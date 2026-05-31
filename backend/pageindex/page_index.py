@@ -3067,7 +3067,7 @@ def page_index_main(doc, opt=None, fast_toc_result=None, hooks=None):
 
 
 def page_index_main_with_page_list(
-    doc_name: str, page_list, opt=None, fast_toc_result=None
+    doc_name: str, page_list, opt=None, fast_toc_result=None, hooks=None
 ):
     """使用外部提供的页文本列表构建 PageIndex（用于 OCR 回填场景）。"""
     logger = JsonLogger(doc_name)
@@ -3089,6 +3089,7 @@ def page_index_main_with_page_list(
             doc_type=doc_type,
             doc_type_confidence=confidence,
             fast_toc_result=fast_toc_result,
+            hooks=hooks,
         )
 
         if opt.if_add_node_id == "yes":

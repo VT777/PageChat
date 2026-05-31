@@ -2442,15 +2442,22 @@ class PageIndexService:
                     fast_toc_result = None  # balanced 不用 fast result
 
             def run_pageindex(opt_obj):
+                # Create enhancement hooks for balanced mode
+                from pageindex.enhancement_hooks import MultimodalEnhancementHooks
+                hooks = MultimodalEnhancementHooks(
+                    enable_hooks=['on_check_toc', 'on_structure_generated', 'on_verify']
+                )
+                
                 if ocr_page_list is None:
                     return page_index_main(
-                        str(file_path), opt_obj, fast_toc_result=fast_toc_result
+                        str(file_path), opt_obj, fast_toc_result=fast_toc_result, hooks=hooks
                     )
                 return page_index_main_with_page_list(
                     doc_name=file_path.name,
                     page_list=ocr_page_list,
                     opt=opt_obj,
                     fast_toc_result=fast_toc_result,
+                    hooks=hooks,
                 )
 
             def run_balanced_once(reason: str) -> Dict[str, Any]:
