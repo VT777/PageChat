@@ -1,0 +1,106 @@
+<script setup lang="ts">
+import { ref } from 'vue'
+import { ChevronRight, ChevronDown } from 'lucide-vue-next'
+
+interface TocNode {
+  node_id: string
+  title: string
+  level: number
+  summary: string
+  start_page: number | null
+  end_page: number | null
+  children: TocNode[]
+}
+
+interface Props {
+  nodes: TocNode[]
+  defaultExpanded?: boolean
+}
+
+withDefaults(defineProps<Props>(), {
+  defaultExpanded: false,
+})
+
+const emit = defineEmits<{
+  jump: [pageNum: number]
+}>()
+
+// Track expanded state per node_id
+const expandedNodes = ref<Set<string>>(new Set())
+
+function isExpanded(nodeId: string): boolean {
+  return expandedNodes.value.has(nodeId)
+}
+
+function toggleNode(nodeId: string) {
+  if (expandedNodes.value.has(nodeId)) {
+    expandedNodes.value.delete(nodeId)
+  } else {
+    expandedNodes.value.add(nodeId)
+  }
+}
+
+function handleJump(pageNum: number | null) {
+  if (pageNum !== null && pageNum > 0) {
+    emit('jump', pageNum)
+  }
+}
+</script>
+
+<template>
+  <div class="space-y-0.5">
+    <div
+      v-for="node in nodes"
+      :key="node.node_id"
+    >
+      <!-- Node Row -->
+      <div
+        class="flex items-start gap-1 group"
+        :style="{ paddingLeft: (node.level * 12) + 'px' }"
+      >
+        <!-- Expand/Collapse button (only if has children) -->
+        <button
+          v-if="node.children?.length"
+          @click.stop="toggleNode(node.node_id)"
+          class="mt-1.5 p-0.5 rounded hover:bg-muted flex-shrink-0 text-muted-foreground"
+        >
+          <ChevronDown v-if="isExpanded(node.node_id)" class="w-3.5 h-3.5" />
+          <ChevronRight v-else class="w-3.5 h-3.5" />
+        </button>
+        <!-- Spacer for leaf nodes to align with expandable ones -->
+        <div v-else class="w-5 flex-shrink-0" />
+
+        <!-- Title + Page info -->
+        <button
+          @click="handleJump(node.start_page)"
+          :disabled="!node.start_page"
+          :title="node.summary || node.title"
+          :class="[
+            'flex-1 text-left px-2 py-1.5 rounded-md text-sm transition-colors',
+            node.start_page
+              ? 'hover:bg-muted cursor-pointer'
+              : 'cursor-default opacity-60',
+          ]"
+        >
+          <span class="truncate block">{{ node.title }}</span>
+          <span
+            v-if="node.start_page"
+            class="text-xs text-muted-foreground mt-0.5 block"
+          >
+            第 {{ node.start_page }} 页
+            <span v-if="node.end_page && node.end_page !== node.start_page">
+              - {{ node.end_page }} 页
+            </span>
+          </span>
+        </button>
+      </div>
+
+      <!-- Children (recursive) -->
+      <TocTree
+        v-if="node.children?.length && isExpanded(node.node_id)"
+        :nodes="node.children"
+        @jump="handleJump"
+      />
+    </div>
+  </div>
+</template>

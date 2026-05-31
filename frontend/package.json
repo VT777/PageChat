@@ -1,0 +1,37 @@
+{
+  "name": "knowclaw-frontend",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vue-tsc && vite build",
+    "preview": "vite preview",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@types/marked": "^5.0.2",
+    "@vueuse/core": "^11.0.0",
+    "axios": "^1.7.0",
+    "class-variance-authority": "^0.7.0",
+    "clsx": "^2.1.0",
+    "lucide-vue-next": "^0.400.0",
+    "marked": "^17.0.5",
+    "marked-vue": "^1.3.0",
+    "pdfjs-dist": "^4.10.38",
+    "pinia": "^2.1.0",
+    "tailwind-merge": "^2.3.0",
+    "vue": "^3.4.0",
+    "vue-router": "^4.3.0"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-vue": "^5.0.0",
+    "autoprefixer": "^10.4.0",
+    "postcss": "^8.4.0",
+    "tailwindcss": "^3.4.0",
+    "typescript": "^5.4.0",
+    "vite": "^5.4.0",
+    "vitest": "^2.1.8",
+    "vue-tsc": "^2.0.0"
+  }
+}

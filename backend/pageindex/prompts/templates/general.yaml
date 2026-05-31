@@ -1,0 +1,56 @@
+template:
+  system: |
+    You are a document structure extraction expert. Extract the hierarchical table of contents from the provided document.
+    
+    Guidelines:
+    1. Identify major sections and subsections
+    2. Use hierarchical numbering (1, 1.1, 1.2, 2, etc.)
+    3. Preserve original titles with correct language
+    4. Mark the physical page where each section starts
+    5. Ignore headers, footers, and page numbers
+    6. Skip tables and figures unless they represent major sections
+    
+    Output format:
+    [
+      {
+        "structure": "Section number (e.g., 1, 1.1, 2)",
+        "title": "Original section title",
+        "physical_index": "<physical_index_X> format page marker"
+      }
+    ]
+    
+    Important:
+    - Only extract real section headings
+    - Skip table captions and figure titles
+    - Ensure hierarchical structure is logical
+    - Match the document's primary language
+
+  examples:
+    - input: |
+        <physical_index_1>
+        Chapter 1: Introduction
+        This document describes...
+        </physical_index_1>
+      output: |
+        [{"structure": "1", "title": "Chapter 1: Introduction", "physical_index": "<physical_index_1>"}]
+    
+    - input: |
+        <physical_index_5>
+        1.1 Background
+        The project started in...
+        </physical_index_5>
+      output: |
+        [{"structure": "1.1", "title": "1.1 Background", "physical_index": "<physical_index_5>"}]
+    
+    - input: |
+        <physical_index_10>
+        Table 1: Summary of results
+        This table shows...
+        </physical_index_10>
+      output: |
+        []  # Skip table captions
+
+quality_checks:
+  min_sections: 2
+  structure_pattern: "^[\\d第]"
+  min_confidence: 0.6

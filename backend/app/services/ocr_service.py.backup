@@ -1,0 +1,113 @@
+import asyncio
+import json
+import urllib.request
+from dataclasses import dataclass
+from typing import Any, Dict, List, Optional
+
+from app.core.config import (
+    BIGMODEL_API_KEY,
+    BIGMODEL_BASE_URL,
+    BIGMODEL_OCR_MODEL,
+    OCR_MAX_RETRIES,
+    OCR_TIMEOUT_SECONDS,
+)
+
+
+@dataclass
+class OCRPageResult:
+    page_num: int
+    text: str
+    ok: bool
+    error: str = ""
+
+
+class OCRService:
+    def __init__(self) -> None:
+        self.base_url = BIGMODEL_BASE_URL.rstrip("/")
+        self.model = BIGMODEL_OCR_MODEL
+        self.api_key = BIGMODEL_API_KEY
+
+    @staticmethod
+    def _extract_text_from_response(payload: Dict[str, Any]) -> str:
+        md = str(payload.get("md_results") or "").strip()
+        if md:
+            return md
+
+        layout_details = payload.get("layout_details") or []
+        lines: List[str] = []
+        for page in layout_details:
+            if not isinstance(page, list):
+                continue
+            for item in page:
+                if not isinstance(item, dict):
+                    continue
+                label = str(item.get("label") or "").strip().lower()
+                if label not in {"text", "table", "formula"}:
+                    continue
+                content = str(item.get("content") or "").strip()
+                if content:
+                    lines.append(content)
+        return "\n".join(lines).strip()
+
+    def _post_layout_parsing(self, image_base64: str) -> Dict[str, Any]:
+        if not self.api_key:
+            raise RuntimeError("BIGMODEL_API_KEY is not configured")
+
+        url = f"{self.base_url}/paas/v4/layout_parsing"
+        file_payload = image_base64.strip()
+        if not file_payload.startswith("data:"):
+            file_payload = f"data:image/jpeg;base64,{file_payload}"
+
+        body = json.dumps(
+            {
+                "model": self.model,
+                "file": file_payload,
+                "return_crop_images": False,
+                "need_layout_visualization": False,
+            }
+        ).encode("utf-8")
+
+        req = urllib.request.Request(
+            url=url,
+            data=body,
+            method="POST",
+            headers={
+                "Authorization": f"Bearer {self.api_key}",
+                "Content-Type": "application/json",
+            },
+        )
+        with urllib.request.urlopen(req, timeout=OCR_TIMEOUT_SECONDS) as resp:
+            raw = resp.read().decode("utf-8", errors="ignore")
+        data = json.loads(raw)
+        if isinstance(data, dict) and data.get("error"):
+            err = data.get("error") or {}
+            code = err.get("code") or "unknown"
+            msg = err.get("message") or "unknown error"
+            raise RuntimeError(f"OCR_API_ERROR[{code}]: {msg}")
+        return data
+
+    async def ocr_image_base64(self, image_base64: str, page_num: int) -> OCRPageResult:
+        if not image_base64:
+            return OCRPageResult(
+                page_num=page_num,
+                text="",
+                ok=False,
+                error="empty_image_base64",
+            )
+
+        last_error = ""
+        max_attempts = max(1, int(OCR_MAX_RETRIES) + 1)
+        for attempt in range(1, max_attempts + 1):
+            try:
+                payload = await asyncio.to_thread(
+                    self._post_layout_parsing, image_base64
+                )
+                text = self._extract_text_from_response(payload)
+                return OCRPageResult(page_num=page_num, text=text, ok=bool(text))
+            except Exception as e:
+                last_error = str(e)
+                if attempt >= max_attempts:
+                    break
+                await asyncio.sleep(min(1.0 * attempt, 2.0))
+
+        return OCRPageResult(page_num=page_num, text="", ok=False, error=last_error)

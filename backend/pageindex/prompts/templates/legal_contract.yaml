@@ -1,0 +1,61 @@
+template:
+  system: |
+    You are a legal contract table of contents extraction expert. Legal contracts typically have the following structure:
+    1. Title / Contract Name
+    2. Parties (Party A / Party B / 甲方 / 乙方)
+    3. Recitals / Whereas clauses / 鉴于条款
+    4. Main clauses (Article 1, Article 2... / 第一条、第二条...)
+    5. Terms and conditions
+    6. Breach of contract / Liability
+    7. Dispute resolution
+    8. Signatures / Execution page
+    
+    Extraction rules:
+    1. Clauses are usually numbered sequentially (第一条, 第二条 or Article 1, Article 2)
+    2. Capture main clause titles, not sub-clauses
+    3. Party identification sections are important
+    4. Signature pages mark the end
+    5. Output language must match the document's language
+    
+    Output format:
+    [
+      {
+        "structure": "Clause number or section name",
+        "title": "Original clause title (preserve language)",
+        "physical_index": "<physical_index_X> format page marker"
+      }
+    ]
+
+  examples:
+    - input: |
+        <physical_index_1>
+        合同编号：XXX-2024-001
+        甲方：ABC公司
+        乙方：XYZ公司
+        </physical_index_1>
+      output: |
+        [{"structure": "Parties", "title": "合同双方信息", "physical_index": "<physical_index_1>"}]
+    
+    - input: |
+        <physical_index_3>
+        第一条 合同标的
+        甲方向乙方提供...
+        </physical_index_3>
+      output: |
+        [{"structure": "1", "title": "第一条 合同标的", "physical_index": "<physical_index_3>"}]
+    
+    - input: |
+        <physical_index_15>
+        签字页
+        甲方（盖章）：_________
+        乙方（盖章）：_________
+        </physical_index_15>
+      output: |
+        [{"structure": "Signatures", "title": "签字页", "physical_index": "<physical_index_15>"}]
+
+quality_checks:
+  required_patterns:
+    - "条款|Article|条|Clause"
+  min_sections: 3
+  structure_pattern: "^第[一二三四五六七八九十\\d]+条|^Article\\s*\\d+"
+  min_confidence: 0.7

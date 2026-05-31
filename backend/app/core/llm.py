@@ -1,0 +1,167 @@
+import os
+import base64
+import io
+from openai import OpenAI, AsyncOpenAI
+from app.core.config import LLM_API_KEY, LLM_BASE_URL, LLM_MODEL, MODEL_CONFIG
+
+
+def _should_disable_thinking(model_name: str) -> bool:
+    return "flash" in (model_name or "").lower()
+
+
+def get_llm_client() -> OpenAI:
+    """获取同步 LLM 客户端"""
+    return OpenAI(
+        api_key=LLM_API_KEY,
+        base_url=LLM_BASE_URL,
+    )
+
+
+def get_async_llm_client() -> AsyncOpenAI:
+    """获取异步 LLM 客户端"""
+    return AsyncOpenAI(
+        api_key=LLM_API_KEY,
+        base_url=LLM_BASE_URL,
+    )
+
+
+def pdf_page_to_base64(pdf_path: str, page_num: int) -> str | None:
+    """将PDF页面转换为base64图片（JPEG压缩）"""
+    try:
+        import pymupdf
+
+        doc = pymupdf.open(pdf_path)
+        if page_num < 1 or page_num > len(doc):
+            doc.close()
+            return None
+
+        page = doc[page_num - 1]
+        pix = page.get_pixmap(dpi=150)  # 150 DPI足够清晰，且更快
+        img_bytes = pix.tobytes(output="jpeg", jpg_quality=75)  # JPEG压缩，更小
+        doc.close()
+        return base64.b64encode(img_bytes).decode("utf-8")
+    except Exception as e:
+        print(f"PDF page to base64 error: {e}")
+        return None
+
+
+def build_vision_message(text: str, images_base64: list[str] = None) -> list:
+    """
+    构建支持多模态的消息格式
+
+    Args:
+        text: 文本内容
+        images_base64: base64 编码的图片列表
+    """
+    if not images_base64:
+        return [{"role": "user", "content": text}]
+
+    content = []
+    for img_b64 in images_base64:
+        content.append(
+            {
+                "type": "image_url",
+                "image_url": {"url": f"data:image/jpeg;base64,{img_b64}"},
+            }
+        )
+    content.append({"type": "text", "text": text})
+
+    return [{"role": "user", "content": content}]
+
+
+def chat_completion(
+    messages: list,
+    model: str = None,
+    temperature: float = 0,
+    stream: bool = False,
+    timeout: float | None = None,
+    **kwargs,
+):
+    """同步调用 LLM"""
+    client = get_llm_client()
+    resolved_model = model or LLM_MODEL
+    params = {
+        "model": resolved_model,
+        "messages": messages,
+        "temperature": temperature,
+        "stream": stream,
+    }
+    if _should_disable_thinking(resolved_model):
+        params["extra_body"] = {"enable_thinking": False}
+    if timeout is not None:
+        params["timeout"] = timeout
+    params.update(kwargs)
+    return client.chat.completions.create(**params)
+
+
+async def async_chat_completion(
+    messages: list,
+    model: str = None,
+    temperature: float = 0,
+    stream: bool = False,
+    timeout: float | None = None,
+    **kwargs,
+):
+    """异步调用 LLM"""
+    client = get_async_llm_client()
+    resolved_model = model or LLM_MODEL
+    params = {
+        "model": resolved_model,
+        "messages": messages,
+        "temperature": temperature,
+        "stream": stream,
+    }
+    if _should_disable_thinking(resolved_model):
+        params["extra_body"] = {"enable_thinking": False}
+    if timeout is not None:
+        params["timeout"] = timeout
+    params.update(kwargs)
+    return await client.chat.completions.create(**params)
+
+
+async def chat_by_scenario(
+    scenario: str,
+    messages: list,
+    stream: bool = False,
+    tools: list = None,
+    timeout: float | None = None,
+    **kwargs,
+):
+    """
+    按场景调用对应模型
+
+    Args:
+        scenario: 场景类型 (intent/chat/qa/index)
+        messages: 消息列表
+        stream: 是否流式
+        tools: 工具定义 (Function Calling)
+    """
+    config = MODEL_CONFIG.get(scenario, MODEL_CONFIG["qa"])
+    client = get_async_llm_client()
+
+    resolved_model = config["model"]
+    params = {
+        "model": resolved_model,
+        "messages": messages,
+        "temperature": config.get("temperature", 0),
+        "stream": stream,
+    }
+    if _should_disable_thinking(resolved_model):
+        params["extra_body"] = {"enable_thinking": False}
+
+    if timeout is not None:
+        params["timeout"] = timeout
+
+    # 添加 max_tokens (如果配置了)
+    if config.get("max_tokens"):
+        params["max_tokens"] = config["max_tokens"]
+
+    # 添加 tools (如果提供了)
+    if tools:
+        params["tools"] = tools
+        params["tool_choice"] = "auto"
+
+    # 合并其他参数
+    params.update(kwargs)
+
+    return await client.chat.completions.create(**params)

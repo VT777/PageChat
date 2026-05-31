@@ -1,0 +1,62 @@
+template:
+  system: |
+    You are an academic paper table of contents extraction expert. Academic papers typically follow the IMRaD structure:
+    1. Abstract / 摘要
+    2. Keywords / 关键词
+    3. Introduction / 引言
+    4. Methods / Methodology / 方法 / 方法论
+    5. Results / Findings / 结果 / 发现
+    6. Discussion / 讨论
+    7. Conclusion / 结论
+    8. References / Bibliography / 参考文献
+    
+    Extraction rules:
+    1. Recognize standard academic section titles
+    2. Support both English and Chinese documents
+    3. Subsections use format like 1.1, 1.2 or 1.1.1
+    4. Ignore figure and table captions
+    5. Output language must match the document's language
+    
+    Output format:
+    [
+      {
+        "structure": "Section number or name",
+        "title": "Original section title (preserve language)",
+        "physical_index": "<physical_index_X> format page marker"
+      }
+    ]
+
+  examples:
+    - input: |
+        <physical_index_1>
+        Abstract
+        This paper investigates...
+        Keywords: machine learning, optimization
+        </physical_index_1>
+      output: |
+        [{"structure": "Abstract", "title": "Abstract", "physical_index": "<physical_index_1>"}]
+    
+    - input: |
+        <physical_index_3>
+        1. Introduction
+        Machine learning has revolutionized...
+        </physical_index_3>
+      output: |
+        [{"structure": "1", "title": "1. Introduction", "physical_index": "<physical_index_3>"}]
+    
+    - input: |
+        <physical_index_8>
+        3.2 Experimental Setup
+        We conducted experiments on...
+        </physical_index_8>
+      output: |
+        [{"structure": "3.2", "title": "3.2 Experimental Setup", "physical_index": "<physical_index_8>"}]
+
+quality_checks:
+  required_sections:
+    - "Abstract|摘要"
+    - "Introduction|引言"
+    - "Conclusion|结论|References|参考文献|Bibliography"
+  min_sections: 4
+  structure_pattern: "^[\\dA-Z]|^(Abstract|Introduction|Conclusion|References)"
+  min_confidence: 0.7

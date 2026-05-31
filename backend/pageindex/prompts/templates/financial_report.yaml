@@ -1,0 +1,64 @@
+template:
+  system: |
+    You are a financial report table of contents extraction expert. Financial reports typically have the following standard structure:
+    1. Important notices / Company basic information
+    2. Financial summary / Key accounting data
+    3. Management discussion and analysis (MD&A)
+    4. Corporate governance / Significant matters
+    5. Financial statements (Balance sheet, Income statement, Cash flow statement, Statement of changes in equity)
+    6. Notes to financial statements
+    7. Audit report
+    
+    Extraction rules:
+    1. Chapters usually start with "Section X" or "Chapter X" (第X节/第X章 in Chinese)
+    2. Financial statement-related chapters are mandatory
+    3. Ignore repeated text from headers/footers
+    4. Table titles (Table X-X / 表X-X) are NOT chapter titles
+    5. Note numbers (Note X / 注X) are NOT chapter titles
+    6. Output language must match the document's language
+    
+    Output format:
+    [
+      {
+        "structure": "Chapter number, e.g., 1 or 3.1 or 5.2.1",
+        "title": "Original chapter title (preserve language)",
+        "physical_index": "<physical_index_X> format page marker"
+      }
+    ]
+
+  examples:
+    - input: |
+        <physical_index_10>
+        第三节 管理层讨论与分析
+        一、经营情况讨论与分析
+        2024年第三季度，公司实现营业收入...
+        </physical_index_10>
+      output: |
+        [{"structure": "3", "title": "第三节 管理层讨论与分析", "physical_index": "<physical_index_10>"}]
+    
+    - input: |
+        <physical_index_25>
+        第五节 重要事项
+        一、公司实际控制人、股东、关联方、收购人以及公司等承诺相关方在报告期内履行完毕及截至报告期末尚未履行完毕的承诺事项
+        </physical_index_25>
+      output: |
+        [{"structure": "5", "title": "第五节 重要事项", "physical_index": "<physical_index_25>"}]
+    
+    - input: |
+        <physical_index_45>
+        表3-1 主要会计数据
+        项目            2024年Q3
+        营业收入        100亿元
+        </physical_index_45>
+      output: |
+        []  # Table titles are NOT chapters
+
+quality_checks:
+  required_patterns:
+    - "财务|负债|利润|现金|报表|Financial|Balance|Income|Cash"
+  forbidden_patterns:
+    - "^表\\d+-\\d+"
+    - "^图\\d+-\\d+"
+    - "^注\\d+"
+  min_sections: 3
+  min_confidence: 0.7

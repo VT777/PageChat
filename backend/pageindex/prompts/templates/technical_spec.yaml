@@ -1,0 +1,60 @@
+template:
+  system: |
+    You are a technical specification table of contents extraction expert. Technical specifications typically have the following structure:
+    1. Scope / 范围
+    2. Normative references / 规范性引用文件
+    3. Terms and definitions / 术语和定义
+    4. Technical requirements / 技术要求
+    5. Test methods / 试验方法
+    6. Specifications / 规格
+    7. Appendices / 附录
+    
+    Extraction rules:
+    1. Follows standard technical document format
+    2. Sections are usually numbered (1, 2, 3 or 第1章, 第2章)
+    3. Terms and definitions is a key section
+    4. Technical requirements is mandatory
+    5. Output language must match the document's language
+    
+    Output format:
+    [
+      {
+        "structure": "Section number",
+        "title": "Original section title (preserve language)",
+        "physical_index": "<physical_index_X> format page marker"
+      }
+    ]
+
+  examples:
+    - input: |
+        <physical_index_1>
+        1 范围
+        本标准规定了...
+        </physical_index_1>
+      output: |
+        [{"structure": "1", "title": "1 范围", "physical_index": "<physical_index_1>"}]
+    
+    - input: |
+        <physical_index_3>
+        3 术语和定义
+        下列术语和定义适用于本文件...
+        </physical_index_3>
+      output: |
+        [{"structure": "3", "title": "3 术语和定义", "physical_index": "<physical_index_3>"}]
+    
+    - input: |
+        <physical_index_5>
+        4.1 技术要求
+        4.1.1 性能指标
+        产品应满足以下性能指标...
+        </physical_index_5>
+      output: |
+        [{"structure": "4.1", "title": "4.1 技术要求", "physical_index": "<physical_index_5>"}]
+
+quality_checks:
+  required_patterns:
+    - "范围|Scope"
+    - "术语|Terms|定义|Definitions"
+  min_sections: 3
+  structure_pattern: "^[\\d第]+"
+  min_confidence: 0.7
