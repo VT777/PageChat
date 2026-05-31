@@ -50,7 +50,7 @@ class EnhancementHooks(ABC):
         self, 
         toc_items: List[Dict[str, Any]], 
         page_list: List[Tuple[str, int]]
-    ) -> Optional[List[Dict[str, Any]]:
+    ) -> Optional[List[Dict[str, Any]]]:
         """Hook called after TOC extraction.
         
         Enhances TOC extraction when official extraction has errors.
@@ -91,7 +91,7 @@ class EnhancementHooks(ABC):
         structure: List[Dict[str, Any]], 
         page_list: List[Tuple[str, int]],
         analysis_info: Dict[str, Any]
-    ) -> Optional[List[Dict[str, Any]]:
+    ) -> Optional[List[Dict[str, Any]]]:
         """Hook called after structure generation (process_no_toc mode).
         
         MOST IMPORTANT HOOK.
@@ -134,7 +134,7 @@ class EnhancementHooks(ABC):
         incorrect_items: List[Dict[str, Any]], 
         page_list: List[Tuple[str, int]], 
         neighbor_range: Optional[Tuple[int, int]] = None
-    ) -> Optional[List[Dict[str, Any]]:
+    ) -> Optional[List[Dict[str, Any]]]:
         """Hook called before fixing incorrect TOC items.
         
         Enhances error correction when neighbor-bounded search fails.
