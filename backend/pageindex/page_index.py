@@ -2413,6 +2413,7 @@ async def meta_processor(
     logger=None,
     doc_type="general",
     doc_type_confidence=0.0,
+    hooks=None,
 ):
     print(mode)
     print(f"start_index: {start_index}")
@@ -2439,6 +2440,28 @@ async def meta_processor(
             toc_with_page_number = process_no_toc(
                 page_list, start_index=start_index, model=opt.model, logger=logger
             )
+            
+            # Hook: Structure Generation Enhancement
+            if hooks is not None and mode == "process_no_toc":
+                try:
+                    # Build analysis_info with chapter_dividers detection
+                    from .pdf_analyzer import analyze_pdf_structure
+                    analysis_info = {"chapter_dividers": []}
+                    try:
+                        if doc and hasattr(doc, 'name'):
+                            analysis = analyze_pdf_structure(doc.name)
+                            analysis_info["chapter_dividers"] = analysis.get("chapter_dividers", [])
+                    except:
+                        pass
+                    
+                    enhanced_structure = await hooks.on_structure_generated(
+                        toc_with_page_number, page_list, analysis_info
+                    )
+                    if enhanced_structure is not None:
+                        toc_with_page_number = enhanced_structure
+                        logger.info(f"[HOOK] Structure generation enhanced: {len(toc_with_page_number)} items")
+                except Exception as e:
+                    logger.warning(f"[HOOK] Structure generation enhancement failed: {e}")
 
         toc_with_page_number = [
             item
@@ -2459,6 +2482,18 @@ async def meta_processor(
             start_index=start_index,
             model=opt.model,
         )
+        
+        # Hook: Verification Enhancement
+        if hooks is not None and accuracy < 0.8:
+            try:
+                enhanced_verify = await hooks.on_verify(
+                    accuracy, incorrect_results, page_list
+                )
+                if enhanced_verify is not None:
+                    accuracy, incorrect_results = enhanced_verify
+                    logger.info(f"[HOOK] Verification enhanced: accuracy={accuracy:.2%}")
+            except Exception as e:
+                logger.warning(f"[HOOK] Verification enhancement failed: {e}")
 
         logger.info(
             {
@@ -2471,6 +2506,18 @@ async def meta_processor(
         if accuracy == 1.0 and len(incorrect_results) == 0:
             return toc_with_page_number
         if accuracy > 0.6 and len(incorrect_results) > 0:
+            # Hook: Fix Incorrect Enhancement
+            if hooks is not None:
+                try:
+                    enhanced_fix = await hooks.on_fix_incorrect(
+                        incorrect_results, page_list
+                    )
+                    if enhanced_fix is not None:
+                        incorrect_results = enhanced_fix
+                        logger.info(f"[HOOK] Fix incorrect enhanced: {len(incorrect_results)} items")
+                except Exception as e:
+                    logger.warning(f"[HOOK] Fix incorrect enhancement failed: {e}")
+            
             (
                 toc_with_page_number,
                 incorrect_results,
@@ -2495,6 +2542,7 @@ async def meta_processor(
                 logger=logger,
                 doc_type=doc_type,
                 doc_type_confidence=doc_type_confidence,
+                hooks=hooks,
             )
         if mode == "process_toc_no_page_numbers":
             return await meta_processor(
@@ -2505,6 +2553,7 @@ async def meta_processor(
                 logger=logger,
                 doc_type=doc_type,
                 doc_type_confidence=doc_type_confidence,
+                hooks=hooks,
             )
         if mode == "process_no_toc":
             # Last resort: return best-effort result instead of crashing
@@ -2795,6 +2844,7 @@ async def tree_parser(
     doc_type="general",
     doc_type_confidence=0.0,
     fast_toc_result=None,
+    hooks=None,
 ):
     is_fast_mode = getattr(opt, "index_mode", "balanced") == "fast"
     is_smart_mode = getattr(opt, "index_mode", "balanced") == "smart"
@@ -2854,6 +2904,17 @@ async def tree_parser(
 
     # ─── Balanced（或 smart fallthrough）: 原有 LLM 流程 ───
     check_toc_result = check_toc(page_list, opt)
+    
+    # Hook: TOC Detection Enhancement
+    if hooks is not None:
+        try:
+            enhanced_result = await hooks.on_check_toc(page_list, check_toc_result)
+            if enhanced_result is not None:
+                logger.info(f"[HOOK] TOC detection enhanced: {enhanced_result}")
+                check_toc_result = enhanced_result
+        except Exception as e:
+            logger.warning(f"[HOOK] TOC detection enhancement failed: {e}")
+    
     logger.info(check_toc_result)
 
     has_toc_with_page_numbers = (
@@ -2873,6 +2934,7 @@ async def tree_parser(
             logger=logger,
             doc_type=doc_type,
             doc_type_confidence=doc_type_confidence,
+            hooks=hooks,
         )
     else:
         toc_with_page_number = await meta_processor(
@@ -2883,6 +2945,7 @@ async def tree_parser(
             logger=logger,
             doc_type=doc_type,
             doc_type_confidence=doc_type_confidence,
+            hooks=hooks,
         )
 
     toc_with_page_number = add_preface_if_needed(toc_with_page_number)
@@ -2906,7 +2969,7 @@ async def tree_parser(
     return toc_tree
 
 
-def page_index_main(doc, opt=None, fast_toc_result=None):
+def page_index_main(doc, opt=None, fast_toc_result=None, hooks=None):
     logger = JsonLogger(doc)
 
     is_valid_pdf = (
@@ -2940,6 +3003,7 @@ def page_index_main(doc, opt=None, fast_toc_result=None):
             doc_type=doc_type,
             doc_type_confidence=confidence,
             fast_toc_result=fast_toc_result,
+            hooks=hooks,
         )
 
         if opt.if_add_node_id == "yes":
