@@ -165,7 +165,7 @@ class MultimodalEnhancementHooks(EnhancementHooks):
             enable_hooks: List of hook names to enable. If None, enables all.
         """
         self.vlm_model = vlm_model or "qwen-vl-max"
-        self.enable_hooks = set(enable_hooks) if enable_hooks else None
+        self.enable_hooks = set(enable_hooks) if enable_hooks is not None else None
     
     def _is_enabled(self, hook_name: str) -> bool:
         """Check if a hook is enabled."""

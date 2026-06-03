@@ -2074,6 +2074,12 @@ class PageIndexService:
         model = getattr(self.opt, "model", "qwen3.6-flash")
         requested_mode = mode_override or "smart"
 
+        # 创建 enhancement hooks（在 balanced 模式下使用）
+        from pageindex.enhancement_hooks import MultimodalEnhancementHooks
+        hooks = MultimodalEnhancementHooks(
+            enable_hooks=[]
+        )
+
         # ─── Phase 0: 文档预分析 ───
         print(f"[INDEX-V3] Phase 0: analyzing {file_path.name}")
         analysis = analyze_pdf_structure(str(file_path))
@@ -2162,7 +2168,7 @@ class PageIndexService:
                 # P2-fix: 传入 dividers 修正 Text 路径结果
                 text_dividers = anchors.get("chapter_dividers", []) if anchors else []
                 balanced_result = await build_balanced_toc_text(
-                    analysis, model, dividers=text_dividers
+                    analysis, model, dividers=text_dividers, hooks=hooks
                 )
                 
                 # P5-fix: Check text path quality, fallback to visual if poor
@@ -2181,6 +2187,7 @@ class PageIndexService:
                         str(file_path), analysis, model,
                         anchors=anchors,
                         ocr_text_map=ocr_text_map,
+                        hooks=hooks,
                     )
                     toc_items = balanced_result["toc_items"]
                     toc_source = balanced_result["source"]
@@ -2192,6 +2199,7 @@ class PageIndexService:
                     str(file_path), analysis, model,
                     anchors=anchors,
                     ocr_text_map=ocr_text_map,
+                    hooks=hooks,
                 )
                 toc_items = balanced_result["toc_items"]
                 toc_source = balanced_result["source"]
@@ -2442,12 +2450,7 @@ class PageIndexService:
                     fast_toc_result = None  # balanced 不用 fast result
 
             def run_pageindex(opt_obj):
-                # Create enhancement hooks for balanced mode
-                from pageindex.enhancement_hooks import MultimodalEnhancementHooks
-                hooks = MultimodalEnhancementHooks(
-                    enable_hooks=['on_check_toc', 'on_structure_generated', 'on_verify']
-                )
-                
+                # 使用外层已创建的 hooks
                 if ocr_page_list is None:
                     return page_index_main(
                         str(file_path), opt_obj, fast_toc_result=fast_toc_result, hooks=hooks

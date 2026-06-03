@@ -16,6 +16,7 @@ from pageindex.vlm_utils import (
     parse_vlm_json,
 )
 from pageindex.fast_toc import verify_content_match, apply_offset
+from pageindex.divider_fix import fix_toc_for_dividers
 from app.prompts.pageindex_prompts import (
     VLM_ANCHOR_DETECTION_PROMPT,
     VLM_TOC_EXTRACT_PROMPT,
@@ -52,6 +53,7 @@ async def build_balanced_toc_visual(
     model: Optional[str] = None,
     anchors: Optional[Dict] = None,
     ocr_text_map: Optional[Dict[int, str]] = None,
+    hooks=None,
 ) -> Dict:
     """Balanced 视觉路径: 缩略图锚点 → 目录提取 → 全文分析。"""
     page_count = analysis["page_count"]
@@ -279,7 +281,8 @@ async def _branch_a_toc_page(
 
     # P1-4 / P2-8: 智能页码映射——检测目录页码可信度，自动选择映射策略
     # 传入 ocr_text_map 做标题搜索验证，传入 dividers 用于无页码场景
-    _map_toc_physical_pages(
+    # P4-fix: 使用分区映射，避免图表条目被强制递增到错误页码
+    _map_toc_physical_pages_partitioned(
         toc_items,
         page_count=page_count,
         first_content_page=first_content_page,
@@ -287,7 +290,7 @@ async def _branch_a_toc_page(
         ocr_text_map=ocr_text_map,
         dividers=dividers,
     )
-
+    
     # P1-4: OCR 完整性验证——检查 VLM 是否遗漏了条目
     if ocr_text_map and toc_items:
         _verify_toc_completeness_with_ocr(toc_items, ocr_text_map, last_toc)
@@ -300,10 +303,10 @@ async def _branch_a_toc_page(
     # 最后的兜底：还有无页码的，用位置顺序分配
     for i, item in enumerate(toc_items):
         if not item.get("physical_index"):
-            prev_pi = toc_items[i-1].get("physical_index", last_toc) if i > 0 else last_toc
+            prev_pi = (toc_items[i-1].get("physical_index") or last_toc) if i > 0 else last_toc
             item["physical_index"] = prev_pi + 1
 
-    pis = [it.get("physical_index", 0) for it in toc_items]
+    pis = [it.get("physical_index") or 0 for it in toc_items]
     print(
         f"[BALANCED-VIS] Branch A: {len(toc_items)} items, "
         f"physical_range={min(pis)}-{max(pis)} (page_count={page_count})"
@@ -317,7 +320,7 @@ async def _branch_a_toc_page(
         if not start or start < 1:
             continue
         if i < len(toc_items) - 1:
-            next_start = toc_items[i + 1].get("physical_index", start + 1)
+            next_start = toc_items[i + 1].get("physical_index") or (start + 1)
             estimated_end = max(next_start - 1, start)
         else:
             estimated_end = page_count
@@ -350,7 +353,8 @@ async def _branch_a_toc_page(
             toc_prefix = toc_title[:10].strip()
             for pt in page_titles:
                 page_title = pt.get("title", "")
-                if pt.get("type") == "chapter" and toc_prefix and toc_prefix in page_title:
+                if (pt.get("type") == "chapter" and toc_prefix and toc_prefix in page_title
+                    and pt.get("physical_index") is not None):
                     chapter_boundaries.append({
                         "structure": item.get("structure", ""),
                         "title": toc_title,
@@ -369,7 +373,9 @@ async def _branch_a_toc_page(
                 toc_prefix = toc_title[:10].strip()
                 for pt in page_titles:
                     page_title = pt.get("title", "")
-                    if toc_prefix and toc_prefix in page_title and pt.get("physical_index", 0) > last_toc:
+                    if (toc_prefix and toc_prefix in page_title
+                        and pt.get("physical_index") is not None
+                        and pt["physical_index"] > last_toc):
                         chapter_boundaries.append({
                             "structure": item.get("structure", ""),
                             "title": toc_title,
@@ -391,7 +397,9 @@ async def _branch_a_toc_page(
             # 从 page_titles 中提取该章节范围内的子节点
             sub_items = [
                 pt for pt in page_titles
-                if start <= pt["physical_index"] <= end
+                if (start is not None and end is not None
+                    and pt.get("physical_index") is not None
+                    and start <= pt["physical_index"] <= end)
                 and pt.get("type") != "chapter"  # 排除章节起始页本身
             ]
 
@@ -452,7 +460,7 @@ async def _branch_a_toc_page(
             if not start or start < 1:
                 continue
             if i < len(toc_items) - 1:
-                next_start = toc_items[i + 1].get("physical_index", start + 1)
+                next_start = toc_items[i + 1].get("physical_index") or (start + 1)
                 estimated_end = max(next_start - 1, start)
             else:
                 estimated_end = page_count
@@ -511,32 +519,40 @@ async def _branch_a_toc_page(
             for child in reversed(children):
                 toc_items.insert(insert_pos, child)
 
-        # Task 3: 去重 — 同一 physical_index 出现多次时，保留 structure 编号最小的
-        seen_pi = {}
+        # Task 3: 去重 — 只去重真正的重复（相同标题 + 相同页码）
+        # 修复：不再按 physical_index 去重，因为一页可以有多个条目（如图表）
+        seen = set()
         deduped = []
         removed = 0
         for item in toc_items:
+            title = item.get("title", "")
             pi = item.get("physical_index", 0)
-            if pi and pi in seen_pi:
-                # 同一 physical_index 已存在，比较 structure 编号
-                existing = seen_pi[pi]
-                existing_struct = existing.get("structure", "999")
-                current_struct = item.get("structure", "999")
-                if current_struct < existing_struct:
-                    # 当前 structure 更小（更优先），替换
-                    deduped.remove(existing)
-                    deduped.append(item)
-                    seen_pi[pi] = item
+            key = (title[:30], pi)  # 用标题+页码作为去重键
+            if key in seen:
                 removed += 1
-            else:
-                deduped.append(item)
-                if pi:
-                    seen_pi[pi] = item
+                continue
+            seen.add(key)
+            deduped.append(item)
         
         if removed > 0:
             print(f"[BALANCED-VIS] Deduplication: removed {removed} duplicate nodes")
             toc_items.clear()
             toc_items.extend(deduped)
+
+    # P5-fix: 子章节提取可能把图表标题误判为子章节，重置图表条目的 structure
+    # 使图表条目成为独立根节点，避免被嵌套到章节下
+    for item in toc_items:
+        title = str(item.get("title", ""))
+        number = str(item.get("number", ""))
+        text = f"{number} {title}"
+        if any(k in text for k in ['图', 'figure', 'Fig.', '表', 'Table']):
+            # 重置图表条目的 structure，使其成为独立根节点
+            if item.get("structure"):
+                print(
+                    f"[BALANCED-VIS] Reset figure/table structure: '{title[:40]}' "
+                    f"from '{item['structure']}' to root"
+                )
+                item["structure"] = ""
 
     return {"toc_items": toc_items, "source": "vlm_toc"}
 
@@ -783,6 +799,7 @@ async def build_balanced_toc_text(
     analysis: Dict,
     model: Optional[str] = None,
     dividers: Optional[List[int]] = None,
+    hooks=None,
 ) -> Dict:
     """Balanced 文本路径: LLM 全文分析 (generate_toc_init/continue)。
 
@@ -824,6 +841,8 @@ async def build_balanced_toc_text(
             logger=logger,
             doc_type="general",
             doc_type_confidence=0.0,
+            hooks=hooks,
+            doc=analysis.get("file_path"),
         )
         if not toc_items or len(toc_items) < 2:
             raise ValueError("Too few TOC items")
@@ -840,6 +859,18 @@ async def build_balanced_toc_text(
     if dividers and len(dividers) > 0:
         print(f"[BALANCED-TEXT] Refining TOC with {len(dividers)} dividers")
         toc_items = _refine_toc_with_dividers(toc_items, dividers, page_count)
+
+    # FIX: Post-process TOC to fix titles for divider-based documents
+    try:
+        toc_items = await fix_toc_for_dividers(
+            toc_items,
+            page_list,
+            pdf_path=analysis.get("file_path"),
+            use_vlm=True,
+            vlm_model="qwen3.6-flash",
+        )
+    except Exception as e:
+        print(f"[BALANCED-TEXT] Divider fix failed: {e}")
 
     return {"toc_items": toc_items, "source": "llm_text"}
 
@@ -891,8 +922,8 @@ def _refine_toc_with_dividers(
             ch_end = dividers[ch_idx + 1] if ch_idx + 1 < len(dividers) else page_count
             
             for sub in sub_chapters:
-                sub_pi = sub.get("physical_index", 0)
-                if ch_start <= sub_pi < ch_end:
+                sub_pi = sub.get("physical_index") or 0
+                if sub_pi and ch_start <= sub_pi < ch_end:
                     result.append(sub)
         
         return result
@@ -951,8 +982,8 @@ def _assign_subchapters_to_parents(
         ch_end = dividers[i + 1] if i + 1 < len(dividers) else page_count
         
         for sub in sub_chapters:
-            sub_pi = sub.get("physical_index", 0)
-            if ch_start <= sub_pi < ch_end:
+            sub_pi = sub.get("physical_index") or 0
+            if sub_pi and ch_start <= sub_pi < ch_end:
                 # 更新 structure 为 "X.Y" 格式
                 parent_struct = str(ch.get("structure", i + 1))
                 # 找到当前主章节下最大的子序号
@@ -1234,6 +1265,17 @@ def _map_toc_physical_pages(
 
     # 提取所有有 page 值的条目
     items_with_page = [it for it in toc_items if it.get("page") is not None]
+    
+    # 防御：如果已有 physical_index（VLM 已提取物理页码），保留它们
+    items_with_physical = [it for it in toc_items if it.get("physical_index") is not None]
+    if not items_with_page and items_with_physical:
+        print(f"[TOC-MAP] No logical pages but {len(items_with_physical)} items already have physical_index, skipping mapping")
+        # 只给没有 physical_index 的条目分配页码
+        items_without = [it for it in toc_items if it.get("physical_index") is None]
+        if items_without and dividers:
+            _assign_divider_positions(toc_items, dividers)
+        return
+    
     if not items_with_page:
         print("[TOC-MAP] No logical pages found, using uniform distribution")
         # 如果提供了 dividers，优先用 dividers 给顶级条目定位
@@ -1265,6 +1307,17 @@ def _map_toc_physical_pages(
 
     # Step 1: 计算初始 offset
     offset = effective_first_content - first_logical
+    
+    # 防御：offset < 0 意味着目录和正文之间有间隙（前言/空白页），
+    # 或者目录中的页码本身就是物理页码。此时令 offset = 0。
+    if offset < 0:
+        print(
+            f"[TOC-MAP] Negative offset detected ({offset}), "
+            f"correcting to 0. This usually means there are preface pages "
+            f"between TOC and content, or the TOC already uses physical page numbers."
+        )
+        offset = 0
+    
     estimated_last = last_logical + offset
 
     # Step 2: OCR 验证（最优先）
@@ -1374,26 +1427,157 @@ def _map_uniformly(
         return
 
     for i, item in enumerate(toc_items):
+        # 防御：不覆盖已有的 physical_index
+        if item.get("physical_index") is not None:
+            continue
         physical = first_content_page + i * available / n
         item["physical_index"] = max(1, min(page_count, round(physical)))
 
 
+def _classify_toc_item_type(item: Dict) -> str:
+    """根据标题/编号特征分类目录条目类型。
+    
+    Returns:
+        'chapter' | 'figure' | 'table' | 'appendix' | 'reference' | 'other'
+    """
+    title = str(item.get("title", "")).lower()
+    number = str(item.get("number", "")).lower()
+    text = f"{number} {title}"
+    
+    if "图目录" in text or "表目录" in text:
+        return 'other'  # 过滤掉目录节点
+    if any(k in text for k in ['图', 'figure', 'fig.']):
+        return 'figure'
+    elif any(k in text for k in ['表', 'table']):
+        return 'table'
+    elif any(k in text for k in ['附录', 'appendix']):
+        return 'appendix'
+    elif any(k in text for k in ['参考文献', 'references', 'reference']):
+        return 'reference'
+    elif any(k in text for k in ['致谢', 'acknowledgement']):
+        return 'other'
+    elif re.match(r'^\d', number) or '第' in number[:3]:
+        return 'chapter'
+    else:
+        return 'other'
+
+
+def _map_toc_physical_pages_partitioned(
+    toc_items: List[Dict],
+    page_count: int,
+    first_content_page: Optional[int],
+    last_toc_page: int,
+    ocr_text_map: Optional[Dict[int, str]] = None,
+    dividers: Optional[List[int]] = None,
+) -> None:
+    """分区版本的页码映射。
+    
+    将目录条目按类型分组（章节、图表、表格等），各组独立计算页码映射，
+    避免不同类型条目互相干扰（如图表被章节强制递增到错误页码）。
+    """
+    if not toc_items or page_count <= 0:
+        return
+    
+    # Step 1: 按类型分组，同时记录原始索引
+    groups: Dict[str, List[Tuple[int, Dict]]] = {}
+    for idx, item in enumerate(toc_items):
+        item_type = _classify_toc_item_type(item)
+        if item_type not in groups:
+            groups[item_type] = []
+        groups[item_type].append((idx, item))
+    
+    if len(groups) <= 1:
+        # 只有一组，回退到原有逻辑
+        _map_toc_physical_pages(
+            toc_items, page_count, first_content_page, last_toc_page,
+            ocr_text_map, dividers
+        )
+        return
+    
+    print(f"[TOC-MAP-PARTITION] {len(groups)} groups: {list(groups.keys())}")
+    
+    # Step 2: 计算统一的 offset（从章节组或所有条目）
+    items_with_page = [it for it in toc_items if it.get("page") is not None]
+    effective_first_content = first_content_page or (last_toc_page + 1)
+    
+    if items_with_page:
+        first_logical = items_with_page[0]["page"]
+        offset = effective_first_content - first_logical
+        if offset < 0:
+            offset = 0
+    else:
+        offset = 0
+    
+    # Step 3: 各组独立映射
+    for group_type, indexed_items in groups.items():
+        items = [item for _, item in indexed_items]
+        
+        if group_type in ('figure', 'table'):
+            # 图表组：应用 offset，但组内单调不减（允许同页）
+            for item in items:
+                logical = item.get("page")
+                if logical is not None and isinstance(logical, (int, float)):
+                    physical = int(logical) + offset
+                    item["physical_index"] = max(1, min(page_count, physical))
+                else:
+                    item["physical_index"] = None
+            
+            # 组内单调不减
+            for i in range(1, len(items)):
+                prev = items[i-1].get("physical_index")
+                curr = items[i].get("physical_index")
+                if prev is not None and curr is not None and curr < prev:
+                    items[i]["physical_index"] = prev
+                    
+        else:
+            # 章节/附录/参考文献：使用原有逻辑
+            _map_toc_physical_pages(
+                items, page_count, first_content_page, last_toc_page,
+                ocr_text_map=None, dividers=None
+            )
+    
+    # Step 4: 确保所有条目都有 physical_index
+    for item in toc_items:
+        if not item.get("physical_index"):
+            logical = item.get("page")
+            if logical is not None:
+                item["physical_index"] = max(1, min(page_count, int(logical) + offset))
+            else:
+                item["physical_index"] = effective_first_content
+    
+    # 注意：不再调用全局 _ensure_monotonic_physical
+    # 因为混合列表中，图表的页码可能小于后面的章节页码
+    # 各组已在 Step 3 中独立确保单调性
+
+
 def _ensure_monotonic_physical(toc_items: List[Dict], page_count: int) -> None:
-    """确保 physical_index 单调递增且不超出 page_count。"""
+    """确保 physical_index 单调不减且不超出 page_count。
+    
+    修复：从严格递增（>）改为单调不减（>=），允许同页多个条目。
+    这对图表条目尤为重要（一页可以放多个图表）。
+    """
     if not toc_items:
         return
 
-    # 第一轮：确保单调递增
+    # 第一轮：确保单调不减（允许相等）
     for i in range(1, len(toc_items)):
-        prev = toc_items[i - 1].get("physical_index", 1)
-        curr = toc_items[i].get("physical_index", prev)
-        if curr <= prev:
-            # 至少比前一个多 1 页
-            toc_items[i]["physical_index"] = min(page_count, prev + 1)
+        prev = toc_items[i - 1].get("physical_index") or 1
+        curr = toc_items[i].get("physical_index") or prev
+        
+        # 防御：父子节点允许共享同一页码（如父章节和1.1子章节都在第4页开始）
+        prev_struct = str(toc_items[i - 1].get("structure", ""))
+        curr_struct = str(toc_items[i].get("structure", ""))
+        if prev_struct and curr_struct.startswith(prev_struct + "."):
+            continue  # 跳过父子节点的递增强制
+        
+        # 修复：从严格递增改为单调不减
+        if curr < prev:
+            # 当前页码倒退，修正为与前一项相同（单调不减）
+            toc_items[i]["physical_index"] = prev
 
     # 第二轮：确保不超出 page_count
     for item in toc_items:
-        pi = item.get("physical_index", 1)
+        pi = item.get("physical_index") or 1
         if pi > page_count:
             item["physical_index"] = page_count
         elif pi < 1:

@@ -16,6 +16,7 @@ from pageindex.pdf_analyzer import (
     extract_toc_from_link_annotations as _pdf_analyzer_extract_links,
     extract_toc_by_regex as _pdf_analyzer_extract_regex,
 )
+# Removed: detect_divider_pages no longer exported from divider_fix
 from app.prompts.pageindex_prompts import (
     CHECK_TITLE_APPEARANCE_PROMPT,
     CHECK_TITLE_APPEARANCE_BATCH_PROMPT,
@@ -36,6 +37,13 @@ from app.prompts.pageindex_prompts import (
 
 # Import quality validator
 from pageindex.validation import QualityValidator
+
+# Import divider fix for post-processing
+from pageindex.divider_fix import (
+    fix_toc_for_dividers,
+    fix_toc_for_dividers_sync,
+    detect_divider_pages_robust,
+)
 
 
 ################### check title in page #########################################################
@@ -1576,11 +1584,20 @@ def find_toc_pages_by_rules(page_list):
         text_stripped = text.strip()
         text_lower = text_stripped.lower()
 
+        # 🔴 FIX: 排除 "汇报提纲" / "大纲" / "Outline" 等导航页（非真正目录）
+        # 特征：页面以这些词开头，且没有页码模式（如 ".... 12"）
+        header = text_stripped[:300]
+        is_summary_page = (
+            ("汇报提纲" in header or "大纲" in header or "outline" in text_lower[:300])
+            and len(text_stripped) < 800  # 导航页通常较短
+        )
+        if is_summary_page:
+            continue  # 跳过导航页，不视为目录页
+
         # P3-10: 增强启发式评分
         score = 0.0
 
         # 1. 包含"目录"或"Contents"标题 → +0.3
-        header = text_stripped[:300]
         if "目录" in header or "contents" in text_lower[:300]:
             score += 0.3
 
@@ -1598,12 +1615,13 @@ def find_toc_pages_by_rules(page_list):
         elif len(matches) >= 3:
             score += 0.15
 
-        # 判定：score >= 0.5 视为目录页
-        is_toc = score >= 0.5 or len(matches) >= 3
+        # 判定：score >= 0.5 视为目录页，或同时满足：大量编号行 + 点线页码
+        # FIX: 避免将时间线/图表页误判为目录（如 "2.1 标题\n2014" 这种无点线的匹配）
+        is_toc = score >= 0.5 or (len(matches) >= 5 and len(dot_page_matches) >= 1)
 
         if is_toc:
             toc_pages.append(i)
-        elif toc_pages and (score >= 0.2 or len(matches) >= 1):
+        elif toc_pages and score >= 0.2 and len(dot_page_matches) >= 1:
             toc_pages.append(i)  # TOC 尾页可能行数少
         elif toc_pages:
             break  # 连续性断了
@@ -1962,12 +1980,31 @@ async def validate_and_finalize_toc(
             for item in toc_items:
                 item["physical_index"] = max(1, item["physical_index"] + offset)
 
-    # 代码预检：覆盖度
+    # 代码预检：覆盖度（同时检查上限，防止时间线/年份被误认为页码）
     last_page = max(item["physical_index"] for item in toc_items)
+    first_page = min(item["physical_index"] for item in toc_items)
+    
+    # 检查下限：最后一页必须超过50%
     if last_page < page_count * 0.5:
         print(
             f"[FAST-TOC] Coverage FAILED: last_page={last_page}, "
             f"page_count={page_count}, ratio={last_page / page_count:.1%}"
+        )
+        return None
+    
+    # 检查上限：所有页码必须在文档范围内
+    if last_page > page_count:
+        print(
+            f"[FAST-TOC] Coverage FAILED: last_page={last_page} exceeds "
+            f"page_count={page_count}. Likely timeline/year numbers extracted as page numbers."
+        )
+        return None
+    
+    # 检查合理性：第一页应该在文档前半部分（真正的TOC应该在前面）
+    if first_page > page_count * 0.3:
+        print(
+            f"[FAST-TOC] Coverage FAILED: first_page={first_page} too late. "
+            f"Likely extracted from content pages, not actual TOC."
         )
         return None
 
@@ -1987,11 +2024,14 @@ async def validate_and_finalize_toc(
         return None
 
     # 如果有系统性偏移，应用校正
-    if content_check["offset_median"] != 0:
+    # 防御：Text路径（LLM从<physical_index_N>标注提取）页码已准确，跳过校正
+    if content_check["offset_median"] != 0 and source not in ("no_toc", "vlm"):
         offset = content_check["offset_median"]
         for item in toc_items:
             item["physical_index"] = max(1, item["physical_index"] + offset)
         print(f"[FAST-TOC] Content-based offset correction: {offset:+d}")
+    elif content_check["offset_median"] != 0 and source in ("no_toc", "vlm"):
+        print(f"[FAST-TOC] Skipping offset correction for {source} source (page numbers already physical)")
 
     # LLM 轻校验
     toc_outline = "\n".join(
@@ -2051,14 +2091,23 @@ def check_toc(page_list, opt=None):
     toc_page_list = find_toc_pages(start_page_index=0, page_list=page_list, opt=opt)
 
     # Extend with regex-detected TOC pages (catches pages LLM missed)
+    # FIX: Only extend if regex pages are continuous with LLM-detected pages
+    # to avoid false positives on content pages with chapter headings
     rule_pages = find_toc_pages_by_rules(page_list)
-    if rule_pages:
-        merged = sorted(set(toc_page_list) | set(rule_pages))
-        if len(merged) > len(toc_page_list):
-            print(
-                f"check_toc: extended TOC pages {toc_page_list} -> {merged} via regex"
-            )
-            toc_page_list = merged
+    if rule_pages and toc_page_list:
+        # Only add regex pages that are within 2 pages of existing TOC pages
+        last_toc_page = toc_page_list[-1]
+        extended_pages = [p for p in rule_pages if p <= last_toc_page + 2]
+        if extended_pages:
+            merged = sorted(set(toc_page_list) | set(extended_pages))
+            if len(merged) > len(toc_page_list):
+                print(
+                    f"check_toc: extended TOC pages {toc_page_list} -> {merged} via regex (conservative)"
+                )
+                toc_page_list = merged
+    elif rule_pages and not toc_page_list:
+        # If LLM found nothing, use regex results but limit to first few pages
+        toc_page_list = sorted(rule_pages)[:3]
 
     if len(toc_page_list) == 0:
         print("no toc found")
@@ -2070,6 +2119,16 @@ def check_toc(page_list, opt=None):
     else:
         print("toc found")
         toc_json = toc_extractor(page_list, toc_page_list, opt.model)
+        
+        # P2: Detect garbled toc_content and force process_no_toc path
+        toc_content = toc_json.get("toc_content", "")
+        if toc_content and is_garbled_text(toc_content):
+            print("[CHECK-TOC] Detected garbled TOC content, forcing process_no_toc path")
+            return {
+                "toc_content": None,
+                "toc_page_list": [],
+                "page_index_given_in_toc": "no",
+            }
 
         if toc_json["page_index_given_in_toc"] == "yes":
             print("index found")
@@ -2155,6 +2214,11 @@ async def fix_incorrect_toc(
 
     end_index = len(page_list) + start_index - 1
 
+    # P1: Detect divider pages and exclude them from search range
+    divider_pages = set(detect_divider_pages_robust(page_list))
+    if divider_pages:
+        print(f"[FIX-INCORRECT] Excluding divider pages from search: {sorted(divider_pages)}")
+
     incorrect_results_and_range_logs = []
 
     # Helper function to process and check a single incorrect item
@@ -2206,6 +2270,9 @@ async def fix_incorrect_toc(
 
         page_contents = []
         for page_index in range(prev_correct, next_correct + 1):
+            # P1: Skip divider pages to avoid false matches
+            if page_index in divider_pages:
+                continue
             # Add bounds checking to prevent IndexError
             page_list_idx = page_index - start_index
             if page_list_idx >= 0 and page_list_idx < len(page_list):
@@ -2414,6 +2481,7 @@ async def meta_processor(
     doc_type="general",
     doc_type_confidence=0.0,
     hooks=None,
+    doc=None,
 ):
     print(mode)
     print(f"start_index: {start_index}")
@@ -2448,8 +2516,13 @@ async def meta_processor(
                     from .pdf_analyzer import analyze_pdf_structure
                     analysis_info = {"chapter_dividers": []}
                     try:
+                        file_path = None
                         if doc and hasattr(doc, 'name'):
-                            analysis = analyze_pdf_structure(doc.name)
+                            file_path = doc.name
+                        elif isinstance(doc, str) and os.path.isfile(doc):
+                            file_path = doc
+                        if file_path:
+                            analysis = analyze_pdf_structure(file_path)
                             analysis_info["chapter_dividers"] = analysis.get("chapter_dividers", [])
                     except:
                         pass
@@ -2774,6 +2847,10 @@ async def meta_processor(
 
 
 async def process_large_node_recursively(node, page_list, opt=None, logger=None):
+    # P5-fix: 跳过 catalog_group 节点（图目录/表目录），避免破坏分组结构
+    if node.get("node_type") == "catalog_group":
+        return node
+    
     node_page_list = page_list[node["start_index"] - 1 : node["end_index"]]
     token_num = sum([page[1] for page in node_page_list])
 
@@ -2859,7 +2936,7 @@ async def tree_parser(
         toc_items = validate_and_truncate_physical_indices(
             toc_items, len(page_list), start_index=1, logger=logger
         )
-        toc_items = add_preface_if_needed(toc_items)
+        toc_items = add_preface_if_needed(toc_items, page_list)
         toc_tree = post_processing(toc_items, len(page_list))
 
         # 添加 node_text
@@ -2885,7 +2962,7 @@ async def tree_parser(
             toc_items = validate_and_truncate_physical_indices(
                 toc_items, len(page_list), start_index=1, logger=logger
             )
-            toc_items = add_preface_if_needed(toc_items)
+            toc_items = add_preface_if_needed(toc_items, page_list)
             toc_tree = post_processing(toc_items, len(page_list))
 
             # 添加 node_text
@@ -2948,7 +3025,12 @@ async def tree_parser(
             hooks=hooks,
         )
 
-    toc_with_page_number = add_preface_if_needed(toc_with_page_number)
+    # FIX: Post-process TOC to fix titles for divider-based documents
+    toc_with_page_number = await fix_toc_for_dividers(
+        toc_with_page_number, page_list, pdf_path=doc, use_vlm=True
+    )
+
+    toc_with_page_number = add_preface_if_needed(toc_with_page_number, page_list)
 
     toc_with_page_number = await check_title_appearance_in_start_concurrent(
         toc_with_page_number, page_list, model=opt.model, logger=logger

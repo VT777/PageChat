@@ -182,7 +182,7 @@ async def llm_validate_toc(
         return valid == "yes"
     except Exception as e:
         # LLM 失败时，如果覆盖度 >= 70% 且匹配率 >= 50% 则接受
-        last_page = max((it.get("physical_index", 0) for it in toc_items), default=0)
+        last_page = max(((it.get("physical_index") or 0) for it in toc_items), default=0)
         if last_page >= page_count * 0.7 and match_info.get("match_rate", 0) >= 0.5:
             print(f"[FAST-TOC] LLM error: {e}, accepting (good coverage + match)")
             return True
@@ -234,12 +234,12 @@ async def try_fast_toc(
     # 2. 内容验证（区分来源）
     if source in ("bookmarks", "links"):
         # 书签/链接：直接信任元数据，只检查页码有效性
-        valid_pages = all(1 <= it.get("physical_index", 0) <= page_count for it in toc_items)
+        valid_pages = all(1 <= (it.get("physical_index") or 0) <= page_count for it in toc_items)
         if not valid_pages:
             print("[FAST-TOC] Bookmarks/links have invalid page numbers, rejecting")
             return None
         # 检查页码单调递增
-        pages = [it.get("physical_index", 0) for it in toc_items]
+        pages = [it.get("physical_index") or 0 for it in toc_items]
         is_monotonic = all(pages[i] <= pages[i+1] for i in range(len(pages)-1))
         if not is_monotonic:
             print("[FAST-TOC] Bookmarks/links page numbers not monotonic, rejecting")
@@ -270,7 +270,7 @@ async def try_fast_toc(
             print(f"[FAST-TOC] Post-correction match: {match_info['match_rate']:.0%}")
 
     # 3. 覆盖度预检（区分来源）
-    last_page = max((it.get("physical_index", 0) for it in toc_items), default=0)
+    last_page = max(((it.get("physical_index") or 0) for it in toc_items), default=0)
     if source in ("bookmarks", "links"):
         # 书签/链接：可能不包含封底/附录，放宽到10%
         if last_page < page_count * 0.1:

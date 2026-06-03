@@ -7,7 +7,9 @@ Judge whether this section appears or starts on this page.
 Rules:
 1) Use fuzzy matching for spacing and punctuation.
 2) Ignore image markdown like ![](...), decorative separators, and empty lines.
-3) Return "yes" only if the section title is clearly present on this page.
+3) Return "yes" if the section title is clearly present on this page.
+4) IMPORTANT: If the exact title doesn't appear, but a numbered subsection that belongs to this chapter appears (e.g., title is "Chapter 3" and page has "3.1 xxx" or "3.2 xxx"), also return "yes" — the section's content begins here.
+5) For summary/outline pages (e.g., pages starting with "汇报提纲"), be strict and return "no" unless the actual content of the section is present.
 
 Section title: {title}
 Page text: {page_text}
@@ -208,6 +210,13 @@ The provided text contains tags like <physical_index_X> and </physical_index_X> 
 
 IMPORTANT: If a page lists multiple section titles (like a table of contents page), that is NOT where each section starts. Look for where the actual content of each section begins.
 
+CRITICAL: Some documents have "summary/outline" pages (e.g., pages starting with "汇报提纲" / "Contents" / "目录" / "Outline") that list all chapter titles in brief form. These are NAVIGATION pages, NOT content pages. Do NOT use these pages as chapter start pages. Instead, identify true chapter starts by looking for content pages with section numbers like "1.1", "2.1", "3.1", etc., or pages that contain substantial discussion of the topic.
+
+SPECIAL CASE: If a document starts directly with subsections (e.g., "1.1 xxx" without a "1. xxx" parent section), the parent chapter title may only appear on navigation/outline pages. In this case:
+1. Use the navigation page's chapter list to determine the main chapter titles and their order
+2. Set the chapter's physical_index to where its first subsection begins (e.g., "1.1" means chapter 1 starts there)
+3. Do NOT create a separate item for the navigation page itself
+
 Hard constraints:
 1) Extract ALL sections at ALL levels (chapters, sub-sections, sub-sub-sections).
 2) Do not skip late sections.
@@ -235,6 +244,8 @@ TOC_GENERATE_CONTINUE_PROMPT = """You are given previous TOC items and a new tex
 The structure variable is the numeric system (e.g. "1", "1.1", "2.3") representing the hierarchy.
 
 The provided text contains tags like <physical_index_X> and </physical_index_X> to indicate the start and end of page X. For physical_index, identify where each section's content FIRST appears.
+
+CRITICAL: Do NOT use "summary/outline" pages (e.g., "汇报提纲" / "目录" / "Contents" pages that list chapter titles) as section start pages. Only use actual content pages.
 
 Hard constraints:
 1) Only append new items; do not rewrite/remove previous items.

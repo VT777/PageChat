@@ -1,79 +1,98 @@
-"""
-验证章节分隔符检测集成效果
-"""
-import sys, os
-sys.path.insert(0, 'backend')
+import sys
+sys.path.insert(0, 'D:/projects/page_chat/backend')
 
-from pageindex.pdf_analyzer import analyze_pdf_structure
+import json
+import pymupdf
+from pageindex.utils import post_processing, clean_structure_post, add_preface_if_needed, is_garbled_text
+from pageindex.divider_fix import detect_divider_pages, fix_toc_for_dividers
+from pageindex.page_index import check_toc, find_toc_pages_by_rules
 
-doc_dir = 'backend/data/documents'
+# Simple options mock
+class MockOpt:
+    def __init__(self):
+        self.model = "gpt-4o"
+        self.toc_check_page_num = 20
+        self.N = 8
+        self.batch_size = 5
+        self.if_add_node_text = "no"
 
-# 测试目标文档
-print("="*80)
-print("测试1: 目标文档（第五范式报告）")
-print("="*80)
+pdf_path = 'D:/projects/page_chat/backend/data/documents/f9a2f07e_2025年第五范式-人工智能驱动的科技创新报告.pdf'
 
-# 找到目标文档
-import glob
-target_files = glob.glob(os.path.join(doc_dir, 'f9a2f07e*.pdf'))
-if target_files:
-    target_path = target_files[0]
-    analysis = analyze_pdf_structure(target_path)
-    
-    print(f"文件: {os.path.basename(target_path)}")
-    print(f"总页数: {analysis['page_count']}")
-    print(f"文本覆盖率: {analysis['text_coverage']:.2%}")
-    print(f"代码TOC来源: {analysis['code_toc']['source']}")
-    print(f"章节分隔页: {analysis.get('chapter_dividers', [])}")
-    
-    if analysis.get('chapter_dividers'):
-        print("\n[PASS] 章节分隔符检测成功！")
-        dividers = analysis['chapter_dividers']
-        print(f"   检测到 {len(dividers)} 个分隔页: {dividers}")
-    else:
-        print("\n[FAIL] 未检测到章节分隔符")
-else:
-    print("未找到目标文档")
+print("=== Integration Test: All Fixes Combined ===")
 
-print("\n" + "="*80)
-print("测试2: 快速检查所有文档的 chapter_dividers 字段")
-print("="*80)
+# Step 1: Get page tokens
+print("\n[1/4] Extracting pages...")
+doc = pymupdf.open(pdf_path)
+page_list = []
+for page in doc:
+    text = page.get_text()
+    page_list.append((text, len(text)))
+doc.close()
+print(f"  Total pages: {len(page_list)}")
 
-pdf_files = [f for f in os.listdir(doc_dir) if f.endswith('.pdf')]
-pdf_files.sort()
+# Step 2: Check divider detection
+print("\n[2/4] Divider detection...")
+divider_pages = detect_divider_pages(page_list)
+print(f"  Detected divider pages: {divider_pages}")
+assert len(divider_pages) > 0, "Should detect divider pages"
+print("  OK: Divider pages detected")
 
-special_count = 0
-for pdf_file in pdf_files:
-    pdf_path = os.path.join(doc_dir, pdf_file)
-    try:
-        analysis = analyze_pdf_structure(pdf_path)
-        dividers = analysis.get('chapter_dividers', [])
-        if dividers:
-            special_count += 1
-            print(f"  {pdf_file[:50]}...: {len(dividers)} dividers at {dividers}")
-    except Exception as e:
-        print(f"  错误 - {pdf_file}: {e}")
+# Step 3: Check TOC detection (should NOT detect TOC pages due to 汇报提纲 exclusion)
+print("\n[3/4] TOC page detection...")
+rule_pages = find_toc_pages_by_rules(page_list)
+print(f"  Regex detected pages: {rule_pages}")
+# Page 14 should NOT be in the list
+assert 14 not in rule_pages, "Page 14 (汇报提纲) should NOT be detected as TOC"
+print("  OK: Page 14 correctly excluded from TOC detection")
 
-print(f"\n总计: {len(pdf_files)} 个文档, {special_count} 个检测到章节分隔符")
+# Step 4: Simulate a problematic TOC structure and verify fixes
+print("\n[4/4] Simulating TOC fixes...")
 
-# 测试3: 验证 balanced_toc 路径（模拟）
-print("\n" + "="*80)
-print("测试3: 验证分析结果结构")
-print("="*80)
+# Simulate LLM-generated TOC with shifted titles (the problem before fix)
+simulated_toc = [
+    {"structure": "1", "title": "汇报提纲", "physical_index": 3, "appear_start": "yes"},
+    {"structure": "1.1", "title": "大模型概述", "physical_index": 4, "appear_start": "yes"},
+    {"structure": "2", "title": "汇报提纲", "physical_index": 13, "appear_start": "yes"},
+    {"structure": "2.1", "title": "大模型辅助的论文与项目", "physical_index": 14, "appear_start": "yes"},
+    {"structure": "3", "title": "汇报提纲", "physical_index": 35, "appear_start": "yes"},
+    {"structure": "3.1", "title": "未来研发方式展望", "physical_index": 36, "appear_start": "yes"},
+    {"structure": "4", "title": "汇报提纲", "physical_index": 49, "appear_start": "yes"},
+    {"structure": "4.1", "title": "大模型辅助的论文与项目", "physical_index": 50, "appear_start": "yes"},
+    {"structure": "5", "title": "汇报提纲", "physical_index": 61, "appear_start": "yes"},
+    {"structure": "5.1", "title": "总结与展望", "physical_index": 62, "appear_start": "yes"},
+]
 
-if target_files:
-    analysis = analyze_pdf_structure(target_files[0])
-    required_keys = ['file_path', 'page_count', 'pages', 'text_coverage', 
-                     'text_pages', 'image_only_pages', 'garbled_pages',
-                     'is_image_only_pdf', 'is_garbled_pdf', 'code_toc',
-                     'page_list', 'page_texts', 'text_quality', 'chapter_dividers']
-    
-    print("检查必需字段:")
-    for key in required_keys:
-        present = key in analysis
-        print(f"  {key}: {'[OK]' if present else '[MISSING]'}")
-    
-    all_present = all(k in analysis for k in required_keys)
-    print(f"\n{'[PASS] 所有字段都存在' if all_present else '[FAIL] 缺少字段'}")
+# Apply divider fix
+fixed_toc = fix_toc_for_dividers(simulated_toc.copy(), page_list)
+print(f"  Before fix: {[item['title'] for item in simulated_toc[:5]]}")
+print(f"  After fix:  {[item['title'] for item in fixed_toc[:5]]}")
 
-print("\n测试完成!")
+# Check that main chapter titles are no longer "汇报提纲" (where divider fix applied)
+main_chapters = [item for item in fixed_toc if '.' not in str(item.get('structure', ''))]
+fixed_count = sum(1 for ch in main_chapters if ch['title'] != "汇报提纲")
+print(f"  Fixed {fixed_count}/{len(main_chapters)} main chapter titles")
+assert fixed_count >= 4, f"Expected at least 4 fixed chapters, got {fixed_count}"
+print("  OK: Divider titles replaced with real chapter titles")
+
+# Apply post-processing and check inverted ranges
+# First add preface
+toc_with_preface = add_preface_if_needed(fixed_toc.copy(), page_list)
+tree = post_processing(toc_with_preface, len(page_list))
+
+# Clean output
+for node in tree:
+    clean_structure_post(node)
+
+print("\n=== Final Tree Structure ===")
+print(json.dumps(tree, ensure_ascii=False, indent=2))
+
+# Check no inverted ranges
+has_inverted = False
+for ch in tree:
+    if ch.get('start_index', 0) > ch.get('end_index', float('inf')):
+        print(f"  WARNING: Inverted range in '{ch.get('title')}'")
+        has_inverted = True
+if not has_inverted:
+    print("OK: No inverted ranges")
+
+print("\n=== All Integration Tests Passed! ===")

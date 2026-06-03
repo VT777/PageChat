@@ -5,6 +5,7 @@ import { ChevronRight, ChevronDown } from 'lucide-vue-next'
 interface TocNode {
   node_id: string
   title: string
+  structure?: string
   level: number
   summary: string
   start_page: number | null
@@ -94,7 +95,10 @@ const isActive = (node: TocNode): boolean => {
           <span v-else class="expand-placeholder" />
           
           <!-- 标题 -->
-          <span class="node-title">{{ node.title }}</span>
+          <span class="node-title">
+            <span v-if="node.structure" class="structure-num">{{ node.structure }}</span>
+            {{ node.title }}
+          </span>
           
           <!-- 页码 -->
           <span v-if="node.start_page" class="page-num">p.{{ node.start_page }}</span>
@@ -196,6 +200,13 @@ const isActive = (node: TocNode): boolean => {
   padding: 2px 6px;
   background: rgba(59, 130, 246, 0.1);
   border-radius: 4px;
+}
+
+.structure-num {
+  color: #888;
+  font-size: 12px;
+  margin-right: 6px;
+  font-weight: 500;
 }
 
 .tree-children {

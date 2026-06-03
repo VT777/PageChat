@@ -5,6 +5,7 @@ import { ChevronRight, ChevronDown } from 'lucide-vue-next'
 interface TocNode {
   node_id: string
   title: string
+  structure?: string
   level: number
   summary: string
   start_page: number | null
@@ -82,7 +83,10 @@ function handleJump(pageNum: number | null) {
               : 'cursor-default opacity-60',
           ]"
         >
-          <span class="truncate block">{{ node.title }}</span>
+          <span class="truncate block">
+            <span v-if="node.structure" class="structure-num">{{ node.structure }}</span>
+            {{ node.title }}
+          </span>
           <span
             v-if="node.start_page"
             class="text-xs text-muted-foreground mt-0.5 block"
@@ -104,3 +108,12 @@ function handleJump(pageNum: number | null) {
     </div>
   </div>
 </template>
+
+<style scoped>
+.structure-num {
+  color: #888;
+  font-size: 12px;
+  margin-right: 6px;
+  font-weight: 500;
+}
+</style>
