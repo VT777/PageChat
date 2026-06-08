@@ -2050,6 +2050,97 @@ class PageIndexService:
             "downgrade_reasons": downgrade_reasons,
         }
 
+    async def _extract_toc_visual(
+        self,
+        file_path: str,
+        toc_pages: List[int],
+        page_count: int,
+        model: str,
+    ) -> Optional[Dict]:
+        """图片型文档：用VLM从目录页高清图提取TOC。"""
+        try:
+            from pageindex.vlm_utils import render_pages_to_images, vlm_call_with_images, parse_vlm_json
+            
+            images = render_pages_to_images(file_path, [p - 1 for p in toc_pages])
+            
+            prompt = """你是PDF文档分析专家。请从以下目录页图片中提取所有目录条目。
+
+要求：
+1. 提取所有条目（包括一级和二级）
+2. 每个条目包含：标题、页码(physical_index)、层级(level)
+3. 返回JSON格式
+
+输出格式：
+{
+    "toc_items": [
+        {"title": "第一章", "level": 1, "physical_index": 5},
+        {"title": "1.1 简介", "level": 2, "physical_index": 6}
+    ]
+}"""
+            
+            raw = await vlm_call_with_images(images, prompt, model=model, max_tokens=3000)
+            result = parse_vlm_json(raw)
+            
+            if isinstance(result, dict) and "toc_items" in result:
+                return result
+            return None
+            
+        except Exception as e:
+            print(f"[EXTRACT-VISUAL] Failed: {e}")
+            return None
+
+    async def _extract_toc_text(
+        self,
+        analysis: Dict,
+        toc_pages: List[int],
+        page_count: int,
+        model: str,
+    ) -> Optional[Dict]:
+        """文本型文档：用LLM从文本提取TOC。"""
+        try:
+            from app.core.llm import async_chat_completion
+            
+            page_texts = analysis.get("page_texts", [])
+            toc_text = "\n".join([page_texts[p - 1] for p in toc_pages if p - 1 < len(page_texts)])
+            
+            prompt = f"""从以下目录页文本中提取目录条目。
+
+目录页文本：
+{toc_text[:3000]}
+
+要求：
+1. 提取所有条目（包括一级和二级）
+2. 每个条目包含：标题、页码(physical_index)、层级(level)
+3. 返回JSON格式
+
+输出格式：
+{{
+    "toc_items": [
+        {{"title": "第一章", "level": 1, "physical_index": 5}},
+        {{"title": "1.1 简介", "level": 2, "physical_index": 6}}
+    ]
+}}"""
+            
+            response = await async_chat_completion(
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0,
+                model=model,
+            )
+            content = response.choices[0].message.content
+            
+            import json
+            import re
+            json_match = re.search(r"\{.*\}", content, re.DOTALL)
+            if json_match:
+                result = json.loads(json_match.group())
+                if "toc_items" in result:
+                    return result
+            return None
+            
+        except Exception as e:
+            print(f"[EXTRACT-TEXT] Failed: {e}")
+            return None
+
     async def _generate_index_v2(
         self, file_path: Path, doc_id: str, mode_override: Optional[str] = None
     ) -> Dict[str, Any]:
@@ -2138,11 +2229,91 @@ class PageIndexService:
                         f"{len(ocr_text_map)} pages with text"
                     )
 
+        # ─── Phase 0.8: 新架构智能路由（实验性，向后兼容）───
+        # 如果启用了新架构，尝试使用5-path路由
+        new_architecture_result = None
+        try:
+            from pageindex.router import decide_extraction_path, get_path_description
+            from pageindex.toc_page_extractor import extract_toc_from_analysis
+            from pageindex.hierarchical_extractor import extract_hierarchical_toc
+            from pageindex.batch_extractor import extract_batch_toc
+            from pageindex.fast_text_extractor import extract_fast_text_toc
+            from pageindex.visual_extractor import extract_visual_toc
+            from pageindex.quality_validator import validate_toc, repair_toc
+
+            route_decision = decide_extraction_path(analysis, requested_mode)
+            chosen_path = route_decision["path"]
+            print(f"[INDEX-V3-NEW] Smart router chose: {chosen_path} ({get_path_description(chosen_path)})")
+            print(f"[INDEX-V3-NEW] Reasons: {route_decision['reasons']}")
+
+            # 根据路径选择提取器
+            if chosen_path == "toc_page":
+                new_architecture_result = extract_toc_from_analysis(analysis, doc_path=str(file_path))
+            elif chosen_path == "hierarchical":
+                new_architecture_result = await extract_hierarchical_toc(
+                    analysis.get("page_texts", []), model
+                )
+            elif chosen_path == "batch":
+                new_architecture_result = await extract_batch_toc(
+                    analysis.get("page_texts", []), model
+                )
+            elif chosen_path == "fast_text":
+                new_architecture_result = extract_fast_text_toc(
+                    analysis.get("page_texts", []), model
+                )
+            elif chosen_path == "visual":
+                # 视觉路径使用原有的 balanced_toc_visual
+                new_architecture_result = await extract_visual_toc(
+                    str(file_path), analysis, model,
+                    anchors=anchors,
+                    ocr_text_map=ocr_text_map,
+                )
+
+            # 质量验证
+            if new_architecture_result and new_architecture_result.get("items"):
+                validation = validate_toc(
+                    new_architecture_result["items"],
+                    page_count,
+                    analysis.get("page_texts", []),
+                    source=new_architecture_result.get("source", "unknown"),
+                )
+                print(f"[INDEX-V3-NEW] Validation: score={validation['score']:.2f}, valid={validation['is_valid']}")
+
+                if not validation["is_valid"]:
+                    # 尝试修复
+                    repaired = await repair_toc(
+                        new_architecture_result["items"],
+                        validation["issues"],
+                        analysis.get("page_texts", []),
+                        model,
+                    )
+                    new_architecture_result["items"] = repaired
+                    new_architecture_result["repaired"] = True
+
+                # 如果质量足够高，直接使用新架构结果
+                if validation["score"] >= 0.7:
+                    print(f"[INDEX-V3-NEW] Using new architecture result (score={validation['score']:.2f})")
+                else:
+                    print(f"[INDEX-V3-NEW] Score too low ({validation['score']:.2f}), falling back to legacy")
+                    new_architecture_result = None
+
+        except Exception as e:
+            print(f"[INDEX-V3-NEW] New architecture failed: {e}, falling back to legacy")
+            new_architecture_result = None
+
         # ─── Phase 1: TOC 构建 ───
         toc_items = None
         toc_source = None
 
-        if execution_mode == "fast":
+        # 如果使用新架构成功，转换格式并跳过后续 legacy 提取
+        new_architecture_used = False
+        if new_architecture_result:
+            toc_items = new_architecture_result["items"]
+            toc_source = new_architecture_result.get("source", "new_architecture")
+            new_architecture_used = True
+            print(f"[INDEX-V3-NEW] Converted {len(toc_items)} items to legacy format")
+
+        if execution_mode == "fast" and not new_architecture_used:
             print("[INDEX-V3] Phase 1: trying fast TOC")
             fast_result = await try_fast_toc(analysis, model)
             if fast_result and not fast_result.get("quality_check_failed"):
@@ -2162,27 +2333,135 @@ class PageIndexService:
                 execution_mode = "balanced"
                 balanced_path = decide_balanced_path(analysis)
 
-        if execution_mode == "balanced":
-            if balanced_path == "text":
-                print("[INDEX-V3] Phase 1: balanced TEXT (LLM)")
-                # P2-fix: 传入 dividers 修正 Text 路径结果
-                text_dividers = anchors.get("chapter_dividers", []) if anchors else []
-                balanced_result = await build_balanced_toc_text(
-                    analysis, model, dividers=text_dividers, hooks=hooks
+        if execution_mode == "balanced" and not new_architecture_used:
+            # ─── Step 1: 查找目录页 ───
+            print("[INDEX-V3] Phase 1: searching for toc pages")
+            from pageindex.toc_detector import find_toc_pages
+            
+            toc_pages = await find_toc_pages(analysis, str(file_path), model)
+            
+            if toc_pages:
+                # 已知目录页流程
+                print(f"[INDEX-V3] Found toc pages: {toc_pages}")
+                from pageindex.toc_page_extractor import extract_toc_from_pages
+                from pageindex.quality_validator import validate_toc
+                
+                toc_result = extract_toc_from_pages(
+                    doc_path=str(file_path),
+                    toc_page_indices=[p - 1 for p in toc_pages],  # 转 0-indexed
+                    doc_page_count=page_count,
+                    model=model,
+                    page_texts=analysis.get("page_texts", []),
                 )
                 
-                # P5-fix: Check text path quality, fallback to visual if poor
-                toc_items = balanced_result["toc_items"]
-                top_level = [it for it in toc_items if "." not in str(it.get("structure", ""))]
-                has_large_nodes = any(
-                    (toc_items[i+1].get("physical_index", page_count+1) - it.get("physical_index", 0)) > 15
-                    for i, it in enumerate(toc_items[:-1])
-                ) if len(toc_items) > 1 else False
+                if toc_result and toc_result.get("items"):
+                    # 质量验证
+                    validation = validate_toc(
+                        toc_result["items"],
+                        page_count,
+                        analysis.get("page_texts", []),
+                        source="toc_page",
+                    )
+                    
+                    if validation["score"] >= 0.7:
+                        print(f"[INDEX-V3] v4 extraction success (score={validation['score']:.2f})")
+                        toc_items = toc_result["items"]
+                        toc_source = "toc_page"
+                    else:
+                        print(f"[INDEX-V3] v4 quality low ({validation['score']:.2f}), falling back")
+                        toc_items = None
+                else:
+                    print("[INDEX-V3] v4 extraction failed, falling back")
+                    toc_items = None
                 
-                if len(top_level) < 3 and len(toc_items) > 10 and has_large_nodes:
-                    print(f"[INDEX-V3] Text path quality poor: {len(top_level)} top-level, {len(toc_items)} items, large nodes detected")
-                    print("[INDEX-V3] Falling back to VISUAL path")
-                    balanced_path = "visual"
+                # 如果v4失败或质量不够，按文档类型降级
+                if toc_items is None:
+                    is_image_doc = (
+                        analysis.get("is_image_only_pdf", False)
+                        or analysis.get("image_coverage", 0.0) >= 0.3
+                    )
+                    
+                    if is_image_doc:
+                        # 图片型 → VLM视觉提取
+                        print("[INDEX-V3] Fallback: VLM visual extraction for image doc")
+                        from pageindex.quality_validation import TocQualityChecker
+                        
+                        fallback_result = await self._extract_toc_visual(
+                            str(file_path), toc_pages, page_count, model
+                        )
+                        if fallback_result and fallback_result.get("toc_items"):
+                            checker = TocQualityChecker()
+                            toc_check = checker.check(fallback_result["toc_items"], toc_pages)
+                            if toc_check["is_valid"]:
+                                if toc_check["has_hierarchy"]:
+                                    # 有层级 → 直接使用
+                                    toc_items = fallback_result["toc_items"]
+                                    toc_source = "vlm_visual"
+                                    print(f"[INDEX-V3] VLM visual extraction success: {len(toc_items)} items with hierarchy")
+                                else:
+                                    # 只有一级 → 需要分支B分段提取
+                                    print(f"[INDEX-V3] TOC has {toc_check['top_level_count']} top-level items only, need Branch B")
+                                    # 清空toc_items，让它进入build_balanced_toc_visual进行路径决策和分支B
+                                    toc_items = None
+                    else:
+                        # 文本型 → LLM文本提取
+                        print("[INDEX-V3] Fallback: LLM text extraction for text doc")
+                        fallback_result = await self._extract_toc_text(
+                            analysis, toc_pages, page_count, model
+                        )
+                        if fallback_result and fallback_result.get("toc_items"):
+                            checker = TocQualityChecker()
+                            toc_check = checker.check(fallback_result["toc_items"], toc_pages)
+                            if toc_check["is_valid"]:
+                                if toc_check["has_hierarchy"]:
+                                    toc_items = fallback_result["toc_items"]
+                                    toc_source = "llm_text"
+                                    print(f"[INDEX-V3] LLM text extraction success: {len(toc_items)} items with hierarchy")
+                                else:
+                                    print(f"[INDEX-V3] TOC has {toc_check['top_level_count']} top-level items only, need Branch B")
+                                    toc_items = None
+                
+                # 如果降级也失败或只有一级需要分支B，继续走原有balanced逻辑
+                if toc_items is None:
+                    print("[INDEX-V3] Fallback incomplete, continuing with balanced path for sub-chapter extraction")
+            else:
+                print("[INDEX-V3] No toc pages found, continuing with traditional balanced path")
+                toc_items = None
+            
+            # 如果没有通过v4获取到toc，走原有balanced路径
+            if toc_items is None:
+                if balanced_path == "text":
+                    print("[INDEX-V3] Phase 1: balanced TEXT (LLM)")
+                    # P2-fix: 传入 dividers 修正 Text 路径结果
+                    text_dividers = anchors.get("chapter_dividers", []) if anchors else []
+                    balanced_result = await build_balanced_toc_text(
+                        analysis, model, dividers=text_dividers, hooks=hooks
+                    )
+                    
+                    # P5-fix: Check text path quality, fallback to visual if poor
+                    toc_items = balanced_result["toc_items"]
+                    top_level = [it for it in toc_items if "." not in str(it.get("structure", ""))]
+                    has_large_nodes = any(
+                        (toc_items[i+1].get("physical_index", page_count+1) - it.get("physical_index", 0)) > 15
+                        for i, it in enumerate(toc_items[:-1])
+                    ) if len(toc_items) > 1 else False
+                    
+                    if len(top_level) < 3 and len(toc_items) > 10 and has_large_nodes:
+                        print(f"[INDEX-V3] Text path quality poor: {len(top_level)} top-level, {len(toc_items)} items, large nodes detected")
+                        print("[INDEX-V3] Falling back to VISUAL path")
+                        balanced_path = "visual"
+                        balanced_result = await build_balanced_toc_visual(
+                            str(file_path), analysis, model,
+                            anchors=anchors,
+                            ocr_text_map=ocr_text_map,
+                            hooks=hooks,
+                        )
+                        toc_items = balanced_result["toc_items"]
+                        toc_source = balanced_result["source"]
+                    else:
+                        toc_source = balanced_result["source"]
+                else:
+                    print("[INDEX-V3] Phase 1: balanced VISUAL (VLM)")
                     balanced_result = await build_balanced_toc_visual(
                         str(file_path), analysis, model,
                         anchors=anchors,
@@ -2191,18 +2470,6 @@ class PageIndexService:
                     )
                     toc_items = balanced_result["toc_items"]
                     toc_source = balanced_result["source"]
-                else:
-                    toc_source = balanced_result["source"]
-            else:
-                print("[INDEX-V3] Phase 1: balanced VISUAL (VLM)")
-                balanced_result = await build_balanced_toc_visual(
-                    str(file_path), analysis, model,
-                    anchors=anchors,
-                    ocr_text_map=ocr_text_map,
-                    hooks=hooks,
-                )
-                toc_items = balanced_result["toc_items"]
-                toc_source = balanced_result["source"]
 
         # ─── Phase 1.5: OCR 图片页 ───
         needs_ocr = (
@@ -2222,14 +2489,92 @@ class PageIndexService:
             analysis["page_list"] = page_list
 
         # ─── Phase 2: 后处理 (post_processing.py v3) ───
-        print(f"[INDEX-V3] Phase 2: post-processing {len(toc_items)} items")
-        toc_tree, completeness = post_process_toc(toc_items, page_count, dividers=dividers)
+        # 检查是否是 v4 提取的树结构（包含 catalog_group 节点）
+        has_catalog_groups = any(
+            item.get("page_type") == "catalog_group" or item.get("node_type") == "catalog_group"
+            for item in toc_items
+        )
+        
+        if has_catalog_groups:
+            # v4 提取的树结构：直接为每个节点设置页码范围，跳过复杂的后处理
+            print(f"[INDEX-V3] Phase 2: v4 tree structure detected, assigning page ranges to {len(toc_items)} groups")
+            toc_tree = []
+            for item in toc_items:
+                # 为当前节点设置范围
+                if "start_index" not in item:
+                    item["start_index"] = item.get("physical_index") or 1
+                if "end_index" not in item:
+                    item["end_index"] = page_count
+                
+                # 为子节点设置范围
+                children = item.get("nodes", [])
+                for i, child in enumerate(children):
+                    if "start_index" not in child:
+                        child["start_index"] = child.get("physical_index") or 1
+                    if "end_index" not in child:
+                        # 下一个兄弟节点的页码 - 1，或文档末尾
+                        if i < len(children) - 1:
+                            next_page = children[i + 1].get("physical_index")
+                            if next_page:
+                                child["end_index"] = max(next_page - 1, child["start_index"])
+                            else:
+                                child["end_index"] = page_count
+                        else:
+                            child["end_index"] = page_count
+                    
+                    # 递归处理孙节点
+                    grandchildren = child.get("nodes", [])
+                    for j, gc in enumerate(grandchildren):
+                        if "start_index" not in gc:
+                            gc["start_index"] = gc.get("physical_index") or 1
+                        if "end_index" not in gc:
+                            if j < len(grandchildren) - 1:
+                                next_page = grandchildren[j + 1].get("physical_index")
+                                if next_page:
+                                    gc["end_index"] = max(next_page - 1, gc["start_index"])
+                                else:
+                                    gc["end_index"] = page_count
+                            else:
+                                # 使用父节点的结束页码
+                                gc["end_index"] = child.get("end_index", page_count)
+                
+                toc_tree.append(item)
+            
+            completeness = {
+                "quality": "good",
+                "coverage": 1.0,
+                "gaps": [],
+                "reaches_end": True,
+                "ok": True,
+                "needs_repair": False,
+            }
+            print(f"[INDEX-V3] v4 tree structure preserved with {sum(len(item.get('nodes', [])) for item in toc_tree)} total entries")
+        else:
+            # 传统扁平列表：使用完整的后处理流程
+            print(f"[INDEX-V3] Phase 2: post-processing {len(toc_items)} items")
+            if execution_mode == "fast":
+                toc_tree, completeness = post_process_toc(
+                    toc_items,
+                    page_count,
+                    dividers=dividers,
+                )
+            else:
+                toc_tree, completeness = post_process_toc(
+                    toc_items,
+                    page_count,
+                    dividers=dividers,
+                    analysis=analysis,
+                    use_llm_grouping=True,
+                    model=model,
+                )
 
         if completeness.get("needs_repair"):
             print(f"[INDEX-V3] Coverage needs repair: {completeness}")
             # TODO: gap 修复（对 gaps 区域补充分析")
 
         # ─── Phase 2.5: LLM 质量检查 ───
+        # 初始化 result 用于存储质检结果
+        result = {"llm_quality_check": None}
         try:
             from pageindex.post_processing import llm_quality_check
             quality_result = await llm_quality_check(
@@ -2277,6 +2622,8 @@ class PageIndexService:
         )
 
         # ─── 构建输出 ───
+        # 保留之前的质检结果
+        llm_quality_check_result = result.get("llm_quality_check")
         result = {
             "doc_name": file_path.name,
             "doc_description": doc_description,
@@ -2292,6 +2639,7 @@ class PageIndexService:
             },
             "completeness": completeness,
             "ocr_used": needs_ocr,
+            "llm_quality_check": llm_quality_check_result,
         }
 
         # 保存索引文件

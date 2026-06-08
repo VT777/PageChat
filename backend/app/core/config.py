@@ -150,7 +150,9 @@ PAGEINDEX_FAST_ENABLED = PAGEINDEX_MODE in {"fast", "smart"} or _env_bool(
 )
 
 # 单文档索引全局超时（秒）
-PAGEINDEX_MAX_INDEX_SECONDS = int(os.getenv("PAGEINDEX_MAX_INDEX_SECONDS", "1800"))
+# 从1800秒改为600秒：改进后的Branch B增加了VLM调用次数，10次调用*60秒=600秒
+# 如果超过10分钟仍未完成，说明处理卡住，应标记为失败
+PAGEINDEX_MAX_INDEX_SECONDS = int(os.getenv("PAGEINDEX_MAX_INDEX_SECONDS", "600"))
 
 # 启动时回收长时间处于 processing 的任务（分钟）
 INDEXING_STUCK_THRESHOLD_MINUTES = int(

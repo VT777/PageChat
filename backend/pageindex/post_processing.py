@@ -7,6 +7,7 @@
 4. 无遗漏（Preface 补充、大节点拆分）
 """
 
+import json
 import re
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -17,10 +18,14 @@ from typing import Any, Dict, List, Optional, Tuple
 
 
 def clean_toc_items(toc_items: List[Dict]) -> List[Dict]:
-    """清洗 TOC 条目：转 int、去重、排序、过滤无效。"""
+    """清洗 TOC 条目：转 int、去重、排序、过滤无效。
+    
+    保留 catalog_group 节点（即使 physical_index 为 None）。
+    """
     cleaned = []
     for item in toc_items:
         pi = item.get("physical_index")
+        page_type = item.get("page_type", "")
 
         # 转 int
         if isinstance(pi, str):
@@ -29,32 +34,48 @@ def clean_toc_items(toc_items: List[Dict]) -> List[Dict]:
         elif isinstance(pi, float):
             pi = int(pi)
 
-        if pi is None or pi < 1:
+        # catalog_group 节点可以没有页码，但必须保留
+        is_catalog_group = page_type == "catalog_group" or item.get("node_type") == "catalog_group"
+        
+        if not is_catalog_group and (pi is None or pi < 1):
             continue
 
         cleaned_item = {
             "structure": str(item.get("structure", "")).strip(),
             "title": str(item.get("title", "")).strip(),
             "physical_index": pi,
+            "page_type": page_type,
         }
         # 保留 number 字段（用于图表分类）
         number = item.get("number")
         if number is not None:
             cleaned_item["number"] = str(number).strip()
+        # 保留 nodes（子节点）用于 catalog_group
+        nodes = item.get("nodes")
+        if nodes:
+            cleaned_item["nodes"] = clean_toc_items(nodes)
         cleaned.append(cleaned_item)
 
     if not cleaned:
         return []
 
     # 按 physical_index 排序（稳定排序，保留原始顺序）
-    cleaned.sort(key=lambda x: x["physical_index"])
+    # catalog_group 节点（physical_index 为 None）排在最前面，保持原始顺序
+    catalog_groups = [x for x in cleaned if x.get("page_type") == "catalog_group" or x.get("node_type") == "catalog_group"]
+    regular_items = [x for x in cleaned if not (x.get("page_type") == "catalog_group" or x.get("node_type") == "catalog_group")]
+    regular_items.sort(key=lambda x: x["physical_index"] or 0)
+    cleaned = catalog_groups + regular_items
 
     # 去重：相同标题 + 相近页码（±1）
     deduped = [cleaned[0]]
     for item in cleaned[1:]:
         last = deduped[-1]
         same_title = item["title"][:20] == last["title"][:20]
-        close_page = abs(item["physical_index"] - last["physical_index"]) <= 1
+        # catalog_group 节点不参与去重
+        if item.get("page_type") == "catalog_group" or item.get("node_type") == "catalog_group":
+            deduped.append(item)
+            continue
+        close_page = abs((item["physical_index"] or 0) - (last["physical_index"] or 0)) <= 1
         if same_title and close_page:
             continue
         deduped.append(item)
@@ -62,7 +83,16 @@ def clean_toc_items(toc_items: List[Dict]) -> List[Dict]:
     # 检查单调递增，移除回退的条目
     result = [deduped[0]]
     for item in deduped[1:]:
-        if item["physical_index"] >= result[-1]["physical_index"]:
+        # catalog_group 节点直接保留，不参与单调性检查
+        if item.get("page_type") == "catalog_group" or item.get("node_type") == "catalog_group":
+            result.append(item)
+            continue
+        # 与前一个常规节点比较
+        last_regular = [x for x in result if not (x.get("page_type") == "catalog_group" or x.get("node_type") == "catalog_group")]
+        if not last_regular:
+            result.append(item)
+            continue
+        if (item["physical_index"] or 0) >= (last_regular[-1]["physical_index"] or 0):
             result.append(item)
         else:
             print(
@@ -81,7 +111,7 @@ def filter_figure_catalogs(toc_items: List[Dict]) -> Tuple[List[Dict], List[Dict
     """过滤纯图录/表录目录节点，保留具体图表条目。
     
     检测规则：
-    1. 标题匹配 "图目录" 或 "表目录" —— 这些是纯目录页，过滤掉
+    1. 标题匹配 "图目录" 或 "表目录" —— 这些是纯目录页，过滤掉（但保留 catalog_group 节点）
     2. 标题匹配 "图 N..." 或 "表 N..." —— 这些是具体图表条目，保留但标记
     """
     catalog_pattern = re.compile(r'^[图表]目录')
@@ -91,15 +121,16 @@ def filter_figure_catalogs(toc_items: List[Dict]) -> Tuple[List[Dict], List[Dict
     
     for item in toc_items:
         title = item.get("title", "")
+        # 保留 catalog_group 节点（如 目录/表目录/图目录）
+        if item.get("page_type") == "catalog_group" or item.get("node_type") == "catalog_group":
+            normal.append(item)
+            continue
         if catalog_pattern.match(title):
             # 纯目录节点（如"图目录"）—— 过滤
             figures.append(item)
             print(f"[POST] Filtered figure/table catalog: {title[:50]}")
         else:
             normal.append(item)
-    
-    if figures:
-        print(f"[POST] Filtered {len(figures)} figure/table catalog entries")
     
     return normal, figures
 
@@ -108,8 +139,12 @@ def validate_indices(toc_items: List[Dict], page_count: int) -> List[Dict]:
     """校验 physical_index 在 [1, page_count] 范围内。"""
     valid = []
     for item in toc_items:
-        pi = item["physical_index"]
-        if 1 <= pi <= page_count:
+        pi = item.get("physical_index")
+        # catalog_group 节点跳过校验
+        if item.get("page_type") == "catalog_group" or item.get("node_type") == "catalog_group":
+            valid.append(item)
+            continue
+        if pi is not None and 1 <= pi <= page_count:
             valid.append(item)
         else:
             print(
@@ -128,13 +163,26 @@ def add_preface(toc_items: List[Dict]) -> List[Dict]:
     if not toc_items:
         return toc_items
 
-    if toc_items[0]["physical_index"] > 1:
+    # 跳过开头的 catalog_group 节点
+    first_regular = None
+    for item in toc_items:
+        if not (item.get("page_type") == "catalog_group" or item.get("node_type") == "catalog_group"):
+            first_regular = item
+            break
+
+    if first_regular and (first_regular.get("physical_index") or 0) > 1:
         preface = {
             "structure": "0",
             "title": "Preface",
             "physical_index": 1,
         }
-        toc_items = [preface] + toc_items
+        # 在 catalog_group 之后插入 Preface
+        insert_idx = 0
+        for i, item in enumerate(toc_items):
+            if not (item.get("page_type") == "catalog_group" or item.get("node_type") == "catalog_group"):
+                insert_idx = i
+                break
+        toc_items.insert(insert_idx, preface)
 
     return toc_items
 
@@ -147,10 +195,17 @@ def add_preface(toc_items: List[Dict]) -> List[Dict]:
 def assign_page_ranges(toc_items: List[Dict], page_count: int) -> List[Dict]:
     """为每个条目设置 start_index 和 end_index。"""
     for i, item in enumerate(toc_items):
-        item["start_index"] = item["physical_index"]
+        physical_index = item.get("physical_index") or 1
+        item["start_index"] = physical_index
 
         if i < len(toc_items) - 1:
-            next_start = toc_items[i + 1]["physical_index"]
+            # 找到下一个有有效页码的条目
+            next_start = page_count
+            for j in range(i + 1, len(toc_items)):
+                next_pi = toc_items[j].get("physical_index")
+                if next_pi is not None:
+                    next_start = next_pi
+                    break
             item["end_index"] = max(next_start - 1, item["start_index"])
         else:
             item["end_index"] = page_count
@@ -364,6 +419,322 @@ def format_tree(tree: List[Dict]) -> List[Dict]:
 
 
 # ---------------------------------------------------------------------------
+# LLM 目录分组辅助函数
+# ---------------------------------------------------------------------------
+
+def _get_toc_page_text(analysis: Dict) -> str:
+    """从analysis中提取目录页文本。"""
+    toc_page_info = analysis.get("toc_page", {})
+    page_indices = toc_page_info.get("page_indices", [])
+    page_texts = analysis.get("page_texts", [])
+    
+    if not page_indices or not page_texts:
+        return ""
+    
+    toc_text = ""
+    for idx in page_indices:
+        if 0 <= idx < len(page_texts):
+            toc_text += page_texts[idx] + "\n"
+    
+    return toc_text[:2000]  # 限制长度
+
+
+def _llm_group_catalogs(tree: List[Dict], analysis: Dict, page_count: int, model: Optional[str]) -> Optional[List[Dict]]:
+    """使用LLM进行目录分组。
+    
+    Returns:
+        分组后的树列表，失败返回None
+    """
+    from pageindex.utils import llm_completion
+    
+    # 展平树获取所有节点
+    all_nodes = []
+    def flatten(nodes):
+        for node in nodes:
+            all_nodes.append(node)
+            if node.get("nodes"):
+                flatten(node["nodes"])
+    flatten(tree)
+    
+    # 准备目录条目
+    toc_items_for_llm = []
+    for node in all_nodes:
+        toc_items_for_llm.append({
+            "title": node.get("title", ""),
+            "page": node.get("physical_index", 0) or node.get("start_index", 0),
+            "structure": node.get("structure", ""),
+        })
+    
+    # 获取目录页文本
+    toc_page_text = _get_toc_page_text(analysis)
+    
+    # 构建prompt
+    prompt = CATALOG_GROUPING_PROMPT.format(
+        page_count=page_count,
+        toc_page_text=toc_page_text[:1500],
+        toc_items_json=json.dumps(toc_items_for_llm[:30], ensure_ascii=False),
+    )
+    
+    # 调用LLM（使用已有的重试机制）
+    response = llm_completion(model, prompt)
+    if not response:
+        return None
+    
+    # 解析JSON
+    try:
+        # 尝试从response中提取JSON
+        json_str = response
+        if "```json" in response:
+            json_str = response.split("```json")[1].split("```")[0]
+        elif "```" in response:
+            json_str = response.split("```")[1].split("```")[0]
+        
+        data = json.loads(json_str.strip())
+        
+        # 构建分组树
+        groups = []
+        
+        # 正文目录 - 直接使用原始节点（保留页码信息）
+        chapter_items = data.get("chapter_catalog", [])
+        if chapter_items:
+            # 从原始节点中找到匹配的章节节点
+            chapter_nodes = []
+            for item in chapter_items:
+                title = item.get("title", "")
+                page = item.get("page", 0)
+                
+                # 在原始节点中查找匹配
+                matched = None
+                for node in all_nodes:
+                    if node.get("title", "") == title or abs(node.get("physical_index", 0) - page) <= 1:
+                        matched = dict(node)  # 复制节点
+                        matched["nodes"] = []  # 清空子节点
+                        break
+                
+                if matched:
+                    chapter_nodes.append(matched)
+                else:
+                    # 未找到匹配，创建新节点
+                    chapter_nodes.append({
+                        "title": title,
+                        "structure": str(item.get("level", "")),
+                        "physical_index": page if page > 0 else 1,
+                        "nodes": [],
+                    })
+            
+            if chapter_nodes:
+                # 重新分配页码范围
+                chapter_nodes = assign_page_ranges(chapter_nodes, page_count)
+                chapter_tree = build_tree(chapter_nodes)
+                groups.append({
+                    "title": "目录",
+                    "node_type": "catalog_group",
+                    "physical_index": chapter_nodes[0].get("physical_index", 1),
+                    "start_index": chapter_nodes[0].get("start_index", 1),
+                    "end_index": chapter_nodes[-1].get("end_index", page_count),
+                    "nodes": chapter_tree,
+                })
+        
+        # 图目录
+        if data.get("has_figure_catalog"):
+            figure_items = data.get("figure_catalog", [])
+            if figure_items and len(figure_items) >= 2:  # 最少2个条目
+                figure_nodes = []
+                for item in figure_items:
+                    title = item.get("title", "")
+                    page = item.get("page", 0)
+                    
+                    # 在原始节点中查找匹配
+                    matched = None
+                    for node in all_nodes:
+                        if node.get("title", "") == title or abs(node.get("physical_index", 0) - page) <= 1:
+                            matched = dict(node)
+                            matched["nodes"] = []
+                            break
+                    
+                    if matched:
+                        figure_nodes.append(matched)
+                    else:
+                        figure_nodes.append({
+                            "title": title,
+                            "structure": "",
+                            "physical_index": page if page > 0 else 1,
+                            "nodes": [],
+                        })
+                
+                if figure_nodes:
+                    figure_nodes = assign_page_ranges(figure_nodes, page_count)
+                    figure_tree = build_tree(figure_nodes)
+                    groups.append({
+                        "title": "图目录",
+                        "node_type": "catalog_group",
+                        "physical_index": figure_nodes[0].get("physical_index", 1),
+                        "start_index": figure_nodes[0].get("start_index", 1),
+                        "end_index": figure_nodes[-1].get("end_index", page_count),
+                        "nodes": figure_tree,
+                    })
+        
+        # 表目录
+        if data.get("has_table_catalog"):
+            table_items = data.get("table_catalog", [])
+            if table_items and len(table_items) >= 2:  # 最少2个条目
+                table_nodes = []
+                for item in table_items:
+                    title = item.get("title", "")
+                    page = item.get("page", 0)
+                    
+                    # 在原始节点中查找匹配
+                    matched = None
+                    for node in all_nodes:
+                        if node.get("title", "") == title or abs(node.get("physical_index", 0) - page) <= 1:
+                            matched = dict(node)
+                            matched["nodes"] = []
+                            break
+                    
+                    if matched:
+                        table_nodes.append(matched)
+                    else:
+                        table_nodes.append({
+                            "title": title,
+                            "structure": "",
+                            "physical_index": page if page > 0 else 1,
+                            "nodes": [],
+                        })
+                
+                if table_nodes:
+                    table_nodes = assign_page_ranges(table_nodes, page_count)
+                    table_tree = build_tree(table_nodes)
+                    groups.append({
+                        "title": "表目录",
+                        "node_type": "catalog_group",
+                        "physical_index": table_nodes[0].get("physical_index", 1),
+                        "start_index": table_nodes[0].get("start_index", 1),
+                        "end_index": table_nodes[-1].get("end_index", page_count),
+                        "nodes": table_tree,
+                    })
+        
+        return groups if groups else None
+        
+    except Exception as e:
+        print(f"[POST] Failed to parse LLM grouping response: {e}")
+        return None
+
+
+def _build_single_tree(tree: List[Dict], page_count: int) -> List[Dict]:
+    """构建单一目录树（不分组）。
+    
+    当LLM分组失败或文档没有图/表目录时使用。
+    """
+    # 展平并重新构建
+    all_nodes = []
+    def flatten(nodes):
+        for node in nodes:
+            # 移除node_type字段
+            clean_node = {k: v for k, v in node.items() if k != "node_type"}
+            all_nodes.append(clean_node)
+            if node.get("nodes"):
+                flatten(node["nodes"])
+    flatten(tree)
+    
+    # 去重
+    seen = set()
+    unique_nodes = []
+    for node in all_nodes:
+        key = (node.get("title", ""), node.get("physical_index", 0))
+        if key not in seen:
+            seen.add(key)
+            unique_nodes.append(node)
+    
+    # 构建单个目录组
+    if unique_nodes:
+        return [{
+            "title": "目录",
+            "node_type": "catalog_group",
+            "physical_index": unique_nodes[0].get("physical_index", 1),
+            "start_index": unique_nodes[0].get("start_index", 1),
+            "end_index": unique_nodes[-1].get("end_index", page_count),
+            "nodes": build_tree(unique_nodes),
+        }]
+    
+    return tree
+
+
+def _legacy_group_catalogs(tree: List[Dict], page_count: int) -> List[Dict]:
+    """旧的按类型分组逻辑（已废弃，仅向后兼容）。
+    
+    使用关键词匹配，容易误分类。
+    """
+    print("[POST] WARNING: Using deprecated legacy catalog grouping")
+    
+    def flatten_tree(nodes):
+        result = []
+        for node in nodes:
+            result.append(node)
+            children = node.get("nodes", [])
+            if children:
+                result.extend(flatten_tree(children))
+        return result
+    
+    def classify_node_type(node):
+        title = str(node.get("title", "")).lower()
+        if "图目录" in title or "表目录" in title:
+            return "other"
+        if any(k in title for k in ['图', 'figure', 'fig.']):
+            return "figure"
+        if any(k in title for k in ['表', 'table']):
+            return "table"
+        return "chapter"
+    
+    all_nodes = flatten_tree(tree)
+    chapters = [n for n in all_nodes if classify_node_type(n) == "chapter"]
+    figures = [n for n in all_nodes if classify_node_type(n) == "figure"]
+    tables = [n for n in all_nodes if classify_node_type(n) == "table"]
+    
+    grouped_tree = []
+    
+    if chapters:
+        for n in chapters:
+            n["nodes"] = []
+        chapter_tree = build_tree(chapters)
+        grouped_tree.append({
+            "title": "目录",
+            "node_type": "catalog_group",
+            "physical_index": chapters[0].get("physical_index", 1),
+            "start_index": chapters[0].get("start_index", 1),
+            "end_index": chapters[-1].get("end_index", page_count),
+            "nodes": chapter_tree,
+        })
+    
+    if figures:
+        for n in figures:
+            n["nodes"] = []
+        figure_tree = build_tree(figures)
+        grouped_tree.append({
+            "title": "图目录",
+            "node_type": "catalog_group",
+            "physical_index": figures[0].get("physical_index", 1),
+            "start_index": figures[0].get("start_index", 1),
+            "end_index": figures[-1].get("end_index", page_count),
+            "nodes": figure_tree,
+        })
+    
+    if tables:
+        for n in tables:
+            n["nodes"] = []
+        table_tree = build_tree(tables)
+        grouped_tree.append({
+            "title": "表目录",
+            "node_type": "catalog_group",
+            "physical_index": tables[0].get("physical_index", 1),
+            "start_index": tables[0].get("start_index", 1),
+            "end_index": tables[-1].get("end_index", page_count),
+            "nodes": table_tree,
+        })
+    
+    return grouped_tree if grouped_tree else tree
+
+
+# ---------------------------------------------------------------------------
 # P3: Unified Refinement Layer (dividers-based cross-validation)
 # ---------------------------------------------------------------------------
 
@@ -399,13 +770,18 @@ def refine_toc_with_dividers(
         deduped.append(item)
     
     items = deduped
-    items.sort(key=lambda x: x["physical_index"])
+    # 分离 catalog_group 节点和常规节点
+    catalog_groups = [x for x in items if x.get("page_type") == "catalog_group" or x.get("node_type") == "catalog_group"]
+    regular_items = [x for x in items if not (x.get("page_type") == "catalog_group" or x.get("node_type") == "catalog_group")]
+    regular_items.sort(key=lambda x: x["physical_index"] or 0)
     
     # 2. Ensure each divider has a corresponding top-level item
     # Find items that are "close" to dividers (±1 page)
     divider_items = {}  # divider -> item
-    for item in items:
+    for item in regular_items:
         pi = item["physical_index"]
+        if pi is None:
+            continue
         for d in dividers:
             if abs(pi - d) <= 1:
                 divider_items[d] = item
@@ -419,8 +795,8 @@ def refine_toc_with_dividers(
         if d not in divider_items and d <= page_count:
             # Find insertion point
             insert_idx = len(items)
-            for i, item in enumerate(items):
-                if item["physical_index"] > d:
+            for i, item in enumerate(regular_items):
+                if (item["physical_index"] or 0) > d:
                     insert_idx = i
                     break
             
@@ -429,20 +805,20 @@ def refine_toc_with_dividers(
                 "title": f"Chapter at page {d}",
                 "physical_index": d,
             }
-            items.insert(insert_idx, synthetic)
+            regular_items.insert(insert_idx, synthetic)
             print(f"[POST-REFINE] Inserted synthetic chapter at p.{d}")
     
     # 4. Re-sort after insertions
-    items.sort(key=lambda x: x["physical_index"])
+    regular_items.sort(key=lambda x: x["physical_index"] or 0)
     
     # 5. Fix empty structures: infer chapter numbers
     chapter_num = 1
-    for i, item in enumerate(items):
+    for i, item in enumerate(regular_items):
         if not item.get("structure"):
             # Check if this looks like a main chapter
             is_main = False
-            if i < len(items) - 1:
-                next_struct = str(items[i + 1].get("structure", ""))
+            if i < len(regular_items) - 1:
+                next_struct = str(regular_items[i + 1].get("structure", ""))
                 if "." in next_struct:
                     is_main = True
             
@@ -453,13 +829,109 @@ def refine_toc_with_dividers(
                 # Sub-chapter: find parent
                 parent_num = None
                 for j in range(i - 1, -1, -1):
-                    prev_struct = str(items[j].get("structure", ""))
+                    prev_struct = str(regular_items[j].get("structure", ""))
                     if prev_struct and "." not in prev_struct:
                         parent_num = prev_struct
                         break
                 if parent_num:
                     item["structure"] = f"{parent_num}.1"
     
+    # 6. Recombine catalog_groups with regular_items
+    return catalog_groups + regular_items
+
+
+def rebuild_structure_by_dividers(
+    toc_items: List[Dict],
+    dividers: List[int],
+    page_count: int,
+) -> List[Dict]:
+    """利用divider位置重建层级structure。
+
+    当VLM提取的TOC条目全部平铺（structure为"1","2"...）时，
+    利用已校验的divider位置将条目重新组织为层级结构：
+    - divider页上的标题 → 顶级（"1","2"...）
+    - 各范围内的其他标题 → 子级（"1.1","1.2"...）
+
+    Args:
+        toc_items: TOC条目列表
+        dividers: 章节分隔页列表（1-indexed）
+        page_count: 文档总页数
+
+    Returns:
+        重建structure后的条目列表
+    """
+    if not dividers or len(dividers) < 2:
+        return toc_items
+
+    items = list(toc_items)  # 复制，避免修改原始数据
+    sorted_dividers = sorted(dividers)
+
+    # Step 1: 识别divider页上的标题（精确匹配优先，±1容差兜底）
+    divider_items = {}  # divider -> item_index
+    used_indices = set()
+
+    # 第一轮：精确匹配
+    for d in sorted_dividers:
+        for i, item in enumerate(items):
+            if i in used_indices:
+                continue
+            pi = item.get("physical_index", 0)
+            if pi == d:
+                divider_items[d] = i
+                used_indices.add(i)
+                break
+
+    # 第二轮：±1容差匹配（未匹配的divider）
+    for d in sorted_dividers:
+        if d in divider_items:
+            continue
+        best_match = None
+        best_distance = float('inf')
+        for i, item in enumerate(items):
+            if i in used_indices:
+                continue
+            pi = item.get("physical_index", 0)
+            distance = abs(pi - d)
+            if distance <= 1 and distance < best_distance:
+                best_match = i
+                best_distance = distance
+        if best_match is not None:
+            divider_items[d] = best_match
+            used_indices.add(best_match)
+
+    print(f"[POST-REBUILD] Found {len(divider_items)} divider chapters out of {len(dividers)}")
+
+    # Step 2: 为divider页的条目分配顶级structure
+    chapter_num = 1
+    for d in sorted_dividers:
+        if d in divider_items:
+            idx = divider_items[d]
+            items[idx]["structure"] = str(chapter_num)
+            chapter_num += 1
+
+    # Step 3: 为范围内的其他条目分配子级structure
+    sub_counters = {}  # parent_chapter -> count
+
+    for i, item in enumerate(items):
+        if i in used_indices:
+            continue  # 跳过已处理的divider条目
+
+        pi = item.get("physical_index", 0)
+
+        # 找到属于哪个divider范围
+        parent_chapter = None
+        for j, d in enumerate(sorted_dividers):
+            next_d = sorted_dividers[j + 1] if j + 1 < len(sorted_dividers) else page_count + 1
+            if d <= pi < next_d:
+                parent_chapter = j + 1
+                break
+
+        if parent_chapter:
+            if parent_chapter not in sub_counters:
+                sub_counters[parent_chapter] = 0
+            sub_counters[parent_chapter] += 1
+            items[i]["structure"] = f"{parent_chapter}.{sub_counters[parent_chapter]}"
+
     return items
 
 
@@ -468,10 +940,82 @@ def refine_toc_with_dividers(
 # ---------------------------------------------------------------------------
 
 
+# ---------------------------------------------------------------------------
+# LLM 目录分组 Prompt
+# ---------------------------------------------------------------------------
+
+CATALOG_GROUPING_PROMPT = """你是文档目录结构分析专家。
+
+请分析以下文档的目录信息，提取所有目录条目（包括正文目录、图目录、表目录）。
+
+## 任务
+
+1. **分析目录页原文**：从目录页文本中提取所有条目
+2. **分类**：将条目分为正文目录、图目录、表目录
+3. **提取图/表目录**：如果目录页中有"图目录"或"表目录"章节，必须提取其中的所有条目
+
+## 判断标准
+
+### 正文目录
+- 文档的主要章节结构
+- 如"第一章 引言"、"1.1 研究背景"
+- 即使标题含"图"或"表"字（如"流程图分析"），只要它是章节标题，就归为此类
+
+### 图目录（Figure Catalog）
+- 独立的"图目录"章节，列出所有图
+- 条目格式："图1 系统架构"、"Figure 1 System Architecture"
+- **必须从目录页原文中提取，不要遗漏**
+
+### 表目录（Table Catalog）
+- 独立的"表目录"章节，列出所有表
+- 条目格式："表1 实验数据"、"Table 1 Experimental Data"
+- **必须从目录页原文中提取，不要遗漏**
+
+## 重要提示
+- **必须仔细分析目录页原文**，不要只看提取的目录条目列表
+- 如果目录页原文中有"图目录"或"表目录"，has_figure_catalog/has_table_catalog 必须为 true
+- 图/表目录的条目必须从目录页原文中**逐条提取**
+- 章节标题即使含"图"字（如"第三章 数据图表分析"）也不是图目录条目
+
+## 输入
+
+文档总页数: {page_count}
+
+目录页原文（请仔细分析）:
+{toc_page_text}
+
+已提取的目录条目（参考）:
+{toc_items_json}
+
+## 输出
+
+请输出JSON格式:
+{{
+    "has_figure_catalog": true/false,
+    "has_table_catalog": true/false,
+    "reasoning": "说明判断理由，特别是图/表目录是否存在",
+    "chapter_catalog": [
+        {{"title": "...", "page": N, "level": 1}}
+    ],
+    "figure_catalog": [
+        {{"title": "...", "page": N}}
+    ],
+    "table_catalog": [
+        {{"title": "...", "page": N}}
+    ]
+}}
+
+注意：如果目录页原文中有图目录或表目录，请务必提取其中的所有条目！
+"""
+
+
 def post_process_toc(
     toc_items: List[Dict],
     page_count: int,
     dividers: Optional[List[int]] = None,
+    analysis: Optional[Dict] = None,
+    use_llm_grouping: bool = True,
+    model: Optional[str] = None,
 ) -> Tuple[List[Dict], Dict[str, Any]]:
     """TOC 后处理主入口。
 
@@ -479,6 +1023,9 @@ def post_process_toc(
         toc_items: TOC 扁平条目列表
         page_count: 文档总页数
         dividers: 可选的章节分隔页列表，用于统一修正
+        analysis: 文档分析结果（用于LLM分组）
+        use_llm_grouping: 是否使用LLM进行目录分组
+        model: LLM模型名称
 
     Returns:
         (tree, completeness_info)
@@ -498,6 +1045,10 @@ def post_process_toc(
     # Step 1.5: P3 Unified Refinement (dividers-based)
     if dividers:
         items = refine_toc_with_dividers(items, dividers, page_count)
+
+    # Step 1.6: 基于divider重建层级structure（修复VLM平铺提取）
+    if dividers and len(dividers) >= 2:
+        items = rebuild_structure_by_dividers(items, dividers, page_count)
 
     # Step 2: 边界校验
     items = validate_indices(items, page_count)
@@ -606,85 +1157,32 @@ def post_process_toc(
     # Step 6: 修复父节点范围
     fix_parent_ranges(tree)
 
-    # Step 6.5: P4-fix —— 按类型分组，构建三个独立的目录
-    def flatten_tree(nodes):
-        """展平树结构，返回所有节点"""
-        result = []
-        for node in nodes:
-            result.append(node)
-            children = node.get("nodes", [])
-            if children:
-                result.extend(flatten_tree(children))
-        return result
-    
-    def classify_node_type(node):
-        """分类节点类型：chapter / figure / table / other"""
-        title = str(node.get("title", "")).lower()
-        number = str(node.get("number", "")).lower()
-        text = f"{number} {title}"
-        
-        if "图目录" in text or "表目录" in text:
-            return "other"  # 过滤掉目录节点
-        if any(k in text for k in ['图', 'figure', 'fig.']):
-            return "figure"
-        if any(k in text for k in ['表', 'table']):
-            return "table"
-        return "chapter"
-    
-    # 展平并分类
-    all_nodes = flatten_tree(tree)
-    chapters = [n for n in all_nodes if classify_node_type(n) == "chapter"]
-    figures = [n for n in all_nodes if classify_node_type(n) == "figure"]
-    tables = [n for n in all_nodes if classify_node_type(n) == "table"]
-    
-    print(f"[POST] Grouped: {len(chapters)} chapters, {len(figures)} figures, {len(tables)} tables")
-    
-    # 构建三个独立的树
-    grouped_tree = []
-    
-    if chapters:
-        # 清理子节点引用，避免重复
-        for n in chapters:
-            n["nodes"] = []
-        chapter_tree = build_tree(chapters)
-        grouped_tree.append({
-            "title": "目录",
-            "physical_index": chapters[0].get("physical_index", 1),
-            "start_index": chapters[0].get("start_index", 1),
-            "end_index": chapters[-1].get("end_index", page_count),
-            "nodes": chapter_tree,
-            "node_type": "catalog_group",
-        })
-    
-    if figures:
-        for n in figures:
-            n["nodes"] = []
-        figure_tree = build_tree(figures)
-        grouped_tree.append({
-            "title": "图目录",
-            "physical_index": figures[0].get("physical_index", 1),
-            "start_index": figures[0].get("start_index", 1),
-            "end_index": figures[-1].get("end_index", page_count),
-            "nodes": figure_tree,
-            "node_type": "catalog_group",
-        })
-    
-    if tables:
-        for n in tables:
-            n["nodes"] = []
-        table_tree = build_tree(tables)
-        grouped_tree.append({
-            "title": "表目录",
-            "physical_index": tables[0].get("physical_index", 1),
-            "start_index": tables[0].get("start_index", 1),
-            "end_index": tables[-1].get("end_index", page_count),
-            "nodes": table_tree,
-            "node_type": "catalog_group",
-        })
-    
-    # 使用分组后的树
-    if grouped_tree:
-        tree = grouped_tree
+    # Step 6.5: LLM 目录分组（新架构）
+    if use_llm_grouping and analysis and analysis.get("toc_page", {}).get("has_toc_page"):
+        try:
+            print("[POST] Step 6.5: LLM catalog grouping")
+            grouped_result = _llm_group_catalogs(tree, analysis, page_count, model)
+            if grouped_result:
+                print(f"[POST] LLM grouping success: {len(grouped_result)} groups")
+                tree = grouped_result
+            else:
+                print("[POST] LLM grouping returned empty, using single tree")
+                tree = _build_single_tree(tree, page_count)
+        except Exception as e:
+            print(f"[POST] LLM grouping failed: {e}, using single tree")
+            tree = _build_single_tree(tree, page_count)
+    elif use_llm_grouping:
+        # 没有TOC页，但有divider且树结构良好（多个顶级节点），保持现有结构
+        if dividers and len(tree) > 1:
+            print(f"[POST] No TOC page but has {len(dividers)} dividers and {len(tree)} top-level nodes, keeping tree structure")
+        else:
+            # 没有TOC页且树结构扁平，降级为单一目录树
+            print("[POST] No TOC page detected, using single tree")
+            tree = _build_single_tree(tree, page_count)
+    else:
+        # 旧逻辑（向后兼容，已废弃）
+        print("[POST] Using legacy grouping (deprecated)")
+        tree = _legacy_group_catalogs(tree, page_count)
 
     # Step 7: 完整性检查
     completeness = check_completeness(tree, page_count)

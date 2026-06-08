@@ -17,6 +17,12 @@ from pageindex.vlm_utils import (
 )
 from pageindex.fast_toc import verify_content_match, apply_offset
 from pageindex.divider_fix import fix_toc_for_dividers
+from pageindex.quality_validation import (
+    validate_toc_pages_vlm,
+    validate_dividers_vlm,
+    decide_extraction_path,
+    TocQualityChecker,
+)
 from app.prompts.pageindex_prompts import (
     VLM_ANCHOR_DETECTION_PROMPT,
     VLM_TOC_EXTRACT_PROMPT,
@@ -43,6 +49,46 @@ def decide_balanced_path(analysis: Dict) -> str:
 
 
 # ===========================================================================
+# 快速TOC提取（用于质量检查）
+# ===========================================================================
+
+async def _quick_extract_toc(
+    file_path: str,
+    toc_pages: List[int],
+    model: Optional[str] = None,
+) -> Optional[Dict]:
+    """从目录页快速提取TOC条目（用于质量检查，不做完整验证）。"""
+    try:
+        images = render_pages_to_images(file_path, [p - 1 for p in toc_pages])
+        
+        prompt = """你是PDF文档分析专家。请从以下目录页图片中提取目录条目。
+
+要求：
+1. 提取所有条目（包括一级和二级）
+2. 每个条目包含：标题、页码(physical_index)、层级（level=1为一级，level=2为二级）
+3. 返回JSON格式
+
+输出格式：
+{
+    "toc_items": [
+        {"title": "第一章", "level": 1, "physical_index": 5},
+        {"title": "1.1 简介", "level": 2, "physical_index": 6}
+    ]
+}"""
+        
+        raw = await vlm_call_with_images(images, prompt, model=model, max_tokens=3000)
+        result = parse_vlm_json(raw)
+        
+        if isinstance(result, dict) and "toc_items" in result:
+            return result
+        return None
+        
+    except Exception as e:
+        print(f"[QUICK-TOC] Extraction failed: {e}")
+        return None
+
+
+# ===========================================================================
 # Balanced 视觉路径
 # ===========================================================================
 
@@ -55,47 +101,91 @@ async def build_balanced_toc_visual(
     ocr_text_map: Optional[Dict[int, str]] = None,
     hooks=None,
 ) -> Dict:
-    """Balanced 视觉路径: 缩略图锚点 → 目录提取 → 全文分析。"""
+    """Balanced 视觉路径 v3.1: VLM校验 + 智能路径决策。"""
     page_count = analysis["page_count"]
+    is_image_doc = (
+        analysis.get("is_image_only_pdf", False)
+        or analysis.get("image_coverage", 0.0) >= 0.3
+    )
 
-    # ─── Phase 0.5: 缩略图锚点检测 (1 次 VLM) ───
+    # ─── Phase 0.5: 查找目录页（Step 1） ───
+    print("[BALANCED-VIS] Phase 0.5: finding TOC pages")
+    from pageindex.toc_detector import find_toc_pages
+    toc_pages = await find_toc_pages(analysis, file_path, model)
+
+    # ─── Phase 0.6: VLM校验TOC页（图片型文档） ───
+    if toc_pages and is_image_doc:
+        print(f"[BALANCED-VIS] Validating {len(toc_pages)} TOC pages with VLM")
+        toc_validation = await validate_toc_pages_vlm(toc_pages, file_path, model)
+        toc_pages = toc_validation["valid_pages"]
+        if not toc_pages:
+            print("[QC] 所有候选TOC页校验失败")
+
+    # ─── Phase 0.7: 锚点检测（查找分隔页） ───
     if anchors is None:
-        print("[BALANCED-VIS] Phase 0.5: anchor detection via thumbnail grids")
+        print("[BALANCED-VIS] Phase 0.7: anchor detection")
         anchors = await _vlm_detect_anchors(file_path, model)
     else:
-        print("[BALANCED-VIS] Phase 0.5: using provided anchors")
+        print("[BALANCED-VIS] Phase 0.7: using provided anchors")
 
-    toc_pages = anchors.get("toc_pages", [])
     dividers = anchors.get("chapter_dividers", [])
     first_content = anchors.get("first_content_page")
 
-    # P0-6: 合并代码检测的章节分隔页（用于"汇报提纲"等VLM难以识别的模式）
+    # 合并代码检测的章节分隔页
     code_dividers = analysis.get("chapter_dividers", [])
     if code_dividers and not dividers:
         print(f"[BALANCED-VIS] Using code-detected chapter dividers: {code_dividers}")
         dividers = code_dividers
-        # 如果 VLM 没有检测到 first_content，使用第一个 divider
         if not first_content and dividers:
             first_content = dividers[0]
     elif code_dividers and dividers:
-        # VLM 和代码都检测到了，取并集（去重+排序）
         merged = sorted(set(dividers + code_dividers))
         if merged != dividers:
             print(f"[BALANCED-VIS] Merged dividers: {dividers} + {code_dividers} = {merged}")
             dividers = merged
 
-    # 分类 divider 密度
+    # ─── Phase 0.8: VLM校验Divider页（图片型文档） ───
+    if dividers and is_image_doc:
+        print(f"[BALANCED-VIS] Validating {len(dividers)} dividers with VLM")
+        div_validation = await validate_dividers_vlm(dividers, file_path, model)
+        dividers = div_validation["valid_dividers"]
+        if not dividers:
+            print("[QC] 所有候选divider页校验失败")
+
+    # 打印当前状态
     divider_density = len(dividers) / page_count if page_count > 0 else 0
     print(
-        f"[BALANCED-VIS] Anchors: toc_pages={toc_pages}, "
-        f"dividers={len(dividers)} (density={divider_density:.0%}), "
-        f"first_content={first_content}"
+        f"[BALANCED-VIS] State: toc_pages={toc_pages}, "
+        f"dividers={len(dividers)} (density={divider_density:.0%})"
     )
 
-    # ─── Phase 1: TOC 构建（分支） ───
-
-    # 分支 A: 有目录页
+    # ─── Phase 1: TOC质量检查 ───
+    toc_check = {"is_valid": False, "has_hierarchy": False}
     if toc_pages:
+        # 快速提取TOC（用于质量检查）
+        toc_result = await _quick_extract_toc(file_path, toc_pages, model)
+        if toc_result and toc_result.get("toc_items"):
+            checker = TocQualityChecker()
+            toc_check = checker.check(toc_result["toc_items"], toc_pages)
+            print(f"[QC] TOC check: {toc_check}")
+
+    # ─── Phase 2: Divider质量检查 ───
+    divider_check = {"is_valid": False}
+    if dividers and len(dividers) >= 2:
+        divider_check = {
+            "is_valid": True,
+            "valid_count": len(dividers),
+            "reason": "VLM校验通过" if is_image_doc else "代码检测"
+        }
+
+    # ─── Phase 3: 路径决策 ───
+    decision = decide_extraction_path(toc_check, divider_check)
+    print(f"[QC] Decision: {decision['path']} - {decision['reason']}")
+
+    # ─── Phase 4: 执行对应分支 ───
+
+    # 分支A: TOC合格且有层级
+    if decision["path"] == "BRANCH_A" and toc_pages:
         result = await _branch_a_toc_page(
             file_path, page_count, toc_pages, dividers, model,
             first_content_page=first_content,
@@ -103,23 +193,20 @@ async def build_balanced_toc_visual(
         )
         if result:
             return result
+        print("[QC] Branch A failed, will try Branch B")
 
-    # 分支 B: 无目录但有 divider
-    if dividers:
+    # 分支B: 按分隔页分段提取（包括分支A失败后的降级）
+    if decision["path"] in ["BRANCH_B", "BRANCH_A_FAILED"] and dividers:
         if divider_density > 0.4:
-            # 密集 divider → divider 列表当 TOC
-            result = await _branch_b_dense_dividers(
-                file_path, page_count, dividers, model
-            )
+            result = await _branch_b_dense_dividers(file_path, page_count, dividers, model)
         else:
-            # 正常 divider → 按 divider 分组
-            result = await _branch_b_normal_dividers(
-                file_path, page_count, dividers, model
-            )
+            result = await _branch_b_normal_dividers(file_path, page_count, dividers, model)
         if result:
             return result
+        print("[QC] Branch B failed, will try Branch C")
 
-    # 分支 C: 无任何锚点 → 分层全文分析
+    # 分支C: 全文扫描兜底
+    print("[QC] Falling back to Branch C (fulltext scan)")
     return await _branch_c_fulltext(file_path, page_count, model)
 
 
@@ -312,232 +399,25 @@ async def _branch_a_toc_page(
         f"physical_range={min(pis)}-{max(pis)} (page_count={page_count})"
     )
 
-    # Task 3: 大节点检测 — 对 span ≥ 8 页的节点做 VLM 子章节发现
-    LARGE_NODE_THRESHOLD = 8
-    large_count = 0
-    for i, item in enumerate(toc_items):
-        start = item.get("physical_index", 0)
-        if not start or start < 1:
+    # Task 3: 去重 — 只去重真正的重复（相同标题 + 相同页码）
+    # 修复：不再按 physical_index 去重，因为一页可以有多个条目（如图表）
+    seen = set()
+    deduped = []
+    removed = 0
+    for item in toc_items:
+        title = item.get("title", "")
+        pi = item.get("physical_index", 0)
+        key = (title[:30], pi)  # 用标题+页码作为去重键
+        if key in seen:
+            removed += 1
             continue
-        if i < len(toc_items) - 1:
-            next_start = toc_items[i + 1].get("physical_index") or (start + 1)
-            estimated_end = max(next_start - 1, start)
-        else:
-            estimated_end = page_count
-        if estimated_end - start + 1 >= LARGE_NODE_THRESHOLD:
-            large_count += 1
-
-    # 判断是否需要全页扫描（条件：条目少 + 有大节点）
-    need_full_scan = len(toc_items) < 10 and large_count > 0 and model
-
-    if need_full_scan:
-        print(
-            f"[BALANCED-VIS] Detected {large_count} large nodes (span >= {LARGE_NODE_THRESHOLD}), "
-            f"toc_items={len(toc_items)} < 10, running full document scan"
-        )
-
-        # Phase 2: 全页扫描
-        page_titles = await _vlm_scan_document_pages(
-            file_path, page_count, model=model
-        )
-
-        # Phase 3: 用目录标题匹配章节边界
-        # 构建章节起始页映射
-        chapter_boundaries = []
-        for item in toc_items:
-            toc_title = item.get("title", "")
-            if not toc_title:
-                continue
-            # 在 page_titles 中找匹配的章节起始页
-            # 匹配策略：TOC 标题的前 10 字符在页面标题中出现
-            toc_prefix = toc_title[:10].strip()
-            for pt in page_titles:
-                page_title = pt.get("title", "")
-                if (pt.get("type") == "chapter" and toc_prefix and toc_prefix in page_title
-                    and pt.get("physical_index") is not None):
-                    chapter_boundaries.append({
-                        "structure": item.get("structure", ""),
-                        "title": toc_title,
-                        "start_page": pt["physical_index"],
-                    })
-                    break
-
-        # 按起始页排序
-        chapter_boundaries.sort(key=lambda x: x["start_page"])
-
-        # 如果没有匹配到章节边界，用目录标题直接匹配 page_titles
-        if not chapter_boundaries:
-            print("[BALANCED-VIS] No chapter boundaries matched, using TOC titles directly")
-            for item in toc_items:
-                toc_title = item.get("title", "")
-                toc_prefix = toc_title[:10].strip()
-                for pt in page_titles:
-                    page_title = pt.get("title", "")
-                    if (toc_prefix and toc_prefix in page_title
-                        and pt.get("physical_index") is not None
-                        and pt["physical_index"] > last_toc):
-                        chapter_boundaries.append({
-                            "structure": item.get("structure", ""),
-                            "title": toc_title,
-                            "start_page": pt["physical_index"],
-                        })
-                        break
-
-        # 构建子节点
-        insertions = []
-        parent_count = 0
-        for cb_idx, cb in enumerate(chapter_boundaries):
-            start = cb["start_page"]
-            # 确定章节结束页
-            if cb_idx < len(chapter_boundaries) - 1:
-                end = chapter_boundaries[cb_idx + 1]["start_page"] - 1
-            else:
-                end = page_count
-
-            # 从 page_titles 中提取该章节范围内的子节点
-            sub_items = [
-                pt for pt in page_titles
-                if (start is not None and end is not None
-                    and pt.get("physical_index") is not None
-                    and start <= pt["physical_index"] <= end)
-                and pt.get("type") != "chapter"  # 排除章节起始页本身
-            ]
-
-            if sub_items:
-                parent_count += 1
-                parent_structure = str(parent_count)
-
-                # 找到对应的 toc_item 并更新
-                toc_item = None
-                for item in toc_items:
-                    if item.get("title", "")[:15] == cb["title"][:15]:
-                        toc_item = item
-                        break
-
-                if toc_item:
-                    toc_item["structure"] = parent_structure
-                    toc_item["physical_index"] = start
-
-                    valid_children = []
-                    for j, si in enumerate(sub_items, 1):
-                        pi = si.get("physical_index", 0)
-                        if pi and start <= pi <= end:
-                            valid_children.append({
-                                "structure": f"{parent_structure}.{j}",
-                                "title": si.get("title", ""),
-                                "physical_index": pi,
-                            })
-
-                    if valid_children:
-                        child_pis = [c["physical_index"] for c in valid_children]
-                        toc_item["physical_index"] = min(child_pis)
-                        for j, child in enumerate(valid_children, 1):
-                            child["structure"] = f"{parent_structure}.{j}"
-
-                    insertions.append((toc_items.index(toc_item), valid_children))
-                    print(
-                        f"[BALANCED-VIS] Chapter '{cb['title'][:30]}' -> structure={parent_structure}, "
-                        f"{len(valid_children)} sub-items, range={start}-{end}"
-                    )
-
-        # 倒序插入
-        for parent_idx, children in reversed(insertions):
-            insert_pos = parent_idx + 1
-            for child in reversed(children):
-                toc_items.insert(insert_pos, child)
-
-    elif large_count > 0 and model:
-        # 原有逻辑：对每个大节点单独做 VLM 子章节提取
-        print(
-            f"[BALANCED-VIS] Detected {large_count} large nodes (span >= {LARGE_NODE_THRESHOLD}), "
-            f"running per-node VLM sub-title extraction"
-        )
-
-        insertions = []
-        parent_count = 0
-        for i, item in enumerate(toc_items):
-            start = item.get("physical_index", 0)
-            if not start or start < 1:
-                continue
-            if i < len(toc_items) - 1:
-                next_start = toc_items[i + 1].get("physical_index") or (start + 1)
-                estimated_end = max(next_start - 1, start)
-            else:
-                estimated_end = page_count
-            span = estimated_end - start + 1
-            if span < LARGE_NODE_THRESHOLD:
-                continue
-
-            page_range = list(range(start - 1, min(estimated_end, page_count)))
-            parent_context = item.get("title", "")
-
-            sub_items = await _vlm_extract_page_titles(
-                file_path, page_range, model=model,
-                parent_context=parent_context,
-            )
-            if sub_items:
-                parent_count += 1
-                parent_structure = str(parent_count)
-                item["structure"] = parent_structure
-
-                valid_children = []
-                for j, si in enumerate(sub_items, 1):
-                    pi = si.get("physical_index", 0)
-                    if pi and start <= pi <= estimated_end:
-                        valid_children.append({
-                            "structure": f"{parent_structure}.{j}",
-                            "title": si.get("title", ""),
-                            "physical_index": pi,
-                        })
-                    else:
-                        if pi:
-                            print(
-                                f"[BALANCED-VIS] Filtered out sub-item (pi={pi}, "
-                                f"not in range {start}-{estimated_end}): "
-                                f"{si.get('title', '')[:30]}"
-                            )
-
-                if valid_children:
-                    child_pis = [c["physical_index"] for c in valid_children]
-                    item["physical_index"] = min(child_pis)
-                    new_end = max(child_pis)
-                    if new_end < estimated_end:
-                        estimated_end = new_end
-                    for j, child in enumerate(valid_children, 1):
-                        child["structure"] = f"{parent_structure}.{j}"
-
-                insertions.append((i, valid_children))
-                print(
-                    f"[BALANCED-VIS] Node '{item.get('title', '')[:30]}' -> structure={parent_structure}, "
-                    f"{len(valid_children)} sub-items (filtered from {len(sub_items)}), "
-                    f"range={item.get('physical_index')}-{estimated_end}"
-                )
-
-        # 倒序插入
-        for parent_idx, children in reversed(insertions):
-            insert_pos = parent_idx + 1
-            for child in reversed(children):
-                toc_items.insert(insert_pos, child)
-
-        # Task 3: 去重 — 只去重真正的重复（相同标题 + 相同页码）
-        # 修复：不再按 physical_index 去重，因为一页可以有多个条目（如图表）
-        seen = set()
-        deduped = []
-        removed = 0
-        for item in toc_items:
-            title = item.get("title", "")
-            pi = item.get("physical_index", 0)
-            key = (title[:30], pi)  # 用标题+页码作为去重键
-            if key in seen:
-                removed += 1
-                continue
-            seen.add(key)
-            deduped.append(item)
-        
-        if removed > 0:
-            print(f"[BALANCED-VIS] Deduplication: removed {removed} duplicate nodes")
-            toc_items.clear()
-            toc_items.extend(deduped)
+        seen.add(key)
+        deduped.append(item)
+    
+    if removed > 0:
+        print(f"[BALANCED-VIS] Deduplication: removed {removed} duplicate nodes")
+        toc_items.clear()
+        toc_items.extend(deduped)
 
     # P5-fix: 子章节提取可能把图表标题误判为子章节，重置图表条目的 structure
     # 使图表条目成为独立根节点，避免被嵌套到章节下
@@ -594,6 +474,243 @@ def _verify_toc_completeness_with_ocr(
 
 
 # ===========================================================================
+# 分支 B (改进版): Divider主导 + 后端构建
+# ===========================================================================
+
+# Divider页专用Prompt
+_DIVIDER_TITLE_PROMPT = """这是PDF文档的一个章节分隔页（第{page}页）。
+
+请仔细观察该页面，提取章节的主标题。
+
+注意：
+1. 页面上可能有"Part01"、"Part02"等标签，这是章节编号，请保留
+2. 主要标题通常是页面上最大、最显眼的文字
+3. 不要提取页眉页脚或装饰性文字
+4. 如果页面主要是图片，请根据图片主题描述章节内容
+
+请只返回标题文字，不要解释。
+
+输出格式（JSON）：
+{{"title": "提取到的完整标题"}}
+"""
+
+# 内容页专用Prompt
+_CONTENT_TITLES_PROMPT = """请分析以下PDF内容页图片，提取每页中的章节标题。
+
+页码对应关系：
+{page_annotations}
+
+要求：
+1. 只提取作为章节标题的文字（通常是该页最大、最显眼的文字）
+2. 不要提取正文段落、图表说明、页眉页脚
+3. 如果某页没有明显的章节标题，不要为该页生成条目
+4. 标题原文提取，不要修改或概括
+
+输出格式（JSON数组）：
+[
+  {{"title": "标题文字", "page_index": 0}},  // page_index对应第几张图（从0开始）
+  {{"title": "标题文字", "page_index": 2}}
+]
+
+注意：
+- page_index是图片的索引（第1张图=0，第2张图=1...）
+- 不要在page_index中加上实际的页码数字
+- 如果连续几页都没有标题，可以只返回有标题的页面
+"""
+
+
+async def _extract_divider_title(
+    file_path: str,
+    page: int,
+    model: Optional[str] = None
+) -> Optional[str]:
+    """提取divider页的主标题
+    
+    Args:
+        file_path: PDF文件路径
+        page: divider页码（1-indexed）
+        model: VLM模型名称
+    
+    Returns:
+        主标题，提取失败返回None
+    """
+    try:
+        # 渲染divider页（高DPI）
+        images = render_pages_to_images(file_path, [page - 1], dpi=200)
+        if not images:
+            return None
+        
+        # 构建专用prompt
+        prompt = _DIVIDER_TITLE_PROMPT.format(page=page)
+        
+        # 调用VLM
+        raw = await vlm_call_with_images(
+            images, prompt, model=model, max_tokens=500
+        )
+        
+        # 解析结果
+        result = parse_vlm_json(raw)
+        if isinstance(result, dict) and "title" in result:
+            title = result["title"].strip()
+            if title:
+                return title
+        
+        return None
+        
+    except Exception as e:
+        print(f"    [ERROR] 提取divider标题失败: {e}")
+        return None
+
+
+async def _extract_content_titles(
+    file_path: str,
+    pages: List[int],
+    model: Optional[str] = None
+) -> List[Dict]:
+    """提取内容页的子标题
+    
+    Args:
+        file_path: PDF文件路径
+        pages: 内容页码列表（1-indexed）
+        model: VLM模型名称
+    
+    Returns:
+        子标题列表，每个包含title和physical_index
+    """
+    if not pages:
+        return []
+    
+    try:
+        # 渲染内容页
+        images = render_pages_to_images(
+            file_path, [p - 1 for p in pages]
+        )
+        
+        if not images:
+            return []
+        
+        # 构建页码标注
+        page_annotations = []
+        for idx, img in enumerate(images):
+            actual_page = img["page_index"] + 1
+            page_annotations.append(f"第{idx+1}张图 = 第{actual_page}页")
+        
+        # 构建专用prompt
+        prompt = _CONTENT_TITLES_PROMPT.format(
+            page_annotations="\n".join(page_annotations)
+        )
+        
+        # 调用VLM
+        raw = await vlm_call_with_images(
+            images, prompt, model=model, max_tokens=3000
+        )
+        
+        # 解析结果
+        result = parse_vlm_json(raw)
+        
+        items = []
+        if isinstance(result, list):
+            for item in result:
+                if isinstance(item, dict) and "title" in item:
+                    page_offset = item.get("page_index", 0)
+                    # 后端计算物理页码
+                    actual_page = pages[0] + page_offset
+                    
+                    # 确保页码在范围内
+                    if 0 <= page_offset < len(pages):
+                        items.append({
+                            "title": item["title"].strip(),
+                            "physical_index": actual_page
+                        })
+        
+        return items
+        
+    except Exception as e:
+        print(f"    [ERROR] 提取内容标题失败: {e}")
+        return []
+
+
+def _deduplicate_items_improved(items: List[Dict]) -> List[Dict]:
+    """去重：相同标题+相邻页码(±1)视为重复"""
+    if not items:
+        return []
+    
+    # 按页码排序
+    sorted_items = sorted(items, key=lambda x: x.get("physical_index", 0))
+    
+    result = []
+    seen_titles = {}  # title -> last_page
+    
+    for item in sorted_items:
+        title = item.get("title", "").strip()
+        page = item.get("physical_index", 0)
+        
+        if not title:
+            continue
+        
+        # 检查是否重复（标题相同且页码相邻）
+        is_duplicate = False
+        for seen_title, seen_page in seen_titles.items():
+            if seen_title == title and abs(page - seen_page) <= 1:
+                is_duplicate = True
+                break
+        
+        if not is_duplicate:
+            seen_titles[title] = page
+            result.append(item)
+    
+    return result
+
+
+def _assign_structure(
+    main_items: List[Dict],
+    sub_items_map: Dict[int, List[Dict]],
+    dividers: List[int]
+) -> List[Dict]:
+    """后端分配structure
+    
+    Args:
+        main_items: 主章节列表 [{"title": "xxx", "physical_index": 5}, ...]
+        sub_items_map: 子章节映射 {divider_page: [{"title": "xxx", "physical_index": 6}, ...]}
+        dividers: divider页码列表
+    
+    Returns:
+        完整TOC条目列表，包含structure字段
+    """
+    result = []
+    
+    for i, div in enumerate(dividers):
+        chapter_num = i + 1
+        
+        # 添加主章节
+        main = main_items[i] if i < len(main_items) else None
+        if main:
+            result.append({
+                "structure": str(chapter_num),
+                "title": main["title"],
+                "physical_index": div
+            })
+        else:
+            # fallback
+            result.append({
+                "structure": str(chapter_num),
+                "title": f"第{chapter_num}章",
+                "physical_index": div
+            })
+        
+        # 添加子章节
+        sub_items = sub_items_map.get(div, [])
+        for j, sub in enumerate(sub_items, 1):
+            result.append({
+                "structure": f"{chapter_num}.{j}",
+                "title": sub["title"],
+                "physical_index": sub["physical_index"]
+            })
+    
+    return result
+
+
+# ===========================================================================
 # 分支 B: 有 divider
 # ===========================================================================
 
@@ -635,49 +752,82 @@ async def _branch_b_normal_dividers(
     dividers: List[int],
     model: Optional[str] = None,
 ) -> Optional[Dict]:
-    """正常 divider: 按 divider 切分，每段 VLM 分析子章节。"""
-    all_items = []
-
-    # 构建分组: 每个 divider 到下一个 divider-1
-    groups = []
-    for i, div in enumerate(dividers):
-        if i < len(dividers) - 1:
-            end = dividers[i + 1] - 1
+    """改进版 Branch B: Divider主导 + 后端构建
+    
+    核心改进：
+    1. Divider页单独提取主标题（专用Prompt）
+    2. 内容页批量提取子标题（专用Prompt + 后端页码计算）
+    3. 后端直接分配Structure，不依赖VLM判断层级
+    """
+    if not dividers:
+        return None
+    
+    # 排序divider
+    sorted_dividers = sorted(dividers)
+    
+    # 存储结果
+    main_items = []  # 主章节
+    sub_items_map = {}  # 子章节映射
+    
+    print(f"[BALANCED-VIS] Branch B (improved): {len(sorted_dividers)} dividers")
+    
+    # 处理每个章节
+    for i, div in enumerate(sorted_dividers):
+        # 计算范围
+        end = sorted_dividers[i + 1] - 1 if i + 1 < len(sorted_dividers) else page_count
+        
+        print(f"\n[BALANCED-VIS] Chapter {i+1}: divider p.{div}, range p.{div+1}~p.{end}")
+        
+        # Step 1: 提取divider页的主标题
+        print(f"  [DIVIDER] Extracting main title from p.{div}")
+        main_title = await _extract_divider_title(file_path, div, model)
+        
+        if main_title:
+            print(f"    [OK] Main title: {main_title[:50]}")
+            main_items.append({
+                "title": main_title,
+                "physical_index": div
+            })
         else:
-            end = page_count
-        groups.append((div, end))
-
-    for start, end in groups:
-        pages = list(range(start - 1, min(end, page_count)))  # 0-indexed
-        images = render_pages_to_images(file_path, pages)
-        if not images:
-            continue
-
-        prev_context = ""
-        if all_items:
-            last_3 = json.dumps(all_items[-3:], ensure_ascii=False)
-            prev_context = (
-                f"\n之前已识别的章节（最后 3 个）:\n{last_3}\n请延续 structure 编号。\n"
-            )
-
-        prompt = VLM_FULLTEXT_SECTION_PROMPT.format(
-            start_page=start,
-            end_page=end,
-            start_page_plus1=start + 1,
-            previous_context=prev_context,
-        )
-
-        print(f"[BALANCED-VIS] Branch B (normal): pages {start}-{end}")
-        raw = await vlm_call_with_images(images, prompt, model=model, max_tokens=8000)
-        try:
-            items = parse_vlm_json(raw)
-            if isinstance(items, list):
-                all_items.extend(items)
-        except Exception as e:
-            print(f"[BALANCED-VIS] Group {start}-{end} failed: {e}")
-
-    if len(all_items) >= 2:
-        return {"toc_items": _deduplicate(all_items), "source": "vlm_divider_groups"}
+            print(f"    [WARN] Failed to extract main title, using fallback")
+            main_items.append({
+                "title": f"Chapter {i+1}",
+                "physical_index": div
+            })
+        
+        # Step 2: 提取内容页的子标题
+        content_pages = list(range(div + 1, end + 1))
+        if content_pages:
+            print(f"  [CONTENT] Extracting sub-titles from p.{content_pages[0]}~p.{content_pages[-1]}")
+            
+            # 分批处理（每批最多8页）
+            batch_size = 8
+            all_sub_items = []
+            
+            for batch_start in range(0, len(content_pages), batch_size):
+                batch = content_pages[batch_start:batch_start + batch_size]
+                print(f"    Batch: p.{batch[0]}~p.{batch[-1]}")
+                
+                sub_items = await _extract_content_titles(file_path, batch, model)
+                all_sub_items.extend(sub_items)
+            
+            # 去重
+            all_sub_items = _deduplicate_items_improved(all_sub_items)
+            sub_items_map[div] = all_sub_items
+            
+            print(f"    [OK] {len(all_sub_items)} unique sub-titles")
+    
+    # Step 3: 后端分配structure
+    print(f"\n[BALANCED-VIS] Assigning structure...")
+    toc_items = _assign_structure(main_items, sub_items_map, sorted_dividers)
+    
+    print(f"[BALANCED-VIS] Total: {len(toc_items)} items ({len(main_items)} main + {len(toc_items) - len(main_items)} sub)")
+    
+    if len(toc_items) >= 2:
+        return {
+            "toc_items": toc_items,
+            "source": "vlm_divider_improved"
+        }
     return None
 
 

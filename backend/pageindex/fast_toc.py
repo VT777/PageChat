@@ -282,22 +282,13 @@ async def try_fast_toc(
             print(f"[FAST-TOC] Coverage {last_page}/{page_count} < 30%, rejecting")
             return None
 
-    # 4. LLM 质检（区分来源）
-    if source in ("bookmarks", "links"):
-        # 书签/链接：跳过LLM质检，直接信任
-        print("[FAST-TOC] Bookmarks/links: skipping LLM validation")
-        valid = True
-    else:
-        valid = await llm_validate_toc(toc_items, page_count, match_info, model)
-        if not valid:
-            # P1-fix: LLM质检失败时，如果基础指标良好则接受
-            if match_info.get("match_rate", 0) >= 0.3 and last_page >= page_count * 0.5:
-                print(f"[FAST-TOC] LLM validation failed, but accepting (good coverage + match)")
-                valid = True
-    
+    # 4. LLM 质检（所有来源）
+    # bookmarks/links 也需要 LLM 质检，检查结构合理性和噪音
+    print("[FAST-TOC] Running LLM validation")
+    valid = await llm_validate_toc(toc_items, page_count, match_info, model)
+
     if not valid:
         print(f"[FAST-TOC] LLM validation failed, returning items for fallback")
-        # P1-fix: 返回toc_items让调用方决定是否降级
         return {"toc_items": toc_items, "source": source, "quality_check_failed": True}
 
     return {"toc_items": toc_items, "source": source}

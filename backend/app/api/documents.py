@@ -58,6 +58,7 @@ def _build_toc_from_index(index_data: Optional[dict]) -> List[dict]:
                 "node_id": node.get("node_id", ""),
                 "title": node.get("title", ""),
                 "level": level,
+                "structure": node.get("structure", ""),
                 "summary": (node.get("summary", "") or "")[:200],
                 "start_page": source_anchor.get("start_page")
                 or node.get("start_index"),
@@ -494,9 +495,32 @@ async def _generate_index_async(
             )
             await db.commit()
         finally:
+            # 安全清理：确保进度线程停止
             if progress_thread and progress_thread.is_alive():
                 progress_stop_event.set()
                 progress_thread.join(timeout=1)
+            
+            # 安全检查：如果状态仍为 processing，说明处理未正常完成
+            # 可能是 asyncio.wait_for 超时但异常未被正确捕获
+            try:
+                cursor = await db.execute(
+                    "SELECT status FROM documents WHERE id = ?",
+                    (doc_id,)
+                )
+                row = await cursor.fetchone()
+                if row and row[0] and row[0].startswith('processing'):
+                    print(f"[INDEX] Safety check: doc {doc_id} still in {row[0]}, marking as failed")
+                    await db.execute(
+                        "UPDATE documents SET status = ?, error_message = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                        (
+                            "failed:indexing_timeout",
+                            f"处理超时：超过{PAGEINDEX_MAX_INDEX_SECONDS}秒未完成，可能是VLM调用超时",
+                            doc_id
+                        ),
+                    )
+                    await db.commit()
+            except Exception as safety_err:
+                print(f"[INDEX] Safety check failed for {doc_id}: {safety_err}")
 
 
 def _update_progress_sync(

@@ -164,6 +164,7 @@ async def vlm_call_with_images(
     prompt: str,
     model: Optional[str] = None,
     max_tokens: int = 8000,
+    timeout: Optional[float] = None,
 ) -> str:
     """调用 Qwen3.5-flash 视觉 API。
 
@@ -172,6 +173,7 @@ async def vlm_call_with_images(
         prompt: 文本提示词
         model: 模型名称（默认 qwen3.6-flash）
         max_tokens: 最大输出 token
+        timeout: HTTP请求超时（秒），默认60秒
 
     Returns:
         模型文本输出
@@ -203,6 +205,7 @@ async def vlm_call_with_images(
         max_tokens=max_tokens,
         temperature=0,
         extra_body=extra_body if extra_body else None,
+        timeout=timeout if timeout is not None else 60.0,  # 默认60秒超时
     )
 
     return response.choices[0].message.content or ""

@@ -2848,7 +2848,7 @@ async def meta_processor(
 
 async def process_large_node_recursively(node, page_list, opt=None, logger=None):
     # P5-fix: 跳过 catalog_group 节点（图目录/表目录），避免破坏分组结构
-    if node.get("node_type") == "catalog_group":
+    if node.get("node_type") == "catalog_group" or node.get("page_type") == "catalog_group":
         return node
     
     node_page_list = page_list[node["start_index"] - 1 : node["end_index"]]

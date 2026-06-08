@@ -65,6 +65,187 @@ def _compute_meaningful_text_ratio(text: str) -> float:
     return meaningful_chars / total_chars if total_chars > 0 else 0.0
 
 
+def _detect_toc_pages(page_texts: List[str], max_scan_pages: int = 20) -> Tuple[bool, List[int], float, List[Dict]]:
+    """检测目录页（TOC pages）- v2 分批扫描 + 多维度打分。
+    
+    检测逻辑：
+    1. 分批扫描（每批5页，最多4批=20页）
+    2. 每页多维度打分（关键词、页码模式、递增性、章节编号、反噪音）
+    3. 连续性检测：目录页通常连续出现，下一页不是目录时停止
+    4. 返回：是否检测到、页码列表、置信度、提取的目录项预览
+    
+    返回:
+        (has_toc_page, toc_page_indices, confidence, preview_items)
+        toc_page_indices: 0-indexed 页码列表（物理页码）
+        confidence: 0-1 置信度
+        preview_items: 提取的目录项列表（仅用于路由决策）
+    """
+    if not page_texts:
+        return False, [], 0.0, []
+    
+    # TOC 关键词（多语言支持）
+    toc_keywords = {
+        'high': ['目录', 'contents', 'table of contents', '目次', '目 录'],
+        'medium': ['catalog', 'index', 'list of figures', 'list of tables', 
+                   '图目录', '表目录', '图表目录', '插图目录']
+    }
+    
+    # 噪音关键词（用于扣分）
+    noise_keywords = ['表1', '表 1', 'table 1', '图1', '图 1', 'figure 1',
+                      '序号', '编号', '编号', '日期', '页码']
+    
+    # 正则模式
+    # 模式1: 行尾页码（标题...数字）
+    dot_page_pattern = re.compile(
+        r'^([^\n]{2,60})[\.\s\.\u00b7\u2026]{3,}(\d{1,4})\s*$',
+        re.MULTILINE
+    )
+    
+    # 模式2: 章节编号（1.1, 第一章, 一、等）
+    section_pattern = re.compile(
+        r'^(?:'
+        r'第[一二三四五六七八九十百零〇两\d]+[章节部分篇]'
+        r'|[\d]+(?:\.[\d]+){0,3}'
+        r'|[一二三四五六七八九十]+[、．.]'
+        r'|\([一二三四五六七八九十\d]+\)'
+        r')\s*',
+        re.MULTILINE
+    )
+    
+    def score_page(page_idx: int) -> Tuple[int, List[Dict]]:
+        """对单页进行打分，返回 (分数, 预览条目)。"""
+        text = page_texts[page_idx] or ""
+        text_lower = text.lower()
+        lines = text.split('\n')
+        score = 0
+        preview_items = []
+        
+        # 1. 标题关键词检测 (+40 高分)
+        has_high_kw = any(kw in text_lower for kw in toc_keywords['high'])
+        has_medium_kw = any(kw in text_lower for kw in toc_keywords['medium'])
+        if has_high_kw:
+            score += 40
+        elif has_medium_kw:
+            score += 25
+        
+        # 2. 页码模式检测 (+30 核心特征)
+        dot_matches = dot_page_pattern.findall(text)
+        if len(dot_matches) >= 5:
+            score += 30
+            # 提取预览条目
+            for match in dot_matches[:10]:
+                title = match[0].strip()
+                page_num = match[1].strip()
+                if title and page_num.isdigit():
+                    preview_items.append({
+                        'title': title,
+                        'physical_index': int(page_num),
+                    })
+        elif len(dot_matches) >= 3:
+            score += 15
+        
+        # 3. 页码递增检测 (+20)
+        if preview_items:
+            page_nums = [p['physical_index'] for p in preview_items]
+            if len(page_nums) >= 2 and all(page_nums[i] <= page_nums[i+1] 
+                                            for i in range(len(page_nums)-1)):
+                score += 20
+            elif len(page_nums) >= 2 and all(page_nums[i] < page_nums[i+1] 
+                                              for i in range(len(page_nums)-1)):
+                score += 10  # 严格递增给一半分
+        
+        # 4. 章节编号模式 (+10)
+        section_matches = section_pattern.findall(text)
+        if len(section_matches) >= 3:
+            score += 10
+        elif len(section_matches) >= 1:
+            score += 5
+        
+        # 5. 反噪音检测 (-20)
+        noise_count = sum(1 for kw in noise_keywords if kw in text_lower)
+        if noise_count >= 5:
+            score -= 20
+        elif noise_count >= 2:
+            score -= 10
+        
+        # 6. 密度检查（条目太少或太多都扣分）
+        if len(preview_items) < 3:
+            score -= 10  # 条目太少
+        elif len(preview_items) > 40:
+            score -= 10  # 条目太多（可能是附录列表）
+        
+        return score, preview_items
+    
+    # 分批扫描
+    batch_size = 5
+    total_pages = len(page_texts)
+    scan_limit = min(max_scan_pages, total_pages)
+    
+    detected_pages = []  # 检测到的目录页
+    all_preview_items = []  # 所有预览条目
+    max_score = 0  # 最高分数（用于置信度计算）
+    
+    for batch_start in range(0, scan_limit, batch_size):
+        batch_end = min(batch_start + batch_size, scan_limit)
+        batch_has_toc = False
+        
+        for page_idx in range(batch_start, batch_end):
+            score, preview = score_page(page_idx)
+            
+            if score >= 60:  # 及格线
+                detected_pages.append(page_idx)
+                all_preview_items.extend(preview)
+                max_score = max(max_score, score)
+                batch_has_toc = True
+                
+                print(f"[PDF-ANALYZER] TOC candidate p.{page_idx + 1}: score={score}")
+        
+        # 连续性检测逻辑
+        if batch_has_toc:
+            # 检查下一页是否也是目录（跨批次）
+            next_page = detected_pages[-1] + 1
+            if next_page < total_pages:
+                next_score, _ = score_page(next_page)
+                if next_score < 60:
+                    # 下一页不是目录，且当前批次已找到目录，停止扫描
+                    print(f"[PDF-ANALYZER] TOC sequence ends at p.{detected_pages[-1] + 1}")
+                    break
+                # 否则继续扫描（下一页也是目录，会在下一批次处理）
+            else:
+                # 已到文档末尾
+                break
+        elif detected_pages:
+            # 之前找到了目录，但当前批次没找到，说明目录序列已结束
+            # 但这里不会执行，因为一旦找到目录就会检查下一页
+            break
+        # 如果从未找到目录，继续下一批次
+    
+    # 计算置信度
+    confidence = 0.0
+    if detected_pages:
+        # 基础置信度
+        confidence = 0.5
+        # 分数加分（80分以上+0.2，60-80分+0.1）
+        if max_score >= 80:
+            confidence += 0.2
+        elif max_score >= 60:
+            confidence += 0.1
+        # 多页加分（目录通常多页）
+        if len(detected_pages) >= 2:
+            confidence += 0.1
+        # 预览条目数量加分
+        if len(all_preview_items) >= 5:
+            confidence += 0.1
+        # 页码连续性加分
+        if all_preview_items:
+            page_nums = [p['physical_index'] for p in all_preview_items if p['physical_index'] > 0]
+            if len(page_nums) >= 2 and all(page_nums[i] <= page_nums[i+1] 
+                                            for i in range(len(page_nums)-1)):
+                confidence += 0.1
+    
+    return bool(detected_pages), detected_pages, min(confidence, 1.0), all_preview_items
+
+
 def _detect_chapter_dividers(page_texts: List[str]) -> List[int]:
     """检测章节分隔页：重复出现的相同短页面。
     
@@ -519,8 +700,10 @@ def analyze_pdf_structure(file_path: str) -> Dict[str, Any]:
 
     text_pages = [p["index"] for p in pages_info if p["type"] == "text"]
     image_only_pages = [p["index"] for p in pages_info if p["type"] == "image_only"]
+    image_pages = [p["index"] for p in pages_info if p["image_count"] > 0]
     garbled_pages = [p["index"] for p in pages_info if p["type"] == "garbled"]
     text_coverage = len(text_pages) / page_count if page_count > 0 else 0
+    image_coverage = len(image_pages) / page_count if page_count > 0 else 0
 
     # 文本质量深度检测（针对扫描件/图片PDF但有伪文本层的情况）
     quality = _check_text_quality(page_texts)
@@ -541,6 +724,10 @@ def analyze_pdf_structure(file_path: str) -> Dict[str, Any]:
     chapter_dividers = _detect_chapter_dividers(page_texts)
     if chapter_dividers:
         print(f"[PDF-ANALYZER] Chapter dividers detected: {chapter_dividers}")
+
+    # 目录页检测已移到 Balanced 路径中按需执行（toc_detector.py）
+    # 预分析不再做目录页检测，避免重复工作和不必要的计算
+    has_toc_page, toc_page_indices, toc_confidence, toc_preview = False, [], 0.0, []
 
     # 代码 TOC 提取（三级优先）
     code_toc_items = None
@@ -576,6 +763,7 @@ def analyze_pdf_structure(file_path: str) -> Dict[str, Any]:
         "text_coverage": text_coverage,
         "text_pages": text_pages,
         "image_only_pages": image_only_pages,
+        "image_coverage": image_coverage,
         "garbled_pages": garbled_pages,
         "is_image_only_pdf": len(image_only_pages) / page_count > 0.9
         if page_count > 0
@@ -591,4 +779,10 @@ def analyze_pdf_structure(file_path: str) -> Dict[str, Any]:
         "page_texts": page_texts,
         "text_quality": quality,
         "chapter_dividers": chapter_dividers,
+        "toc_page": {
+            "has_toc_page": has_toc_page,
+            "page_indices": toc_page_indices,
+            "confidence": toc_confidence,
+            "preview_items": toc_preview,
+        },
     }

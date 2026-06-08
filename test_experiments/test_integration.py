@@ -1,98 +1,120 @@
+"""集成测试：验证改进后的Branch B在项目代码中正常工作"""
+import asyncio
 import sys
-sys.path.insert(0, 'D:/projects/page_chat/backend')
+from pathlib import Path
 
-import json
-import pymupdf
-from pageindex.utils import post_processing, clean_structure_post, add_preface_if_needed, is_garbled_text
-from pageindex.divider_fix import detect_divider_pages, fix_toc_for_dividers
-from pageindex.page_index import check_toc, find_toc_pages_by_rules
+sys.path.insert(0, str(Path(__file__).parent.parent / "backend"))
 
-# Simple options mock
-class MockOpt:
-    def __init__(self):
-        self.model = "gpt-4o"
-        self.toc_check_page_num = 20
-        self.N = 8
-        self.batch_size = 5
-        self.if_add_node_text = "no"
+from pageindex.balanced_toc import _branch_b_normal_dividers
+from pageindex.post_processing import post_process_toc
 
-pdf_path = 'D:/projects/page_chat/backend/data/documents/f9a2f07e_2025年第五范式-人工智能驱动的科技创新报告.pdf'
 
-print("=== Integration Test: All Fixes Combined ===")
+async def test_integration():
+    """测试改进后的Branch B集成"""
+    
+    file_path = "backend/data/documents/275d4c02_2026年快消行业AI营销增长白皮书.pdf"
+    dividers = [5, 13, 25, 35, 41]
+    page_count = 62
+    model = "qwen3.6-flash"
+    
+    print("="*70)
+    print("INTEGRATION TEST: 改进版Branch B")
+    print("="*70)
+    
+    # Step 1: 调用改进后的Branch B
+    print("\n[Step 1] 调用 _branch_b_normal_dividers (improved)")
+    result = await _branch_b_normal_dividers(
+        file_path=file_path,
+        page_count=page_count,
+        dividers=dividers,
+        model=model
+    )
+    
+    if not result:
+        print("[ERROR] Branch B返回None")
+        return False
+    
+    toc_items = result["toc_items"]
+    print(f"[OK] 提取到 {len(toc_items)} 个条目")
+    
+    # 显示前10个
+    print("\n前10个条目:")
+    for item in toc_items[:10]:
+        print(f"  [{item.get('structure', 'N/A')}] p.{item.get('physical_index')} {item.get('title', 'N/A')[:40]}")
+    
+    # Step 2: 后处理
+    print("\n[Step 2] 后处理")
+    tree, completeness = post_process_toc(
+        toc_items=toc_items,
+        page_count=page_count,
+        dividers=dividers,
+    )
+    
+    print(f"[OK] 后处理完成: {len(tree)} 个顶级节点, 覆盖率 {completeness['coverage']:.0%}")
+    
+    # Step 3: 验证
+    print("\n[Step 3] 验证")
+    success = True
+    
+    # 验证1：页码准确性
+    expected = {
+        5: ["市场", "Part01"],
+        6: ["行业", "现状"],
+        7: ["竞争", "态势"],
+        13: ["Part02"],
+    }
+    
+    print("\n页码验证:")
+    for page, keywords in expected.items():
+        found = [it for it in toc_items if it.get("physical_index") == page]
+        if found:
+            title = found[0].get("title", "")
+            matches = any(kw in title for kw in keywords)
+            status = "OK" if matches else "FAIL"
+            print(f"  p.{page}: {status} '{title[:30]}' (期望含{keywords})")
+            if not matches:
+                success = False
+        else:
+            print(f"  p.{page}: FAIL 未找到")
+            success = False
+    
+    # 验证2：层级结构
+    main_count = len([it for it in toc_items if '.' not in str(it.get('structure', ''))])
+    sub_count = len([it for it in toc_items if '.' in str(it.get('structure', ''))])
+    
+    print(f"\n层级结构:")
+    print(f"  主章节: {main_count} (期望: 5)")
+    print(f"  子章节: {sub_count} (期望: >0)")
+    
+    if main_count == 5:
+        print("  [OK] 主章节数量正确")
+    else:
+        print("  [FAIL] 主章节数量不正确")
+        success = False
+    
+    if sub_count > 0:
+        print("  [OK] 有子章节")
+    else:
+        print("  [FAIL] 无子章节")
+        success = False
+    
+    # 验证3：树结构
+    print(f"\n树结构验证:")
+    print(f"  顶级节点: {len(tree)}")
+    for i, node in enumerate(tree):
+        struct = node.get('structure', 'N/A')
+        title = node.get('title', 'N/A')[:30]
+        children = len(node.get('nodes', []))
+        print(f"  节点{i+1}: [{struct}] {title} (子节点:{children})")
+    
+    if success:
+        print("\n*** ALL CHECKS PASSED ***")
+    else:
+        print("\n*** SOME CHECKS FAILED ***")
+    
+    return success
 
-# Step 1: Get page tokens
-print("\n[1/4] Extracting pages...")
-doc = pymupdf.open(pdf_path)
-page_list = []
-for page in doc:
-    text = page.get_text()
-    page_list.append((text, len(text)))
-doc.close()
-print(f"  Total pages: {len(page_list)}")
 
-# Step 2: Check divider detection
-print("\n[2/4] Divider detection...")
-divider_pages = detect_divider_pages(page_list)
-print(f"  Detected divider pages: {divider_pages}")
-assert len(divider_pages) > 0, "Should detect divider pages"
-print("  OK: Divider pages detected")
-
-# Step 3: Check TOC detection (should NOT detect TOC pages due to 汇报提纲 exclusion)
-print("\n[3/4] TOC page detection...")
-rule_pages = find_toc_pages_by_rules(page_list)
-print(f"  Regex detected pages: {rule_pages}")
-# Page 14 should NOT be in the list
-assert 14 not in rule_pages, "Page 14 (汇报提纲) should NOT be detected as TOC"
-print("  OK: Page 14 correctly excluded from TOC detection")
-
-# Step 4: Simulate a problematic TOC structure and verify fixes
-print("\n[4/4] Simulating TOC fixes...")
-
-# Simulate LLM-generated TOC with shifted titles (the problem before fix)
-simulated_toc = [
-    {"structure": "1", "title": "汇报提纲", "physical_index": 3, "appear_start": "yes"},
-    {"structure": "1.1", "title": "大模型概述", "physical_index": 4, "appear_start": "yes"},
-    {"structure": "2", "title": "汇报提纲", "physical_index": 13, "appear_start": "yes"},
-    {"structure": "2.1", "title": "大模型辅助的论文与项目", "physical_index": 14, "appear_start": "yes"},
-    {"structure": "3", "title": "汇报提纲", "physical_index": 35, "appear_start": "yes"},
-    {"structure": "3.1", "title": "未来研发方式展望", "physical_index": 36, "appear_start": "yes"},
-    {"structure": "4", "title": "汇报提纲", "physical_index": 49, "appear_start": "yes"},
-    {"structure": "4.1", "title": "大模型辅助的论文与项目", "physical_index": 50, "appear_start": "yes"},
-    {"structure": "5", "title": "汇报提纲", "physical_index": 61, "appear_start": "yes"},
-    {"structure": "5.1", "title": "总结与展望", "physical_index": 62, "appear_start": "yes"},
-]
-
-# Apply divider fix
-fixed_toc = fix_toc_for_dividers(simulated_toc.copy(), page_list)
-print(f"  Before fix: {[item['title'] for item in simulated_toc[:5]]}")
-print(f"  After fix:  {[item['title'] for item in fixed_toc[:5]]}")
-
-# Check that main chapter titles are no longer "汇报提纲" (where divider fix applied)
-main_chapters = [item for item in fixed_toc if '.' not in str(item.get('structure', ''))]
-fixed_count = sum(1 for ch in main_chapters if ch['title'] != "汇报提纲")
-print(f"  Fixed {fixed_count}/{len(main_chapters)} main chapter titles")
-assert fixed_count >= 4, f"Expected at least 4 fixed chapters, got {fixed_count}"
-print("  OK: Divider titles replaced with real chapter titles")
-
-# Apply post-processing and check inverted ranges
-# First add preface
-toc_with_preface = add_preface_if_needed(fixed_toc.copy(), page_list)
-tree = post_processing(toc_with_preface, len(page_list))
-
-# Clean output
-for node in tree:
-    clean_structure_post(node)
-
-print("\n=== Final Tree Structure ===")
-print(json.dumps(tree, ensure_ascii=False, indent=2))
-
-# Check no inverted ranges
-has_inverted = False
-for ch in tree:
-    if ch.get('start_index', 0) > ch.get('end_index', float('inf')):
-        print(f"  WARNING: Inverted range in '{ch.get('title')}'")
-        has_inverted = True
-if not has_inverted:
-    print("OK: No inverted ranges")
-
-print("\n=== All Integration Tests Passed! ===")
+if __name__ == "__main__":
+    success = asyncio.run(test_integration())
+    sys.exit(0 if success else 1)
