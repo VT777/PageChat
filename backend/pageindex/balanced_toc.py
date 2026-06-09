@@ -7,6 +7,8 @@
 import asyncio
 import json
 import re
+from collections import Counter
+from copy import deepcopy
 from typing import Any, Dict, List, Optional, Tuple
 
 from pageindex.vlm_utils import (
@@ -48,6 +50,473 @@ def decide_balanced_path(analysis: Dict) -> str:
     return "visual"
 
 
+def decide_v4_1_route(analysis: Dict[str, Any]) -> str:
+    """Decide the initial v4.1 branch after TOC page detection/extraction."""
+    toc_pages = analysis.get("toc_pages") or []
+    toc_entries = analysis.get("toc_entries") or []
+
+    if not toc_pages:
+        return "B-bare"
+    if analysis.get("toc_has_page_numbers") or any(entry.get("page") for entry in toc_entries):
+        return "A"
+    return "A+B"
+
+
+def decide_v4_1_fallback(previous_branch: str, analysis: Dict[str, Any]) -> str:
+    """Decide the v4.1 fallback branch without dropping extracted TOC info."""
+    if previous_branch in {"A", "A+B"} and should_use_b_enhanced_v4_1(analysis):
+        return "B-enhanced"
+    return "C"
+
+
+def should_use_b_enhanced_v4_1(analysis: Dict[str, Any]) -> bool:
+    """Return true when fallback should preserve existing TOC hints."""
+    return bool(analysis.get("toc_entries"))
+
+
+def store_toc_entries_v4_1(
+    analysis: Dict[str, Any],
+    entries: List[Dict[str, Any]],
+    toc_pages: Optional[List[int]] = None,
+) -> None:
+    """Persist TOC entries in analysis for A/A+B/B-enhanced reuse."""
+    analysis["toc_entries"] = entries or []
+    if toc_pages is not None:
+        analysis["toc_pages"] = toc_pages
+    analysis["toc_has_page_numbers"] = any(
+        entry.get("page") or entry.get("logical_page") or entry.get("physical_index")
+        for entry in entries or []
+    )
+
+
+def most_common(values: List[int]) -> Optional[int]:
+    """Return the most common integer value."""
+    if not values:
+        return None
+    return Counter(values).most_common(1)[0][0]
+
+
+def _is_trusted_flat_toc_skeleton(toc_items: List[Dict[str, Any]], toc_check: Dict[str, Any]) -> bool:
+    """Return true when the TOC page already provides the canonical flat skeleton."""
+    if not toc_items or not toc_check.get("skeleton_valid"):
+        return False
+    if toc_check.get("has_hierarchy") or toc_check.get("hierarchy_valid"):
+        return False
+    top_level = [
+        item
+        for item in toc_items
+        if int(item.get("level") or 1) == 1
+    ]
+    return len(top_level) >= 3 and len(top_level) == len(toc_items)
+
+
+_PART_TITLE_RE = re.compile(r"^\s*(part|chapter)\s*0?\d+\s*[：:\-.\s]", re.IGNORECASE)
+_CHINESE_PART_TITLE_RE = re.compile(r"^\s*第\s*[一二三四五六七八九十\d]+\s*[章节篇部]\s*[：:\-.\s]")
+_SUBTITLE_LABEL_RE = re.compile(
+    r"^\s*(?:增长引擎|核心模块|关键路径|主题|专题|篇章|阶段|模块|章节)\s*"
+    r"[一二三四五六七八九十\d]*\s*[：:]\s*$"
+)
+
+
+def _is_main_part_title(title: str) -> bool:
+    text = str(title or "").strip()
+    return bool(_PART_TITLE_RE.search(text) or _CHINESE_PART_TITLE_RE.search(text))
+
+
+def _is_short_subtitle_label(title: str) -> bool:
+    text = str(title or "").strip()
+    if not text or len(text) > 24:
+        return False
+    if _is_main_part_title(text):
+        return False
+    return bool(_SUBTITLE_LABEL_RE.search(text))
+
+
+def _merge_flat_toc_subtitle_labels_legacy(toc_items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Merge short subtitle labels into following numbered Part/Chapter TOC items."""
+    if len(toc_items or []) < 3:
+        return toc_items
+
+    merged: List[Dict[str, Any]] = []
+    pending_label: Optional[str] = None
+    changed = False
+
+    for raw_item in toc_items:
+        item = deepcopy(raw_item)
+        title = str(item.get("title") or "").strip()
+        if _is_short_subtitle_label(title):
+            pending_label = title.strip(" ：:")
+            changed = True
+            continue
+
+        if pending_label and _is_main_part_title(title):
+            prefix_match = re.match(
+                r"^(\s*(?:part|chapter)\s*0?\d+\s*[：:\-.\s]+|第\s*[一二三四五六七八九十\d]+\s*[章节篇部]\s*[：:\-.\s]*)",
+                title,
+                flags=re.IGNORECASE,
+            )
+            if prefix_match:
+                prefix = prefix_match.group(1)
+                rest = title[prefix_match.end():].strip()
+                item["title"] = f"{prefix}{pending_label}：{rest}" if rest else f"{prefix}{pending_label}"
+                changed = True
+            pending_label = None
+
+        elif pending_label:
+            merged.append({"title": pending_label, "level": 1})
+            pending_label = None
+
+        merged.append(item)
+
+    if pending_label:
+        merged.append({"title": pending_label, "level": 1})
+
+    return merged if changed else toc_items
+
+
+_MAIN_PART_PREFIX_RE_V2 = re.compile(
+    r"^(\s*(?:part|chapter)\s*0?\d+\s*[：:\-.\s]+|"
+    r"第\s*[一二三四五六七八九十\d]+\s*[章节篇部]\s*[：:\-.\s]*)",
+    re.IGNORECASE,
+)
+_VISUAL_LABEL_TITLE_RE_V2 = re.compile(
+    r"^\s*(?P<label>"
+    r"(?:增长引擎|核心模块|关键路径|主题|专题|篇章|阶段|模块|章节|路径)\s*[一二三四五六七八九十\d]+"
+    r"|(?:战略|策略|趋势|案例|技术|应用|行业|生态|治理|市场|洞察)[篇章]"
+    r")\s*[·:：\-—\s]+(?P<rest>.+?)\s*$",
+    re.IGNORECASE,
+)
+_SHORT_VISUAL_LABEL_RE_V2 = re.compile(
+    r"^\s*(?P<label>"
+    r"(?:增长引擎|核心模块|关键路径|主题|专题|篇章|阶段|模块|章节|路径)\s*[一二三四五六七八九十\d]+"
+    r"|(?:战略|策略|趋势|案例|技术|应用|行业|生态|治理|市场|洞察)[篇章]"
+    r")\s*[:：\-—]?\s*$",
+    re.IGNORECASE,
+)
+
+
+def _split_main_part_title_v2(title: str) -> Optional[Tuple[str, str]]:
+    text = str(title or "").strip()
+    match = _MAIN_PART_PREFIX_RE_V2.match(text)
+    if not match:
+        return None
+    return match.group(1), text[match.end():].strip()
+
+
+def _split_visual_label_title_v2(title: str) -> Optional[Tuple[str, str]]:
+    text = str(title or "").strip()
+    if not text or _is_main_part_title(text):
+        return None
+    match = _VISUAL_LABEL_TITLE_RE_V2.match(text)
+    if not match:
+        return None
+    label = match.group("label").strip()
+    rest = match.group("rest").strip(" ：:")
+    if not label or not rest:
+        return None
+    return label, rest
+
+
+def _short_visual_label_v2(title: str) -> Optional[str]:
+    text = str(title or "").strip()
+    if not text or _is_main_part_title(text):
+        return None
+    match = _SHORT_VISUAL_LABEL_RE_V2.match(text)
+    if not match:
+        return None
+    return match.group("label").strip()
+
+
+def _normalize_title_for_overlap_v2(title: str) -> str:
+    text = str(title or "").lower()
+    return re.sub(r"[\s:：·\-—_，,。、“”\"'（）()\[\]【】]+", "", text)
+
+
+def _titles_semantically_overlap_v2(left: str, right: str) -> bool:
+    left_norm = _normalize_title_for_overlap_v2(left)
+    right_norm = _normalize_title_for_overlap_v2(right)
+    if len(left_norm) < 4 or len(right_norm) < 4:
+        return False
+    if left_norm in right_norm or right_norm in left_norm:
+        return True
+    left_chunks = {left_norm[i:i + 2] for i in range(max(0, len(left_norm) - 1))}
+    right_chunks = {right_norm[i:i + 2] for i in range(max(0, len(right_norm) - 1))}
+    if not left_chunks or not right_chunks:
+        return False
+    overlap = len(left_chunks & right_chunks) / max(1, min(len(left_chunks), len(right_chunks)))
+    return overlap >= 0.65
+
+
+def _merge_flat_toc_subtitle_labels(toc_items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Merge visual label rows into following numbered Part/Chapter TOC items."""
+    if len(toc_items or []) < 3:
+        return toc_items
+
+    merged: List[Dict[str, Any]] = []
+    pending_label: Optional[str] = None
+    pending_label_rest: Optional[str] = None
+    changed = False
+
+    for raw_item in toc_items:
+        item = deepcopy(raw_item)
+        title = str(item.get("title") or "").strip()
+
+        short_label = _short_visual_label_v2(title)
+        if _is_short_subtitle_label(title) or short_label:
+            pending_label = short_label or title.strip(" ：:")
+            pending_label_rest = None
+            changed = True
+            continue
+
+        visual_label = _split_visual_label_title_v2(title)
+        if visual_label:
+            pending_label, pending_label_rest = visual_label
+            changed = True
+            continue
+
+        if pending_label and _is_main_part_title(title):
+            split_part = _split_main_part_title_v2(title)
+            if split_part:
+                prefix, rest = split_part
+                if pending_label_rest and not _titles_semantically_overlap_v2(pending_label_rest, rest):
+                    merged.append({"title": f"{pending_label}：{pending_label_rest}", "level": 1})
+                else:
+                    title_rest = rest or pending_label_rest or ""
+                    item["title"] = (
+                        f"{prefix}{pending_label}：{title_rest}"
+                        if title_rest
+                        else f"{prefix}{pending_label}"
+                    )
+                    changed = True
+            pending_label = None
+            pending_label_rest = None
+        elif pending_label:
+            title_value = f"{pending_label}：{pending_label_rest}" if pending_label_rest else pending_label
+            merged.append({"title": title_value, "level": 1})
+            pending_label = None
+            pending_label_rest = None
+
+        merged.append(item)
+
+    if pending_label:
+        title_value = f"{pending_label}：{pending_label_rest}" if pending_label_rest else pending_label
+        merged.append({"title": title_value, "level": 1})
+
+    return merged if changed else toc_items
+
+
+def _looks_like_ordinal_toc_pages(
+    toc_items: List[Dict[str, Any]],
+    first_content_page: Optional[int],
+    last_toc_page: int,
+) -> bool:
+    """Detect fake page fields like 1,2,3,4 from no-page TOC pages."""
+    pages = [
+        item.get("page")
+        for item in toc_items
+        if isinstance(item.get("page"), int) and not isinstance(item.get("page"), bool)
+    ]
+    if len(pages) < 3:
+        return False
+    if pages != list(range(pages[0], pages[0] + len(pages))):
+        return False
+    content_start = first_content_page or (last_toc_page + 1)
+    return max(pages) < content_start
+
+
+def _chapter_marker_pattern(chapter_no: int) -> re.Pattern:
+    chinese_numbers = {
+        1: "一",
+        2: "二",
+        3: "三",
+        4: "四",
+        5: "五",
+        6: "六",
+        7: "七",
+        8: "八",
+        9: "九",
+        10: "十",
+    }
+    chinese = chinese_numbers.get(chapter_no)
+    alternatives = [rf"chapter\s*0?{chapter_no}\b"]
+    if chinese:
+        alternatives.append(rf"第\s*{chinese}\s*[章节篇部分]")
+    alternatives.append(rf"第\s*0?{chapter_no}\s*[章节篇部分]")
+    return re.compile("|".join(alternatives), re.IGNORECASE)
+
+
+def _find_text_chapter_anchor_pages(
+    page_texts: List[str],
+    item_count: int,
+    page_count: int,
+    first_content_page: Optional[int],
+    last_toc_page: int = 0,
+) -> List[Optional[int]]:
+    """Find chapter start pages from deterministic text markers such as Chapter 2."""
+    if not page_texts or item_count <= 0:
+        return []
+
+    anchors: List[Optional[int]] = []
+    search_from = max(1, last_toc_page + 1)
+    for chapter_no in range(1, item_count + 1):
+        pattern = _chapter_marker_pattern(chapter_no)
+        found = None
+        for page in range(search_from, page_count + 1):
+            if page - 1 >= len(page_texts):
+                break
+            text = page_texts[page - 1] or ""
+            if pattern.search(text):
+                found = page
+                search_from = page + 1
+                break
+        anchors.append(found)
+
+    found_count = sum(1 for page in anchors if page)
+    if found_count >= 2:
+        print(f"[TOC-MAP] Text chapter anchors detected: {anchors}")
+        return anchors
+    return []
+
+
+def _preserve_flat_toc_skeleton_result(
+    toc_items: List[Dict[str, Any]],
+    toc_check: Dict[str, Any],
+    page_count: int,
+    toc_pages: List[int],
+    dividers: List[int],
+    first_content_page: Optional[int],
+    page_texts: Optional[List[str]] = None,
+) -> Optional[Dict[str, Any]]:
+    """Keep a trusted flat TOC page skeleton and only repair its page mapping."""
+    toc_items = _merge_flat_toc_subtitle_labels(toc_items)
+    if not _is_trusted_flat_toc_skeleton(toc_items, toc_check):
+        return None
+
+    preserved = deepcopy(toc_items)
+    last_toc = max(toc_pages) if toc_pages else 0
+    if _looks_like_ordinal_toc_pages(preserved, first_content_page, last_toc):
+        for item in preserved:
+            item["logical_page"] = item.get("page")
+            item.pop("page", None)
+            item.pop("physical_index", None)
+
+    top_items = [item for item in preserved if int(item.get("level") or 1) == 1]
+    usable_dividers = [
+        page
+        for page in sorted(set(dividers or []))
+        if isinstance(page, int) and 1 <= page <= page_count
+    ]
+    if usable_dividers:
+        for item, page in zip(top_items, usable_dividers):
+            item["physical_index"] = page
+
+    text_anchors = _find_text_chapter_anchor_pages(
+        page_texts or [],
+        item_count=len(top_items),
+        page_count=page_count,
+        first_content_page=first_content_page,
+        last_toc_page=last_toc,
+    )
+    if text_anchors:
+        for item, page in zip(top_items, text_anchors):
+            if page:
+                item["physical_index"] = page
+
+    missing = [item for item in top_items if not item.get("physical_index")]
+    if missing:
+        start_page = first_content_page or (last_toc + 1) or 1
+        _map_uniformly(preserved, page_count, start_page)
+
+    print(
+        f"[BALANCED-VIS] Preserving flat TOC skeleton: "
+        f"{len(preserved)} items, mapped={len([i for i in preserved if i.get('physical_index')])}"
+    )
+    return {
+        "toc_items": preserved,
+        "source": "vlm_toc_skeleton",
+        "mapped": True,
+        "semi_frozen": True,
+        "prevalidated": True,
+    }
+
+
+def render_page(file_path: str, page_index: int, dpi: int = 180) -> Dict[str, Any]:
+    """Render one page for VLM title checks."""
+    return render_pages_to_images(file_path, [page_index], dpi=dpi)[0]
+
+
+async def vlm_check_title_starts_page(image: Dict[str, Any], title: str, model: Optional[str] = None) -> bool:
+    """Ask VLM whether the rendered page starts with the given title."""
+    prompt = f"""请判断这页PDF是否以以下章节标题开始：{title}
+
+要求：
+1. 允许轻微空格、换行和标点差异。
+2. 只有标题位于页面开头或作为明显大标题时才返回 true。
+3. 如果标题只出现在正文段落、页眉、页脚或目录中，返回 false。
+
+输出严格JSON：{{"found": true/false, "reason": "..."}}
+"""
+    raw = await vlm_call_with_images([image], prompt, model=model, max_tokens=800)
+    result = parse_vlm_json(raw)
+    return bool(isinstance(result, dict) and result.get("found"))
+
+
+async def calculate_page_offset_visual_v4_1(
+    file_path: str,
+    toc_entries: List[Dict[str, Any]],
+    page_count: int,
+    model: Optional[str] = None,
+) -> Optional[int]:
+    """Calculate visual page offset by checking title matches in candidate windows."""
+    offsets: List[int] = []
+    for item in [entry for entry in toc_entries if entry.get("page")][:5]:
+        for offset in range(-5, 6):
+            physical_index = item["page"] + offset
+            if physical_index < 1 or physical_index > page_count:
+                continue
+            image = render_page(file_path, physical_index - 1, dpi=180)
+            if await vlm_check_title_starts_page(image, item.get("title", ""), model):
+                offsets.append(offset)
+                break
+    return most_common(offsets)
+
+
+def _split_range_v4_1(start_page: int, end_page: int, batch_size: int) -> List[Tuple[int, int]]:
+    return [
+        (page, min(page + batch_size - 1, end_page))
+        for page in range(start_page, end_page + 1, batch_size)
+    ]
+
+
+def build_unsearched_batches_v4_1(
+    start_page: int,
+    end_page: int,
+    searched: set[int],
+    batch_size: int = 10,
+) -> List[Tuple[int, int]]:
+    """Build batches for pages not yet searched during progressive expansion."""
+    batches: List[Tuple[int, int]] = []
+    current_start: Optional[int] = None
+    current_end: Optional[int] = None
+
+    for page in range(start_page, end_page + 1):
+        if page in searched:
+            if current_start is not None and current_end is not None:
+                batches.extend(_split_range_v4_1(current_start, current_end, batch_size))
+                current_start = None
+                current_end = None
+            continue
+
+        if current_start is None:
+            current_start = page
+        current_end = page
+
+    if current_start is not None and current_end is not None:
+        batches.extend(_split_range_v4_1(current_start, current_end, batch_size))
+
+    return batches
+
+
 # ===========================================================================
 # 快速TOC提取（用于质量检查）
 # ===========================================================================
@@ -76,6 +545,25 @@ async def _quick_extract_toc(
     ]
 }"""
         
+        prompt = """You are a PDF document analysis expert. Extract TOC entries from the provided TOC page images.
+
+Requirements:
+1. Extract all TOC entries, including top-level groups and nested entries.
+2. Each entry must include title, level, and page.
+3. page is the page number printed in the TOC. It is not the physical PDF page.
+4. Do not put TOC page numbers in physical_index. physical_index is reserved for mapped PDF pages.
+5. Do not output wrapper titles such as the document title, cover title, "目录", "Contents", or "Table of Contents" as TOC items.
+6. For case catalogs like "AI+产业发展" followed by numbered case entries, set the "AI+..." category rows to level=1 and the numbered case rows such as "01 ..." to level=2.
+7. Preserve the original TOC order and do not invent missing entries.
+8. Return strict JSON only.
+
+Output format:
+{
+    "toc_items": [
+        {"title": "AI+产业发展", "level": 1},
+        {"title": "01 渝车出海——汽车全球化智慧交互体验与服务模式创新", "level": 2, "page": 1}
+    ]
+}"""
         raw = await vlm_call_with_images(images, prompt, model=model, max_tokens=3000)
         result = parse_vlm_json(raw)
         
@@ -103,15 +591,25 @@ async def build_balanced_toc_visual(
 ) -> Dict:
     """Balanced 视觉路径 v3.1: VLM校验 + 智能路径决策。"""
     page_count = analysis["page_count"]
+
     is_image_doc = (
         analysis.get("is_image_only_pdf", False)
         or analysis.get("image_coverage", 0.0) >= 0.3
     )
 
     # ─── Phase 0.5: 查找目录页（Step 1） ───
-    print("[BALANCED-VIS] Phase 0.5: finding TOC pages")
-    from pageindex.toc_detector import find_toc_pages
-    toc_pages = await find_toc_pages(analysis, file_path, model)
+    toc_pages = []
+    if anchors:
+        toc_pages = list(anchors.get("toc_pages") or [])
+    if not toc_pages:
+        toc_pages = list(analysis.get("toc_pages") or [])
+
+    if toc_pages:
+        print(f"[BALANCED-VIS] Phase 0.5: using provided TOC pages {toc_pages}")
+    else:
+        print("[BALANCED-VIS] Phase 0.5: finding TOC pages")
+        from pageindex.toc_detector import find_toc_pages
+        toc_pages = await find_toc_pages(analysis, file_path, model)
 
     # ─── Phase 0.6: VLM校验TOC页（图片型文档） ───
     if toc_pages and is_image_doc:
@@ -165,6 +663,8 @@ async def build_balanced_toc_visual(
         # 快速提取TOC（用于质量检查）
         toc_result = await _quick_extract_toc(file_path, toc_pages, model)
         if toc_result and toc_result.get("toc_items"):
+            _normalize_mislabeled_logical_pages(toc_result["toc_items"], page_count)
+            store_toc_entries_v4_1(analysis, toc_result["toc_items"], toc_pages=toc_pages)
             checker = TocQualityChecker()
             toc_check = checker.check(toc_result["toc_items"], toc_pages)
             print(f"[QC] TOC check: {toc_check}")
@@ -186,6 +686,19 @@ async def build_balanced_toc_visual(
 
     # 分支A: TOC合格且有层级
     if decision["path"] == "BRANCH_A" and toc_pages:
+        if toc_result and toc_result.get("toc_items"):
+            preserved_result = _preserve_flat_toc_skeleton_result(
+                toc_result["toc_items"],
+                toc_check,
+                page_count=page_count,
+                toc_pages=toc_pages,
+                dividers=dividers,
+                first_content_page=first_content,
+                page_texts=analysis.get("page_texts") or [],
+            )
+            if preserved_result:
+                return preserved_result
+
         result = await _branch_a_toc_page(
             file_path, page_count, toc_pages, dividers, model,
             first_content_page=first_content,
@@ -966,6 +1479,10 @@ async def build_balanced_toc_text(
     page_count = analysis["page_count"]
 
     # 构建 opt
+    rule_result = _try_extract_text_heading_toc(analysis)
+    if rule_result:
+        return rule_result
+
     opt = SimpleNamespace(
         model=model or "qwen3.6-flash",
         toc_check_page_num=15,
@@ -1023,6 +1540,58 @@ async def build_balanced_toc_text(
         print(f"[BALANCED-TEXT] Divider fix failed: {e}")
 
     return {"toc_items": toc_items, "source": "llm_text"}
+
+
+def _try_extract_text_heading_toc(analysis: Dict) -> Optional[Dict]:
+    """Use deterministic headings for text-rich docs with chapter-only TOC pages."""
+    if analysis.get("text_coverage", 0) < 0.8:
+        return None
+
+    page_texts = analysis.get("page_texts") or []
+    toc_pages = analysis.get("toc_pages") or analysis.get("toc_page", {}).get("pages") or []
+    if not page_texts or not toc_pages:
+        return None
+
+    try:
+        from pageindex.text_heading_extractor import (
+            extract_text_headings,
+            is_chapter_skeleton_toc,
+            merge_chapter_skeleton_with_headings,
+        )
+    except Exception:
+        return None
+
+    toc_text = "\n".join(
+        page_texts[p - 1]
+        for p in toc_pages
+        if isinstance(p, int) and 0 <= p - 1 < len(page_texts)
+    )
+    skeleton = is_chapter_skeleton_toc(toc_text)
+    if not skeleton.get("is_skeleton"):
+        return None
+
+    headings = extract_text_headings(page_texts, start_page=1)
+    body_headings = [
+        item for item in headings
+        if item.get("physical_index") not in toc_pages
+    ]
+    if len(body_headings) < 5:
+        return None
+
+    merged = merge_chapter_skeleton_with_headings(skeleton, body_headings)
+    if len(merged) < 5:
+        return None
+
+    print(
+        f"[BALANCED-TEXT] Rule heading extraction: "
+        f"skeleton={len(skeleton.get('items') or [])}, headings={len(body_headings)}"
+    )
+    return {
+        "toc_items": merged,
+        "source": "text_heading",
+        "mapped": True,
+        "semi_frozen": True,
+    }
 
 
 # ===========================================================================
@@ -1395,6 +1964,39 @@ def _deduplicate(items: List[Dict]) -> List[Dict]:
     return result
 
 
+def _normalize_mislabeled_logical_pages(toc_items: List[Dict], page_count: int) -> None:
+    """Move logical TOC page numbers out of physical_index when mislabeled."""
+    if any(item.get("page") is not None for item in toc_items):
+        return
+
+    candidates = [
+        item
+        for item in toc_items
+        if isinstance(item.get("physical_index"), int)
+        and not isinstance(item.get("physical_index"), bool)
+        and item["physical_index"] > 0
+    ]
+    if not candidates:
+        return
+
+    out_of_range = [
+        item for item in candidates
+        if item["physical_index"] > page_count
+    ]
+    if len(out_of_range) < max(1, len(candidates) * 0.2):
+        return
+
+    print(
+        f"[TOC-MAP] Normalizing {len(candidates)} logical page numbers "
+        f"from physical_index ({len(out_of_range)} exceed page_count={page_count})"
+    )
+    for item in candidates:
+        logical_page = item.get("physical_index")
+        item["page"] = logical_page
+        item["logical_page"] = logical_page
+        item["physical_index"] = None
+
+
 def _map_toc_physical_pages(
     toc_items: List[Dict],
     page_count: int,
@@ -1414,6 +2016,7 @@ def _map_toc_physical_pages(
         return
 
     # 提取所有有 page 值的条目
+    _normalize_mislabeled_logical_pages(toc_items, page_count)
     items_with_page = [it for it in toc_items if it.get("page") is not None]
     
     # 防御：如果已有 physical_index（VLM 已提取物理页码），保留它们
@@ -1501,7 +2104,7 @@ def _map_toc_physical_pages(
             f"[TOC-MAP] Standard offset: offset={offset}, "
             f"estimated_last={estimated_last}, threshold={TRUST_THRESHOLD}"
         )
-        for item in toc_items:
+        for item in items_with_page:
             logical = item.get("page")
             if logical is not None and isinstance(logical, (int, float)):
                 physical = int(logical) + offset
@@ -1532,7 +2135,7 @@ def _map_toc_physical_pages(
                 f"step={most_common_diff}, ratio={diff_ratio:.0%}, "
                 f"using 1 page per item"
             )
-            for i, item in enumerate(toc_items):
+            for i, item in enumerate(items_with_page):
                 item["physical_index"] = min(
                     page_count, effective_first_content + i
                 )
@@ -1549,7 +2152,7 @@ def _map_toc_physical_pages(
                     f"scale={scale:.3f}, estimated_last={estimated_last}, "
                     f"diffs={sorted(set(diffs))}"
                 )
-                for item in toc_items:
+                for item in items_with_page:
                     logical = item.get("page", first_logical)
                     if logical is None:
                         continue
@@ -1564,7 +2167,37 @@ def _map_toc_physical_pages(
                 _map_uniformly(toc_items, page_count, effective_first_content)
 
     # 确保单调递增且无重复
+    _inherit_missing_physical_pages(toc_items, page_count, effective_first_content)
     _ensure_monotonic_physical(toc_items, page_count)
+
+
+def _inherit_missing_physical_pages(
+    toc_items: List[Dict], page_count: int, default_page: int
+) -> None:
+    """Give group headings a content page without consuming a mapping slot."""
+    previous_page: Optional[int] = None
+
+    for idx, item in enumerate(toc_items):
+        current = item.get("physical_index")
+        if isinstance(current, int) and not isinstance(current, bool) and current > 0:
+            item["physical_index"] = max(1, min(page_count, current))
+            previous_page = item["physical_index"]
+            continue
+
+        next_page = None
+        for following in toc_items[idx + 1:]:
+            candidate = following.get("physical_index")
+            if (
+                isinstance(candidate, int)
+                and not isinstance(candidate, bool)
+                and candidate > 0
+            ):
+                next_page = max(1, min(page_count, candidate))
+                break
+
+        inherited = next_page or previous_page or default_page
+        item["physical_index"] = max(1, min(page_count, inherited))
+        previous_page = item["physical_index"]
 
 
 def _map_uniformly(
@@ -1629,6 +2262,7 @@ def _map_toc_physical_pages_partitioned(
         return
     
     # Step 1: 按类型分组，同时记录原始索引
+    _normalize_mislabeled_logical_pages(toc_items, page_count)
     groups: Dict[str, List[Tuple[int, Dict]]] = {}
     for idx, item in enumerate(toc_items):
         item_type = _classify_toc_item_type(item)

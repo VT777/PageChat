@@ -7,7 +7,7 @@ import base64
 from pathlib import Path
 from typing import Optional, Dict, Any, List
 
-# 添加 pageindex 到 Python 路径
+# 娣诲姞 pageindex 鍒?Python 璺緞
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 import PyPDF2
@@ -15,6 +15,7 @@ import PyPDF2
 from pageindex.page_index import page_index_main, page_index_main_with_page_list
 from pageindex.utils import config, get_nodes, get_page_tokens, structure_to_list
 from pageindex.page_index_md import md_to_tree
+from pageindex.quality_validation import TocQualityChecker
 from app.core.config import (
     INDEXES_DIR,
     build_effective_pageindex_config,
@@ -48,7 +49,7 @@ async def check_query_appearance(
     query: str, node_text: str, model: str = "qwen3.6-flash"
 ) -> dict:
     """
-    验证用户查询是否出现在节点文本中
+    楠岃瘉鐢ㄦ埛鏌ヨ鏄惁鍑虹幇鍦ㄨ妭鐐规枃鏈腑
 
     Returns:
         {
@@ -63,12 +64,11 @@ async def check_query_appearance(
         return {
             "query_appears": "no",
             "confidence": 0.0,
-            "reasoning": "节点文本为空或过短",
+            "reasoning": "node text is empty or too short",
         }
 
     truncated_text = node_text[:800]
 
-    # 使用优化后的查询验证提示词
     prompt = QUERY_VERIFICATION_PROMPT.format(query=query, content=truncated_text)
 
     try:
@@ -100,17 +100,14 @@ async def verify_candidate_nodes(
     model: str = "qwen3.6-flash",
 ) -> List[dict]:
     """
-    验证 LLM 选择的候选节点是否真的包含查询内容
-
+    楠岃瘉 LLM 閫夋嫨鐨勫€欓€夎妭鐐规槸鍚︾湡鐨勫寘鍚煡璇㈠唴瀹?
     Args:
-        candidates: LLM 返回的候选列表
-        query: 用户查询
-        nodes: 所有节点的完整信息 (from structure_to_list)
-        model: 验证用的模型
+        candidates: LLM 杩斿洖鐨勫€欓€夊垪琛?        query: 鐢ㄦ埛鏌ヨ
+        nodes: 鎵€鏈夎妭鐐圭殑瀹屾暣淇℃伅 (from structure_to_list)
+        model: 楠岃瘉鐢ㄧ殑妯″瀷
 
     Returns:
-        带验证分数的候选列表
-    """
+        甯﹂獙璇佸垎鏁扮殑鍊欓€夊垪琛?    """
     node_dict = {n.get("node_id"): n for n in nodes}
     verified_results = []
 
@@ -154,7 +151,7 @@ async def verify_candidate_nodes(
 
 
 class PageIndexService:
-    """PageIndex 服务 - 生成和查询树状索引"""
+    """PageIndex service - generate and query tree indexes."""
 
     def __init__(self):
         self.opt = self._build_opt()
@@ -188,9 +185,9 @@ class PageIndexService:
     async def _ocr_pages_for_toc_validation(
         self, file_path: Path, page_indices: List[int]
     ) -> Dict[int, str]:
-        """Phase 0.5: 对指定页面做轻量 OCR，用于 TOC 验证。
+        """Phase 0.5: run lightweight OCR for selected pages.
 
-        返回: {物理页码(1-indexed): OCR文本}
+        Returns: {physical_page_number(1-indexed): OCR text}
         """
         if not page_indices:
             return {}
@@ -207,7 +204,7 @@ class PageIndexService:
         sem = asyncio.Semaphore(max(1, int(OCR_MAX_CONCURRENCY)))
 
         async def ocr_single(img_info):
-            page_num = img_info["page_index"] + 1  # 0-indexed → 1-indexed
+            page_num = img_info["page_index"] + 1  # 0-indexed 鈫?1-indexed
             async with sem:
                 result = await ocr_service.ocr_image_base64(
                     img_info["image_base64"], page_num=page_num
@@ -519,7 +516,7 @@ class PageIndexService:
         for fragment in watermark_fragments:
             t = t.replace(fragment, " ")
 
-        t = re.sub(r"^[◆•●\-\*u\s]+", "", t)
+        t = re.sub(r"^[◆•●\-*u\s]+", "", t)
         t = re.sub(r"(?i)^chapter\s*\d+[a-zA-Z]*[\s:：.\-]*", "", t)
         t = re.sub(r"^第\s*\d+\s*[章节部分卷篇]\s*", "", t)
         t = re.sub(r"^\d+(?:\.\d+)*[\s:：.\-]*", "", t)
@@ -579,32 +576,14 @@ class PageIndexService:
         if re.fullmatch(r"[A-Za-z]{1,6}", t):
             return True
 
-        noise_keywords = [
-            "免责声明",
-            "风险提示",
-            "分析师",
-            "邮箱",
-            "电话",
-            "版权",
-            "www.",
-            "@",
-        ]
+        noise_keywords = ["免责声明", "风险提示", "分析师", "邮箱", "电话", "版权", "www.", "@"]
         if any(k in t for k in noise_keywords):
             return True
 
         readable = sum(1 for ch in t if PageIndexService._is_common_readable_char(ch))
         if readable / max(1, len(t)) < 0.72:
             return True
-
-        cjk_count = sum(1 for ch in t if "\u4e00" <= ch <= "\u9fff")
-        ascii_alpha = sum(1 for ch in t if ch.isascii() and ch.isalpha())
-        digit_count = sum(1 for ch in t if ch.isdigit())
-        if cjk_count == 0 and ascii_alpha <= 5 and len(t) <= 8:
-            return True
-        if digit_count / max(1, len(t)) > 0.45 and cjk_count < 2:
-            return True
         return False
-
     @staticmethod
     def _extract_heading_from_text(text: str) -> str:
         if not text:
@@ -728,7 +707,7 @@ class PageIndexService:
             nodes.append(
                 {
                     "node_id": f"{idx:04d}",
-                    "title": f"第{idx}部分（第{start}-{end}页）",
+                    "title": f"Part {idx} (pages {start}-{end})",
                     "start_index": start,
                     "end_index": end,
                     "nodes": [],
@@ -791,8 +770,9 @@ class PageIndexService:
                     return None
 
                 prompt = (
-                    "请阅读这页PDF图片内容，提炼1句用于检索的中文摘要，"
-                    "重点保留主题、关键术语、图表结论。不要编造，输出不超过60字。"
+                    "Read this PDF page image and write one concise searchable summary. "
+                    "Keep the topic, key terms, chart/table conclusions, and do not invent facts. "
+                    "Output no more than 60 Chinese characters when possible."
                 )
                 image_url = f"data:image/jpeg;base64,{image_b64}"
                 for _ in range(max_attempts):
@@ -812,7 +792,6 @@ class PageIndexService:
                 return None
 
         unique_pages = sorted({int(p) for p in page_numbers if int(p) > 0})
-        # 分批并行，避免一次创建过多 pending task 导致事件循环不稳定
         batch_size = max(2, max_concurrency * 2)
         results: List[Optional[Dict[str, Any]]] = []
         for i in range(0, len(unique_pages), batch_size):
@@ -860,7 +839,7 @@ class PageIndexService:
                 continue
 
             _, target = min(candidates, key=lambda x: x[0])
-            marker = f"[视觉摘要 p.{page_num}] {summary}"
+            marker = f"[visual summary p.{page_num}] {summary}"
 
             text = (target.get("text") or "").strip()
             if marker not in text:
@@ -870,7 +849,7 @@ class PageIndexService:
             if not node_summary:
                 target["summary"] = summary
             elif summary not in node_summary:
-                target["summary"] = (node_summary + "；" + summary)[:260]
+                target["summary"] = (node_summary + "; " + summary)[:260]
 
     @staticmethod
     def _looks_like_segment_fallback_toc(structure_data: Any) -> bool:
@@ -881,8 +860,8 @@ class PageIndexService:
         fallback_hits = 0
         for node in sample:
             title = (node.get("title") or "").strip()
-            if re.match(r"^第\d+部分（第\d+-\d+页）$", title) or re.match(
-                r"^第\d+部分[:：]", title
+            if re.match(r"^Part\s+\d+\s+\(pages\s+\d+-\d+\)$", title) or re.match(
+                r"^Part\s+\d+\s*:", title
             ):
                 fallback_hits += 1
         return fallback_hits >= max(2, len(sample) - 1)
@@ -931,7 +910,7 @@ class PageIndexService:
         t = (title or "").strip()
         if not t:
             return False
-        m = re.match(r"^第\d+部分[:：](.+)$", t)
+        m = re.match(r"^Part\s+\d+\s*:\s*(.+)$", t)
         if m:
             payload = m.group(1).strip()
             return len(payload) >= 8 and not PageIndexService._is_noise_title(payload)
@@ -967,8 +946,8 @@ class PageIndexService:
                 normalized = dict(node)
                 normalized["summary"] = summary
                 normalized["nodes"] = []
-                if title and f"第{start}-{end}页" not in title:
-                    normalized["title"] = f"{title}（第{start}-{end}页）"
+                if title and f"pages {start}-{end}" not in title:
+                    normalized["title"] = f"{title} (pages {start}-{end})"
                 densified.append(normalized)
                 continue
 
@@ -977,9 +956,9 @@ class PageIndexService:
                 seg_end = min(end, seg_start + max_span - 1)
                 seg_title = title
                 if title:
-                    seg_title = f"{title}（第{seg_start}-{seg_end}页）"
+                    seg_title = f"{title} (pages {seg_start}-{seg_end})"
                 else:
-                    seg_title = f"章节片段（第{seg_start}-{seg_end}页）"
+                    seg_title = f"Chapter segment (pages {seg_start}-{seg_end})"
                 densified.append(
                     {
                         "title": seg_title,
@@ -1012,7 +991,7 @@ class PageIndexService:
         cleaned: List[str] = []
         seen = set()
         for item in summaries:
-            s = re.sub(r"\s+", " ", str(item or "")).strip().strip("。；; ")
+            s = re.sub(r"\s+", " ", str(item or "")).strip().strip("銆傦紱; ")
             if not s:
                 continue
             key = s[:80]
@@ -1025,7 +1004,7 @@ class PageIndexService:
             return ""
         if len(cleaned) == 1:
             return cleaned[0][:220]
-        merged = "；".join(cleaned[:3])
+        merged = "; ".join(cleaned[:3])
         return merged[:260]
 
     @staticmethod
@@ -1093,7 +1072,6 @@ class PageIndexService:
 
         pages = [p for p in range(start, end + 1) if p in page_summary]
 
-        # 节点摘要要求是区间级语义：当节点内证据不足时，补充邻页证据
         min_evidence = 3 if (end - start + 1) <= 2 else 2
         if len(pages) < min_evidence:
             for delta in (1, 2, 3):
@@ -1165,20 +1143,20 @@ class PageIndexService:
                 f"- p.{p}: {page_summary.get(p, '')}" for p in evidence_pages[:6]
             )
             if not evidence_block:
-                evidence_block = "- 无视觉证据"
+                evidence_block = "- no visual evidence"
 
             prompt = (
-                "你是文档摘要助手。请基于一个章节(多页区间)生成节点级摘要。\n"
-                f"章节标题: {title or '未命名章节'}\n"
-                f"章节页码: {start}-{end}\n"
-                f"章节文本证据(可能为空): {node_text or '无'}\n"
-                "章节视觉证据:\n"
+                "You are a document summarization assistant. Generate a node-level summary "
+                "for one chapter or page range based only on the given evidence.\n"
+                f"Title: {title or 'Untitled section'}\n"
+                f"Page range: {start}-{end}\n"
+                f"Text evidence: {node_text or 'none'}\n"
+                "Visual evidence:\n"
                 f"{evidence_block}\n\n"
-                "要求:\n"
-                "1) 输出1-2句中文摘要，40-160字；\n"
-                "2) 必须概括整个章节区间，不要写'本页'；\n"
-                "3) 仅基于给定证据，不得编造。\n"
-                "只输出摘要正文。"
+                "Requirements:\n"
+                "1. Output 1-2 concise Chinese sentences, 40-160 characters when possible.\n"
+                "2. Summarize the whole page range, not a single page.\n"
+                "3. Do not invent facts. Output only the summary text."
             )
 
             summary = ""
@@ -1244,7 +1222,6 @@ class PageIndexService:
         needed = max(1, int(round(page_count * target_ratio)))
         targets: set[int] = set()
 
-        # 1) 全局均匀补点，先满足基础覆盖率目标
         sample_count = min(page_count, max(needed, 12))
         if sample_count <= 1:
             targets.add(page_count)
@@ -1254,7 +1231,7 @@ class PageIndexService:
                 if p not in existing_pages:
                     targets.add(p)
 
-        # 2) 大间隙优先补点（中点 + 四分位），降低目录“盲区”
+        # Fill large gaps first using midpoint and quartiles.
         all_pages = sorted(existing_pages)
         boundaries = [0] + all_pages + [page_count + 1]
         for i in range(len(boundaries) - 1):
@@ -1272,13 +1249,13 @@ class PageIndexService:
                 if 1 <= p <= page_count and p not in existing_pages:
                     targets.add(p)
 
-        # 3) 尾段加密，提升问答命中后半部分章节概率
+        # Strengthen tail sampling.
         tail_start = max(1, int(page_count * 0.7))
         for p in range(tail_start, page_count + 1, 2):
             if p not in existing_pages:
                 targets.add(p)
 
-        # 4) 结构稀疏时再加强前段抽样，避免前部被压缩成单大段
+        # Strengthen front sampling when the structure is sparse.
         if gate_reason in {
             "node_sparse",
             "visual_summary_sparse",
@@ -1309,7 +1286,6 @@ class PageIndexService:
         if not source:
             return []
 
-        # 第一轮：严格去重，保留语义变化明显的页
         anchors: List[Dict[str, Any]] = []
         prev_title = ""
         for item in source:
@@ -1347,7 +1323,7 @@ class PageIndexService:
                 )
                 prev_title = title
 
-        # 第二轮：如果锚点过少，放宽相似度阈值补锚点
+        # 绗簩杞細濡傛灉閿氱偣杩囧皯锛屾斁瀹界浉浼煎害闃堝€艰ˉ閿氱偣
         min_nodes = min(max(6, total // 8), 18)
         if len(anchors) < min_nodes:
             anchors = []
@@ -1379,7 +1355,7 @@ class PageIndexService:
                     )
                     prev_title = title
 
-        # 控制节点上限，避免目录过密（保留文末锚点，防止尾部内容丢失）
+        # 鎺у埗鑺傜偣涓婇檺锛岄伩鍏嶇洰褰曡繃瀵嗭紙淇濈暀鏂囨湯閿氱偣锛岄槻姝㈠熬閮ㄥ唴瀹逛涪澶憋級
         max_nodes = 80 if total <= 80 else 60
         if len(anchors) > max_nodes:
             if max_nodes <= 1:
@@ -1408,7 +1384,7 @@ class PageIndexService:
             end = max(start, min(total, end))
             title = anchor["title"]
             if not PageIndexService._is_semantic_toc_title(title):
-                title = f"第{idx + 1}部分：{title}" if title else f"第{idx + 1}部分"
+                title = f"Part {idx + 1}: {title}" if title else f"Part {idx + 1}"
             nodes.append(
                 {
                     "node_id": f"{idx + 1:04d}",
@@ -1428,7 +1404,7 @@ class PageIndexService:
         metrics = PageIndexService._compute_vision_toc_gate_metrics(
             toc_nodes=toc_nodes,
             page_count=page_count,
-            # 兼容旧测试语义：仅评估结构质量，不因视觉覆盖率被否决
+            # 鍏煎鏃ф祴璇曡涔夛細浠呰瘎浼扮粨鏋勮川閲忥紝涓嶅洜瑙嗚瑕嗙洊鐜囪鍚﹀喅
             visual_summaries=(
                 [{"page_num": i + 1, "summary": "ok"} for i in range(page_count)]
                 if page_count > 0
@@ -1675,9 +1651,9 @@ class PageIndexService:
                     r"\s+", " ", str(anchor.get("summary") or "")
                 ).strip()
             if anchor_text:
-                title = f"第{idx}部分：{anchor_text[:24]}"
+                title = f"Part {idx}: {anchor_text[:24]}"
             else:
-                title = f"第{idx}部分（第{start}-{end}页）"
+                title = f"Part {idx} (pages {start}-{end})"
 
             nodes.append(
                 {
@@ -2057,25 +2033,24 @@ class PageIndexService:
         page_count: int,
         model: str,
     ) -> Optional[Dict]:
-        """图片型文档：用VLM从目录页高清图提取TOC。"""
+        """Extract TOC from rendered TOC page images using VLM."""
         try:
             from pageindex.vlm_utils import render_pages_to_images, vlm_call_with_images, parse_vlm_json
             
             images = render_pages_to_images(file_path, [p - 1 for p in toc_pages])
             
-            prompt = """你是PDF文档分析专家。请从以下目录页图片中提取所有目录条目。
+            prompt = """You are analyzing rendered PDF TOC pages. Extract all catalog entries.
+Requirements:
+1. Keep the original title text.
+2. Return physical PDF page numbers as physical_index and hierarchy as level.
+3. Return JSON only.
 
-要求：
-1. 提取所有条目（包括一级和二级）
-2. 每个条目包含：标题、页码(physical_index)、层级(level)
-3. 返回JSON格式
-
-输出格式：
+Example:
 {
-    "toc_items": [
-        {"title": "第一章", "level": 1, "physical_index": 5},
-        {"title": "1.1 简介", "level": 2, "physical_index": 6}
-    ]
+  "toc_items": [
+    {"title": "Chapter 1", "level": 1, "physical_index": 5},
+    {"title": "1.1 Introduction", "level": 2, "physical_index": 6}
+  ]
 }"""
             
             raw = await vlm_call_with_images(images, prompt, model=model, max_tokens=3000)
@@ -2096,29 +2071,29 @@ class PageIndexService:
         page_count: int,
         model: str,
     ) -> Optional[Dict]:
-        """文本型文档：用LLM从文本提取TOC。"""
+        """Extract TOC from TOC page text using LLM."""
         try:
             from app.core.llm import async_chat_completion
             
             page_texts = analysis.get("page_texts", [])
             toc_text = "\n".join([page_texts[p - 1] for p in toc_pages if p - 1 < len(page_texts)])
             
-            prompt = f"""从以下目录页文本中提取目录条目。
+            prompt = f"""Extract catalog entries from the following TOC page text.
 
-目录页文本：
+TOC text:
 {toc_text[:3000]}
 
-要求：
-1. 提取所有条目（包括一级和二级）
-2. 每个条目包含：标题、页码(physical_index)、层级(level)
-3. 返回JSON格式
+Requirements:
+1. Keep original titles.
+2. Return physical PDF page numbers as physical_index and hierarchy as level.
+3. Return JSON only.
 
-输出格式：
+Example:
 {{
-    "toc_items": [
-        {{"title": "第一章", "level": 1, "physical_index": 5}},
-        {{"title": "1.1 简介", "level": 2, "physical_index": 6}}
-    ]
+  "toc_items": [
+    {{"title": "Chapter 1", "level": 1, "physical_index": 5}},
+    {{"title": "1.1 Introduction", "level": 2, "physical_index": 6}}
+  ]
 }}"""
             
             response = await async_chat_completion(
@@ -2141,17 +2116,1018 @@ class PageIndexService:
             print(f"[EXTRACT-TEXT] Failed: {e}")
             return None
 
+    @staticmethod
+    def _normalize_and_map_fallback_toc(
+        fallback_result: Optional[Dict],
+        page_count: int,
+        toc_pages: List[int],
+        ocr_text_map: Optional[Dict[int, str]] = None,
+        dividers: Optional[List[int]] = None,
+    ) -> Optional[Dict]:
+        """Normalize legacy TOC fallback output before post-processing.
+
+        Older VLM/text fallback prompts may put TOC logical page numbers in
+        physical_index. The balanced mapper already knows how to detect and map
+        that shape, so route fallback results through it before accepting them.
+        """
+        if not fallback_result or not fallback_result.get("toc_items"):
+            return fallback_result
+
+        from pageindex.balanced_toc import _map_toc_physical_pages
+
+        last_toc_page = max(toc_pages) if toc_pages else 0
+        first_content_page = last_toc_page + 1 if last_toc_page else 1
+
+        _map_toc_physical_pages(
+            fallback_result["toc_items"],
+            page_count=page_count,
+            first_content_page=first_content_page,
+            last_toc_page=last_toc_page,
+            ocr_text_map=ocr_text_map,
+            dividers=dividers or [],
+        )
+        fallback_result["mapped"] = True
+        fallback_result["mapping_source"] = "legacy_fallback_normalizer"
+        return fallback_result
+
+    @staticmethod
+    def _sync_toc_context(
+        analysis: Dict,
+        toc_pages: Optional[List[int]],
+        confidence: str = "known",
+    ) -> None:
+        """Store detected TOC pages in the shared analysis shape."""
+        pages = [int(p) for p in (toc_pages or []) if isinstance(p, int) and p > 0]
+        if not pages:
+            return
+
+        analysis["toc_pages"] = pages
+        analysis["toc_page"] = {
+            "has_toc_page": True,
+            "pages": pages,
+            "confidence": confidence,
+        }
+
+    @staticmethod
+    def _try_text_heading_shortcut(
+        analysis: Dict,
+        balanced_result: Optional[Dict],
+    ) -> Optional[Dict]:
+        """Convert deterministic text heading extraction into new-architecture shape."""
+        return PageIndexService._try_prevalidated_outline_shortcut(
+            analysis,
+            balanced_result,
+            allowed_sources={"text_heading"},
+        )
+
+    @staticmethod
+    def _try_prevalidated_outline_shortcut(
+        analysis: Dict,
+        outline_result: Optional[Dict],
+        allowed_sources: Optional[set[str]] = None,
+    ) -> Optional[Dict]:
+        """Convert deterministic outline extraction into new-architecture shape."""
+        sources = allowed_sources or {"text_heading", "slide_outline", "agenda_outline"}
+        if not outline_result or outline_result.get("source") not in sources:
+            return None
+        items = outline_result.get("toc_items") or []
+        if not items:
+            return None
+
+        source = outline_result.get("source")
+        analysis["toc_frozen"] = True
+        analysis["toc_frozen_source"] = source
+        return {
+            "items": items,
+            "source": source,
+            "mapped": bool(outline_result.get("mapped")),
+            "semi_frozen": bool(outline_result.get("semi_frozen")),
+            "prevalidated": True,
+        }
+
+    @staticmethod
+    def _try_balanced_provider_shortcut(
+        analysis: Dict,
+        page_count: int,
+    ) -> Optional[Dict]:
+        """Run v4.2 providers and adapt a trusted skeleton to legacy result shape."""
+        from pageindex.balanced_orchestrator import ProviderRegistry, build_balanced_state
+        from pageindex.page_mapping_service import map_skeleton_pages
+        from pageindex.providers.code_toc_provider import CodeTocProvider
+        from pageindex.providers.deterministic_outline_provider import (
+            default_agenda_outline_provider,
+            default_slide_outline_provider,
+        )
+        from pageindex.providers.toc_page_provider import TocPageTextProvider
+
+        registry = ProviderRegistry([
+            CodeTocProvider(),
+            TocPageTextProvider(),
+            default_slide_outline_provider(),
+            default_agenda_outline_provider(),
+        ])
+        state = build_balanced_state(analysis, registry)
+        PageIndexService._sync_build_state_to_analysis(analysis, state)
+        skeleton = state.get("skeleton")
+        if not skeleton or not skeleton.get("skeleton_valid"):
+            candidates = state.get("candidates") or []
+            if not candidates:
+                return None
+            candidate = candidates[0]
+            items = candidate.get("items") or []
+            if not items:
+                return None
+            source = candidate.get("source") or "outline_candidate"
+            analysis["toc_frozen"] = bool(candidate.get("top_level_frozen", candidate.get("semi_frozen", True)))
+            analysis["toc_frozen_source"] = source
+            analysis["top_level_frozen"] = analysis["toc_frozen"]
+            analysis["allow_child_expansion"] = bool(candidate.get("allow_child_expansion", True))
+            return {
+                "items": items,
+                "source": source,
+                "mapped": candidate.get("mapping_strategy") == "existing",
+                "semi_frozen": bool(candidate.get("semi_frozen", True)),
+                "prevalidated": True,
+                "balanced_state": state,
+            }
+
+        source = skeleton.get("source") or "toc_skeleton"
+        mapping_strategy = "existing"
+        mapped = None
+        if skeleton.get("page_mapping_valid"):
+            items = skeleton.get("items") or []
+        else:
+            mapped = map_skeleton_pages(
+                skeleton,
+                analysis.get("page_texts", []),
+                page_count,
+            )
+            items = mapped.get("items") or []
+            mapping_strategy = mapped.get("mapping_strategy") or "unknown"
+
+        if not items:
+            return None
+
+        analysis["toc_frozen"] = True
+        analysis["toc_frozen_source"] = source
+        analysis["top_level_frozen"] = True
+        analysis["allow_child_expansion"] = True
+        return {
+            "items": items,
+            "source": source,
+            "mapped": True,
+            "mapping_strategy": mapping_strategy,
+            "mapping_quality": mapped.get("mapping_quality") if mapped else 1.0,
+            "prevalidated": True,
+            "balanced_state": state,
+        }
+
+    @staticmethod
+    def _sync_build_state_to_analysis(analysis: Dict, state: Dict) -> None:
+        """Expose canonical build state while keeping legacy analysis aliases."""
+        analysis["build_state"] = state
+        analysis["top_level_frozen"] = bool(state.get("top_level_frozen"))
+        analysis["allow_child_expansion"] = bool(state.get("allow_child_expansion", True))
+        analysis["range_locked"] = bool(state.get("range_locked"))
+        analysis["children_locked"] = bool(state.get("children_locked"))
+        analysis["tree_complete"] = bool(state.get("tree_complete"))
+        analysis["needs_repair"] = bool(state.get("needs_repair"))
+
+    @staticmethod
+    def _apply_balanced_result_state(analysis: Dict, balanced_result: Optional[Dict]) -> None:
+        """Propagate trusted balanced extraction state to legacy post-processing."""
+        if not balanced_result:
+            return
+
+        source = balanced_result.get("source") or "balanced"
+        top_level_frozen = bool(
+            balanced_result.get(
+                "top_level_frozen",
+                balanced_result.get("mapped")
+                or balanced_result.get("semi_frozen")
+                or source in {"text_heading", "slide_outline", "agenda_outline", "vlm_toc_skeleton"},
+            )
+        )
+        allow_child_expansion = bool(
+            balanced_result.get(
+                "allow_child_expansion",
+                balanced_result.get("semi_frozen", False),
+            )
+        )
+        if not top_level_frozen:
+            return
+
+        build_state = dict(analysis.get("build_state") or {})
+        build_state.update({
+            "top_level_frozen": True,
+            "allow_child_expansion": allow_child_expansion,
+            "children_locked": bool(build_state.get("children_locked", False)),
+            "top_level_source": source,
+            "tree_complete": bool(build_state.get("tree_complete", False)),
+        })
+        analysis["build_state"] = build_state
+        analysis["top_level_frozen"] = True
+        analysis["allow_child_expansion"] = allow_child_expansion
+        analysis["toc_frozen_source"] = source
+        if allow_child_expansion:
+            analysis["toc_frozen"] = False
+            analysis["toc_semi_frozen"] = True
+        else:
+            analysis["toc_frozen"] = True
+            analysis["toc_semi_frozen"] = False
+
+    @staticmethod
+    def _is_prevalidated_outline_result(result: Optional[Dict]) -> bool:
+        return bool(
+            result
+            and result.get("source") in {
+                "text_heading",
+                "slide_outline",
+                "agenda_outline",
+                "toc_page_text",
+                "bookmarks",
+                "links",
+                "regex",
+                "vlm_toc_skeleton",
+            }
+            and result.get("prevalidated")
+            and result.get("items")
+        )
+
+    @staticmethod
+    def _should_skip_legacy_toc_detection(
+        analysis: Dict,
+        new_architecture_result: Optional[Dict],
+    ) -> bool:
+        """Avoid repeating TOC detection when canonical/anchored result already succeeded."""
+        return bool(
+            new_architecture_result
+            and new_architecture_result.get("items")
+            and new_architecture_result.get("prevalidated")
+            and (
+                analysis.get("toc_pages")
+                or (analysis.get("toc_page") or {}).get("pages")
+            )
+        )
+
+    @staticmethod
+    def _try_text_heading_shortcut_legacy(
+        analysis: Dict,
+        balanced_result: Optional[Dict],
+    ) -> Optional[Dict]:
+        """Deprecated compatibility shim."""
+        if not balanced_result or balanced_result.get("source") != "text_heading":
+            return None
+        items = balanced_result.get("toc_items") or []
+        if not items:
+            return None
+
+        analysis["toc_frozen"] = True
+        analysis["toc_frozen_source"] = "text_heading"
+        return {
+            "items": items,
+            "source": "text_heading",
+            "mapped": bool(balanced_result.get("mapped")),
+            "semi_frozen": bool(balanced_result.get("semi_frozen")),
+            "prevalidated": True,
+        }
+
+    @staticmethod
+    def _is_prevalidated_text_heading_result(result: Optional[Dict]) -> bool:
+        return PageIndexService._is_prevalidated_outline_result(result)
+
+    @staticmethod
+    def _prevalidated_skip_validation_message(result: Dict) -> str:
+        source = result.get("source") or "outline"
+        return f"[INDEX-V3-NEW] {source} shortcut prevalidated, skipping generic validation"
+
+    @staticmethod
+    def _is_effectively_image_doc(analysis: Dict) -> bool:
+        text_coverage = float(analysis.get("text_coverage") or 0.0)
+        image_coverage = float(analysis.get("image_coverage") or 0.0)
+        return bool(analysis.get("is_image_only_pdf", False)) or (
+            text_coverage < 0.3 and image_coverage >= 0.3
+        )
+
+    @staticmethod
+    def _is_weak_slide_bookmark_toc(analysis: Dict, items: List[Dict]) -> bool:
+        if not items:
+            return False
+        titles = [str(item.get("title", "")).strip() for item in items]
+        weak_count = 0
+        for title in titles:
+            if not title:
+                weak_count += 1
+            elif re.match(r"^(?:幻灯片|Slide)\s*\d+(?:\s*[:：].*)?$", title, re.IGNORECASE):
+                weak_count += 1
+            elif title in {"默认节", "Default Section"}:
+                weak_count += 1
+            elif re.match(r"^第[一二三四五六七八九十]+章$", title):
+                weak_count += 1
+            elif re.match(r"^Chapter\s*\d+$", title, re.IGNORECASE):
+                weak_count += 1
+
+        weak_ratio = weak_count / len(titles)
+        text_coverage = float(analysis.get("text_coverage") or 0.0)
+        image_coverage = float(analysis.get("image_coverage") or 0.0)
+        page_count = int(analysis.get("page_count") or 0)
+        garbled_ratio = (
+            len(analysis.get("garbled_pages") or []) / page_count
+            if page_count > 0 else 0.0
+        )
+        low_text_quality = (
+            text_coverage <= 0.35
+            or garbled_ratio >= 0.3
+            or image_coverage >= 0.8
+        )
+        return weak_ratio >= 0.3 and low_text_quality
+
+    @staticmethod
+    def _has_reliable_code_toc(analysis: Dict) -> bool:
+        code_toc = analysis.get("code_toc") or {}
+        items = code_toc.get("items") or []
+        source = code_toc.get("source")
+        if not items:
+            return False
+        if source in {"bookmarks", "links"}:
+            if source == "bookmarks" and PageIndexService._is_weak_slide_bookmark_toc(analysis, items):
+                print("[CODE-TOC] Ignoring weak slide-export bookmarks")
+                analysis["code_toc_reject_reason"] = "weak_slide_bookmarks"
+                return False
+            return True
+        if source != "regex":
+            return False
+        if analysis.get("agenda_outline_candidate"):
+            print("[CODE-TOC] Ignoring weak regex TOC: agenda_outline_candidate=True")
+            return False
+
+        page_count = int(analysis.get("page_count") or 0)
+        if page_count <= 0:
+            return False
+
+        physical_pages = [
+            item.get("physical_index")
+            for item in items
+            if isinstance(item.get("physical_index"), int)
+        ]
+        if len(physical_pages) < 3:
+            return False
+
+        out_of_range_ratio = sum(1 for page in physical_pages if page > page_count) / len(physical_pages)
+        year_like_ratio = sum(1 for page in physical_pages if 1900 <= page <= 2100) / len(physical_pages)
+        if out_of_range_ratio >= 0.3 or year_like_ratio >= 0.3:
+            print(
+                f"[CODE-TOC] Ignoring weak regex TOC: "
+                f"out_of_range={out_of_range_ratio:.0%}, years={year_like_ratio:.0%}"
+            )
+            return False
+
+        compressed_ratio = max(physical_pages) / page_count if physical_pages else 1.0
+        figure_title_ratio = sum(
+            1
+            for item in items
+            if str(item.get("title", "")).strip().startswith(("图：", "表：", "图:", "表:"))
+        ) / len(items)
+        if page_count > 15 and compressed_ratio <= 0.35:
+            print(
+                f"[CODE-TOC] Ignoring weak regex TOC: "
+                f"compressed_pages={compressed_ratio:.0%}"
+            )
+            return False
+        if figure_title_ratio >= 0.2:
+            print(
+                f"[CODE-TOC] Ignoring weak regex TOC: "
+                f"figure_titles={figure_title_ratio:.0%}"
+            )
+            return False
+
+        in_range_pages = [page for page in physical_pages if 1 <= page <= page_count]
+        unique_ratio = len(set(in_range_pages)) / len(in_range_pages) if in_range_pages else 0.0
+        return len(in_range_pages) >= 3 and unique_ratio >= 0.6
+
+    @staticmethod
+    def _select_initial_execution_mode(requested_mode: str, analysis: Dict) -> str:
+        if requested_mode != "smart":
+            return requested_mode
+        return "fast" if PageIndexService._has_reliable_code_toc(analysis) else "balanced"
+
+    @staticmethod
+    def _log_index_stage(stage_no: int, name: str, status: str, **details: Any) -> None:
+        detail_text = " ".join(
+            f"{key}={value}" for key, value in details.items()
+            if value is not None
+        )
+        suffix = f" {detail_text}" if detail_text else ""
+        print(f"[INDEX] Stage {stage_no}/7 {name}: {status}{suffix}")
+
+    @staticmethod
+    def _content_ocr_stage_name() -> str:
+        return "content_ocr"
+
+    @staticmethod
+    def _build_toc_extract_stage_details(
+        toc_items: List[Dict],
+        page_count: int,
+        frozen: bool,
+    ) -> Dict[str, Any]:
+        physical_pages = [
+            item.get("physical_index")
+            for item in toc_items
+            if isinstance(item.get("physical_index"), int)
+        ]
+        start_pages = (
+            f"{min(physical_pages)}-{max(physical_pages)}"
+            if physical_pages else None
+        )
+        return {
+            "start_pages": start_pages,
+            "coverage": "100%" if physical_pages and page_count > 0 else None,
+            "final_end": page_count if physical_pages else None,
+            "frozen": frozen,
+        }
+
+    @staticmethod
+    def _build_auxiliary_catalog_nodes(analysis: Dict) -> List[Dict]:
+        code_toc = analysis.get("code_toc") or {}
+        if code_toc.get("source") != "regex":
+            return []
+        items = code_toc.get("items") or []
+        groups = {
+            "figure": {"title": "图目录", "prefix": "图", "items": []},
+            "table": {"title": "表目录", "prefix": "表", "items": []},
+        }
+        for item in items:
+            title = str(item.get("title", "")).strip()
+            if re.match(r"^图\s*\d+[.、：:\s]", title):
+                groups["figure"]["items"].append(item)
+            elif re.match(r"^表\s*\d+[.、：:\s]", title):
+                groups["table"]["items"].append(item)
+
+        catalogs: List[Dict[str, Any]] = []
+        for catalog_type in ("figure", "table"):
+            group = groups[catalog_type]
+            if not group["items"]:
+                continue
+            children = []
+            for idx, item in enumerate(group["items"], start=1):
+                children.append(
+                    {
+                        "structure": f"{catalog_type}.{idx}",
+                        "title": str(item.get("title", "")).strip(),
+                        "physical_index": item.get("physical_index"),
+                        "start_index": item.get("physical_index"),
+                        "end_index": item.get("physical_index"),
+                        "node_type": "auxiliary_catalog_item",
+                        "catalog_type": catalog_type,
+                        "exclude_from_coverage": True,
+                        "exclude_from_llm_qc": True,
+                        "exclude_from_text": True,
+                        "source_anchor": {
+                            "start_page": item.get("physical_index"),
+                            "end_page": item.get("physical_index"),
+                        },
+                    }
+                )
+            catalogs.append(
+                {
+                    "structure": catalog_type,
+                    "title": group["title"],
+                    "physical_index": None,
+                    "node_type": "auxiliary_catalog",
+                    "catalog_type": catalog_type,
+                    "exclude_from_coverage": True,
+                    "exclude_from_llm_qc": True,
+                    "exclude_from_text": True,
+                    "nodes": children,
+                }
+            )
+        return catalogs
+
+    @staticmethod
+    def _merge_auxiliary_catalog_nodes(
+        tree: List[Dict],
+        catalogs: List[Dict],
+    ) -> List[Dict]:
+        if not catalogs:
+            return tree
+        def _catalog_key(node: Dict) -> tuple[Any, Any]:
+            return (
+                node.get("node_type"),
+                node.get("catalog_type") or node.get("title"),
+            )
+
+        existing = {
+            _catalog_key(node)
+            for node in tree
+        }
+        merged = list(tree)
+        for catalog in catalogs:
+            key = _catalog_key(catalog)
+            if key not in existing:
+                merged.append(catalog)
+                existing.add(key)
+        return merged
+
+    @staticmethod
+    def _normalize_auxiliary_catalog_nodes(tree: List[Dict]) -> List[Dict]:
+        def normalize_item_title(title: str) -> str:
+            text = re.sub(r"\s+", "", str(title or "").strip().lower())
+            return re.sub(r"[：:，,、。.·\-\s]+", "", text)
+
+        def range_quality(node: Dict) -> int:
+            start = node.get("start_index") or node.get("physical_index")
+            end = node.get("end_index") or start
+            if not isinstance(start, int) or start <= 0:
+                return 0
+            if not isinstance(end, int) or end <= 0:
+                return 1
+            if start == 1 and end == 1:
+                return 1
+            return 3 if end >= start else 2
+
+        def choose_better_item(existing: Dict, candidate: Dict) -> Dict:
+            if range_quality(candidate) > range_quality(existing):
+                merged = dict(existing)
+                merged.update(candidate)
+                return merged
+            merged = dict(candidate)
+            merged.update(existing)
+            return merged
+
+        def merge_auxiliary_catalog_roots(nodes: List[Dict]) -> List[Dict]:
+            regular_nodes: List[Dict] = []
+            catalog_by_type: Dict[str, Dict] = {}
+            child_keys_by_type: Dict[str, Dict[str, int]] = {}
+
+            for node in nodes:
+                if (
+                    node.get("node_type") != "auxiliary_catalog"
+                    or node.get("catalog_type") not in {"figure", "table"}
+                ):
+                    regular_nodes.append(node)
+                    continue
+
+                catalog_type = str(node.get("catalog_type"))
+                if catalog_type not in catalog_by_type:
+                    catalog_by_type[catalog_type] = dict(node)
+                    catalog_by_type[catalog_type]["nodes"] = []
+                    child_keys_by_type[catalog_type] = {}
+
+                target = catalog_by_type[catalog_type]
+                target["exclude_from_coverage"] = True
+                target["exclude_from_llm_qc"] = True
+                target["exclude_from_text"] = True
+                target["is_auxiliary"] = True
+
+                for child in node.get("nodes") or []:
+                    key = normalize_item_title(child.get("title", ""))
+                    if not key:
+                        continue
+                    children = target["nodes"]
+                    existing_index = child_keys_by_type[catalog_type].get(key)
+                    if existing_index is None:
+                        child_keys_by_type[catalog_type][key] = len(children)
+                        children.append(child)
+                    else:
+                        children[existing_index] = choose_better_item(
+                            children[existing_index],
+                            child,
+                        )
+
+            merged = list(regular_nodes)
+            for catalog_type in ("figure", "table"):
+                catalog = catalog_by_type.get(catalog_type)
+                if catalog:
+                    merged.append(catalog)
+            return merged
+
+        def detect_catalog_type(node: Dict) -> Optional[str]:
+            catalog_type = node.get("catalog_type")
+            if catalog_type in {"figure", "table"}:
+                return str(catalog_type)
+            page_type = str(node.get("page_type") or "").lower()
+            if page_type == "figure_catalog":
+                return "figure"
+            if page_type == "table_catalog":
+                return "table"
+            title = str(node.get("title") or "").strip().lower()
+            figure_markers = {
+                "figure catalog",
+                "list of figures",
+                "\u56fe\u76ee\u5f55",
+                "\u63d2\u56fe\u76ee\u5f55",
+            }
+            table_markers = {
+                "table catalog",
+                "list of tables",
+                "\u8868\u76ee\u5f55",
+                "\u8868\u683c\u76ee\u5f55",
+            }
+            if any(marker in title for marker in figure_markers):
+                return "figure"
+            if any(marker in title for marker in table_markers):
+                return "table"
+            if node.get("node_type") == "auxiliary_catalog":
+                return str(node.get("catalog_type") or "")
+            return None
+
+        def mark_auxiliary_item(node: Dict, catalog_type: str) -> Dict:
+            item = dict(node)
+            item["node_type"] = "auxiliary_catalog_item"
+            item["catalog_type"] = catalog_type
+            item["is_auxiliary"] = True
+            item["exclude_from_coverage"] = True
+            item["exclude_from_llm_qc"] = True
+            item["exclude_from_text"] = True
+            item.pop("text", None)
+            item.pop("summary", None)
+            children = item.get("nodes") or []
+            item["nodes"] = [mark_auxiliary_item(child, catalog_type) for child in children]
+            if "source_anchor" not in item:
+                start = item.get("start_index") or item.get("physical_index")
+                end = item.get("end_index") or start
+                item["source_anchor"] = {"start_page": start, "end_page": end}
+            return item
+
+        normalized: List[Dict] = []
+        for node in tree or []:
+            catalog_type = detect_catalog_type(node)
+            if catalog_type in {"figure", "table"}:
+                catalog = dict(node)
+                catalog["node_type"] = "auxiliary_catalog"
+                catalog["catalog_type"] = catalog_type
+                catalog["is_auxiliary"] = True
+                catalog["exclude_from_coverage"] = True
+                catalog["exclude_from_llm_qc"] = True
+                catalog["exclude_from_text"] = True
+                catalog.pop("text", None)
+                catalog.pop("summary", None)
+                catalog["nodes"] = [
+                    mark_auxiliary_item(child, catalog_type)
+                    for child in (node.get("nodes") or [])
+                ]
+                normalized.append(catalog)
+                continue
+
+            regular = dict(node)
+            if regular.get("page_type") == "catalog_group":
+                regular.pop("page_type", None)
+            if regular.get("node_type") == "catalog_group":
+                regular.pop("node_type", None)
+            children = regular.get("nodes")
+            if isinstance(children, list):
+                regular["nodes"] = PageIndexService._normalize_auxiliary_catalog_nodes(children)
+            normalized.append(regular)
+        return merge_auxiliary_catalog_roots(normalized)
+
+    @staticmethod
+    def _normalize_final_tree_schema(
+        tree: List[Dict],
+        *,
+        doc_id: str,
+        page_count: int,
+    ) -> List[Dict]:
+        """Normalize the final saved tree to the canonical balanced schema."""
+        from pageindex.tree_schema import normalize_tree_node
+
+        return [
+            normalize_tree_node(node, doc_id=doc_id, page_count=page_count)
+            for node in (tree or [])
+            if isinstance(node, dict)
+        ]
+
+    @staticmethod
+    def _allows_child_outline_expansion(analysis: Dict) -> bool:
+        build_state = analysis.get("build_state") or {}
+        top_level_frozen = bool(
+            analysis.get("top_level_frozen")
+            or build_state.get("top_level_frozen")
+            or analysis.get("toc_semi_frozen")
+        )
+        allow_child_expansion = bool(
+            analysis.get(
+                "allow_child_expansion",
+                build_state.get("allow_child_expansion", analysis.get("toc_semi_frozen", False)),
+            )
+        )
+        return top_level_frozen and allow_child_expansion
+
+    @staticmethod
+    def _expand_visual_page_outline_if_needed(
+        toc_tree: List[Dict],
+        analysis: Dict,
+        page_count: int,
+        toc_source: Optional[str],
+        page_list: Optional[List[Any]] = None,
+    ) -> int:
+        """Expand a top-level-frozen TOC skeleton with child page titles."""
+        if not PageIndexService._allows_child_outline_expansion(analysis):
+            return 0
+        from pageindex.visual_page_outline_extractor import (
+            expand_flat_toc_with_page_titles,
+            expand_toc_with_page_evidence,
+        )
+
+        print(f"[OUTLINE-EXPAND] source=visual_page_titles chapters={len(toc_tree)}")
+        page_evidence = analysis.get("page_evidence") or analysis.get("page_evidences") or []
+        if page_evidence:
+            expansion = expand_toc_with_page_evidence(toc_tree, page_evidence, page_count)
+            expansion["source"] = "page_evidence"
+        else:
+            page_texts = [
+                str(page[0] or "")
+                for page in (page_list or [])
+                if isinstance(page, (list, tuple)) and len(page) >= 1
+            ]
+            if not page_texts:
+                print("[OUTLINE-EXPAND] skipped reason=no_page_texts")
+                return 0
+            expansion = expand_flat_toc_with_page_titles(toc_tree, page_texts, page_count)
+            expansion["source"] = "flat_text_fallback"
+
+        added = int(expansion.get("added_children") or 0)
+        analysis["outline_expansion"] = expansion
+        if added:
+            print(
+                f"[OUTLINE-EXPAND] done added_children={added} "
+                f"quality={expansion.get('quality')}"
+            )
+        else:
+            print(
+                f"[OUTLINE-EXPAND] skipped reason=no_visual_titles "
+                f"quality={expansion.get('quality')} "
+                f"expected_children={expansion.get('expected_children')} "
+                f"actual_children={expansion.get('actual_children')}"
+            )
+        return added
+
+    @staticmethod
+    def _should_skip_flat_text_outline_expansion(analysis: Dict) -> bool:
+        """Return true when extracted page text is not trustworthy for structure."""
+        text_quality = analysis.get("text_quality") or {}
+        if bool(text_quality.get("is_low_quality")):
+            return True
+        if bool(analysis.get("is_garbled_pdf")):
+            return True
+
+        try:
+            text_coverage = float(analysis.get("text_coverage") or 0.0)
+        except Exception:
+            text_coverage = 0.0
+        try:
+            duplicate_ratio = float(text_quality.get("duplicate_ratio") or 0.0)
+        except Exception:
+            duplicate_ratio = 0.0
+        try:
+            meaningful_ratio = float(text_quality.get("meaningful_ratio") or 1.0)
+        except Exception:
+            meaningful_ratio = 1.0
+
+        return text_coverage <= 0.35 and (
+            duplicate_ratio >= 0.65
+            or meaningful_ratio <= 0.35
+            or bool(analysis.get("garbled_pages"))
+        )
+
+    @staticmethod
+    async def _expand_visual_page_outline_with_vlm_fallback(
+        toc_tree: List[Dict],
+        analysis: Dict,
+        page_count: int,
+        toc_source: Optional[str],
+        page_list: Optional[List[Any]] = None,
+        model: Optional[str] = None,
+    ) -> int:
+        """Run deterministic expansion, then bounded VLM fallback if quality is bad."""
+        if not PageIndexService._allows_child_outline_expansion(analysis):
+            return 0
+        if (
+            PageIndexService._should_skip_flat_text_outline_expansion(analysis)
+            and analysis.get("document_path")
+        ):
+            print("[OUTLINE-EXPAND] skip flat_text_fallback reason=low_quality_text")
+            visual_expansion = await PageIndexService._extract_visual_child_titles_for_flat_skeleton(
+                file_path=str(analysis["document_path"]),
+                tree=toc_tree,
+                page_count=page_count,
+                model=model,
+            )
+            visual_expansion["source"] = "vlm_page_titles"
+            visual_expansion["reason"] = "low_quality_text"
+            analysis["outline_expansion"] = visual_expansion
+            visual_added = int(visual_expansion.get("added_children") or 0)
+            print(
+                f"[OUTLINE-EXPAND] vlm_page_titles added_children={visual_added} "
+                f"quality={visual_expansion.get('quality')}"
+            )
+            return visual_added
+
+        added = PageIndexService._expand_visual_page_outline_if_needed(
+            toc_tree=toc_tree,
+            analysis=analysis,
+            page_count=page_count,
+            toc_source=toc_source,
+            page_list=page_list,
+        )
+        expansion = analysis.get("outline_expansion") or {}
+        if not expansion.get("needs_repair") or not analysis.get("document_path"):
+            return added
+
+        visual_expansion = await PageIndexService._extract_visual_child_titles_for_flat_skeleton(
+            file_path=str(analysis["document_path"]),
+            tree=toc_tree,
+            page_count=page_count,
+            model=model,
+        )
+        visual_added = int(visual_expansion.get("added_children") or 0)
+        if visual_added > added:
+            visual_expansion["source"] = "vlm_page_titles"
+            analysis["outline_expansion"] = visual_expansion
+            print(
+                f"[OUTLINE-EXPAND] vlm fallback added_children={visual_added} "
+                f"quality={visual_expansion.get('quality')}"
+            )
+            return visual_added
+        return added
+
+    @staticmethod
+    async def _extract_visual_child_titles_for_flat_skeleton(
+        *,
+        file_path: str,
+        tree: List[Dict],
+        page_count: int,
+        model: Optional[str] = None,
+    ) -> Dict:
+        """Use VLM page images to extract child titles for long flat visual chapters."""
+        from pageindex.visual_page_outline_extractor import expand_toc_with_page_evidence
+
+        evidence = await PageIndexService._build_visual_page_title_evidence(
+            file_path=file_path,
+            tree=tree,
+            page_count=page_count,
+            model=model,
+        )
+        if not evidence:
+            return {
+                "added_children": 0,
+                "quality": "bad",
+                "expected_children": 0,
+                "actual_children": 0,
+                "needs_repair": True,
+            }
+        result = expand_toc_with_page_evidence(tree, evidence, page_count)
+        result["evidence_pages"] = [item.get("page") for item in evidence]
+        return result
+
+    @staticmethod
+    async def _build_visual_page_title_evidence(
+        *,
+        file_path: str,
+        tree: List[Dict],
+        page_count: int,
+        model: Optional[str] = None,
+    ) -> List[Dict]:
+        """Render bounded chapter pages and ask VLM for visible slide/page titles."""
+        from pageindex.vlm_utils import render_pages_to_images, vlm_call_with_images, parse_vlm_json
+
+        def safe_confidence(value: Any, default: float = 0.75) -> float:
+            try:
+                return float(value)
+            except Exception:
+                text = str(value or "").strip().lower()
+                if text in {"high", "yes", "true"}:
+                    return 0.85
+                if text in {"medium", "mid"}:
+                    return 0.65
+                if text in {"low", "weak"}:
+                    return 0.45
+                return default
+
+        pages: List[int] = []
+        for node in tree or []:
+            if node.get("nodes"):
+                continue
+            title = str(node.get("title") or "").lower()
+            if str(node.get("structure") or "") == "0" or "preface" in title:
+                continue
+            start = node.get("start_index") or node.get("physical_index")
+            end = node.get("end_index") or page_count
+            if not isinstance(start, int) or not isinstance(end, int):
+                continue
+            if end - start + 1 < 6:
+                continue
+            pages.extend(range(max(1, start), min(page_count, end) + 1))
+
+        page_indices = sorted({p - 1 for p in pages})
+        if not page_indices:
+            return []
+
+        evidence: List[Dict] = []
+        batch_size = 6
+        for offset in range(0, len(page_indices), batch_size):
+            batch = page_indices[offset : offset + batch_size]
+            images = render_pages_to_images(file_path, batch, dpi=120)
+            if not images:
+                continue
+            labels = "\n".join(f"- image {idx + 1}: PDF page {img['page_index'] + 1}" for idx, img in enumerate(images))
+            prompt = f"""You are extracting visible page/slide titles from a PDF report.
+
+For each image, read only the main visible title of that page. Ignore footers, page numbers, website URLs, chart axis labels, body paragraphs, and decorative text.
+If a page is a chapter cover whose title duplicates the parent chapter, still return it; downstream logic will filter duplicates.
+If no reliable page title exists, return an empty title.
+
+Images:
+{labels}
+
+Return strict JSON only:
+{{
+  "pages": [
+    {{"page": 11, "title": "visible title", "confidence": 0.0}}
+  ]
+}}
+"""
+            try:
+                raw = await vlm_call_with_images(images, prompt, model=model, max_tokens=2000, timeout=45)
+                parsed = parse_vlm_json(raw)
+            except Exception as exc:
+                print(f"[OUTLINE-EXPAND] VLM page title batch failed: {exc}")
+                continue
+            for item in (parsed.get("pages") if isinstance(parsed, dict) else []) or []:
+                try:
+                    page = int(item.get("page") or 0)
+                except Exception:
+                    continue
+                title = str(item.get("title") or "").strip()
+                if not page or not title:
+                    continue
+                confidence = safe_confidence(item.get("confidence"))
+                evidence.append(
+                    {
+                        "page": page,
+                        "primary_role": "content_slide",
+                        "source": "vlm_page_titles",
+                        "confidence": confidence,
+                        "evidence_spans": [
+                            {
+                                "role": "page_title",
+                                "text": title,
+                                "confidence": confidence,
+                            }
+                        ],
+                    }
+                )
+        return evidence
+
+    @staticmethod
+    def _apply_balanced_quality_gate(
+        toc_tree: List[Dict],
+        analysis: Dict,
+        completeness: Dict,
+        page_count: int,
+    ) -> tuple[List[Dict], Dict]:
+        """Run deterministic balanced quality checks before LLM QC/enrichment."""
+        from pageindex.balanced_quality_gate import run_balanced_quality_gate
+
+        state = analysis.get("build_state") or {
+            "top_level_frozen": bool(analysis.get("top_level_frozen") or analysis.get("toc_frozen")),
+            "allow_child_expansion": bool(analysis.get("allow_child_expansion", True)),
+        }
+        skeleton = analysis.get("toc_skeleton") or (state.get("skeleton") if isinstance(state, dict) else None)
+        fixed_tree, gate = run_balanced_quality_gate(toc_tree, state, skeleton, page_count)
+        updated = dict(completeness or {})
+        updated["balanced_quality_gate"] = gate
+        if gate.get("needs_repair"):
+            updated["needs_repair"] = True
+            updated["quality"] = "bad"
+        analysis["balanced_quality_gate"] = gate
+        return fixed_tree, updated
+
+    @staticmethod
+    def _save_index_payload(doc_id: str, payload: Dict[str, Any]) -> Path:
+        INDEXES_DIR.mkdir(parents=True, exist_ok=True)
+        index_path = INDEXES_DIR / f"{doc_id}.json"
+        with open(index_path, "w", encoding="utf-8") as f:
+            json.dump(payload, f, ensure_ascii=False, indent=2)
+        return index_path
+
     async def _generate_index_v2(
         self, file_path: Path, doc_id: str, mode_override: Optional[str] = None
     ) -> Dict[str, Any]:
-        """v3 重构版：pdf_analyzer → fast/balanced(text|visual) → post_processing → node_filler"""
+        """v3 閲嶆瀯鐗堬細pdf_analyzer 鈫?fast/balanced(text|visual) 鈫?post_processing 鈫?node_filler"""
         from pageindex.pdf_analyzer import analyze_pdf_structure
         from pageindex.fast_toc import try_fast_toc
         from pageindex.balanced_toc import (
             decide_balanced_path,
             build_balanced_toc_visual,
             build_balanced_toc_text,
+            _try_extract_text_heading_toc,
             _vlm_detect_anchors,
+        )
+        from pageindex.slide_outline_extractor import (
+            is_slide_like_document,
+        )
+        from pageindex.agenda_outline_extractor import (
+            is_agenda_outline_document,
         )
         from pageindex.post_processing import post_process_toc
         from pageindex.node_filler import (
@@ -2165,24 +3141,32 @@ class PageIndexService:
         model = getattr(self.opt, "model", "qwen3.6-flash")
         requested_mode = mode_override or "smart"
 
-        # 创建 enhancement hooks（在 balanced 模式下使用）
+        # 鍒涘缓 enhancement hooks锛堝湪 balanced 妯″紡涓嬩娇鐢級
         from pageindex.enhancement_hooks import MultimodalEnhancementHooks
         hooks = MultimodalEnhancementHooks(
             enable_hooks=[]
         )
 
-        # ─── Phase 0: 文档预分析 ───
+        # 鈹€鈹€鈹€ Phase 0: 鏂囨。棰勫垎鏋?鈹€鈹€鈹€
+        self._log_index_stage(1, "analyze", "started")
         print(f"[INDEX-V3] Phase 0: analyzing {file_path.name}")
         analysis = analyze_pdf_structure(str(file_path))
+        analysis["document_path"] = str(file_path)
         page_count = analysis["page_count"]
         page_list = list(analysis["page_list"])
+        analysis["slide_outline_candidate"] = is_slide_like_document(analysis)
+        analysis["agenda_outline_candidate"] = is_agenda_outline_document(analysis)
+        self._log_index_stage(
+            1,
+            "analyze",
+            "done",
+            pages=page_count,
+            text_coverage=f"{analysis['text_coverage']:.0%}",
+        )
 
-        # 路由决策
-        has_code_toc = analysis["code_toc"]["items"] is not None
-        if requested_mode == "smart":
-            execution_mode = "fast" if has_code_toc else "balanced"
-        else:
-            execution_mode = requested_mode
+        # 璺敱鍐崇瓥
+        execution_mode = self._select_initial_execution_mode(requested_mode, analysis)
+        initial_execution_mode = execution_mode
 
         balanced_path = None
         if execution_mode == "balanced":
@@ -2194,43 +3178,54 @@ class PageIndexService:
             f"pages={page_count}, text_coverage={analysis['text_coverage']:.0%}"
         )
 
-        # ─── Phase 0.5: 锚点检测（所有 balanced 文档）───
-        # P2-fix: 所有 balanced 文档都先跑锚点检测，获取 dividers 信息
+        # 鈹€鈹€鈹€ Phase 0.5: 閿氱偣妫€娴嬶紙鎵€鏈?balanced 鏂囨。锛夆攢鈹€鈹€
+        # P2-fix: 鎵€鏈?balanced 鏂囨。閮藉厛璺戦敋鐐规娴嬶紝鑾峰彇 dividers 淇℃伅
         anchors = None
         ocr_text_map = None
         dividers = []  # Initialize for all execution modes
         if execution_mode == "balanced":
+            self._log_index_stage(2, "anchors", "started")
             print("[INDEX-V3] Phase 0.5: anchor detection for all balanced documents")
             anchors = await _vlm_detect_anchors(str(file_path), model)
             dividers = anchors.get("chapter_dividers", [])
+            self._sync_toc_context(
+                analysis,
+                anchors.get("toc_pages", []),
+                confidence="anchor",
+            )
             print(f"[INDEX-V3] Phase 0.5: detected {len(dividers)} dividers")
+            self._log_index_stage(
+                2,
+                "anchors",
+                "done",
+                toc_pages=anchors.get("toc_pages", []),
+                dividers=len(dividers),
+            )
             
-            # 图片型文档额外做 OCR
+            # 鍥剧墖鍨嬫枃妗ｉ澶栧仛 OCR
             if balanced_path == "visual" and (analysis.get("is_image_only_pdf") or analysis["text_coverage"] < 0.3):
                 print("[INDEX-V3] Phase 0.5: pre-TOC OCR for image-only PDF")
                 toc_pages = anchors.get("toc_pages", [])
                 if toc_pages:
-                    pages_to_ocr = sorted(set(
-                        [p - 1 for p in toc_pages]  # 0-indexed 目录页
-                        + list(range(
-                            max(toc_pages),
-                            min(max(toc_pages) + 6, page_count)
-                        ))  # 目录后 5 页
-                    ))
+                    pages_to_ocr = sorted(
+                        set([p - 1 for p in toc_pages])
+                        | set(range(max(toc_pages), min(max(toc_pages) + 6, page_count)))
+                    )
                     print(
-                        f"[INDEX-V3] Phase 0.5: OCR {len(pages_to_ocr)} pages "
+                        f"[INDEX-V3] Phase 0.5 structure_ocr: {len(pages_to_ocr)} pages "
                         f"(toc_pages={toc_pages})"
                     )
+                    analysis["structure_ocr_pages"] = pages_to_ocr
                     ocr_text_map = await self._ocr_pages_for_toc_validation(
                         file_path, pages_to_ocr
                     )
                     print(
-                        f"[INDEX-V3] Phase 0.5: OCR done, "
+                        f"[INDEX-V3] Phase 0.5 structure_ocr done, "
                         f"{len(ocr_text_map)} pages with text"
                     )
 
-        # ─── Phase 0.8: 新架构智能路由（实验性，向后兼容）───
-        # 如果启用了新架构，尝试使用5-path路由
+        # 鈹€鈹€鈹€ Phase 0.8: 鏂版灦鏋勬櫤鑳借矾鐢憋紙瀹為獙鎬э紝鍚戝悗鍏煎锛夆攢鈹€鈹€
+        # 濡傛灉鍚敤浜嗘柊鏋舵瀯锛屽皾璇曚娇鐢?-path璺敱
         new_architecture_result = None
         try:
             from pageindex.router import decide_extraction_path, get_path_description
@@ -2246,8 +3241,34 @@ class PageIndexService:
             print(f"[INDEX-V3-NEW] Smart router chose: {chosen_path} ({get_path_description(chosen_path)})")
             print(f"[INDEX-V3-NEW] Reasons: {route_decision['reasons']}")
 
-            # 根据路径选择提取器
-            if chosen_path == "toc_page":
+            if not new_architecture_result and execution_mode == "balanced" and balanced_path == "text":
+                text_heading_result = _try_extract_text_heading_toc(analysis)
+                new_architecture_result = self._try_text_heading_shortcut(
+                    analysis,
+                    text_heading_result,
+                )
+                if new_architecture_result:
+                    print(
+                        f"[INDEX-V3-NEW] Using text heading shortcut: "
+                        f"{len(new_architecture_result['items'])} items"
+                    )
+
+            if not new_architecture_result and execution_mode == "balanced":
+                new_architecture_result = self._try_balanced_provider_shortcut(
+                    analysis,
+                    page_count,
+                )
+                if new_architecture_result:
+                    print(
+                        f"[INDEX-V3-NEW] Using balanced provider shortcut: "
+                        f"source={new_architecture_result['source']} "
+                        f"items={len(new_architecture_result['items'])} "
+                        f"mapping={new_architecture_result.get('mapping_strategy')}"
+                    )
+
+            if new_architecture_result:
+                pass
+            elif chosen_path == "toc_page":
                 new_architecture_result = extract_toc_from_analysis(analysis, doc_path=str(file_path))
             elif chosen_path == "hierarchical":
                 new_architecture_result = await extract_hierarchical_toc(
@@ -2262,55 +3283,91 @@ class PageIndexService:
                     analysis.get("page_texts", []), model
                 )
             elif chosen_path == "visual":
-                # 视觉路径使用原有的 balanced_toc_visual
+                # 瑙嗚璺緞浣跨敤鍘熸湁鐨?balanced_toc_visual
                 new_architecture_result = await extract_visual_toc(
                     str(file_path), analysis, model,
                     anchors=anchors,
                     ocr_text_map=ocr_text_map,
                 )
 
-            # 质量验证
+            # 璐ㄩ噺楠岃瘉
             if new_architecture_result and new_architecture_result.get("items"):
-                validation = validate_toc(
-                    new_architecture_result["items"],
-                    page_count,
-                    analysis.get("page_texts", []),
-                    source=new_architecture_result.get("source", "unknown"),
-                )
-                print(f"[INDEX-V3-NEW] Validation: score={validation['score']:.2f}, valid={validation['is_valid']}")
-
-                if not validation["is_valid"]:
-                    # 尝试修复
-                    repaired = await repair_toc(
-                        new_architecture_result["items"],
-                        validation["issues"],
-                        analysis.get("page_texts", []),
-                        model,
-                    )
-                    new_architecture_result["items"] = repaired
-                    new_architecture_result["repaired"] = True
-
-                # 如果质量足够高，直接使用新架构结果
-                if validation["score"] >= 0.7:
-                    print(f"[INDEX-V3-NEW] Using new architecture result (score={validation['score']:.2f})")
+                if self._is_prevalidated_text_heading_result(new_architecture_result):
+                    print(self._prevalidated_skip_validation_message(new_architecture_result))
                 else:
-                    print(f"[INDEX-V3-NEW] Score too low ({validation['score']:.2f}), falling back to legacy")
-                    new_architecture_result = None
+                    validation = validate_toc(
+                        new_architecture_result["items"],
+                        page_count,
+                        analysis.get("page_texts", []),
+                        source=new_architecture_result.get("source", "unknown"),
+                    )
+                    print(f"[INDEX-V3-NEW] Validation: score={validation['score']:.2f}, valid={validation['is_valid']}")
+
+                    if not validation["is_valid"]:
+                        # 灏濊瘯淇
+                        repaired = await repair_toc(
+                            new_architecture_result["items"],
+                            validation["issues"],
+                            analysis.get("page_texts", []),
+                            model,
+                        )
+                        new_architecture_result["items"] = repaired
+                        new_architecture_result["repaired"] = True
+
+                    if validation["score"] >= 0.7:
+                        print(f"[INDEX-V3-NEW] Using new architecture result (score={validation['score']:.2f})")
+                    else:
+                        print(f"[INDEX-V3-NEW] Score too low ({validation['score']:.2f}), falling back to legacy")
+                        new_architecture_result = None
 
         except Exception as e:
             print(f"[INDEX-V3-NEW] New architecture failed: {e}, falling back to legacy")
             new_architecture_result = None
 
-        # ─── Phase 1: TOC 构建 ───
+        # 鈹€鈹€鈹€ Phase 1: TOC 鏋勫缓 鈹€鈹€鈹€
         toc_items = None
         toc_source = None
 
-        # 如果使用新架构成功，转换格式并跳过后续 legacy 提取
+        # 濡傛灉浣跨敤鏂版灦鏋勬垚鍔燂紝杞崲鏍煎紡骞惰烦杩囧悗缁?legacy 鎻愬彇
         new_architecture_used = False
         if new_architecture_result:
             toc_items = new_architecture_result["items"]
             toc_source = new_architecture_result.get("source", "new_architecture")
+            top_level_frozen = bool(
+                new_architecture_result.get(
+                    "top_level_frozen",
+                    new_architecture_result.get("mapped") or new_architecture_result.get("semi_frozen"),
+                )
+            )
+            allow_child_expansion = bool(
+                new_architecture_result.get(
+                    "allow_child_expansion",
+                    new_architecture_result.get("semi_frozen", False),
+                )
+            )
+            analysis["top_level_frozen"] = top_level_frozen
+            analysis["allow_child_expansion"] = allow_child_expansion
+            if allow_child_expansion:
+                analysis["toc_frozen"] = False
+                analysis["toc_frozen_source"] = toc_source
+                analysis["toc_semi_frozen"] = True
+            elif top_level_frozen:
+                analysis["toc_frozen"] = True
+                analysis["toc_frozen_source"] = toc_source
             new_architecture_used = True
+            stage_details = self._build_toc_extract_stage_details(
+                toc_items,
+                page_count=page_count,
+                frozen=analysis.get("toc_frozen", False),
+            )
+            self._log_index_stage(
+                3,
+                "toc_extract",
+                "done",
+                source=toc_source,
+                items=len(toc_items),
+                **stage_details,
+            )
             print(f"[INDEX-V3-NEW] Converted {len(toc_items)} items to legacy format")
 
         if execution_mode == "fast" and not new_architecture_used:
@@ -2333,29 +3390,33 @@ class PageIndexService:
                 execution_mode = "balanced"
                 balanced_path = decide_balanced_path(analysis)
 
-        if execution_mode == "balanced" and not new_architecture_used:
-            # ─── Step 1: 查找目录页 ───
+        skip_legacy_toc_detection = self._should_skip_legacy_toc_detection(
+            analysis,
+            new_architecture_result,
+        )
+        if execution_mode == "balanced" and not new_architecture_used and not skip_legacy_toc_detection:
+            # 鈹€鈹€鈹€ Step 1: 鏌ユ壘鐩綍椤?鈹€鈹€鈹€
             print("[INDEX-V3] Phase 1: searching for toc pages")
             from pageindex.toc_detector import find_toc_pages
             
             toc_pages = await find_toc_pages(analysis, str(file_path), model)
+            self._sync_toc_context(analysis, toc_pages, confidence="detected")
             
             if toc_pages:
-                # 已知目录页流程
                 print(f"[INDEX-V3] Found toc pages: {toc_pages}")
                 from pageindex.toc_page_extractor import extract_toc_from_pages
                 from pageindex.quality_validator import validate_toc
                 
                 toc_result = extract_toc_from_pages(
                     doc_path=str(file_path),
-                    toc_page_indices=[p - 1 for p in toc_pages],  # 转 0-indexed
+                    toc_page_indices=[p - 1 for p in toc_pages],  # 杞?0-indexed
                     doc_page_count=page_count,
                     model=model,
                     page_texts=analysis.get("page_texts", []),
                 )
                 
                 if toc_result and toc_result.get("items"):
-                    # 质量验证
+                    # 璐ㄩ噺楠岃瘉
                     validation = validate_toc(
                         toc_result["items"],
                         page_count,
@@ -2374,40 +3435,49 @@ class PageIndexService:
                     print("[INDEX-V3] v4 extraction failed, falling back")
                     toc_items = None
                 
-                # 如果v4失败或质量不够，按文档类型降级
                 if toc_items is None:
-                    is_image_doc = (
-                        analysis.get("is_image_only_pdf", False)
-                        or analysis.get("image_coverage", 0.0) >= 0.3
-                    )
+                    is_image_doc = self._is_effectively_image_doc(analysis)
                     
                     if is_image_doc:
-                        # 图片型 → VLM视觉提取
+                        # 鍥剧墖鍨?鈫?VLM瑙嗚鎻愬彇
                         print("[INDEX-V3] Fallback: VLM visual extraction for image doc")
-                        from pageindex.quality_validation import TocQualityChecker
                         
                         fallback_result = await self._extract_toc_visual(
                             str(file_path), toc_pages, page_count, model
+                        )
+                        fallback_result = self._normalize_and_map_fallback_toc(
+                            fallback_result,
+                            page_count=page_count,
+                            toc_pages=toc_pages,
+                            ocr_text_map=ocr_text_map,
+                            dividers=dividers,
                         )
                         if fallback_result and fallback_result.get("toc_items"):
                             checker = TocQualityChecker()
                             toc_check = checker.check(fallback_result["toc_items"], toc_pages)
                             if toc_check["is_valid"]:
                                 if toc_check["has_hierarchy"]:
-                                    # 有层级 → 直接使用
+                                    # 鏈夊眰绾?鈫?鐩存帴浣跨敤
                                     toc_items = fallback_result["toc_items"]
                                     toc_source = "vlm_visual"
                                     print(f"[INDEX-V3] VLM visual extraction success: {len(toc_items)} items with hierarchy")
                                 else:
-                                    # 只有一级 → 需要分支B分段提取
+                                    # 鍙湁涓€绾?鈫?闇€瑕佸垎鏀疊鍒嗘鎻愬彇
                                     print(f"[INDEX-V3] TOC has {toc_check['top_level_count']} top-level items only, need Branch B")
-                                    # 清空toc_items，让它进入build_balanced_toc_visual进行路径决策和分支B
+                                    # 娓呯┖toc_items锛岃瀹冭繘鍏uild_balanced_toc_visual杩涜璺緞鍐崇瓥鍜屽垎鏀疊
                                     toc_items = None
                     else:
-                        # 文本型 → LLM文本提取
+                        # 鏂囨湰鍨?鈫?LLM鏂囨湰鎻愬彇
                         print("[INDEX-V3] Fallback: LLM text extraction for text doc")
                         fallback_result = await self._extract_toc_text(
                             analysis, toc_pages, page_count, model
+                        )
+                        fallback_result = self._normalize_and_map_fallback_toc(
+                            fallback_result,
+                            page_count=page_count,
+                            toc_pages=toc_pages,
+                            ocr_text_map=ocr_text_map,
+                            dividers=dividers,
                         )
                         if fallback_result and fallback_result.get("toc_items"):
                             checker = TocQualityChecker()
@@ -2421,18 +3491,18 @@ class PageIndexService:
                                     print(f"[INDEX-V3] TOC has {toc_check['top_level_count']} top-level items only, need Branch B")
                                     toc_items = None
                 
-                # 如果降级也失败或只有一级需要分支B，继续走原有balanced逻辑
+                # 濡傛灉闄嶇骇涔熷け璐ユ垨鍙湁涓€绾ч渶瑕佸垎鏀疊锛岀户缁蛋鍘熸湁balanced閫昏緫
                 if toc_items is None:
                     print("[INDEX-V3] Fallback incomplete, continuing with balanced path for sub-chapter extraction")
             else:
                 print("[INDEX-V3] No toc pages found, continuing with traditional balanced path")
                 toc_items = None
             
-            # 如果没有通过v4获取到toc，走原有balanced路径
+            # 濡傛灉娌℃湁閫氳繃v4鑾峰彇鍒皌oc锛岃蛋鍘熸湁balanced璺緞
             if toc_items is None:
                 if balanced_path == "text":
                     print("[INDEX-V3] Phase 1: balanced TEXT (LLM)")
-                    # P2-fix: 传入 dividers 修正 Text 路径结果
+                    # P2-fix: 浼犲叆 dividers 淇 Text 璺緞缁撴灉
                     text_dividers = anchors.get("chapter_dividers", []) if anchors else []
                     balanced_result = await build_balanced_toc_text(
                         analysis, model, dividers=text_dividers, hooks=hooks
@@ -2440,13 +3510,26 @@ class PageIndexService:
                     
                     # P5-fix: Check text path quality, fallback to visual if poor
                     toc_items = balanced_result["toc_items"]
+                    if (
+                        balanced_result.get("mapped")
+                        or balanced_result.get("semi_frozen")
+                        or balanced_result.get("source") == "text_heading"
+                    ):
+                        analysis["toc_frozen"] = True
+                        analysis["toc_frozen_source"] = balanced_result.get("source")
+                    self._apply_balanced_result_state(analysis, balanced_result)
                     top_level = [it for it in toc_items if "." not in str(it.get("structure", ""))]
                     has_large_nodes = any(
                         (toc_items[i+1].get("physical_index", page_count+1) - it.get("physical_index", 0)) > 15
                         for i, it in enumerate(toc_items[:-1])
                     ) if len(toc_items) > 1 else False
                     
-                    if len(top_level) < 3 and len(toc_items) > 10 and has_large_nodes:
+                    if (
+                        not analysis.get("toc_frozen")
+                        and len(top_level) < 3
+                        and len(toc_items) > 10
+                        and has_large_nodes
+                    ):
                         print(f"[INDEX-V3] Text path quality poor: {len(top_level)} top-level, {len(toc_items)} items, large nodes detected")
                         print("[INDEX-V3] Falling back to VISUAL path")
                         balanced_path = "visual"
@@ -2458,6 +3541,7 @@ class PageIndexService:
                         )
                         toc_items = balanced_result["toc_items"]
                         toc_source = balanced_result["source"]
+                        self._apply_balanced_result_state(analysis, balanced_result)
                     else:
                         toc_source = balanced_result["source"]
                 else:
@@ -2470,15 +3554,26 @@ class PageIndexService:
                     )
                     toc_items = balanced_result["toc_items"]
                     toc_source = balanced_result["source"]
+                    self._apply_balanced_result_state(analysis, balanced_result)
 
-        # ─── Phase 1.5: OCR 图片页 ───
+        # 鈹€鈹€鈹€ Phase 1.5: OCR 鍥剧墖椤?鈹€鈹€鈹€
         needs_ocr = (
             len(analysis.get("image_only_pages", [])) > 0
             or len(analysis.get("garbled_pages", [])) > 0
         )
         if needs_ocr:
+            analysis["ocr_role"] = "content_fill"
+            content_ocr_stage = self._content_ocr_stage_name()
+            self._log_index_stage(
+                4,
+                content_ocr_stage,
+                "started",
+                role="content_fill",
+                pages=len(analysis.get("image_only_pages", []))
+                + len(analysis.get("garbled_pages", [])),
+            )
             print(
-                f"[INDEX-V3] OCR: {len(analysis.get('image_only_pages', []))} image "
+                f"[INDEX-V3] Content OCR: {len(analysis.get('image_only_pages', []))} image "
                 f"+ {len(analysis.get('garbled_pages', []))} garbled pages"
             )
             page_list = await ocr_image_pages(
@@ -2487,32 +3582,37 @@ class PageIndexService:
                 ocr_service_fn=self._run_full_pdf_ocr_by_images,
             )
             analysis["page_list"] = page_list
+            self._log_index_stage(
+                4,
+                content_ocr_stage,
+                "done",
+                role="content_fill",
+                coverage=f"{len(page_list)}/{page_count}",
+            )
 
-        # ─── Phase 2: 后处理 (post_processing.py v3) ───
-        # 检查是否是 v4 提取的树结构（包含 catalog_group 节点）
-        has_catalog_groups = any(
-            item.get("page_type") == "catalog_group" or item.get("node_type") == "catalog_group"
+        # 鈹€鈹€鈹€ Phase 2: 鍚庡鐞?(post_processing.py v3) 鈹€鈹€鈹€
+        # Check whether extraction already returned a nested tree.
+        has_prebuilt_tree = any(
+            isinstance(item.get("nodes"), list) and bool(item.get("nodes"))
             for item in toc_items
         )
         
-        if has_catalog_groups:
-            # v4 提取的树结构：直接为每个节点设置页码范围，跳过复杂的后处理
-            print(f"[INDEX-V3] Phase 2: v4 tree structure detected, assigning page ranges to {len(toc_items)} groups")
+        if has_prebuilt_tree:
+            print(f"[INDEX-V3] Phase 2: prebuilt tree detected, assigning page ranges to {len(toc_items)} roots")
             toc_tree = []
             for item in toc_items:
-                # 为当前节点设置范围
                 if "start_index" not in item:
                     item["start_index"] = item.get("physical_index") or 1
                 if "end_index" not in item:
                     item["end_index"] = page_count
                 
-                # 为子节点设置范围
+                # 涓哄瓙鑺傜偣璁剧疆鑼冨洿
                 children = item.get("nodes", [])
                 for i, child in enumerate(children):
                     if "start_index" not in child:
                         child["start_index"] = child.get("physical_index") or 1
                     if "end_index" not in child:
-                        # 下一个兄弟节点的页码 - 1，或文档末尾
+                        # 涓嬩竴涓厔寮熻妭鐐圭殑椤电爜 - 1锛屾垨鏂囨。鏈熬
                         if i < len(children) - 1:
                             next_page = children[i + 1].get("physical_index")
                             if next_page:
@@ -2522,7 +3622,6 @@ class PageIndexService:
                         else:
                             child["end_index"] = page_count
                     
-                    # 递归处理孙节点
                     grandchildren = child.get("nodes", [])
                     for j, gc in enumerate(grandchildren):
                         if "start_index" not in gc:
@@ -2535,7 +3634,7 @@ class PageIndexService:
                                 else:
                                     gc["end_index"] = page_count
                             else:
-                                # 使用父节点的结束页码
+                                # 浣跨敤鐖惰妭鐐圭殑缁撴潫椤电爜
                                 gc["end_index"] = child.get("end_index", page_count)
                 
                 toc_tree.append(item)
@@ -2548,10 +3647,10 @@ class PageIndexService:
                 "ok": True,
                 "needs_repair": False,
             }
-            print(f"[INDEX-V3] v4 tree structure preserved with {sum(len(item.get('nodes', [])) for item in toc_tree)} total entries")
+            print(f"[INDEX-V3] Prebuilt tree preserved with {sum(len(item.get('nodes', [])) for item in toc_tree)} total entries")
         else:
-            # 传统扁平列表：使用完整的后处理流程
             print(f"[INDEX-V3] Phase 2: post-processing {len(toc_items)} items")
+            self._log_index_stage(5, "post_process", "started", input_items=len(toc_items))
             if execution_mode == "fast":
                 toc_tree, completeness = post_process_toc(
                     toc_items,
@@ -2567,13 +3666,41 @@ class PageIndexService:
                     use_llm_grouping=True,
                     model=model,
                 )
+            self._log_index_stage(
+                5,
+                "post_process",
+                "done",
+                coverage=f"{completeness.get('coverage', 0):.0%}",
+                needs_repair=completeness.get("needs_repair", False),
+            )
 
         if completeness.get("needs_repair"):
             print(f"[INDEX-V3] Coverage needs repair: {completeness}")
-            # TODO: gap 修复（对 gaps 区域补充分析")
+            # TODO: gap 淇锛堝 gaps 鍖哄煙琛ュ厖鍒嗘瀽")
 
-        # ─── Phase 2.5: LLM 质量检查 ───
-        # 初始化 result 用于存储质检结果
+        # 鈹€鈹€鈹€ Phase 2.5: LLM 璐ㄩ噺妫€鏌?鈹€鈹€鈹€
+        # 鍒濆鍖?result 鐢ㄤ簬瀛樺偍璐ㄦ缁撴灉
+        await self._expand_visual_page_outline_with_vlm_fallback(
+            toc_tree=toc_tree,
+            analysis=analysis,
+            page_count=page_count,
+            toc_source=toc_source,
+            page_list=page_list,
+            model=model,
+        )
+        toc_tree, completeness = self._apply_balanced_quality_gate(
+            toc_tree=toc_tree,
+            analysis=analysis,
+            completeness=completeness,
+            page_count=page_count,
+        )
+        gate = completeness.get("balanced_quality_gate") or {}
+        print(
+            f"[BALANCED-QC] top_level_frozen_check: "
+            f"ok={gate.get('top_level_exact_match')} "
+            f"needs_repair={gate.get('needs_repair')}"
+        )
+
         result = {"llm_quality_check": None}
         try:
             from pageindex.post_processing import llm_quality_check
@@ -2588,18 +3715,17 @@ class PageIndexService:
             )
             result["llm_quality_check"] = quality_result
             
-            # 根据质检结果修复
+            # 鏍规嵁璐ㄦ缁撴灉淇
             if quality_result.get("needs_repair"):
                 print(f"[INDEX-V3] LLM quality check suggests repairs")
                 for suggestion in quality_result.get("suggestions", []):
-                    if "子章节" in suggestion or "拆分" in suggestion:
+                    if any(token in suggestion for token in ("子章节", "拆分", "sub-chapter", "split")):
                         print(f"[INDEX-V3] Triggering sub-chapter extraction for large nodes")
-                        # 标记需要子章节提取
+                        # 鏍囪闇€瑕佸瓙绔犺妭鎻愬彇
                         break
         except Exception as e:
             print(f"[INDEX-V3] LLM quality check skipped: {e}")
 
-        # 大节点递归拆分（balanced 模式）
         if execution_mode == "balanced":
             import asyncio as _aio
             from pageindex.page_index import process_large_node_recursively, JsonLogger
@@ -2611,67 +3737,78 @@ class PageIndexService:
             ]
             await _aio.gather(*tasks)
 
-        # ─── Phase 3: 节点填充 + 摘要 ───
+        auxiliary_catalogs = self._build_auxiliary_catalog_nodes(analysis)
+        if auxiliary_catalogs:
+            toc_tree = self._merge_auxiliary_catalog_nodes(toc_tree, auxiliary_catalogs)
+            print(
+                f"[INDEX-V3] Added auxiliary catalogs: "
+                f"{', '.join(node.get('title', '') for node in auxiliary_catalogs)}"
+            )
+
+        # 鈹€鈹€鈹€ Phase 3: 鑺傜偣濉厖 + 鎽樿 鈹€鈹€鈹€
+        toc_tree = self._normalize_auxiliary_catalog_nodes(toc_tree)
+        toc_tree = self._normalize_final_tree_schema(
+            toc_tree,
+            doc_id=doc_id,
+            page_count=page_count,
+        )
         print(f"[INDEX-V3] Phase 3: filling nodes + summaries (mode={execution_mode})")
+        self._log_index_stage(6, "enrich", "started", mode=execution_mode)
         fill_node_text(toc_tree, page_list)
         write_node_ids(toc_tree)
-        await generate_summaries(toc_tree, model=model, mode=execution_mode)
-
-        doc_description = await generate_doc_description(
-            toc_tree, model=model, file_name=file_path.name
-        )
-
-        # ─── 构建输出 ───
-        # 保留之前的质检结果
+        # 鈹€鈹€鈹€ 鏋勫缓杈撳嚭 鈹€鈹€鈹€
+        # 淇濈暀涔嬪墠鐨勮川妫€缁撴灉
         llm_quality_check_result = result.get("llm_quality_check")
         result = {
             "doc_name": file_path.name,
-            "doc_description": doc_description,
+            "doc_description": "",
             "page_count": page_count,
             "structure": toc_tree,
             "route_decision": {
                 "requested_mode": requested_mode,
                 "execution_mode": execution_mode,
+                "initial_execution_mode": initial_execution_mode,
+                "final_execution_mode": execution_mode,
                 "balanced_path": balanced_path,
                 "toc_source": toc_source,
                 "text_coverage": analysis["text_coverage"],
                 "is_image_only_pdf": analysis.get("is_image_only_pdf", False),
+                "fallback_reason": analysis.get("code_toc_reject_reason"),
             },
             "completeness": completeness,
             "ocr_used": needs_ocr,
             "llm_quality_check": llm_quality_check_result,
+            "enrichment_status": "pending",
         }
 
-        # 保存索引文件
-        index_path = INDEXES_DIR / f"{doc_id}.json"
-        import json
+        # Save a usable base index before slower enrichment calls.
+        index_path = self._save_index_payload(doc_id, result)
+        print(f"[INDEX-V2] Saved base index before enrichment: {index_path}")
 
-        with open(index_path, "w", encoding="utf-8") as f:
-            json.dump(result, f, ensure_ascii=False, indent=2)
+        await generate_summaries(toc_tree, model=model, mode=execution_mode)
+        doc_description = await generate_doc_description(
+            toc_tree, model=model, file_name=file_path.name
+        )
+        result["doc_description"] = doc_description
+        result["enrichment_status"] = "done"
+        self._log_index_stage(6, "enrich", "done")
+
+        index_path = self._save_index_payload(doc_id, result)
         print(f"[INDEX-V2] Saved index: {index_path}")
+        self._log_index_stage(7, "save", "done", index=index_path.name)
 
         return {"index_path": str(index_path), "structure": result}
 
     async def generate_index(
         self, file_path: str, doc_id: str, mode_override: Optional[str] = None
     ) -> Dict[str, Any]:
-        """
-        生成文档的 PageIndex 树状索引 — 路由到 v2 重构版
-
-        Args:
-            file_path: 文档文件路径
-            doc_id: 文档 ID
-
-        Returns:
-            索引结果字典
-        """
+        """Generate a PageIndex tree index for a document."""
         file_path = Path(file_path)
 
-        # PDF 文件走 v2 重构版
         if file_path.suffix.lower() == ".pdf":
             return await self._generate_index_v2(file_path, doc_id, mode_override)
 
-        # 非 PDF 文件走旧流程
+        # 闈?PDF 鏂囦欢璧版棫娴佺▼
         self.opt = self._build_opt(mode_override=mode_override)
 
         visual_coverage = None
@@ -2724,7 +3861,7 @@ class PageIndexService:
             )
             setattr(self.opt, "file_path", str(file_path))
 
-            # ─── 两轮 Fast TOC 提取（OCR 前 + OCR 后）───
+            # 鈹€鈹€鈹€ 涓よ疆 Fast TOC 鎻愬彇锛圤CR 鍓?+ OCR 鍚庯級鈹€鈹€鈹€
             fast_toc_result = None
             if execution_mode in ("fast", "smart"):
                 import pageindex.page_index as _pi_mod
@@ -2733,7 +3870,6 @@ class PageIndexService:
                 validate_and_finalize_toc = _pi_mod.validate_and_finalize_toc
                 _extract_toc_by_regex = _pi_mod._extract_toc_by_regex
 
-                # 第一轮：用 pymupdf 原始文本（OCR 之前）
                 raw_page_list = None
                 try:
                     raw_page_list = get_page_tokens(
@@ -2748,7 +3884,7 @@ class PageIndexService:
                     print(f"[FAST-TOC] Round 1 error: {e}")
                     toc_items, source = None, None
 
-                # 第二轮：如果第一轮没成功且有 OCR 文本，用 OCR 文本再跑 Level 3
+                # 绗簩杞細濡傛灉绗竴杞病鎴愬姛涓旀湁 OCR 鏂囨湰锛岀敤 OCR 鏂囨湰鍐嶈窇 Level 3
                 if not toc_items and ocr_page_list:
                     try:
                         toc_items = _extract_toc_by_regex(ocr_page_list)
@@ -2760,10 +3896,10 @@ class PageIndexService:
                     except Exception as e:
                         print(f"[FAST-TOC] Round 2 error: {e}")
 
-                # 校验
+                # 鏍￠獙
                 if toc_items:
                     try:
-                        # 使用 OCR page_list（如果有）或原始 page_list 进行 offset 校正
+                        # 浣跨敤 OCR page_list锛堝鏋滄湁锛夋垨鍘熷 page_list 杩涜 offset 鏍℃
                         correction_page_list = ocr_page_list or raw_page_list
                         fast_toc_result = await validate_and_finalize_toc(
                             toc_items,
@@ -2781,7 +3917,7 @@ class PageIndexService:
                         raise ValueError(
                             "FAST_TOC_INCOMPLETE: code extraction + validation failed"
                         )
-                    # smart 模式：升级到 balanced
+                    # smart 妯″紡锛氬崌绾у埌 balanced
                     print(
                         "[FAST-TOC] Smart mode: fast extraction failed, escalating to balanced"
                     )
@@ -2795,10 +3931,10 @@ class PageIndexService:
                         pre_analysis.get("preferred_parser", "PyPDF2"),
                     )
                     setattr(self.opt, "file_path", str(file_path))
-                    fast_toc_result = None  # balanced 不用 fast result
+                    fast_toc_result = None  # balanced 涓嶇敤 fast result
 
             def run_pageindex(opt_obj):
-                # 使用外层已创建的 hooks
+                # 浣跨敤澶栧眰宸插垱寤虹殑 hooks
                 if ocr_page_list is None:
                     return page_index_main(
                         str(file_path), opt_obj, fast_toc_result=fast_toc_result, hooks=hooks
@@ -2853,7 +3989,7 @@ class PageIndexService:
             result["ocr_coverage"] = ocr_coverage
             result["ocr_missing_pages"] = ocr_missing_pages
 
-            # 主流程质量门控：仅 balanced 模式执行
+            # 涓绘祦绋嬭川閲忛棬鎺э細浠?balanced 妯″紡鎵ц
             if execution_mode == "fast":
                 structure_data = result.get("structure", result)
                 # Fast mode skips LLM-based node summaries, fill from title/text
@@ -2914,12 +4050,11 @@ class PageIndexService:
                         }
                 result["visual_coverage"] = visual_coverage
         elif file_path.suffix.lower() in [".md", ".markdown"]:
-            # Markdown 优先走规则化目录解析（更快、更稳定）
             adapted = generate_multi_format_index(file_path)
             if adapted is not None:
                 result = adapted
             else:
-                # 兜底兼容：保留原有 md_to_tree 路径
+                # 鍏滃簳鍏煎锛氫繚鐣欏師鏈?md_to_tree 璺緞
                 result = await md_to_tree(
                     md_path=str(file_path),
                     if_thinning=False,
@@ -2937,7 +4072,6 @@ class PageIndexService:
                 raise ValueError(f"Unsupported file type: {file_path.suffix}")
             result = adapted
 
-        # 索引文件在后处理后落盘，确保包含最终摘要/质量元信息
         index_path = INDEXES_DIR / f"{doc_id}.json"
 
         doc_description = ""
@@ -2947,7 +4081,7 @@ class PageIndexService:
             if "page_count" in result:
                 page_count = result.get("page_count")
             elif file_path.suffix.lower() == ".pdf":
-                # 从 PDF 文件获取实际页数
+                # 浠?PDF 鏂囦欢鑾峰彇瀹為檯椤垫暟
                 try:
                     with open(file_path, "rb") as f:
                         pdf_reader = PyPDF2.PdfReader(f)
@@ -2956,7 +4090,7 @@ class PageIndexService:
                     print(f"[WARN] Failed to get PDF page count from {file_path}: {e}")
                     page_count = None
 
-            # Fast 模式：同流程内生成轻量文档摘要；超时或失败直接跳过
+            # Fast mode generates a lightweight document summary in-flow.
             if (
                 not doc_description
                 and getattr(self.opt, "index_mode", "balanced") == "fast"
@@ -2985,7 +4119,7 @@ class PageIndexService:
         }
 
     async def load_index(self, doc_id: str) -> Optional[Dict[str, Any]]:
-        """加载文档的索引"""
+        """Load a document index."""
         index_path = INDEXES_DIR / f"{doc_id}.json"
         if not index_path.exists():
             return None
@@ -3109,21 +4243,15 @@ class PageIndexService:
     async def search_in_structure_async(
         self, structure: Dict[str, Any], query: str, doc_id: str, doc_name: str
     ) -> List[Dict[str, Any]]:
-        """
-        使用 LLM 进行推理式检索（PageIndex 核心功能）
-
-        模拟人类专家如何浏览文档找到相关内容
-        """
+        """Use LLM reasoning to search the tree structure."""
         from app.core.llm import async_chat_completion
         from app.services.cache_service import cache_service
 
-        # 检查缓存
         cached_result = cache_service.get_search_result(query, [doc_id])
         if cached_result is not None:
             print(f"[CACHE] Search cache hit for query: {query[:30]}...")
             return cached_result
 
-        # 处理索引文件格式
         if "structure" in structure:
             structure_data = structure["structure"]
         else:
@@ -3134,41 +4262,36 @@ class PageIndexService:
             else []
         )
 
-        # 构建树状结构的摘要（包含页码，提升章节定位能力）
         nodes = structure_to_list(structure_data)
         structure_summary = self._build_search_structure_summary(nodes)
 
-        prompt = f"""分析文档目录结构，找出与用户查询最相关的章节。
+        prompt = f"""Analyze the document TOC structure and find the chapters most relevant to the user query.
 
-目录结构:
+TOC structure:
 {json.dumps(structure_summary, ensure_ascii=False, indent=2)}
 
-用户查询: {query}
+User query: {query}
 
-返回最相关的 2-3 个章节，JSON 格式:
-[{{"node_id": "节点ID", "reasoning": "相关原因", "relevance_score": 0.0-1.0}}]
+Return the most relevant 2-3 chapters as JSON:
+[{{"node_id": "node id", "reasoning": "why relevant", "relevance_score": 0.0}}]
 
-只返回 JSON，不要其他内容。"""
+Return JSON only."""
 
         try:
             response = await async_chat_completion(
-                messages=[
-                    {"role": "user", "content": prompt},
-                ],
+                messages=[{"role": "user", "content": prompt}],
                 temperature=0,
-                model="qwen3.6-flash",  # 使用快速模型
+                model="qwen3.6-flash",
             )
-
             content = response.choices[0].message.content
 
-            # 解析 JSON
+            # 瑙ｆ瀽 JSON
             json_match = re.search(r"\[.*\]", content, re.DOTALL)
             if json_match:
                 llm_results = json.loads(json_match.group())
             else:
                 llm_results = []
 
-            # 转换为标准格式
             results = []
             node_dict = {n.get("node_id"): n for n in nodes}
 
@@ -3176,7 +4299,7 @@ class PageIndexService:
                 node_id = item.get("node_id")
                 if node_id in node_dict:
                     node = node_dict[node_id]
-                    # 获取文本内容
+                    # 鑾峰彇鏂囨湰鍐呭
                     text = node.get("text", "")
 
                     results.append(
@@ -3187,8 +4310,8 @@ class PageIndexService:
                             "node_title": node.get("title"),
                             "start_index": node.get("start_index"),
                             "end_index": node.get("end_index"),
-                            "summary": text[:300] if text else "",  # 摘要用于展示
-                            "full_text": text,  # 完整原文用于推理
+                            "summary": text[:300] if text else "",  # 鎽樿鐢ㄤ簬灞曠ず
+                            "full_text": text,  # 瀹屾暣鍘熸枃鐢ㄤ簬鎺ㄧ悊
                             "reasoning": item.get("reasoning", ""),
                             "relevance": item.get("relevance_score", 0.5),
                         }
@@ -3234,7 +4357,7 @@ class PageIndexService:
                         results.append(vc)
                         existing_ids.add(nid)
 
-            # 按相关度和验证置信度综合排序
+            # 鎸夌浉鍏冲害鍜岄獙璇佺疆淇″害缁煎悎鎺掑簭
             results.sort(
                 key=lambda x: (
                     x.get("relevance", 0)
@@ -3245,36 +4368,35 @@ class PageIndexService:
 
             final_results = results[:3]
 
-            # 缓存结果
+            # 缂撳瓨缁撴灉
             cache_service.set_search_result(query, [doc_id], final_results)
 
             return final_results
 
         except Exception as e:
             print(f"LLM search error: {e}")
-            # 降级到简单搜索
             return self._simple_search(structure_data, query, doc_id, doc_name)
 
     def _simple_search(
         self, structure_data: Dict[str, Any], query: str, doc_id: str, doc_name: str
     ) -> List[Dict[str, Any]]:
-        """
-        关键词搜索：先全串匹配，无结果则拆词/拆字匹配
-        """
+        """Simple keyword search fallback."""
+
+
         import re as _re
 
         nodes = structure_to_list(structure_data)
         results = []
 
-        # 清理查询
+        # 娓呯悊鏌ヨ
         query_clean = query.lower().replace(" ", "")
 
-        # 提取关键词：英文词 + 中文2字词 + 中文单字
+        # 鎻愬彇鍏抽敭璇嶏細鑻辨枃璇?+ 涓枃2瀛楄瘝 + 涓枃鍗曞瓧
         stopwords = set("搜索一下帮找一下请什么是的有吗呢了啊关于介绍下帮我")
         raw_tokens = _re.findall(r"[a-zA-Z0-9]+|[\u4e00-\u9fff]", query_clean)
-        # 保留英文词和不在停用词表中的中文字符
+        # 淇濈暀鑻辨枃璇嶅拰涓嶅湪鍋滅敤璇嶈〃涓殑涓枃瀛楃
         keywords = [t for t in raw_tokens if len(t) > 1 or t not in stopwords]
-        # 同时生成相邻两字组合（模拟中文分词）
+        # 鍚屾椂鐢熸垚鐩搁偦涓ゅ瓧缁勫悎锛堟ā鎷熶腑鏂囧垎璇嶏級
         bigrams = []
         cn_chars = [t for t in raw_tokens if len(t) == 1 and t not in stopwords]
         for i in range(len(cn_chars) - 1):
@@ -3289,7 +4411,7 @@ class PageIndexService:
             text_lower = text.lower().replace(" ", "")
             search_content = f"{title} {text} {summary}".lower().replace(" ", "")
 
-            # 第一级：全串匹配
+            # 绗竴绾э細鍏ㄤ覆鍖归厤
             if query_clean in search_content:
                 results.append(
                     {
@@ -3305,14 +4427,13 @@ class PageIndexService:
                 )
                 continue
 
-            # 第二级：关键词/拆字匹配
+            # 绗簩绾э細鍏抽敭璇?鎷嗗瓧鍖归厤
             if all_keywords:
                 hit_count = sum(1 for kw in all_keywords if kw in search_content)
                 title_hits = sum(1 for kw in all_keywords if kw in title_lower)
                 text_hits = sum(1 for kw in all_keywords if kw in text_lower)
                 min_hits = min(2, len(all_keywords)) if len(all_keywords) >= 2 else 1
                 if hit_count >= min_hits:
-                    # 标题命中加分，文本命中密度加分
                     base = 0.3 + hit_count * 0.05
                     title_bonus = title_hits * 0.15
                     text_density = min(text_hits * 0.02, 0.2)
@@ -3331,17 +4452,16 @@ class PageIndexService:
                         }
                     )
 
-        # 按相关度排序
+        # 鎸夌浉鍏冲害鎺掑簭
         results.sort(key=lambda x: x.get("relevance", 0), reverse=True)
         return results[:3]
 
     def search_in_structure(
         self, structure: Dict[str, Any], query: str, doc_id: str, doc_name: str
     ) -> List[Dict[str, Any]]:
-        """
-        同步版本的搜索（用于兼容）
-        """
-        # 处理索引文件格式
+        """Synchronous search compatibility wrapper."""
+
+        # Normalize index payload format.
         if "structure" in structure:
             structure_data = structure["structure"]
         else:
@@ -3357,60 +4477,49 @@ class PageIndexService:
         doc_name: str,
         pdf_text: str = None,
     ) -> List[Dict[str, Any]]:
-        """
-        使用 LLM 进行推理式检索（PageIndex 核心功能）
-
-        模拟人类专家如何浏览文档找到相关内容
-        """
+        """Use LLM reasoning to search the document tree."""
         from app.core.llm import async_chat_completion
 
-        # 构建树状结构的摘要
         nodes = structure_to_list(structure)
         structure_summary = self._build_search_structure_summary(nodes)
 
-        prompt = f"""你是一个文档检索专家。给定一个文档的目录结构和用户的查询，你需要找出最相关的章节。
+        prompt = f"""You are a document retrieval expert. Given the document TOC and user query, find the most relevant chapters.
 
-文档目录结构:
+TOC structure:
 {json.dumps(structure_summary, ensure_ascii=False, indent=2)}
 
-用户查询: {query}
+User query: {query}
 
-请分析哪些章节最可能包含用户需要的信息，并返回结果。
-
-返回格式 (JSON):
+Return JSON only:
 [
-    {{
-        "node_id": "节点ID",
-        "title": "章节标题",
-        "reasoning": "为什么这个章节相关",
-        "relevance_score": 0.0-1.0
-    }}
-]
-
-只返回 JSON，不要其他内容。"""
+  {{
+    "node_id": "node id",
+    "title": "chapter title",
+    "reasoning": "why this chapter is relevant",
+    "relevance_score": 0.0
+  }}
+]"""
 
         try:
             response = await async_chat_completion(
                 messages=[
                     {
                         "role": "system",
-                        "content": "你是一个文档检索专家，擅长根据目录结构找到相关内容。",
+                        "content": "You are a document retrieval expert.",
                     },
                     {"role": "user", "content": prompt},
                 ],
                 temperature=0,
             )
-
             content = response.choices[0].message.content
 
-            # 解析 JSON
+            # 瑙ｆ瀽 JSON
             json_match = re.search(r"\[.*\]", content, re.DOTALL)
             if json_match:
                 llm_results = json.loads(json_match.group())
             else:
                 llm_results = []
 
-            # 转换为标准格式
             results = []
             node_dict = {n.get("node_id"): n for n in nodes}
 
@@ -3432,11 +4541,10 @@ class PageIndexService:
                         }
                     )
 
-            # 按相关度排序
+            # 鎸夌浉鍏冲害鎺掑簭
             results.sort(key=lambda x: x["relevance"], reverse=True)
             return results[:5]
 
         except Exception as e:
             print(f"Reasoning search error: {e}")
-            # 降级到简单搜索
             return self.search_in_structure(structure, query, doc_id, doc_name)
