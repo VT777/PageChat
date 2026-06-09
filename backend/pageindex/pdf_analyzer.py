@@ -414,6 +414,82 @@ def _classify_page(text: str, image_count: int) -> str:
     return "text"
 
 
+def _build_document_profile(
+    *,
+    page_count: int,
+    text_coverage: float,
+    image_coverage: float,
+    image_only_pages: List[int],
+    garbled_pages: List[int],
+    text_quality: Dict[str, Any],
+    chapter_dividers: List[int],
+) -> Dict[str, Any]:
+    """Build a route-oriented document profile from cheap analyzer signals."""
+    safe_page_count = max(1, page_count)
+    image_only_ratio = len(image_only_pages or []) / safe_page_count
+    garbled_ratio = len(garbled_pages or []) / safe_page_count
+    fragment_ratio = float((text_quality or {}).get("fragment_ratio") or 0.0)
+    meaningful_ratio = float((text_quality or {}).get("meaningful_ratio") or 0.0)
+    low_quality = bool((text_quality or {}).get("is_low_quality"))
+    has_dividers = len(chapter_dividers or []) >= 3
+
+    if low_quality or garbled_ratio > 0.5:
+        text_layer_quality = "garbled" if garbled_ratio > 0.5 else "noisy"
+    elif text_coverage >= 0.85 and meaningful_ratio >= 0.8 and fragment_ratio <= 0.2:
+        text_layer_quality = "reliable"
+    elif text_coverage >= 0.4:
+        text_layer_quality = "partial"
+    else:
+        text_layer_quality = "noisy"
+
+    visual_dependency_score = 0.0
+    if image_coverage >= 0.9:
+        visual_dependency_score += 0.45
+    elif image_coverage >= 0.5:
+        visual_dependency_score += 0.25
+    if image_only_ratio >= 0.2:
+        visual_dependency_score += 0.25
+    elif image_only_ratio > 0:
+        visual_dependency_score += 0.1
+    if has_dividers:
+        visual_dependency_score += 0.2
+    if text_layer_quality in {"partial", "noisy", "garbled"}:
+        visual_dependency_score += 0.15
+    visual_dependency_score = min(1.0, round(visual_dependency_score, 3))
+
+    has_reliable_full_text = (
+        text_layer_quality == "reliable"
+        and text_coverage >= 0.85
+        and image_only_ratio == 0
+    )
+
+    if image_only_ratio > 0.9 or (text_coverage <= 0.05 and image_coverage >= 0.8):
+        layout_type = "scanned_image_pdf"
+    elif image_coverage >= 0.9 and not has_reliable_full_text and (
+        image_only_ratio >= 0.15 or has_dividers
+    ):
+        layout_type = "mixed_visual_report"
+    elif image_coverage >= 0.8 and has_dividers and not has_reliable_full_text:
+        layout_type = "slide_like_report"
+    else:
+        layout_type = "native_text_report"
+
+    if layout_type in {"scanned_image_pdf", "mixed_visual_report", "slide_like_report"}:
+        structure_policy = "visual_required"
+    elif visual_dependency_score >= 0.7:
+        structure_policy = "visual_preferred"
+    else:
+        structure_policy = "text_allowed"
+
+    return {
+        "layout_type": layout_type,
+        "text_layer_quality": text_layer_quality,
+        "visual_dependency_score": visual_dependency_score,
+        "structure_policy": structure_policy,
+        "ocr_policy": "content_fill_only",
+    }
+
+
 # ---------------------------------------------------------------------------
 # 代码 TOC 提取 — 三级优先
 # ---------------------------------------------------------------------------
@@ -725,6 +801,16 @@ def analyze_pdf_structure(file_path: str) -> Dict[str, Any]:
     if chapter_dividers:
         print(f"[PDF-ANALYZER] Chapter dividers detected: {chapter_dividers}")
 
+    document_profile = _build_document_profile(
+        page_count=page_count,
+        text_coverage=text_coverage,
+        image_coverage=image_coverage,
+        image_only_pages=image_only_pages,
+        garbled_pages=garbled_pages,
+        text_quality=quality,
+        chapter_dividers=chapter_dividers,
+    )
+
     # 目录页检测已移到 Balanced 路径中按需执行（toc_detector.py）
     # 预分析不再做目录页检测，避免重复工作和不必要的计算
     has_toc_page, toc_page_indices, toc_confidence, toc_preview = False, [], 0.0, []
@@ -761,6 +847,7 @@ def analyze_pdf_structure(file_path: str) -> Dict[str, Any]:
         "page_count": page_count,
         "pages": pages_info,
         "text_coverage": text_coverage,
+        **document_profile,
         "text_pages": text_pages,
         "image_only_pages": image_only_pages,
         "image_coverage": image_coverage,

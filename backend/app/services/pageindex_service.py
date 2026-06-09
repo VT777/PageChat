@@ -2828,12 +2828,27 @@ Example:
             expand_toc_with_page_evidence,
         )
 
-        print(f"[OUTLINE-EXPAND] source=visual_page_titles chapters={len(toc_tree)}")
         page_evidence = analysis.get("page_evidence") or analysis.get("page_evidences") or []
+        if PageIndexService._requires_visual_outline_provider(analysis) and not page_evidence:
+            reason = PageIndexService._flat_text_outline_skip_reason(analysis)
+            analysis["outline_expansion"] = {
+                "source": "none",
+                "reason": reason,
+                "added_children": 0,
+                "quality": "bad",
+                "expected_children": 0,
+                "actual_children": 0,
+                "needs_repair": True,
+            }
+            print(f"[OUTLINE-EXPAND] skipped provider=flat_text_fallback reason={reason}")
+            return 0
+
         if page_evidence:
+            print(f"[OUTLINE-EXPAND] provider=page_evidence chapters={len(toc_tree)}")
             expansion = expand_toc_with_page_evidence(toc_tree, page_evidence, page_count)
             expansion["source"] = "page_evidence"
         else:
+            print(f"[OUTLINE-EXPAND] provider=flat_text_fallback chapters={len(toc_tree)}")
             page_texts = [
                 str(page[0] or "")
                 for page in (page_list or [])
@@ -2850,7 +2865,10 @@ Example:
         if added:
             print(
                 f"[OUTLINE-EXPAND] done added_children={added} "
-                f"quality={expansion.get('quality')}"
+                f"quality={expansion.get('quality')} "
+                f"source_distribution={expansion.get('source_distribution')} "
+                f"avg_confidence={expansion.get('avg_title_confidence')} "
+                f"low_confidence_ratio={expansion.get('low_confidence_ratio')}"
             )
         else:
             print(
@@ -2864,6 +2882,9 @@ Example:
     @staticmethod
     def _should_skip_flat_text_outline_expansion(analysis: Dict) -> bool:
         """Return true when extracted page text is not trustworthy for structure."""
+        if PageIndexService._requires_visual_outline_provider(analysis):
+            return True
+
         text_quality = analysis.get("text_quality") or {}
         if bool(text_quality.get("is_low_quality")):
             return True
@@ -2890,6 +2911,25 @@ Example:
         )
 
     @staticmethod
+    def _requires_visual_outline_provider(analysis: Dict) -> bool:
+        """Return true when structure must come from visual evidence, not OCR text."""
+        if str(analysis.get("structure_policy") or "").lower() == "visual_required":
+            return True
+        if str(analysis.get("layout_type") or "").lower() in {
+            "scanned_image_pdf",
+            "mixed_visual_report",
+            "slide_like_report",
+        }:
+            return True
+        return False
+
+    @staticmethod
+    def _flat_text_outline_skip_reason(analysis: Dict) -> str:
+        if PageIndexService._requires_visual_outline_provider(analysis):
+            return "visual_required"
+        return "low_quality_text"
+
+    @staticmethod
     async def _expand_visual_page_outline_with_vlm_fallback(
         toc_tree: List[Dict],
         analysis: Dict,
@@ -2905,7 +2945,8 @@ Example:
             PageIndexService._should_skip_flat_text_outline_expansion(analysis)
             and analysis.get("document_path")
         ):
-            print("[OUTLINE-EXPAND] skip flat_text_fallback reason=low_quality_text")
+            skip_reason = PageIndexService._flat_text_outline_skip_reason(analysis)
+            print(f"[OUTLINE-EXPAND] skip flat_text_fallback reason={skip_reason}")
             visual_expansion = await PageIndexService._extract_visual_child_titles_for_flat_skeleton(
                 file_path=str(analysis["document_path"]),
                 tree=toc_tree,
@@ -2913,7 +2954,7 @@ Example:
                 model=model,
             )
             visual_expansion["source"] = "vlm_page_titles"
-            visual_expansion["reason"] = "low_quality_text"
+            visual_expansion["reason"] = skip_reason
             analysis["outline_expansion"] = visual_expansion
             visual_added = int(visual_expansion.get("added_children") or 0)
             print(
@@ -3171,6 +3212,7 @@ Return strict JSON only:
         balanced_path = None
         if execution_mode == "balanced":
             balanced_path = decide_balanced_path(analysis)
+            analysis["balanced_path"] = balanced_path
 
         print(
             f"[INDEX-V3] Route: requested={requested_mode}, execution={execution_mode}, "
