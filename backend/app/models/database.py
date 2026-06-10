@@ -1,12 +1,14 @@
 import aiosqlite
 from pathlib import Path
 from app.core.config import DATA_DIR
+from app.models.migrations import run_migrations
 
 DB_PATH = DATA_DIR / "knowclaw.db"
 
 async def get_db():
     """获取数据库连接（FastAPI 依赖）"""
     db = await aiosqlite.connect(str(DB_PATH))
+    await db.execute("PRAGMA foreign_keys=ON")
     db.row_factory = aiosqlite.Row
     try:
         yield db
@@ -16,6 +18,7 @@ async def get_db():
 async def init_db():
     """初始化数据库，创建所有表"""
     async with aiosqlite.connect(str(DB_PATH)) as db:
+        await db.execute("PRAGMA foreign_keys=ON")
         # 文档表
         await db.execute("""
             CREATE TABLE IF NOT EXISTS documents (
@@ -118,3 +121,4 @@ async def init_db():
         """)
 
         await db.commit()
+        await run_migrations(db)
