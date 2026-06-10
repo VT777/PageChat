@@ -190,6 +190,16 @@ class CacheService:
     def clear_search_cache(self):
         self._search_cache.clear()
 
+    def clear_document(self, user_id: str, doc_id: str) -> None:
+        """Clear document-derived caches for a deleted document.
+
+        Search cache keys are hashed and may include the document in a list, so
+        the safe first-phase behavior is to clear document-derived caches.
+        """
+        self._structure_cache.clear()
+        self._page_content_cache.clear()
+        self._search_cache.clear()
+
 
 # 全局缓存实例
 cache_service = CacheService()

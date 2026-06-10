@@ -12,6 +12,7 @@ import aiosqlite
 from app.core.config import (
     ALLOWED_EXTENSIONS,
     DOCUMENTS_DIR,
+    INDEXES_DIR,
     MAX_FILE_SIZE,
     VISUAL_DAILY_STATS_PATH,
     VISUAL_COVERAGE_TARGET,
@@ -304,6 +305,34 @@ class DocumentService:
             return False, f"文件大小超过限制 ({MAX_FILE_SIZE // 1024 // 1024}MB)"
 
         return True, ""
+
+    @staticmethod
+    def _is_within(path: Path, root: Path) -> bool:
+        try:
+            path.resolve().relative_to(root.resolve())
+            return True
+        except ValueError:
+            return False
+
+    async def cleanup_document_artifacts(self, doc: DocumentResponse) -> None:
+        """Remove source and index files for a document without touching the DB."""
+        candidates = []
+        if doc.file_path:
+            candidates.append((Path(doc.file_path), DOCUMENTS_DIR))
+        if doc.index_path:
+            candidates.append((Path(doc.index_path), INDEXES_DIR))
+        candidates.append((INDEXES_DIR / f"{doc.id}.json", INDEXES_DIR))
+
+        seen = set()
+        for path, root in candidates:
+            resolved = path.resolve()
+            if resolved in seen:
+                continue
+            seen.add(resolved)
+            if not self._is_within(path, root):
+                continue
+            if path.exists() and path.is_file():
+                path.unlink()
 
     async def save_document(
         self,
@@ -613,16 +642,7 @@ class DocumentService:
         if not doc:
             return False
 
-        # 删除文件
-        file_path = Path(doc.file_path)
-        if file_path.exists():
-            file_path.unlink()
-
-        # 删除索引
-        if doc.index_path:
-            index_path = Path(doc.index_path)
-            if index_path.exists():
-                index_path.unlink()
+        await self.cleanup_document_artifacts(doc)
 
         # 删除数据库记录（带用户权限验证）
         if user_id:
@@ -637,7 +657,9 @@ class DocumentService:
 
         # 删除文档后清除所有会话缓存
         from app.services.agent_service import clear_conversation_cache
+        from app.services.cache_service import cache_service
 
+        cache_service.clear_document(user_id or "", doc_id)
         clear_conversation_cache()
 
         return cursor.rowcount > 0

@@ -1,9 +1,12 @@
 import aiosqlite
 import uuid
 from pathlib import Path
+from types import SimpleNamespace
 from typing import List, Optional, Tuple
 from app.core.config import DATA_DIR
 from app.models.schemas import FolderResponse, FolderTreeResponse
+from app.services.cache_service import cache_service
+from app.services.document_service import DocumentService
 
 DB_PATH = DATA_DIR / "knowclaw.db"
 
@@ -429,6 +432,50 @@ class FolderService:
                 cursor = await db.execute(child_query, child_params)
                 child_ids = [row[0] for row in await cursor.fetchall()]
                 all_ids = [folder_id] + child_ids
+
+                placeholders = ",".join("?" for _ in all_ids)
+                docs_query = f"""
+                    SELECT id, name, original_name, file_path, index_path, file_size,
+                           file_type, status, page_count, processed_pages, error_message,
+                           folder_id, folder_path, description, user_id, created_at, updated_at
+                    FROM documents
+                    WHERE folder_id IN ({placeholders})
+                """
+                docs_params = list(all_ids)
+                if user_id:
+                    docs_query += " AND user_id = ?"
+                    docs_params.append(user_id)
+                else:
+                    docs_query += " AND user_id IS NULL"
+                cursor = await db.execute(docs_query, docs_params)
+                document_rows = await cursor.fetchall()
+                documents = [
+                    SimpleNamespace(
+                        id=row[0],
+                        name=row[1],
+                        original_name=row[2],
+                        file_path=row[3],
+                        index_path=row[4],
+                        file_size=row[5],
+                        file_type=row[6],
+                        status=row[7],
+                        page_count=row[8],
+                        processed_pages=row[9],
+                        error_message=row[10],
+                        folder_id=row[11],
+                        folder_path=row[12],
+                        description=row[13],
+                        user_id=row[14],
+                        created_at=row[15],
+                        updated_at=row[16],
+                    )
+                    for row in document_rows
+                ]
+
+                document_service = DocumentService(db)
+                for doc in documents:
+                    await document_service.cleanup_document_artifacts(doc)
+                    cache_service.clear_document(doc.user_id or user_id or "", doc.id)
 
                 for fid in all_ids:
                     doc_query = "DELETE FROM documents WHERE folder_id = ?"
