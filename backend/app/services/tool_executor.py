@@ -741,21 +741,36 @@ class ToolExecutor:
         doc_map = {d.id: d for d in docs}
 
         selected = []
+        rejected_document_ids = []
         for doc_id in document_ids:
             if self.allowed_doc_ids is not None and doc_id not in self.allowed_doc_ids:
+                rejected_document_ids.append(doc_id)
                 continue
             doc = doc_map.get(doc_id)
             if doc is not None:
                 selected.append(doc)
+            else:
+                rejected_document_ids.append(doc_id)
+
+        rejected_quality_note = (
+            "Some requested document IDs were not accessible or unavailable."
+            if rejected_document_ids
+            else None
+        )
 
         if not selected:
+            quality_notes = ["未找到可访问的目标文档"]
+            if rejected_quality_note:
+                quality_notes.append(rejected_quality_note)
             return {
                 "status": "success",
                 "data": {
                     "result_table": [],
                     "schema_mapping": {},
-                    "quality_notes": ["未找到可访问的目标文档"],
+                    "quality_notes": quality_notes,
                     "citations": [],
+                    "document_count": 0,
+                    "rejected_document_ids": rejected_document_ids,
                 },
                 "next_steps": {
                     "action": "call_tool",
@@ -772,6 +787,8 @@ class ToolExecutor:
         quality_notes = loaded.get("quality_notes", []) + result.get(
             "quality_notes", []
         )
+        if rejected_quality_note:
+            quality_notes.append(rejected_quality_note)
         table_rows = result.get("result_table", [])
 
         return {
@@ -782,6 +799,7 @@ class ToolExecutor:
                 "quality_notes": quality_notes,
                 "citations": result.get("citations", []),
                 "document_count": len(selected),
+                "rejected_document_ids": rejected_document_ids,
             },
             "next_steps": {
                 "action": "answer" if table_rows else "ask_user",

@@ -127,3 +127,31 @@ def test_allowed_doc_ids_empty_allows_no_documents() -> None:
         assert index.load_index_calls == []
 
     asyncio.run(run())
+
+
+def test_aggregate_tables_reports_rejected_document_ids() -> None:
+    async def run() -> None:
+        docs = FakeDocumentService()
+        executor = ToolExecutor(
+            FakePageIndexService(),
+            docs,
+            user_id="user-a",
+            allowed_doc_ids=["doc-a"],
+        )
+
+        result = await executor.execute(
+            "aggregate_tables",
+            {
+                "document_ids": ["doc-a", "doc-b", "missing-doc"],
+                "operation_spec": {"operation": "count"},
+            },
+        )
+
+        assert result["data"]["document_count"] == 1
+        assert result["data"]["rejected_document_ids"] == ["doc-b", "missing-doc"]
+        assert any(
+            "not accessible" in note.lower()
+            for note in result["data"]["quality_notes"]
+        )
+
+    asyncio.run(run())
