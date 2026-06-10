@@ -302,6 +302,7 @@ class AgentService:
                 messages=messages,
                 tools=AGENT_TOOLS,
                 stream=True,
+                user_id=user_id,
             )
 
             # 收集本轮响应
@@ -535,6 +536,7 @@ class AgentService:
                 scenario="qa",
                 messages=messages,
                 stream=True,
+                user_id=user_id,
             )
             async for chunk in fallback_response:
                 if not chunk.choices:

@@ -11,6 +11,7 @@ from app.core.config import (
     MODEL_PLUS_TIMEOUT_SECONDS,
 )
 from app.core.logging_config import silence_noisy_http_loggers
+from app.services.litellm_adapter import LiteLLMAdapter
 
 
 silence_noisy_http_loggers()
@@ -26,6 +27,39 @@ def _default_timeout_for_model(model_name: str) -> float:
         if "flash" in (model_name or "").lower()
         else float(MODEL_PLUS_TIMEOUT_SECONDS)
     )
+
+
+SCENARIO_ROUTE_SLOTS = {
+    "chat": "general_chat",
+    "qa": "document_qa",
+    "query_expansion": "query_expansion",
+    "index": "indexing",
+    "node_summary": "indexing",
+    "relevance": "document_qa",
+}
+
+
+async def _resolve_user_route(user_id: str, route_slot: str) -> dict | None:
+    if not user_id:
+        return None
+    try:
+        import aiosqlite
+
+        from app.models.database import DB_PATH
+        from app.services.model_settings_service import ModelSettingsService
+
+        async with aiosqlite.connect(str(DB_PATH)) as db:
+            db.row_factory = aiosqlite.Row
+            resolved = await ModelSettingsService(db).resolve_route(user_id, route_slot)
+            if resolved.get("source") != "user":
+                return None
+            return {
+                "route_version": resolved["route_version"],
+                "provider_config": resolved,
+                "model": resolved["model"],
+            }
+    except Exception:
+        return None
 
 
 def get_llm_client() -> OpenAI:
@@ -94,9 +128,22 @@ def chat_completion(
     temperature: float = 0,
     stream: bool = False,
     timeout: float | None = None,
+    provider_config: dict | None = None,
     **kwargs,
 ):
     """同步调用 LLM"""
+    if provider_config:
+        resolved_config = dict(provider_config)
+        if model:
+            resolved_config["model"] = model
+        return LiteLLMAdapter().completion(
+            provider_config=resolved_config,
+            messages=messages,
+            temperature=temperature,
+            stream=stream,
+            timeout=timeout,
+            **kwargs,
+        )
     client = get_llm_client()
     resolved_model = model or LLM_MODEL
     params = {
@@ -118,9 +165,22 @@ async def async_chat_completion(
     temperature: float = 0,
     stream: bool = False,
     timeout: float | None = None,
+    provider_config: dict | None = None,
     **kwargs,
 ):
     """异步调用 LLM"""
+    if provider_config:
+        resolved_config = dict(provider_config)
+        if model:
+            resolved_config["model"] = model
+        return await LiteLLMAdapter().acompletion(
+            provider_config=resolved_config,
+            messages=messages,
+            temperature=temperature,
+            stream=stream,
+            timeout=timeout,
+            **kwargs,
+        )
     client = get_async_llm_client()
     resolved_model = model or LLM_MODEL
     params = {
@@ -142,6 +202,7 @@ async def chat_by_scenario(
     stream: bool = False,
     tools: list = None,
     timeout: float | None = None,
+    user_id: str | None = None,
     **kwargs,
 ):
     """
@@ -154,6 +215,25 @@ async def chat_by_scenario(
         tools: 工具定义 (Function Calling)
     """
     config = MODEL_CONFIG.get(scenario, MODEL_CONFIG["qa"])
+    route_slot = SCENARIO_ROUTE_SLOTS.get(scenario)
+    if user_id and route_slot:
+        route = await _resolve_user_route(user_id, route_slot)
+        if route:
+            extra = dict(kwargs)
+            if tools:
+                extra["tools"] = tools
+                extra["tool_choice"] = "auto"
+            if config.get("max_tokens"):
+                extra["max_tokens"] = config["max_tokens"]
+            return await async_chat_completion(
+                messages=messages,
+                model=route["model"],
+                temperature=config.get("temperature", 0),
+                stream=stream,
+                timeout=timeout,
+                provider_config=route["provider_config"],
+                **extra,
+            )
     client = get_async_llm_client()
 
     resolved_model = config["model"]

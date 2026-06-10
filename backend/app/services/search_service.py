@@ -103,7 +103,7 @@ class DocumentSearchService:
         self.doc_metadata = {}  # doc_id -> {name, description}
         self.rerank_model = None
         self._initialized = False
-        self._query_cache = {}  # 查询扩展缓存 {(user_id, query): (expanded_query, timestamp)}
+        self._query_cache = {}  # {(user_id, route_version, query): (...)}
         self._cache_ttl = 300  # 缓存5分钟
         self._rebuild_lock: Optional[asyncio.Lock] = None
         self.last_rebuild_at: Optional[str] = None
@@ -251,7 +251,8 @@ class DocumentSearchService:
         """
         import time
 
-        cache_key = (user_id, query)
+        route = await self._resolve_query_expansion_route(user_id)
+        cache_key = (user_id, route["route_version"], query)
 
         # 检查缓存
         if cache_key in self._query_cache:
@@ -273,7 +274,8 @@ class DocumentSearchService:
 
             response = await async_chat_completion(
                 messages=[{"role": "user", "content": prompt}],
-                model="qwen-turbo",  # 使用快速模型
+                model=route["model"],
+                provider_config=route.get("provider_config"),
                 temperature=0,
                 max_tokens=100,
             )
@@ -297,6 +299,30 @@ class DocumentSearchService:
             print(f"[SearchService] Warning: Query expansion failed: {e}")
             # 失败时返回原查询
             return query
+
+    async def _resolve_query_expansion_route(self, user_id: str) -> Dict[str, Any]:
+        try:
+            from app.models.database import DB_PATH
+            from app.services.model_settings_service import ModelSettingsService
+
+            async with aiosqlite.connect(str(DB_PATH)) as db:
+                db.row_factory = aiosqlite.Row
+                resolved = await ModelSettingsService(db).resolve_route(
+                    user_id, "query_expansion"
+                )
+                return {
+                    "route_version": resolved["route_version"],
+                    "provider_config": resolved
+                    if resolved.get("source") == "user"
+                    else None,
+                    "model": resolved["model"],
+                }
+        except Exception:
+            return {
+                "route_version": "environment:qwen-turbo",
+                "provider_config": None,
+                "model": "qwen-turbo",
+            }
 
     async def rebuild_index(self):
         """全量重建索引"""

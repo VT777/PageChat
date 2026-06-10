@@ -44,14 +44,37 @@ from app.prompts.pageindex_prompts import (
 from app.services.multi_format_adapter import generate_multi_format_index
 from app.services.ocr_service import OCRService
 from app.services.runtime_settings_service import runtime_settings_service
+from app.services.model_gateway import ModelGateway
 
 
 TREE_HIGH_CONFIDENCE_THRESHOLD = 0.65
 TREE_FALLBACK_CONFIDENCE_THRESHOLD = 0.35
 
 
+class _PageIndexModelSettingsResolver:
+    def __init__(self, routes: Optional[Dict[str, Dict[str, Any]]] = None):
+        self._routes = routes or {}
+
+    async def resolve_route(self, user_id: str, route_slot: str) -> Dict[str, Any]:
+        if route_slot in self._routes:
+            return self._routes[route_slot]
+
+        import aiosqlite
+
+        from app.models.database import DB_PATH
+        from app.services.model_settings_service import ModelSettingsService
+
+        async with aiosqlite.connect(str(DB_PATH)) as db:
+            db.row_factory = aiosqlite.Row
+            route = await ModelSettingsService(db).resolve_route(user_id, route_slot)
+            return route if route.get("source") == "user" else {}
+
+
 async def check_query_appearance(
-    query: str, node_text: str, model: str = "qwen3.6-flash"
+    query: str,
+    node_text: str,
+    model: str = "qwen3.6-flash",
+    provider_config: Optional[Dict[str, Any]] = None,
 ) -> dict:
     """
     楠岃瘉鐢ㄦ埛鏌ヨ鏄惁鍑虹幇鍦ㄨ妭鐐规枃鏈腑
@@ -81,6 +104,7 @@ async def check_query_appearance(
             messages=[{"role": "user", "content": prompt}],
             temperature=0,
             model=model,
+            provider_config=provider_config,
         )
         content = response.choices[0].message.content
 
@@ -103,6 +127,7 @@ async def verify_candidate_nodes(
     query: str,
     nodes: List[dict],
     model: str = "qwen3.6-flash",
+    provider_config: Optional[Dict[str, Any]] = None,
 ) -> List[dict]:
     """
     楠岃瘉 LLM 閫夋嫨鐨勫€欓€夎妭鐐规槸鍚︾湡鐨勫寘鍚煡璇㈠唴瀹?
@@ -121,7 +146,9 @@ async def verify_candidate_nodes(
         if node_id in node_dict:
             node = node_dict[node_id]
             text = node.get("text", "") or ""
-            return await check_query_appearance(query, text, model)
+            return await check_query_appearance(
+                query, text, model, provider_config=provider_config
+            )
         else:
             return {
                 "query_appears": "no",
@@ -158,8 +185,88 @@ async def verify_candidate_nodes(
 class PageIndexService:
     """PageIndex service - generate and query tree indexes."""
 
-    def __init__(self):
+    def __init__(self, user_id: str | None = None):
+        self.user_id = user_id
+        self._model_route_cache: Dict[str, Optional[Dict[str, Any]]] = {}
         self.opt = self._build_opt()
+
+    async def _resolve_model_route(self, route_slot: str) -> Optional[Dict[str, Any]]:
+        if not self.user_id:
+            return None
+        if route_slot in self._model_route_cache:
+            return self._model_route_cache[route_slot]
+        try:
+            import aiosqlite
+
+            from app.models.database import DB_PATH
+            from app.services.model_settings_service import ModelSettingsService
+
+            async with aiosqlite.connect(str(DB_PATH)) as db:
+                db.row_factory = aiosqlite.Row
+                route = await ModelSettingsService(db).resolve_route(
+                    self.user_id, route_slot
+                )
+                if route.get("source") != "user":
+                    route = None
+        except Exception as exc:
+            print(
+                f"[MODEL_ROUTE] fallback route_slot={route_slot} user_id={self.user_id} error_type={type(exc).__name__}"
+            )
+            route = None
+        self._model_route_cache[route_slot] = route
+        return route
+
+    async def _indexing_completion(
+        self,
+        *,
+        messages: list[dict],
+        model: str | None = None,
+        **kwargs,
+    ):
+        from app.core.llm import async_chat_completion
+
+        route = await self._resolve_model_route("indexing")
+        if route:
+            return await async_chat_completion(
+                messages=messages,
+                model=route.get("model") or model,
+                provider_config=route,
+                **kwargs,
+            )
+        return await async_chat_completion(messages=messages, model=model, **kwargs)
+
+    async def _build_model_gateway(self) -> ModelGateway:
+        if not self.user_id:
+            return ModelGateway()
+        vision_route = await self._resolve_model_route("vision")
+        if not vision_route:
+            return ModelGateway()
+        return ModelGateway(
+            model_settings_service=_PageIndexModelSettingsResolver(
+                {"vision": vision_route}
+            ),
+            user_id=self.user_id,
+        )
+
+    @staticmethod
+    def _sanitize_model_route_metadata(route: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+        if not isinstance(route, dict):
+            return {}
+        metadata = {}
+        for key in ("route_slot", "source", "model", "route_version"):
+            value = route.get(key)
+            if value is not None:
+                metadata[key] = value
+        return metadata
+
+    async def _model_route_metadata(self) -> Dict[str, Dict[str, Any]]:
+        metadata: Dict[str, Dict[str, Any]] = {}
+        for slot in ("indexing", "vision"):
+            route = await self._resolve_model_route(slot)
+            clean = self._sanitize_model_route_metadata(route)
+            if clean:
+                metadata[slot] = clean
+        return metadata
 
     @staticmethod
     def _persist_failure_diagnostics(doc_id: str, payload: Dict[str, Any]) -> None:
@@ -461,8 +568,6 @@ class PageIndexService:
         deadline = start_time + PAGEINDEX_FAST_LIGHT_SUMMARY_TIMEOUT_SECONDS
         attempt = 0
 
-        from app.core.llm import async_chat_completion
-
         while True:
             attempt += 1
             remaining = deadline - time.perf_counter()
@@ -475,7 +580,7 @@ class PageIndexService:
 
             try:
                 response = await asyncio.wait_for(
-                    async_chat_completion(
+                    self._indexing_completion(
                         messages=[{"role": "user", "content": prompt}],
                         model=self.opt.model,
                         temperature=0,
@@ -749,9 +854,8 @@ class PageIndexService:
             return []
 
         from app.core.llm import pdf_page_to_base64
-        from app.services.model_gateway import ModelGateway
 
-        gateway = ModelGateway()
+        gateway = await self._build_model_gateway()
         max_concurrency = max(1, int(VISUAL_VLM_MAX_CONCURRENCY))
         max_attempts = max(
             1,
@@ -1120,8 +1224,6 @@ class PageIndexService:
         if not nodes:
             return
 
-        from app.core.llm import async_chat_completion
-
         page_summary: Dict[int, str] = {}
         for item in visual_summaries or []:
             try:
@@ -1171,7 +1273,7 @@ class PageIndexService:
             try:
                 async with sem:
                     resp = await asyncio.wait_for(
-                        async_chat_completion(
+                        self._indexing_completion(
                             messages=[{"role": "user", "content": prompt}],
                             temperature=0.1,
                             model=self.opt.model,
@@ -2081,8 +2183,6 @@ Example:
     ) -> Optional[Dict]:
         """Extract TOC from TOC page text using LLM."""
         try:
-            from app.core.llm import async_chat_completion
-            
             page_texts = analysis.get("page_texts", [])
             toc_text = "\n".join([page_texts[p - 1] for p in toc_pages if p - 1 < len(page_texts)])
             
@@ -2104,7 +2204,7 @@ Example:
   ]
 }}"""
             
-            response = await async_chat_completion(
+            response = await self._indexing_completion(
                 messages=[{"role": "user", "content": prompt}],
                 temperature=0,
                 model=model,
@@ -3890,6 +3990,10 @@ Return strict JSON only:
             "enrichment_status": "pending",
         }
 
+        model_routes = await self._model_route_metadata()
+        if model_routes:
+            result["model_routes"] = model_routes
+
         # Save a usable base index before slower enrichment calls.
         index_path = self._save_index_payload(doc_id, result)
         print(f"[INDEX-V2] Saved base index before enrichment: {index_path}")
@@ -3900,6 +4004,8 @@ Return strict JSON only:
         )
         result["doc_description"] = doc_description
         result["enrichment_status"] = "done"
+        if model_routes:
+            result["model_routes"] = model_routes
         self._log_index_stage(6, "enrich", "done")
 
         index_path = self._save_index_payload(doc_id, result)
@@ -4220,6 +4326,9 @@ Return strict JSON only:
             page_count=page_count,
             force_pdf=file_path.suffix.lower() == ".pdf",
         )
+        model_routes = await self._model_route_metadata()
+        if model_routes:
+            result["model_routes"] = model_routes
 
         with open(index_path, "w", encoding="utf-8") as f:
             json.dump(result, f, indent=2, ensure_ascii=False)
@@ -4408,10 +4517,13 @@ Return strict JSON only:
         user_id: str = "legacy",
     ) -> List[Dict[str, Any]]:
         """Use LLM reasoning to search the tree structure."""
-        from app.core.llm import async_chat_completion
         from app.services.cache_service import cache_service
 
-        cached_result = cache_service.get_search_result(user_id, query, [doc_id])
+        route = await self._resolve_model_route("indexing")
+        route_version = route.get("route_version") if route else None
+        cached_result = cache_service.get_search_result(
+            user_id, query, [doc_id], route_version=route_version
+        )
         if cached_result is not None:
             print(f"[CACHE] Search cache hit for query: {query[:30]}...")
             return cached_result
@@ -4442,7 +4554,7 @@ Return the most relevant 2-3 chapters as JSON:
 Return JSON only."""
 
         try:
-            response = await async_chat_completion(
+            response = await self._indexing_completion(
                 messages=[{"role": "user", "content": prompt}],
                 temperature=0,
                 model="qwen3.6-flash",
@@ -4497,6 +4609,7 @@ Return JSON only."""
                     query=query,
                     nodes=nodes,
                     model="qwen3.6-flash",
+                    provider_config=route,
                 )
                 results = verified_results
 
@@ -4543,7 +4656,9 @@ Return JSON only."""
             final_results = results[:3]
 
             # 缂撳瓨缁撴灉
-            cache_service.set_search_result(user_id, query, [doc_id], final_results)
+            cache_service.set_search_result(
+                user_id, query, [doc_id], final_results, route_version=route_version
+            )
 
             return final_results
 
@@ -4670,8 +4785,6 @@ Return JSON only."""
         pdf_text: str = None,
     ) -> List[Dict[str, Any]]:
         """Use LLM reasoning to search the document tree."""
-        from app.core.llm import async_chat_completion
-
         nodes = structure_to_list(structure)
         structure_summary = self._build_search_structure_summary(nodes)
 
@@ -4693,7 +4806,7 @@ Return JSON only:
 ]"""
 
         try:
-            response = await async_chat_completion(
+            response = await self._indexing_completion(
                 messages=[
                     {
                         "role": "system",

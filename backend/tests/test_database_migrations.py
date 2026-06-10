@@ -104,6 +104,7 @@ def test_migrations_create_history_and_are_idempotent() -> None:
             assert migration_ids == [
                 "20260610_001_add_documents_last_reindex_at",
                 "20260610_002_add_core_indexes",
+                "20260611_003_add_model_settings_tables",
             ]
 
     asyncio.run(run())
@@ -146,5 +147,34 @@ def test_migrations_add_core_indexes() -> None:
             assert "idx_messages_conversation_created" in await _index_names(
                 db, "messages"
             )
+
+    asyncio.run(run())
+
+
+def test_migrations_add_model_settings_tables() -> None:
+    async def run() -> None:
+        async with aiosqlite.connect(":memory:") as db:
+            await _create_bootstrap_schema(db)
+
+            await run_migrations(db)
+
+            provider_columns = await _column_names(db, "model_provider_configs")
+            route_columns = await _column_names(db, "model_route_mappings")
+
+            assert {
+                "provider_id",
+                "user_id",
+                "provider",
+                "base_url",
+                "api_key_ciphertext",
+                "api_key_mask",
+            }.issubset(provider_columns)
+            assert {
+                "user_id",
+                "route_slot",
+                "provider_id",
+                "model",
+                "route_version",
+            }.issubset(route_columns)
 
     asyncio.run(run())

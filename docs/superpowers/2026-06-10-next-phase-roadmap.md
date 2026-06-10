@@ -10,7 +10,21 @@ The Phase 1 report recommended model configuration as the next candidate phase. 
 
 ## Current Baseline
 
-Phase 3 is the current foundation baseline.
+Phase 4 is the current foundation baseline.
+
+Verified baseline from the Phase 4 report:
+
+- Phase 4 focused backend suite: `45 passed`
+- Full backend suite: `342 passed, 8 skipped`
+- Folder-aware chat scope fields are available: `folder_id`, `include_subfolders`, `document_ids`, and `strict_scope`.
+- Folder-scoped search filters documents by folder, descendants, selected documents, and allowed document boundaries.
+- Agent tools can list folder trees and folder contents.
+- `find_related_documents` can honor explicit document and folder scope and returns scope trace metadata.
+- Compact tree output is available for Agent-facing structure inspection.
+- A lightweight retrieval planner chooses deterministic first-step retrieval routes before the Agent fallback loop.
+- Pushed commit: `f219756 feat: add folder-aware agent retrieval`
+
+Phase 4 changed the backend assumption from "selected documents are the main chat scope" to "chat scope is an explicit retrieval boundary." Later phases should treat Phase 4 scope semantics and trace metadata as the current contract.
 
 Verified baseline from the Phase 3 report:
 
@@ -105,29 +119,49 @@ Phase 1 safety baseline
 
 Phase 5 can begin after Phase 2 if team capacity allows, but it should not modify retrieval cache semantics without preserving the user/scope/model-route cache contracts.
 
+## Post-Phase-5 Baseline
+
+Phase 5 is now implemented as the backend model-settings foundation.
+
+Current Phase 5 evidence:
+
+- Phase 5 focused backend suite: `39 passed`
+- Full backend suite: `369 passed, 8 skipped`
+- Completion gate result: conditional pass with no P0/P1 gaps
+- Accepted P2 follow-up: deep PageIndex indexing calls needed user-aware route integration before the frontend could treat indexing model controls as production-ready.
+
+Phase 5.1 closes that P2 follow-up:
+
+- `docs/superpowers/plans/2026-06-11-phase-5-1-indexing-route-closure.md`
+
+Use the Phase 5.1 report and verification output as the backend baseline for indexing model controls.
+
 ## Immediate Recommendation
 
-Start with Phase 4.
+Start with Phase 5.1 indexing route closure, while allowing Phase 6 frontend slices to begin only where their backend baseline is already complete.
 
 Why:
 
-- Phase 3 has already made tree retrieval quality measurable through quality reports, regression fixtures, fallback thresholds, and tree-first policy tests.
-- The next unlock is making retrieval scope explicit across folders, selected document sets, and current-user library search.
-- Phase 4 should use Phase 3 quality signals when deciding whether to trust document structure or disclose fallback evidence.
-- Phase 6 evidence UI can start with Phase 2/3 fields, but chat scope UI should wait for Phase 4 backend behavior.
-- Phase 5 can proceed in parallel only after the model-settings ownership and secret-storage decisions are recorded.
+- Phase 4 has already made retrieval scope explicit across folders, selected document sets, and current-user library search.
+- Phase 5 has added model configuration without changing retrieval authorization or scope behavior.
+- Phase 5.1 is required before indexing model controls are presented as production-ready.
+- Phase 6 evidence UI can start from Phase 2/3 fields and can now include chat scope UI because Phase 4 backend behavior exists.
+- Phase 6 model settings UI can use Phase 5 backend endpoints and write-only key behavior, but indexing controls must wait for Phase 5.1 completion.
+- Phase 7 and Phase 8 should continue to use Phase 2/3/4 evidence, quality, and scope contracts as their baseline.
 
 Recommended immediate execution order:
 
-1. Phase 4 Task 1: folder-aware search filtering.
-2. Phase 4 Task 2: folder navigation tools.
-3. Phase 4 Task 3: scope-aware `find_related_documents`.
-4. Phase 4 Task 4: compact tree structure output.
-5. Phase 4 Task 5: lightweight retrieval planner.
+1. Phase 5.1 indexing route closure.
+2. Phase 6 evidence labels and document quality display slices, if not already complete.
+3. Phase 6 chat scope UI slice, using Phase 4 scope request and trace metadata.
+4. Phase 6 model settings UI for configured routes whose backend paths are complete.
+5. Phase 6 indexing model controls only after Phase 5.1 verification passes.
 
 Parallel candidate:
 
-- Phase 5 may begin only after its security gate decisions are resolved. It should not change retrieval cache semantics unless user, scope, and model-route cache contracts stay explicit.
+- Phase 6 evidence-label and quality-display slices may proceed in parallel with Phase 5.1 because they do not depend on indexing model routing.
+- Phase 6 model settings UI for `general_chat`, `document_qa`, `query_expansion`, and `vision` may proceed from the Phase 5 baseline.
+- Phase 6 `indexing` route UI must be hidden, disabled, or clearly deferred until Phase 5.1 completion is verified.
 
 ## Cross-Phase Rules
 
@@ -156,6 +190,11 @@ Every phase should run the completion gate with these inputs:
 - The current phase plan under `docs/superpowers/plans/`.
 - `docs/superpowers/2026-06-10-phase-1-improvement-report.md`
 - `docs/superpowers/2026-06-10-phase-2-improvement-report.md`
+- `docs/superpowers/2026-06-10-phase-3-improvement-report.md`
+- `docs/superpowers/2026-06-11-phase-4-improvement-report.md`
+- `docs/superpowers/plans/2026-06-11-phase-4-gap-closure.md`
+- `docs/superpowers/2026-06-11-phase-5-improvement-report.md`
+- `docs/superpowers/plans/2026-06-11-phase-5-1-indexing-route-closure.md`
 - Any source plan listed in the mapping above that corresponds to the phase.
 - Current git status and test output from the phase verification commands.
 

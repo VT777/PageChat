@@ -10,6 +10,34 @@ def _env_bool(name: str, default: bool = False) -> bool:
     return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _env_value(env: dict[str, str] | os._Environ[str], name: str) -> str | None:
+    value = env.get(name)
+    if value is None:
+        return None
+    value = value.strip()
+    return value or None
+
+
+def app_env(env: dict[str, str] | os._Environ[str] = os.environ) -> str:
+    return (_env_value(env, "APP_ENV") or "development").lower()
+
+
+def is_production(env: dict[str, str] | os._Environ[str] = os.environ) -> bool:
+    return app_env(env) in {"prod", "production"}
+
+
+def resolve_jwt_secret(env: dict[str, str] | os._Environ[str] = os.environ) -> str:
+    secret = _env_value(env, "JWT_SECRET") or _env_value(env, "SECRET_KEY")
+    if secret:
+        return secret
+    if is_production(env):
+        raise RuntimeError(
+            "JWT_SECRET or SECRET_KEY is required in production; refusing to use "
+            "the development fallback signing secret."
+        )
+    return "dev-only-change-me-page-chat-jwt-secret"
+
+
 # 项目根目录
 BASE_DIR = Path(__file__).parent.parent.parent
 
@@ -27,9 +55,9 @@ VISUAL_DAILY_STATS_PATH = DATA_DIR / "visual_daily_stats.json"
 DATABASE_URL = f"sqlite+aiosqlite:///{DATA_DIR}/knowclaw.db"
 
 # JWT signing configuration. Keep local/test fallback stable across restarts.
-JWT_SECRET = os.getenv("JWT_SECRET") or os.getenv("SECRET_KEY")
-if not JWT_SECRET:
-    JWT_SECRET = "dev-only-change-me-page-chat-jwt-secret"
+APP_ENV = app_env()
+IS_PRODUCTION = is_production()
+JWT_SECRET = resolve_jwt_secret()
 
 # LLM 基础配置
 LLM_API_KEY = os.getenv("LLM_API_KEY")

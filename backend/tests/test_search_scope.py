@@ -141,6 +141,44 @@ def test_query_expansion_cache_is_user_scoped(monkeypatch) -> None:
     asyncio.run(run())
 
 
+def test_query_expansion_cache_differs_by_model_route(monkeypatch) -> None:
+    async def run() -> None:
+        service = DocumentSearchService()
+        calls = []
+        route_versions = ["route-v1", "route-v2"]
+
+        async def fake_completion(**kwargs):
+            calls.append(kwargs)
+            return SimpleNamespace(
+                choices=[
+                    SimpleNamespace(
+                        message=SimpleNamespace(content=f"expanded-{len(calls)}")
+                    )
+                ]
+            )
+
+        async def fake_route(_user_id):
+            return {
+                "route_version": route_versions[len(calls)],
+                "provider_config": None,
+                "model": "qwen-turbo",
+            }
+
+        import app.core.llm as llm
+
+        monkeypatch.setattr(llm, "async_chat_completion", fake_completion)
+        monkeypatch.setattr(service, "_resolve_query_expansion_route", fake_route)
+
+        first = await service._expand_query("短问", user_id="user-a")
+        second = await service._expand_query("短问", user_id="user-a")
+
+        assert first == "expanded-1"
+        assert second == "expanded-2"
+        assert len(calls) == 2
+
+    asyncio.run(run())
+
+
 def test_index_snapshot_reports_user_scoped_counts() -> None:
     service = _search_service()
 

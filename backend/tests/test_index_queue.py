@@ -12,7 +12,7 @@ def test_start_index_process_queues_when_worker_busy(monkeypatch) -> None:
     statuses = []
     release = threading.Event()
 
-    def fake_run_index_job(doc_id, file_path, mode_override=None):
+    def fake_run_index_job(doc_id, file_path, mode_override=None, user_id=None):
         started.append(doc_id)
         if doc_id == "doc-1":
             release.wait(timeout=1)

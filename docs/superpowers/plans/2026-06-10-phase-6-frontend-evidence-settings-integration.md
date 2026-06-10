@@ -28,8 +28,11 @@ Phase 6 can be executed in slices. Do not block all frontend evidence work on mo
 | Document quality display | Phase 3 `quality_report` metadata |
 | Chat scope UI | Phase 4 folder/document scope request and trace behavior |
 | Model settings UI | Phase 5 settings API and write-only key contract |
+| Indexing model controls | Phase 5.1 indexing route closure |
 
 If a slice starts before the later slices are ready, keep API types tolerant of missing fields and record the deferred slices in the completion gate.
+
+Phase 6 may build model settings UI after Phase 5, but it must not present index generation model controls as production-ready unless `docs/superpowers/plans/2026-06-11-phase-5-1-indexing-route-closure.md` has been implemented and verified. If Phase 5.1 is not complete, hide, disable, or explicitly defer the indexing route control.
 
 ## Files And Responsibilities
 
@@ -83,6 +86,9 @@ The frontend should tolerate partial backend rollout:
 - Prefer backend `display_label` when present.
 - Fall back to formatting `source_anchor` when `display_label` is missing.
 - Fall back to the existing page/index label when both `display_label` and `source_anchor` are missing.
+- Prefer backend retrieval `scope` trace metadata when present.
+- Show neutral current-scope copy when retrieval trace metadata is missing.
+- When trace metadata reports expansion beyond the selected scope, disclose that expansion without treating it as an error.
 - Treat `quality_report` as optional.
 - Treat unknown `quality_report.status` values as neutral metadata, not fatal UI states.
 - Preserve existing chat requests when no folder/document scope is selected.
@@ -112,6 +118,17 @@ type QualityReport = {
   warnings?: string[]
   node_count?: number
   page_range_coverage?: number
+}
+
+type RetrievalScopeTrace = {
+  folder_id?: string
+  folder_path?: string
+  include_subfolders?: boolean
+  document_ids?: string[]
+  strict_scope?: boolean
+  expanded_to_user_library?: boolean
+  retrieval_mode?: string
+  recommended_next_action?: string
 }
 ```
 
@@ -232,18 +249,28 @@ Examples:
 - Folder including subfolders
 - All documents
 
-- [ ] **Step 3: Add explicit all-documents option**
+- [ ] **Step 3: Display retrieval scope trace when available**
+
+Use backend trace metadata to show what scope the answer actually used:
+
+- Selected document scope.
+- Selected folder scope.
+- Folder plus descendants.
+- Expanded current-user library scope when `expanded_to_user_library=true`.
+- Unknown or missing trace as neutral current-scope metadata.
+
+- [ ] **Step 4: Add explicit all-documents option**
 
 Avoid silently expanding from selected folder/document to all documents.
 
-- [ ] **Step 4: Run build**
+- [ ] **Step 5: Run build**
 
 ```powershell
 cd frontend
 npm.cmd run build
 ```
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 6: Commit**
 
 ```powershell
 git add frontend/src/views/ChatView.vue frontend/src/stores/document.ts frontend/src/stores/folder.ts frontend/src/api/index.ts
@@ -290,7 +317,7 @@ Route slots:
 - General chat.
 - Document Q&A.
 - Query expansion.
-- Index generation.
+- Index generation, only if Phase 5.1 completion has been verified.
 - Vision/OCR.
 
 - [ ] **Step 4: Integrate into SettingsView**
@@ -337,6 +364,8 @@ Check:
 - Provider test failures show clear errors without exposing raw keys.
 - Route mappings fall back to environment defaults after a provider is deleted or disabled.
 - Chat scope can be switched explicitly.
+- Chat answers disclose when retrieval expanded beyond the selected document or folder scope.
+- Missing scope trace metadata does not break existing chat rendering.
 
 - [ ] **Step 4: Run completion gate audit**
 
@@ -362,6 +391,7 @@ Phase 6 is complete when:
 - Retrieval fallback is disclosed subtly when present.
 - Document detail shows quality status and warnings.
 - Chat request can carry explicit retrieval scope.
+- Chat UI can display retrieval scope trace and expansion metadata when the backend provides it.
 - Settings page supports model provider and route configuration.
 - API keys are write-only from UI perspective.
 - Frontend build passes.

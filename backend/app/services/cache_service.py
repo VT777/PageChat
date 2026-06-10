@@ -117,15 +117,20 @@ class CacheService:
     # ==================== 搜索结果缓存 ====================
 
     def get_search_result(
-        self, user_id: str, query: str, doc_ids: List[str]
+        self, user_id: str, query: str, doc_ids: List[str], route_version: str | None = None
     ) -> Optional[List[Dict]]:
-        key = self._make_key("search", user_id, query, sorted(doc_ids))
+        key = self._make_key("search", user_id, query, sorted(doc_ids), route_version or "")
         return self._search_cache.get(key)
 
     def set_search_result(
-        self, user_id: str, query: str, doc_ids: List[str], results: List[Dict]
+        self,
+        user_id: str,
+        query: str,
+        doc_ids: List[str],
+        results: List[Dict],
+        route_version: str | None = None,
     ):
-        key = self._make_key("search", user_id, query, sorted(doc_ids))
+        key = self._make_key("search", user_id, query, sorted(doc_ids), route_version or "")
         self._search_cache.set(key, results)
 
     # ==================== LLM响应缓存 ====================

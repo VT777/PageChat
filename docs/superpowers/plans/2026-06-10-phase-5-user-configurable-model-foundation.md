@@ -60,6 +60,17 @@ Before Task 1 begins, record the approved decisions in this section or in the Ph
 
 If a decision is intentionally deferred, the implementation must fail closed in production and the completion gate must record the deferral explicitly.
 
+### Implementation Decision Record (2026-06-11)
+
+| Decision | Phase 5 implementation choice |
+| --- | --- |
+| Settings ownership | Per-user settings with existing environment fallback |
+| API key storage mode | Development profile stores protected local values; production refuses model-key writes unless a stable `MODEL_SETTINGS_SECRET` or `SECRET_KEY` is available |
+| Secret source | Environment-backed `MODEL_SETTINGS_SECRET` preferred, `SECRET_KEY` accepted for local compatibility; no import-time generated secret |
+| Configurable route slots for v1 | `general_chat`, `document_qa`, `query_expansion`, `indexing`, `vision` |
+| Custom OpenAI-compatible provider support | Allowed in v1 through `openai_compatible` provider config with editable `base_url` and model IDs |
+| Model list behavior | Curated presets plus manual model IDs; no live provider model discovery in Phase 5 |
+
 ## Security Gate
 
 Do not implement Tasks 1-4 for production use until these gate items are decided and recorded in this plan or a phase report:
@@ -72,6 +83,23 @@ Do not implement Tasks 1-4 for production use until these gate items are decided
 - **Fallback behavior:** when no user setting exists, current `.env`/Qwen behavior remains unchanged.
 
 If any item is deferred, the implementation must fail closed in production and document the deferral in the completion gate.
+
+## Phase 0 Hardening Status Audit
+
+The source model-configuration plan included a broader architecture-hardening Phase 0. Before Phase 5 begins, record the status of each item below in the Phase 5 completion notes or an implementation kickoff note. Do not reopen completed Phase 1-4 work unless the audit finds a regression.
+
+| Source hardening item | Expected status before Phase 5 implementation | Phase 5 action |
+| --- | --- | --- |
+| Upload filename normalization and safe storage names | Covered by the Phase 1 safety baseline if its report remains valid | Verify report status; only add follow-up if current code regressed |
+| User scope mandatory for tool execution | Covered by Phase 1 safety baseline and Phase 4 scoped Agent retrieval | Verify focused scope tests still pass before model-route cache changes |
+| Search scope cannot widen across users | Covered by Phase 1 safety baseline and Phase 4 folder-aware search filtering | Preserve user/scope boundaries when adding model-route fingerprints |
+| Lightweight migrations and missing document columns | Covered by Phase 1 safety baseline if its report remains valid | Use the existing migration mechanism for model settings tables if SQLite persistence is selected |
+| SQLite foreign keys and core indexes | Covered by Phase 1 safety baseline if its report remains valid | Do not weaken existing database initialization or migration behavior |
+| Folder deletion cleans files, indexes, caches, and agent state | Covered by Phase 1 safety baseline if its report remains valid | Keep model settings independent from document cleanup unless cache keys change |
+| JWT secret generated at import time | Not fully closed until this phase | Implement Task 0 before production-capable model-key storage |
+| User-scoped cache keys | Covered by Phase 1 and Phase 4 for retrieval scope; model route is still new | Add model route/version or settings fingerprint where model output can affect cached behavior |
+| Raw model API keys exposed through read/list APIs | New Phase 5 responsibility | Enforce write-only key behavior in service and API tests |
+| User-owned model settings ownership | New Phase 5 decision | Record per-user, admin-global, or both before creating persistence schema |
 
 ## Files And Responsibilities
 

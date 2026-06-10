@@ -57,9 +57,51 @@ async def _add_core_indexes(db: aiosqlite.Connection) -> None:
     )
 
 
+async def _add_model_settings_tables(db: aiosqlite.Connection) -> None:
+    await db.execute(
+        """
+        CREATE TABLE IF NOT EXISTS model_provider_configs (
+            provider_id TEXT PRIMARY KEY,
+            user_id TEXT NOT NULL,
+            provider TEXT NOT NULL,
+            base_url TEXT NOT NULL,
+            api_key_ciphertext TEXT NOT NULL,
+            api_key_mask TEXT NOT NULL,
+            validation_status TEXT NOT NULL DEFAULT 'untested',
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+        """
+    )
+    await db.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_model_provider_configs_user
+        ON model_provider_configs(user_id, updated_at)
+        """
+    )
+    await db.execute(
+        """
+        CREATE TABLE IF NOT EXISTS model_route_mappings (
+            user_id TEXT NOT NULL,
+            route_slot TEXT NOT NULL,
+            provider_id TEXT NOT NULL,
+            model TEXT NOT NULL,
+            supports_vision INTEGER NOT NULL DEFAULT 0,
+            route_version TEXT NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (user_id, route_slot),
+            FOREIGN KEY (provider_id) REFERENCES model_provider_configs(provider_id)
+                ON DELETE CASCADE
+        )
+        """
+    )
+
+
 MIGRATIONS: tuple[Migration, ...] = (
     ("20260610_001_add_documents_last_reindex_at", _add_documents_last_reindex_at),
     ("20260610_002_add_core_indexes", _add_core_indexes),
+    ("20260611_003_add_model_settings_tables", _add_model_settings_tables),
 )
 
 

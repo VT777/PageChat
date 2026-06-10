@@ -25,8 +25,15 @@ TIMEOUT_EXCEPTIONS = (asyncio.TimeoutError, TimeoutError)
 
 
 class ModelGateway:
-    def __init__(self, completion_fn: CompletionFn | None = None):
+    def __init__(
+        self,
+        completion_fn: CompletionFn | None = None,
+        model_settings_service: Any | None = None,
+        user_id: str | None = None,
+    ):
         self._completion_fn = completion_fn or async_chat_completion
+        self._model_settings_service = model_settings_service
+        self._user_id = user_id
 
     def timeout_for(self, route: str) -> int:
         if route == "flash":
@@ -145,6 +152,7 @@ class ModelGateway:
         try:
             return await self._call_with_timeout_retry(
                 route=route,
+                task=task,
                 messages=messages,
                 stream=stream,
                 tools=tools,
@@ -157,6 +165,7 @@ class ModelGateway:
                 raise
             return await self._call_with_timeout_retry(
                 route="flash",
+                task=task,
                 messages=messages,
                 stream=stream,
                 tools=tools,
@@ -167,6 +176,7 @@ class ModelGateway:
         self,
         *,
         route: str,
+        task: str = "",
         messages: list[dict],
         stream: bool,
         tools: list[dict] | None,
@@ -174,7 +184,10 @@ class ModelGateway:
     ) -> Any:
         retries_left = config.MODEL_TIMEOUT_RETRIES
         timeout = self.timeout_for(route)
-        model_name = self._model_for(route)
+        provider_config = await self._resolve_provider_config(task=task, route=route)
+        model_name = (
+            provider_config["model"] if provider_config else self._model_for(route)
+        )
 
         while True:
             try:
@@ -188,6 +201,8 @@ class ModelGateway:
                 if tools:
                     params["tools"] = tools
                     params["tool_choice"] = "auto"
+                if provider_config:
+                    params["provider_config"] = provider_config
                 return await self._completion_fn(**params)
             except TIMEOUT_EXCEPTIONS:
                 if retries_left <= 0:
@@ -213,3 +228,24 @@ class ModelGateway:
         if route == "flash":
             return config.LLM_FLASH_MODEL
         return config.LLM_PLUS_MODEL
+
+    @staticmethod
+    def _route_slot_for_task(task: str, route: str) -> str:
+        if task == "vision" or route == "vision":
+            return "vision"
+        if task == "answer":
+            return "document_qa"
+        return "general_chat"
+
+    async def _resolve_provider_config(
+        self, *, task: str, route: str
+    ) -> dict[str, Any] | None:
+        if not self._model_settings_service or not self._user_id:
+            return None
+        route_slot = self._route_slot_for_task(task, route)
+        provider_config = await self._model_settings_service.resolve_route(
+            self._user_id, route_slot
+        )
+        if route_slot == "vision" and not provider_config.get("supports_vision"):
+            raise ValueError("Configured vision route must use a vision-capable model")
+        return provider_config
