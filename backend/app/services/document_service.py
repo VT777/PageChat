@@ -25,6 +25,30 @@ class DocumentService:
     """文档服务 - 处理文档上传、管理和索引"""
 
     VISUAL_STATS_LOCK_STALE_SECONDS = 30.0
+    WINDOWS_RESERVED_NAMES = {
+        "CON",
+        "PRN",
+        "AUX",
+        "NUL",
+        "COM1",
+        "COM2",
+        "COM3",
+        "COM4",
+        "COM5",
+        "COM6",
+        "COM7",
+        "COM8",
+        "COM9",
+        "LPT1",
+        "LPT2",
+        "LPT3",
+        "LPT4",
+        "LPT5",
+        "LPT6",
+        "LPT7",
+        "LPT8",
+        "LPT9",
+    }
 
     def __init__(
         self,
@@ -246,10 +270,32 @@ class DocumentService:
         """生成文档 ID"""
         return str(uuid.uuid4())[:8]
 
+    def _normalize_upload_display_name(self, filename: str) -> str:
+        if not filename:
+            raise ValueError("文件名不能为空")
+        if "\x00" in filename or any(ord(ch) < 32 for ch in filename):
+            raise ValueError("文件名包含非法控制字符")
+        if "/" in filename or "\\" in filename:
+            raise ValueError("文件名不能包含路径分隔符")
+
+        name = Path(filename).name.strip()
+        if not name or name in {".", ".."}:
+            raise ValueError("文件名无效")
+
+        stem = Path(name).stem.upper()
+        if stem in self.WINDOWS_RESERVED_NAMES:
+            raise ValueError("文件名为系统保留名称")
+
+        return name
+
     def validate_file(self, filename: str, file_size: int) -> tuple[bool, str]:
         """验证文件"""
+        try:
+            display_name = self._normalize_upload_display_name(filename)
+        except ValueError as exc:
+            return False, str(exc)
         # 检查文件扩展名
-        ext = Path(filename).suffix.lower()
+        ext = Path(display_name).suffix.lower()
         if ext not in ALLOWED_EXTENSIONS:
             return False, f"不支持的文件格式: {ext}"
 
@@ -271,9 +317,11 @@ class DocumentService:
     ) -> DocumentResponse:
         """保存上传的文档到指定文件夹"""
         doc_id = self.generate_doc_id()
+        display_name = self._normalize_upload_display_name(filename)
+        ext = Path(display_name).suffix.lower()
 
         # 保存文件
-        file_path = DOCUMENTS_DIR / f"{doc_id}_{filename}"
+        file_path = DOCUMENTS_DIR / f"{doc_id}{ext}"
         with open(file_path, "wb") as f:
             f.write(file_content)
 
@@ -285,8 +333,8 @@ class DocumentService:
             """,
             (
                 doc_id,
-                filename,
-                filename,
+                display_name,
+                display_name,
                 str(file_path),
                 file_size,
                 file_type,
@@ -306,8 +354,8 @@ class DocumentService:
         now = datetime.utcnow()
         return DocumentResponse(
             id=doc_id,
-            name=filename,
-            original_name=filename,
+            name=display_name,
+            original_name=display_name,
             file_path=str(file_path),
             file_size=file_size,
             file_type=file_type,
