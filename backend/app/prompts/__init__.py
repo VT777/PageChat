@@ -44,7 +44,7 @@ D. 综合分析（"总结/评估"）
 - find_related_documents 置信度低 → 按 next_steps 建议尝试 get_document_structure → 仍不相关则请求用户澄清
 - 禁止在任何情况下编造文档内容
 
-## 可用工具
+## 【工具列表】
 {tool_catalog}
 
 ## 额外约束

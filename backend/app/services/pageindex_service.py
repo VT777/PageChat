@@ -553,6 +553,9 @@ class PageIndexService:
 
     @staticmethod
     def _is_noise_title(title: str) -> bool:
+        stripped = (title or "").strip()
+        if re.fullmatch(r"\d{4}[-/.]\d{1,2}[-/.]\d{1,2}", stripped):
+            return True
         t = PageIndexService._normalize_title(title)
         if not t:
             return True
