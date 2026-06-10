@@ -8,6 +8,7 @@ export interface ContentBlock {
   type: 'text' | 'heading' | 'paragraph' | 'table_row' | 'sheet' | 'slide' | 'image'
   content: any
   metadata: Record<string, any>
+  source_anchor?: SourceAnchor
 }
 
 // 文档内容响应
@@ -102,6 +103,7 @@ export interface Slide {
 // 引用位置信息
 export interface SourceAnchor {
   format: string
+  unit_type?: string
   // PDF
   start_page?: number
   end_page?: number
@@ -118,6 +120,8 @@ export interface SourceAnchor {
   end_paragraph?: number
   // PPTX
   slide?: number
+  start_slide?: number
+  end_slide?: number
 }
 
 // 预览器公共 Props

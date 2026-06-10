@@ -129,7 +129,27 @@ class DocumentSearchService:
     ) -> Optional[Dict[str, Any]]:
         anchor = meta.get("source_anchor")
         if isinstance(anchor, dict) and anchor:
-            return anchor
+            normalized = dict(anchor)
+            if not normalized.get("unit_type"):
+                if "start_line" in normalized or "end_line" in normalized:
+                    normalized["unit_type"] = "line"
+                elif "start_paragraph" in normalized or "end_paragraph" in normalized:
+                    normalized["unit_type"] = "paragraph"
+                elif "start_row" in normalized or "end_row" in normalized:
+                    normalized["unit_type"] = "row_range"
+                elif "start_slide" in normalized or "end_slide" in normalized or "slide" in normalized:
+                    normalized["unit_type"] = "slide"
+                    if "slide" in normalized and "start_slide" not in normalized:
+                        normalized["start_slide"] = normalized["slide"]
+                    if "slide" in normalized and "end_slide" not in normalized:
+                        normalized["end_slide"] = normalized["slide"]
+                elif "start_page" in normalized or "end_page" in normalized or "page" in normalized:
+                    normalized["unit_type"] = "page"
+                    if "page" in normalized and "start_page" not in normalized:
+                        normalized["start_page"] = normalized["page"]
+                    if "page" in normalized and "end_page" not in normalized:
+                        normalized["end_page"] = normalized["page"]
+            return normalized
         start_index = meta.get("start_index")
         if start_index is None:
             return None

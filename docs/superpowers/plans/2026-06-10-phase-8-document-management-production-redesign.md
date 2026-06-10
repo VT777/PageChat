@@ -32,6 +32,15 @@ Required backend fields should be confirmed before implementing the right detail
 
 If some fields are unavailable, implement graceful placeholders and record backend follow-ups.
 
+Before visual implementation, prepare sample states for QA:
+
+- Long file name.
+- Long folder path.
+- Long document summary.
+- Missing optional metadata fields.
+- `completed`, `needs_review`, `indexing`, and error statuses.
+- Batch mode with multiple selected documents.
+
 ## Files And Responsibilities
 
 - Modify: `frontend/src/views/DocumentView.vue`
@@ -285,6 +294,19 @@ Check:
 - Batch mode does not squeeze row content.
 - Detail panel actions do not overflow.
 - Preview modal shows source content only.
+- Long file names and folder paths truncate or wrap cleanly.
+- Long summaries scroll only inside the intended summary area.
+- Switching between batch and non-batch mode does not change row height or squeeze primary metadata.
+- Empty, loading, error, and no-selection states are visually stable.
+
+Capture screenshots or recorded QA notes for:
+
+- Document list with normal data.
+- Document list with long names/paths.
+- Right detail panel with long summary.
+- Batch mode.
+- Preview modal.
+- Narrow viewport.
 
 - [ ] **Step 3: Run backend tests only if API fields changed**
 
@@ -301,6 +323,7 @@ Inputs:
 - This Phase 8 plan.
 - `docs/superpowers/2026-06-10-next-phase-roadmap.md`
 - `docs/superpowers/2026-06-10-phase-1-improvement-report.md`
+- `docs/superpowers/2026-06-10-phase-2-improvement-report.md`
 - Source plan: `<source-plan-copy>\docs\superpowers\plans\2026-06-10-frontend-design-plan.md`
 - Current git status.
 - Build output, manual QA notes, and any backend test output from Steps 1-3.
@@ -315,7 +338,8 @@ Phase 8 is complete when:
 - Detail panel shows identity, attributes, index status, full summary, and actions.
 - Preview modal keeps TOC on the left and original content on the right.
 - Frontend build passes.
-- Manual responsive QA is recorded.
+- Manual responsive QA is recorded with screenshots or explicit notes for the required states.
+- Long text, batch mode, and detail-panel scrolling are verified against overflow and layout-shift regressions.
 - Completion gate passes or only records accepted P2 follow-ups.
 
 ## Out Of Scope

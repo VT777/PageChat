@@ -20,6 +20,38 @@ Required:
 - Existing adapters emit `unit_type` in anchors.
 - Source-anchor resolver has tests for line/row anchors and explicit Office behavior.
 - Full backend suite passes after Phase 2.
+- `docs/superpowers/2026-06-10-phase-2-improvement-report.md` is available as the adapter-contract baseline.
+
+## Parsing Limits And Safety Rules
+
+All new adapters must be bounded and deterministic.
+
+Initial limits should be conservative and configurable where practical:
+
+- Maximum rows indexed per table chunk.
+- Maximum table chunks per sheet.
+- Maximum sheets indexed per workbook before summary-only fallback.
+- Maximum text characters per DOCX/PPTX node.
+- Maximum slides inspected per PPTX before summary-only fallback.
+- Maximum source-anchor resolver range for lines, rows, paragraphs, and slides.
+
+Error handling rules:
+
+- Corrupt files should return a controlled indexing error, not an unhandled parser exception.
+- Large files should degrade to schema/sample/summary nodes before exhausting memory.
+- Office ZIP/XML files should be treated as untrusted input. Tests should cover malformed archives and missing expected XML parts when practical.
+- Parser warnings should be stored as metadata or quality flags when they affect evidence completeness.
+
+Visual-heavy Office content should use a consistent metadata flag:
+
+```json
+{
+  "needs_visual_enhancement": true,
+  "visual_reason": "slide has little text and multiple image shapes"
+}
+```
+
+Do not claim complete extraction for DOCX/PPTX content that is mainly images, charts, or embedded objects.
 
 ## Files And Responsibilities
 
@@ -146,6 +178,8 @@ Cover:
 - Numeric type inference.
 - Sheet and row-range source anchors.
 - XLSX anchor resolution returns row content.
+- Large-sheet chunk limits.
+- Corrupt or unsupported workbook errors are controlled.
 
 - [ ] **Step 3: Run tests**
 
@@ -210,6 +244,8 @@ Cover:
 - Long sections that need splitting.
 - Paragraph anchors.
 - DOCX anchor resolution returns paragraph content.
+- Image-heavy documents set `needs_visual_enhancement` without pretending image content was extracted.
+- Corrupt DOCX errors are controlled.
 
 - [ ] **Step 3: Run tests**
 
@@ -277,6 +313,8 @@ Cover:
 - Visual-heavy slides.
 - Slide anchors.
 - PPTX anchor resolution returns slide text.
+- Slide-count or text-size limits are enforced.
+- Corrupt PPTX errors are controlled.
 
 - [ ] **Step 3: Run tests**
 
@@ -371,6 +409,8 @@ Store converted artifacts under a controlled directory such as:
 backend/data/converted/
 ```
 
+Converted artifacts must be linked to the source document ID so document deletion and reindex cleanup can remove them.
+
 - [ ] **Step 4: Add whitelist entries only after conversion tests pass**
 
 Only then allow:
@@ -384,6 +424,8 @@ Only then allow:
 ```powershell
 C:\Users\TT_WT\.local\bin\uv.exe run pytest tests/test_legacy_office_conversion.py -q
 ```
+
+Tests should verify that deleting a converted legacy document removes both the uploaded source and converted artifact.
 
 - [ ] **Step 6: Commit**
 
@@ -422,6 +464,7 @@ Inputs:
 - This Phase 7 plan.
 - `docs/superpowers/2026-06-10-next-phase-roadmap.md`
 - `docs/superpowers/2026-06-10-phase-1-improvement-report.md`
+- `docs/superpowers/2026-06-10-phase-2-improvement-report.md`
 - Source plan: `<source-plan-copy>\docs\superpowers\plans\2026-06-10-multi-format-document-support-plan.md`
 - Current git status.
 - Test and build output from Steps 1-3.
@@ -435,6 +478,8 @@ Phase 7 is complete when:
 - Preview extraction uses canonical blocks where available.
 - Table aggregation uses the table adapter dataset.
 - Source-anchor resolver handles line, row, paragraph, and slide anchors with real parser-backed content.
+- Large and malformed non-PDF files have bounded behavior and controlled errors.
+- Visual-heavy DOCX/PPTX content is explicitly flagged instead of silently treated as fully extracted text.
 - Legacy `.doc`, `.xls`, and `.ppt` remain rejected unless conversion support is enabled and tested.
 - Focused and full backend tests pass.
 - Frontend build passes.

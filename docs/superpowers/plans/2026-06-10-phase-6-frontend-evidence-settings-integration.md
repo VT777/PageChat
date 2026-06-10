@@ -24,6 +24,10 @@ Phase 4 is recommended if chat scope UI is included.
 
 - Modify: `frontend/src/api/index.ts`
   - Add model settings API methods and chat scope fields.
+- Modify or create: `frontend/src/types/preview.ts`
+  - Keep `SourceAnchor` in sync with backend anchor fields.
+- Modify or create: `frontend/src/types/retrieval.ts`
+  - Add retrieval trace, quality report, and chat scope types if no existing type home is more appropriate.
 - Modify: `frontend/src/stores/document.ts`
   - Preserve source anchors and quality metadata.
 - Modify: `frontend/src/stores/folder.ts`
@@ -61,6 +65,45 @@ Phase 4 is recommended if chat scope UI is included.
   - `sales.xlsx Sheet1 rows 2-80`
   - `deck.pptx slide 7`
 
+## Frontend Data Contracts
+
+The frontend should tolerate partial backend rollout:
+
+- Prefer backend `display_label` when present.
+- Fall back to formatting `source_anchor` when `display_label` is missing.
+- Fall back to the existing page/index label when both `display_label` and `source_anchor` are missing.
+- Treat `quality_report` as optional.
+- Treat unknown `quality_report.status` values as neutral metadata, not fatal UI states.
+- Preserve existing chat requests when no folder/document scope is selected.
+
+Minimum TypeScript shapes:
+
+```ts
+type SourceAnchor = {
+  format?: string
+  unit_type?: 'page' | 'line' | 'paragraph' | 'row_range' | 'slide' | string
+  start_page?: number
+  end_page?: number
+  start_line?: number
+  end_line?: number
+  start_paragraph?: number
+  end_paragraph?: number
+  sheet?: string
+  start_row?: number
+  end_row?: number
+  start_slide?: number
+  end_slide?: number
+}
+
+type QualityReport = {
+  status?: 'completed' | 'needs_review' | 'failed:indexing' | string
+  score?: number
+  warnings?: string[]
+  node_count?: number
+  page_range_coverage?: number
+}
+```
+
 ## Task 1: Evidence Labels In Chat And Preview
 
 **Files:**
@@ -80,6 +123,8 @@ Create or colocate a helper that formats `source_anchor` the same way as backend
 - [ ] **Step 2: Add evidence label tests if frontend test framework exists**
 
 If no frontend test framework is configured, document this as a verification limitation and rely on build plus manual checks.
+
+Manual checks must include examples for page, line, row, paragraph, and slide labels when fixtures are available.
 
 - [ ] **Step 3: Update citation rendering**
 
@@ -211,6 +256,8 @@ Add methods for:
 - Provider config list/create/update/delete.
 - Test connection.
 - Route mapping read/update.
+- Error responses for failed provider validation.
+- Safe handling for masked saved-key state.
 
 - [ ] **Step 2: Build provider settings component**
 
@@ -222,6 +269,8 @@ Fields:
 - Model IDs.
 - Test connection.
 - Masked saved key state.
+- Validation error state.
+- Delete/reset behavior that makes route fallback explicit.
 
 - [ ] **Step 3: Build route settings component**
 
@@ -274,6 +323,8 @@ Check:
 - Source preview opens for page, line, row, paragraph, and slide anchors where supported.
 - `needs_review` documents show concrete warnings.
 - Model settings save without displaying raw saved keys.
+- Provider test failures show clear errors without exposing raw keys.
+- Route mappings fall back to environment defaults after a provider is deleted or disabled.
 - Chat scope can be switched explicitly.
 
 - [ ] **Step 4: Run completion gate audit**
@@ -285,6 +336,7 @@ Inputs:
 - This Phase 6 plan.
 - `docs/superpowers/2026-06-10-next-phase-roadmap.md`
 - `docs/superpowers/2026-06-10-phase-1-improvement-report.md`
+- `docs/superpowers/2026-06-10-phase-2-improvement-report.md`
 - Source plan: `<source-plan-copy>\docs\superpowers\plans\2026-06-10-core-tree-retrieval-quality-plan.md`
 - Source plan: `<source-plan-copy>\docs\superpowers\plans\2026-06-10-user-configurable-models.md`
 - Source plan: `<source-plan-copy>\docs\superpowers\plans\2026-06-10-frontend-design-plan.md`

@@ -10,15 +10,15 @@ The Phase 1 report recommended model configuration as the next candidate phase. 
 
 ## Current Baseline
 
-Phase 1 and Phase 1.1 are the current foundation baseline.
+Phase 2 is the current foundation baseline.
 
-Verified baseline from the Phase 1 report:
+Verified baseline from the Phase 2 report:
 
-- Focused Phase 1 backend suite: `43 passed`
-- Full backend suite: `271 passed, 8 skipped`
+- Phase 2 focused backend suite: `37 passed`
+- Full backend suite: `293 passed, 8 skipped`
 - Frontend compatibility build: passed from `frontend/` with `npm.cmd run build`
 
-Phase 1 established these contracts:
+Phase 1 established these safety contracts:
 
 - Tool, search, cache, and document access paths require user scope.
 - `allowed_doc_ids` narrows access but does not grant cross-user access.
@@ -27,6 +27,15 @@ Phase 1 established these contracts:
 - Folder and document deletion clear files, indexes, document caches, and agent state.
 - JWT signing secret is stable and environment-backed.
 - Lightweight migrations and core indexes exist.
+
+Phase 2 established these evidence contracts:
+
+- Current non-PDF adapters emit explicit `source_anchor.unit_type`.
+- Search and tool outputs preserve `source_anchor`, `display_label`, `retrieval_source`, `confidence`, and `why_selected`.
+- Preview blocks may carry additive `source_anchor` metadata.
+- A canonical adapter data model exists under `backend/app/services/format_adapters/`.
+- Source anchors can be resolved to bounded source content for TXT, Markdown, CSV/TSV, XLSX, DOCX, and PPTX through the current resolver.
+- PDF page anchors remain handled by the existing page-content path.
 
 ## Strategic Direction
 
@@ -88,14 +97,14 @@ Phase 5 can begin after Phase 2 if team capacity allows, but it should not modif
 
 ## Immediate Recommendation
 
-Start with Phase 2.
+Start with Phase 3.
 
 Why:
 
-- The code still contains a concrete Markdown adapter defect in `backend/app/services/multi_format_adapter.py`: the Markdown path references `paragraphs`, which belongs to the DOCX path.
-- Existing multi-format tests only cover TXT and CSV lightly.
-- Search and retrieval trace already preserve `source_anchor`; the next unlock is making anchors consistent and resolvable across formats.
-- Later frontend citation work needs stable labels such as `notes.md lines 20-42`, `sales.xlsx Sheet1 rows 2-80`, and `deck.pptx slide 7`.
+- Phase 2 already stabilized the source-anchor and current multi-format evidence foundation.
+- The next unlock is making tree retrieval quality measurable through quality reports, regression fixtures, fallback thresholds, and tree-first policy tests.
+- Phase 4 folder-aware retrieval and Phase 6 evidence UI should depend on explicit quality signals instead of ad hoc retrieval behavior.
+- Later adapter migration can preserve the Phase 2 anchor contract while Phase 3 protects retrieval quality from regressions.
 
 ## Cross-Phase Rules
 
@@ -110,6 +119,7 @@ Why:
 - Do not add legacy `.doc`, `.xls`, or `.ppt` upload support until conversion support exists and is tested.
 - Do not expose user API keys back to the frontend after saving model settings.
 - Do not treat Phase 2 as the full multi-format implementation. Phase 2 only stabilizes anchors and current paths; Phase 7 migrates each format to canonical adapters and handles legacy conversion.
+- Treat Phase 2 as complete for roadmap sequencing. Do not reopen Phase 2 scope unless the Phase 2 report or completion gate records a regression.
 - Do not claim tree retrieval quality is complete until tree-first policy, fallback thresholds, and compact tree output are covered in Phases 3 and 4.
 - Keep legacy `NULL user_id` records quarantined from new retrieval, tool, and settings behavior unless a phase explicitly defines a migration or ownership policy.
 - Add bounded retrieval and parsing limits when new flows can expand work: candidate document count, fetched source range, row chunk size, and agent/tool loop count should be explicit in the relevant phase.
@@ -122,6 +132,7 @@ Every phase should run the completion gate with these inputs:
 - This roadmap.
 - The current phase plan under `docs/superpowers/plans/`.
 - `docs/superpowers/2026-06-10-phase-1-improvement-report.md`
+- `docs/superpowers/2026-06-10-phase-2-improvement-report.md`
 - Any source plan listed in the mapping above that corresponds to the phase.
 - Current git status and test output from the phase verification commands.
 

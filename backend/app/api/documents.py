@@ -98,12 +98,16 @@ def _load_index_meta_brief(index_path: Optional[str]) -> dict:
         route = data.get("route_decision")
         if not isinstance(route, dict):
             route = {}
+        quality_report = data.get("quality_report")
+        if not isinstance(quality_report, dict):
+            quality_report = None
         return {
             "requested_mode": route.get("requested_mode"),
             "execution_mode": route.get("execution_mode"),
             "reasons": route.get("reasons")
             if isinstance(route.get("reasons"), list)
             else [],
+            "quality_report": quality_report,
         }
     except Exception:
         return {}
@@ -174,6 +178,7 @@ def _attach_parse_meta(doc: DocumentResponse) -> DocumentResponse:
     doc.parse_reasons = meta.get("reasons") or []
     doc.parse_completion = _parse_completion_from_status(doc.status)
     doc.parse_error_code = _parse_error_code(doc.status)
+    doc.quality_report = meta.get("quality_report")
     doc.processing_duration = _calculate_processing_duration(doc)
     return doc
 

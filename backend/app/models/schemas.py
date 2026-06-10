@@ -1,5 +1,5 @@
 from pydantic import BaseModel, validator
-from typing import Optional, List
+from typing import Optional, List, Dict, Any
 from datetime import datetime
 
 
@@ -98,6 +98,7 @@ class DocumentResponse(DocumentBase):
     parse_reasons: Optional[List[str]] = None
     parse_completion: Optional[str] = None
     parse_error_code: Optional[str] = None
+    quality_report: Optional[Dict[str, Any]] = None
     processing_duration: Optional[float] = None
     last_reindex_at: Optional[datetime] = None
     created_at: datetime

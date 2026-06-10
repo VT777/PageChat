@@ -91,7 +91,7 @@ def build_source_display_label(
         label = _range_label(anchor.get("start_row"), anchor.get("end_row"), "row", "rows")
         if sheet and label:
             return f"{document_name} {sheet} {label}"
-        return fallback
+        return f"{document_name} {label}" if label else fallback
 
     if unit_type == "slide":
         label = _range_label(

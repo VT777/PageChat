@@ -309,6 +309,173 @@ def decide_extraction_path(toc_check: Dict, divider_check: Dict) -> Dict[str, st
 # TOC质量检查器
 # ===========================================================================
 
+def _flatten_index_nodes(nodes: Any, depth: int = 1) -> List[Dict[str, Any]]:
+    if not isinstance(nodes, list):
+        return []
+
+    flattened: List[Dict[str, Any]] = []
+    for node in nodes:
+        if not isinstance(node, dict):
+            continue
+        item = dict(node)
+        item["_quality_depth"] = depth
+        flattened.append(item)
+        children = node.get("nodes") or node.get("children") or []
+        flattened.extend(_flatten_index_nodes(children, depth + 1))
+    return flattened
+
+
+def _positive_page(value: Any) -> Optional[int]:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int) and value > 0:
+        return value
+    if isinstance(value, str) and value.strip().isdigit():
+        parsed = int(value.strip())
+        return parsed if parsed > 0 else None
+    return None
+
+
+def _node_page_range(node: Dict[str, Any]) -> Optional[tuple[int, int]]:
+    anchor = node.get("source_anchor")
+    if isinstance(anchor, dict) and anchor.get("unit_type") == "page":
+        start = _positive_page(anchor.get("start_page") or anchor.get("page"))
+        end = _positive_page(anchor.get("end_page") or anchor.get("page"))
+    else:
+        start = _positive_page(
+            node.get("start_index")
+            or node.get("start_page")
+            or node.get("page")
+            or node.get("physical_index")
+        )
+        end = _positive_page(
+            node.get("end_index")
+            or node.get("end_page")
+            or node.get("page")
+            or node.get("physical_index")
+        )
+
+    if start is None or end is None:
+        return None
+    if end < start:
+        return None
+    return start, end
+
+
+def build_index_quality_report(
+    index_payload: Dict[str, Any],
+    page_count: Optional[int] = None,
+) -> Dict[str, Any]:
+    """Build a deterministic, conservative quality report for an index payload."""
+    structure = (
+        index_payload.get("structure", [])
+        if isinstance(index_payload, dict)
+        else []
+    )
+    if isinstance(structure, dict):
+        structure = structure.get("structure", [])
+
+    nodes = _flatten_index_nodes(structure)
+    node_count = len(nodes)
+    warnings: List[str] = []
+
+    if node_count == 0:
+        page_total = int(page_count or 0)
+        return {
+            "status": "failed:indexing",
+            "score": 0.0,
+            "node_count": 0,
+            "max_depth": 0,
+            "page_range_coverage": 0.0,
+            "duplicate_title_ratio": 0.0,
+            "empty_summary_ratio": 0.0,
+            "unmapped_pages": list(range(1, page_total + 1)),
+            "anchor_confidence": 0.0,
+            "visual_required_pages": 0,
+            "visual_success_pages": 0,
+            "warnings": ["empty structure"],
+        }
+
+    max_depth = max(int(node.get("_quality_depth") or 1) for node in nodes)
+    titles = [
+        str(node.get("title") or "").strip().lower()
+        for node in nodes
+        if str(node.get("title") or "").strip()
+    ]
+    title_counts = Counter(titles)
+    duplicate_title_count = sum(count - 1 for count in title_counts.values() if count > 1)
+    duplicate_title_ratio = duplicate_title_count / node_count
+
+    empty_summary_count = sum(
+        1 for node in nodes if not str(node.get("summary") or "").strip()
+    )
+    empty_summary_ratio = empty_summary_count / node_count
+
+    page_total = int(page_count or index_payload.get("page_count") or 0)
+    covered_pages = set()
+    valid_anchor_count = 0
+    for node in nodes:
+        page_range = _node_page_range(node)
+        if page_range is None:
+            continue
+        valid_anchor_count += 1
+        start, end = page_range
+        if page_total > 0:
+            start = max(1, min(start, page_total))
+            end = max(1, min(end, page_total))
+        covered_pages.update(range(start, end + 1))
+
+    if page_total > 0:
+        page_range_coverage = len(covered_pages) / page_total
+        unmapped_pages = [
+            page for page in range(1, page_total + 1) if page not in covered_pages
+        ]
+    else:
+        page_range_coverage = 1.0 if covered_pages else 0.0
+        unmapped_pages = []
+
+    anchor_confidence = valid_anchor_count / node_count
+    if page_range_coverage < 0.7:
+        warnings.append("page range coverage below threshold")
+    if duplicate_title_ratio > 0.35:
+        warnings.append("duplicate title ratio above threshold")
+    if empty_summary_ratio > 0.5:
+        warnings.append("empty summary ratio above threshold")
+    if anchor_confidence < 0.7:
+        warnings.append("anchor confidence below threshold")
+
+    status = "needs_review" if warnings else "completed"
+    score = (
+        page_range_coverage * 0.4
+        + (1.0 - min(duplicate_title_ratio, 1.0)) * 0.2
+        + (1.0 - min(empty_summary_ratio, 1.0)) * 0.2
+        + anchor_confidence * 0.2
+    )
+
+    visual_summaries = index_payload.get("visual_page_summaries") or []
+    visual_required_pages = len(visual_summaries) if isinstance(visual_summaries, list) else 0
+    visual_success_pages = sum(
+        1
+        for item in visual_summaries
+        if isinstance(item, dict) and str(item.get("summary") or "").strip()
+    )
+
+    return {
+        "status": status,
+        "score": round(score, 4),
+        "node_count": node_count,
+        "max_depth": max_depth,
+        "page_range_coverage": round(page_range_coverage, 4),
+        "duplicate_title_ratio": round(duplicate_title_ratio, 4),
+        "empty_summary_ratio": round(empty_summary_ratio, 4),
+        "unmapped_pages": unmapped_pages,
+        "anchor_confidence": round(anchor_confidence, 4),
+        "visual_required_pages": visual_required_pages,
+        "visual_success_pages": visual_success_pages,
+        "warnings": warnings,
+    }
+
+
 class TocQualityChecker:
     """Validate whether an extracted TOC is good enough to preserve."""
 

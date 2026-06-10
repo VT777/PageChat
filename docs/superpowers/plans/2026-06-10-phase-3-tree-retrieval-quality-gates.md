@@ -20,6 +20,16 @@ Required inputs:
 - Source-anchor display labels work.
 - Search and tool outputs preserve source anchors.
 - Full backend suite passes after Phase 2.
+- `docs/superpowers/2026-06-10-phase-2-improvement-report.md` is available and treated as the immediate baseline.
+
+## Pre-Implementation Decisions
+
+Resolve these before Task 2 changes index persistence or document status behavior:
+
+- Keep database `documents.status` as `completed` for usable but weak indexes unless a focused compatibility audit confirms `needs_review` will not break current list/detail/status workflows.
+- Store the first quality signal under `index_payload["quality_report"]`. Add database columns only if a later frontend or filtering requirement needs denormalized quality fields.
+- Expose quality reports through document detail/list APIs as optional metadata. Missing quality reports must mean "not yet measured", not failure.
+- Treat old indexes without `quality_report` as backward-compatible. They should load normally and may return `quality_report: null` or a generated lightweight default, but they must not be marked failed just because the field is absent.
 
 ## Files And Responsibilities
 
@@ -73,6 +83,43 @@ Initial statuses:
 - `failed:indexing`: unusable index.
 
 If document status changes would break existing UI or workflows, keep database status as `completed` and store `quality_report.status = "needs_review"` until Phase 6.
+
+## API And Compatibility Contract
+
+Document-facing responses may add an optional field:
+
+```json
+{
+  "quality_report": {
+    "status": "completed",
+    "score": 0.91,
+    "warnings": [],
+    "node_count": 48,
+    "page_range_coverage": 0.96
+  }
+}
+```
+
+Rules:
+
+- The field is additive and optional.
+- Existing clients that ignore it must continue to work.
+- Old indexes without the field must not fail document detail, preview, search, or chat flows.
+- `quality_report.status = "needs_review"` is the preferred first-stage signal for weak but usable indexes.
+- `documents.status = "needs_review"` is deferred unless the implementation proves all existing status consumers handle it.
+- `failed:indexing` should be used only for unusable index output, not for missing quality metadata on legacy indexes.
+
+## Evaluation Fixture Policy
+
+Regression fixtures should be small, deterministic, and safe to run in the normal backend suite.
+
+Use this preference order:
+
+1. Synthetic in-test documents generated from stable content.
+2. Existing lightweight repository fixtures.
+3. New small fixture files under `backend/tests/fixtures/evaluation/`.
+
+Do not require network access, external model calls, or large binary documents. If PDF fixture generation is expensive or flaky, start with quality-report unit tests plus Markdown/table retrieval fixtures, then record PDF fixture expansion as a P2 follow-up.
 
 ## Task 1: Define Quality Report Builder
 
@@ -137,6 +184,8 @@ git commit -m "feat: add index quality report builder"
 
 Test that generated or saved index payloads include `quality_report`.
 
+Also test that an existing index payload without `quality_report` still loads and remains searchable.
+
 - [ ] **Step 2: Run test and verify failure**
 
 ```powershell
@@ -148,6 +197,8 @@ C:\Users\TT_WT\.local\bin\uv.exe run pytest tests/test_pdf_index_quality_gates.p
 Call `build_index_quality_report()` after structure generation and before index persistence.
 
 Do not change PDF extraction logic.
+
+Keep database document status as `completed` for `quality_report.status = "needs_review"` unless the pre-implementation decision explicitly approved a database status change.
 
 - [ ] **Step 4: Run tests**
 
@@ -196,6 +247,20 @@ Example:
     "expected_unit_type": "line"
   }
 ]
+```
+
+Manifest entries should include enough expected data to catch regressions without relying on exact model wording:
+
+```json
+{
+  "id": "contract_scope_lookup",
+  "format": "markdown",
+  "query": "Which section explains renewal terms?",
+  "expected_document_contains": "contract",
+  "expected_title_contains": "Renewal",
+  "expected_unit_type": "line",
+  "allow_fallback": false
+}
 ```
 
 - [ ] **Step 3: Write regression tests**
@@ -310,6 +375,7 @@ Inputs:
 - This Phase 3 plan.
 - `docs/superpowers/2026-06-10-next-phase-roadmap.md`
 - `docs/superpowers/2026-06-10-phase-1-improvement-report.md`
+- `docs/superpowers/2026-06-10-phase-2-improvement-report.md`
 - Source plan: `<source-plan-copy>\docs\superpowers\plans\2026-06-10-core-tree-retrieval-quality-plan.md`
 - Current git status.
 - Test output from Steps 1-2.
@@ -319,6 +385,8 @@ Inputs:
 Phase 3 is complete when:
 
 - Every new index payload can include `quality_report`.
+- Old index payloads without `quality_report` remain loadable and searchable.
+- Document APIs expose quality metadata as optional additive fields or explicitly record a Phase 6 follow-up if API exposure is deferred.
 - Quality report builder is covered by unit tests.
 - Weak but usable indexes have a measurable status.
 - Regression fixtures exist and can detect retrieval quality drift.

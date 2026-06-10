@@ -15,7 +15,7 @@ import PyPDF2
 from pageindex.page_index import page_index_main, page_index_main_with_page_list
 from pageindex.utils import config, get_nodes, get_page_tokens, structure_to_list
 from pageindex.page_index_md import md_to_tree
-from pageindex.quality_validation import TocQualityChecker
+from pageindex.quality_validation import TocQualityChecker, build_index_quality_report
 from app.models.retrieval import build_source_display_label
 from app.core.config import (
     INDEXES_DIR,
@@ -44,6 +44,10 @@ from app.prompts.pageindex_prompts import (
 from app.services.multi_format_adapter import generate_multi_format_index
 from app.services.ocr_service import OCRService
 from app.services.runtime_settings_service import runtime_settings_service
+
+
+TREE_HIGH_CONFIDENCE_THRESHOLD = 0.65
+TREE_FALLBACK_CONFIDENCE_THRESHOLD = 0.35
 
 
 async def check_query_appearance(
@@ -3151,9 +3155,36 @@ Return strict JSON only:
     def _save_index_payload(doc_id: str, payload: Dict[str, Any]) -> Path:
         INDEXES_DIR.mkdir(parents=True, exist_ok=True)
         index_path = INDEXES_DIR / f"{doc_id}.json"
+        PageIndexService._attach_index_quality_report(payload)
         with open(index_path, "w", encoding="utf-8") as f:
             json.dump(payload, f, ensure_ascii=False, indent=2)
         return index_path
+
+    @staticmethod
+    def _attach_index_quality_report(
+        payload: Dict[str, Any],
+        page_count: Optional[int] = None,
+        *,
+        force_pdf: bool = False,
+    ) -> None:
+        if not isinstance(payload, dict) or payload.get("quality_report") is not None:
+            return
+
+        doc_name = str(
+            payload.get("doc_name") or payload.get("document_name") or ""
+        ).lower()
+        is_pdf_payload = (
+            force_pdf
+            or str(payload.get("format") or "").lower() == "pdf"
+            or doc_name.endswith(".pdf")
+        )
+        if not is_pdf_payload:
+            return
+
+        payload["quality_report"] = build_index_quality_report(
+            payload,
+            page_count=page_count or payload.get("page_count"),
+        )
 
     async def _generate_index_v2(
         self, file_path: Path, doc_id: str, mode_override: Optional[str] = None
@@ -4183,6 +4214,12 @@ Return strict JSON only:
                     print(
                         f"[FAST_SUMMARY] final=empty doc={file_path.name} doc_id={doc_id}"
                     )
+
+        self._attach_index_quality_report(
+            result,
+            page_count=page_count,
+            force_pdf=file_path.suffix.lower() == ".pdf",
+        )
 
         with open(index_path, "w", encoding="utf-8") as f:
             json.dump(result, f, indent=2, ensure_ascii=False)

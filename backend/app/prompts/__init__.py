@@ -33,6 +33,13 @@ C. 多文档比较（"对比A和B"）
 D. 综合分析（"总结/评估"）
    → get_document_structure → 若摘要已足够则不调 get_page_content
 
+## tree-first retrieval policy
+- When a document is selected, use get_document_structure before get_page_content.
+- When no document is selected, use find_related_documents only to identify candidate documents, then inspect structure.
+- Always fetch source content before final answer when factual claims need citations.
+- Use keyword_fallback or visual_summary only when tree results are empty, low confidence, marked needs_review, or the user explicitly asks for broad keyword search.
+- If keyword_fallback or visual_summary materially contributes, disclose fallback evidence and uncertainty in the answer.
+
 ## 质量门槛
 回答前确认：
 - 是否获取了足够证据？（2个以上独立来源更可靠）

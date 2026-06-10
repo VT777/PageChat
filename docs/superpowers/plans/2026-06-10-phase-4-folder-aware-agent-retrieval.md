@@ -19,6 +19,7 @@ Required:
 - Search/tool outputs include source anchors and display labels.
 - User and allowed document scope remains mandatory and tested.
 - Folder metadata exists in search segment metadata.
+- Phase 2 report is available as the evidence-anchor baseline.
 
 ## Files And Responsibilities
 
@@ -69,6 +70,57 @@ Rules:
 - `strict_scope=true` means do not search outside selected documents/folder.
 - `strict_scope=false` allows current-user expansion only, never cross-user access.
 
+Scope precedence:
+
+1. `user_id` is always the outer authorization boundary.
+2. `document_ids` and `folder_id` are narrowing filters inside the current user boundary.
+3. When both `document_ids` and `folder_id` are supplied, results must satisfy both unless the API explicitly documents a different mode.
+4. `allowed_doc_ids` remains a narrower authorization subset and must never be widened by `folder_id` or `strict_scope=false`.
+5. `strict_scope=false` may expand from selected documents or folder to the current user's broader library, but it must never include another user's documents or quarantined legacy `NULL user_id` records.
+
+## Chat Request Compatibility
+
+Current chat requests that only send `document_ids` must continue to work.
+
+Recommended request shape:
+
+```json
+{
+  "message": "Summarize the renewal risk",
+  "conversation_id": "conv-1",
+  "document_ids": ["doc-1"],
+  "folder_id": "folder-1",
+  "include_subfolders": false,
+  "strict_scope": true
+}
+```
+
+Compatibility rules:
+
+- If `document_ids` is present and `strict_scope` is omitted, default to `strict_scope=true`.
+- If `folder_id` is present and `strict_scope` is omitted, default to `strict_scope=true`.
+- If neither document nor folder scope is present, search only the current user's library.
+- If `strict_scope=false`, include a trace field showing that scoped expansion was allowed.
+- Unknown scope fields should be ignored only if they are additive and harmless; invalid known IDs should return a clear scoped-not-found or unauthorized response.
+
+## Retrieval Trace Requirements
+
+Any search, tool, or planner result that expands beyond an explicit selected document or folder should include trace metadata such as:
+
+```json
+{
+  "scope": {
+    "requested_document_ids": ["doc-1"],
+    "requested_folder_id": "folder-1",
+    "include_subfolders": false,
+    "strict_scope": false,
+    "expanded_to_user_library": true
+  }
+}
+```
+
+The exact field name may follow existing trace conventions, but tests must assert that expansion is visible and user-scoped.
+
 ## Task 1: Add Folder-Aware Search Filtering
 
 **Files:**
@@ -84,6 +136,7 @@ Cover:
 - `include_subfolders=true` includes descendants.
 - `include_subfolders=false` excludes descendants.
 - `allowed_doc_ids` still narrows folder results.
+- Combined `document_ids` and `folder_id` returns only documents satisfying both filters.
 - Renaming a folder updates descendant `documents.folder_path`.
 - Moving a folder updates descendant `documents.folder_path`.
 
@@ -186,6 +239,8 @@ Cover:
 - Explicit `document_ids` defaults to strict scope.
 - Explicit `folder_id` defaults to strict scope.
 - `strict_scope=false` allows current-user expansion.
+- `strict_scope=false` records expansion trace metadata.
+- `allowed_doc_ids` still cannot be widened by folder or global expansion.
 - Returned matched segments include actionable anchors.
 - `recommended_next_action` is present.
 
@@ -299,6 +354,8 @@ Cover:
 - Global question -> current-user search.
 - Table/statistics query -> table aggregation route.
 - Low confidence -> Agent fallback.
+- Existing `document_ids`-only chat request -> strict selected-document route.
+- `strict_scope=false` request -> current-user expansion route with visible trace.
 
 - [ ] **Step 2: Run tests and verify failure**
 
@@ -356,6 +413,7 @@ Inputs:
 - This Phase 4 plan.
 - `docs/superpowers/2026-06-10-next-phase-roadmap.md`
 - `docs/superpowers/2026-06-10-phase-1-improvement-report.md`
+- `docs/superpowers/2026-06-10-phase-2-improvement-report.md`
 - Source plan: `<source-plan-copy>\docs\superpowers\plans\2026-06-10-agent-retrieval-improvement-plan.md`
 - Current git status.
 - Test output from Steps 1-2.
@@ -365,8 +423,10 @@ Inputs:
 Phase 4 is complete when:
 
 - Search supports folder and subfolder scope.
+- Chat requests preserve current `document_ids` compatibility while supporting explicit folder/document scope fields.
 - Folder tools are available and user-scoped.
 - `find_related_documents` supports explicit scope while preserving query-only compatibility.
+- Scope expansion beyond selected documents or folders is visible in retrieval trace metadata.
 - Folder rename and move keep document folder metadata consistent.
 - `get_document_structure` has a compact hierarchy-preserving, text-free output for agent retrieval.
 - Agent prompt describes folder-first retrieval.

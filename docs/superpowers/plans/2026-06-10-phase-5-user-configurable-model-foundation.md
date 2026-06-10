@@ -19,6 +19,10 @@ Before storing user-owned model keys, confirm:
 - JWT secret has production enforcement or an explicit deferral.
 - User scope contracts from Phase 1 still pass.
 - Model settings persistence choice is approved: per-user, admin-global, or both.
+- API key storage mode is approved: encrypted-at-rest, development-only plaintext, or external secret manager.
+- A stable application secret exists if encrypted-at-rest storage is selected.
+- Custom OpenAI-compatible providers are either explicitly allowed in v1 or deferred behind a later advanced setting.
+- `docs/superpowers/2026-06-10-phase-2-improvement-report.md` is available as the latest retrieval/evidence baseline.
 
 ## Open Product Decisions
 
@@ -40,6 +44,19 @@ Default recommendation:
 - Store API keys encrypted if an app secret exists; otherwise keep a local-only development store and mark production encryption as required before deployment.
 - Configure route slots: `general_chat`, `document_qa`, `query_expansion`, `indexing`, `vision`.
 - Use provider presets plus editable model IDs.
+
+## Security Gate
+
+Do not implement Tasks 1-4 for production use until these gate items are decided and recorded in this plan or a phase report:
+
+- **Ownership:** settings are per-user, admin-global, or both.
+- **Secret storage:** raw keys are encrypted at rest, stored only in a local development profile, or delegated to an external secret manager.
+- **Secret source:** the encryption key or secret-manager configuration is environment-backed and not generated at import time.
+- **Read behavior:** list/read endpoints return only masked key state and metadata, never raw API keys.
+- **Validation behavior:** provider testing uses monkeypatched adapters in tests and never requires live provider calls in CI.
+- **Fallback behavior:** when no user setting exists, current `.env`/Qwen behavior remains unchanged.
+
+If any item is deferred, the implementation must fail closed in production and document the deferral in the completion gate.
 
 ## Files And Responsibilities
 
@@ -153,6 +170,22 @@ If SQLite is chosen, add tables:
 
 If runtime JSON is chosen for v1, extend `runtime_settings_service.py` with user-scoped records.
 
+Persist a provider config with enough metadata to support masking and rotation:
+
+```json
+{
+  "provider_id": "provider-1",
+  "user_id": "user-1",
+  "provider": "openai_compatible",
+  "base_url": "https://example.test/v1",
+  "api_key_ciphertext": "...",
+  "api_key_mask": "sk-...abcd",
+  "validation_status": "untested",
+  "created_at": "...",
+  "updated_at": "..."
+}
+```
+
 - [ ] **Step 4: Implement service**
 
 The service must never return raw API keys from read/list methods.
@@ -189,6 +222,7 @@ Cover:
 - Streaming compatibility if current code needs it.
 - Timeout propagation.
 - Provider errors become controlled exceptions.
+- Raw API keys are not included in exception messages or logs.
 
 - [ ] **Step 2: Run tests and verify failure**
 
@@ -291,6 +325,8 @@ Cover:
 - Save route mapping.
 - Test connection uses monkeypatched adapter.
 - User A cannot read User B settings.
+- Read/list responses never include raw API keys.
+- Production mode rejects insecure key storage if encryption or an approved secret backend is required.
 
 - [ ] **Step 2: Run tests**
 
@@ -353,6 +389,7 @@ Inputs:
 - This Phase 5 plan.
 - `docs/superpowers/2026-06-10-next-phase-roadmap.md`
 - `docs/superpowers/2026-06-10-phase-1-improvement-report.md`
+- `docs/superpowers/2026-06-10-phase-2-improvement-report.md`
 - Source plan: `<source-plan-copy>\docs\superpowers\plans\2026-06-10-user-configurable-models.md`
 - Current git status.
 - Test output from Steps 1-2.
@@ -363,6 +400,7 @@ Phase 5 is complete when:
 
 - Model provider settings are persisted under the approved scope.
 - Production mode fails when JWT signing secret is missing.
+- Production mode fails or refuses model-key writes when the approved secret-storage requirement is not satisfied.
 - API keys are write-only from read/list endpoints.
 - LiteLLM adapter is covered without network calls.
 - Existing `.env` model behavior remains fallback.

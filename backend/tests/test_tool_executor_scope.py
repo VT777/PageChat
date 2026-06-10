@@ -11,14 +11,20 @@ from app.models.schemas import DocumentResponse
 from app.services.tool_executor import ToolExecutor
 
 
-def _doc(doc_id: str, user_id: str, name: str | None = None) -> DocumentResponse:
+def _doc(
+    doc_id: str,
+    user_id: str,
+    name: str | None = None,
+    file_path: str | None = None,
+    file_type: str = ".pdf",
+) -> DocumentResponse:
     return DocumentResponse(
         id=doc_id,
-        name=name or f"{doc_id}.pdf",
-        original_name=name or f"{doc_id}.pdf",
-        file_path=f"/tmp/{doc_id}.pdf",
+        name=name or f"{doc_id}{file_type}",
+        original_name=name or f"{doc_id}{file_type}",
+        file_path=file_path or f"/tmp/{doc_id}{file_type}",
         file_size=10,
-        file_type=".pdf",
+        file_type=file_type,
         status="completed",
         page_count=1,
         processed_pages=1,
@@ -153,5 +159,31 @@ def test_aggregate_tables_reports_rejected_document_ids() -> None:
             "not accessible" in note.lower()
             for note in result["data"]["quality_notes"]
         )
+
+    asyncio.run(run())
+
+
+def test_tool_executor_resolves_source_anchor_content(tmp_path: Path) -> None:
+    async def run() -> None:
+        file_path = tmp_path / "notes.txt"
+        file_path.write_text("one\ntwo\nthree\n", encoding="utf-8")
+        docs = FakeDocumentService()
+        docs.docs["doc-a"] = _doc(
+            "doc-a",
+            "user-a",
+            "notes.txt",
+            file_path=str(file_path),
+            file_type=".txt",
+        )
+        executor = ToolExecutor(FakePageIndexService(), docs, user_id="user-a")
+
+        result = await executor._resolve_source_anchor_content(
+            docs.docs["doc-a"],
+            {"format": "txt", "unit_type": "line", "start_line": 2, "end_line": 3},
+        )
+
+        assert result["status"] == "success"
+        assert result["content"] == "two\nthree"
+        assert result["display_label"] == "notes.txt lines 2-3"
 
     asyncio.run(run())

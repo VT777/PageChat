@@ -5,11 +5,13 @@
 
 import json
 import base64
+from pathlib import Path
 from typing import Dict, Any, List, Optional
 from app.services.pageindex_service import PageIndexService
 from app.services.document_service import DocumentService
 from app.services.cache_service import cache_service
 from app.services.table_analysis_service import TableAnalysisService
+from app.services.source_anchor_resolver import resolve_source_anchor
 
 
 # ============================================================
@@ -384,6 +386,13 @@ class ToolExecutor:
             result["node_summary"] = target_node.get("summary", "")[:300]
 
         return result
+
+    async def _resolve_source_anchor_content(self, doc, source_anchor: dict) -> dict:
+        return resolve_source_anchor(
+            file_path=Path(doc.file_path),
+            document_name=doc.original_name,
+            anchor=source_anchor,
+        )
 
     @staticmethod
     def _pdf_page_has_images(pdf_path: str, page_num: int) -> bool:

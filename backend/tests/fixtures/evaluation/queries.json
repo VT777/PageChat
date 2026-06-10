@@ -1,0 +1,12 @@
+[
+  {
+    "id": "markdown_deployment_lookup",
+    "format": "markdown",
+    "document_id": "eval-md",
+    "document_name": "deployment-notes.md",
+    "query": "Where is the deployment checklist?",
+    "expected_title_contains": "Deployment Checklist",
+    "expected_unit_type": "line",
+    "allow_fallback": false
+  }
+]

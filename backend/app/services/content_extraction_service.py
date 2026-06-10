@@ -23,6 +23,7 @@ class ContentBlock:
     type: str  # 'text', 'heading', 'image', 'table', 'slide'
     content: Any
     metadata: Dict[str, Any]
+    source_anchor: Optional[Dict[str, Any]] = None
 
 
 class ContentExtractionService:
@@ -86,6 +87,12 @@ class ContentExtractionService:
                     type="text",
                     content=line,
                     metadata={"line_number": i},
+                    source_anchor={
+                        "format": "txt",
+                        "unit_type": "line",
+                        "start_line": i,
+                        "end_line": i,
+                    },
                 )
             )
 
@@ -114,6 +121,12 @@ class ContentExtractionService:
                         type="heading",
                         content=line.lstrip("#").strip(),
                         metadata={"line_number": i, "level": level, "raw": line},
+                        source_anchor={
+                            "format": "markdown",
+                            "unit_type": "line",
+                            "start_line": i,
+                            "end_line": i,
+                        },
                     )
                 )
             else:
@@ -123,6 +136,12 @@ class ContentExtractionService:
                         type="text",
                         content=line,
                         metadata={"line_number": i},
+                        source_anchor={
+                            "format": "markdown",
+                            "unit_type": "line",
+                            "start_line": i,
+                            "end_line": i,
+                        },
                     )
                 )
 
@@ -156,6 +175,12 @@ class ContentExtractionService:
                     "type": "table_row",
                     "content": row,
                     "metadata": {"row_index": i},
+                    "source_anchor": {
+                        "format": "csv" if delimiter == "," else "tsv",
+                        "unit_type": "row_range",
+                        "start_row": i + 1,
+                        "end_row": i + 1,
+                    },
                 }
                 for i, row in enumerate(rows)
             ],
@@ -235,6 +260,13 @@ class ContentExtractionService:
                         "row_count": sheet["row_count"],
                         "col_count": sheet["col_count"],
                     },
+                    "source_anchor": {
+                        "format": "xlsx",
+                        "unit_type": "row_range",
+                        "sheet": sheet["name"],
+                        "start_row": sheet["rows"][0]["row_number"] if sheet["rows"] else 1,
+                        "end_row": sheet["rows"][-1]["row_number"] if sheet["rows"] else 1,
+                    },
                 }
                 for i, sheet in enumerate(sheets)
             ],
@@ -313,6 +345,12 @@ class ContentExtractionService:
                                 "paragraph_number": para_idx,
                                 "images": para_images,
                             },
+                            source_anchor={
+                                "format": "docx",
+                                "unit_type": "paragraph",
+                                "start_paragraph": para_idx,
+                                "end_paragraph": para_idx,
+                            },
                         )
                     )
 
@@ -379,6 +417,12 @@ class ContentExtractionService:
                         "slide_number": s["slide_number"],
                         "title": s["title"],
                     },
+                    "source_anchor": {
+                        "format": "pptx",
+                        "unit_type": "slide",
+                        "start_slide": s["slide_number"],
+                        "end_slide": s["slide_number"],
+                    },
                 }
                 for s in slides
             ],
@@ -392,6 +436,7 @@ class ContentExtractionService:
             "type": block.type,
             "content": block.content,
             "metadata": block.metadata,
+            "source_anchor": block.source_anchor,
         }
 
     def _xml_ns(self, tag: str) -> str:
