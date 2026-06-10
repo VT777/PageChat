@@ -16,6 +16,7 @@ import jieba
 import numpy as np
 import aiosqlite
 from datetime import datetime
+from app.models.retrieval import build_source_display_label
 
 # 设置HuggingFace镜像以加速下载
 import os
@@ -42,6 +43,11 @@ class SearchResult:
     score: float
     reason: str
     matched_segments: List[Dict[str, Any]] = field(default_factory=list)
+    retrieval_source: str = "document_search"
+    confidence: float = 0.0
+    why_selected: str = ""
+    source_anchor: Optional[Dict[str, Any]] = None
+    display_label: Optional[str] = None
 
 
 @dataclass
@@ -108,6 +114,49 @@ class DocumentSearchService:
         if self._rebuild_lock is None:
             self._rebuild_lock = asyncio.Lock()
         return self._rebuild_lock
+
+    @staticmethod
+    def _format_from_metadata(meta: Dict[str, Any]) -> str:
+        file_type = str(meta.get("file_type") or "").lstrip(".").lower()
+        if file_type:
+            return file_type
+        suffix = os.path.splitext(str(meta.get("doc_name") or ""))[1].lstrip(".")
+        return suffix.lower() or "pdf"
+
+    @classmethod
+    def _source_anchor_from_segment(
+        cls, meta: Dict[str, Any]
+    ) -> Optional[Dict[str, Any]]:
+        anchor = meta.get("source_anchor")
+        if isinstance(anchor, dict) and anchor:
+            return anchor
+        start_index = meta.get("start_index")
+        if start_index is None:
+            return None
+        end_index = meta.get("end_index") if meta.get("end_index") is not None else start_index
+        return {
+            "format": cls._format_from_metadata(meta),
+            "unit_type": "page",
+            "start_page": start_index,
+            "end_page": end_index,
+        }
+
+    @classmethod
+    def _trace_for_segment(
+        cls, meta: Dict[str, Any], score: float
+    ) -> Dict[str, Any]:
+        anchor = cls._source_anchor_from_segment(meta)
+        doc_name = str(meta.get("doc_name") or "")
+        display_label = (
+            build_source_display_label(doc_name, anchor) if anchor else None
+        )
+        return {
+            "retrieval_source": "document_search",
+            "confidence": round(float(score), 4),
+            "why_selected": "Matched document search index.",
+            "source_anchor": anchor,
+            "display_label": display_label,
+        }
 
     async def initialize(self):
         """初始化索引和模型"""
@@ -249,7 +298,7 @@ class DocumentSearchService:
             async with aiosqlite.connect(str(db_path)) as db:
                 cursor = await db.execute(
                     """
-                    SELECT id, original_name, description, updated_at, user_id, folder_id, folder_path
+                    SELECT id, original_name, description, updated_at, user_id, folder_id, folder_path, file_type
                     FROM documents
                     WHERE status = 'completed'
                     """
@@ -267,6 +316,7 @@ class DocumentSearchService:
                         "user_id": row[4],
                         "folder_id": row[5],
                         "folder_path": row[6],
+                        "file_type": row[7],
                     }
                 )
 
@@ -292,6 +342,7 @@ class DocumentSearchService:
                 doc_user_id = doc.get("user_id")
                 doc_folder_id = doc.get("folder_id")
                 doc_folder_path = doc.get("folder_path")
+                doc_file_type = doc.get("file_type")
                 desc = doc_desc or doc_name
                 metadata[doc_id] = {
                     "name": doc_name,
@@ -299,6 +350,7 @@ class DocumentSearchService:
                     "user_id": doc_user_id,
                     "folder_id": doc_folder_id,
                     "folder_path": doc_folder_path,
+                    "file_type": doc_file_type,
                 }
 
                 index_data = await index_service.load_index(doc_id)
@@ -326,6 +378,7 @@ class DocumentSearchService:
                                 "user_id": doc_user_id,
                                 "folder_id": doc_folder_id,
                                 "folder_path": doc_folder_path,
+                                "file_type": doc_file_type,
                                 "node_id": node.get("node_id"),
                                 "title": title,
                                 "node_type": node.get("node_type"),
@@ -349,6 +402,7 @@ class DocumentSearchService:
                                 "user_id": doc_user_id,
                                 "folder_id": doc_folder_id,
                                 "folder_path": doc_folder_path,
+                                "file_type": doc_file_type,
                                 "node_id": None,
                                 "title": "文档摘要",
                                 "start_index": None,
@@ -556,6 +610,7 @@ class DocumentSearchService:
                 else:
                     current["best_score"] = max(current["best_score"], score)
 
+                segment_trace = self._trace_for_segment(seg_meta, score)
                 doc_grouped[doc_id]["segments"].append(
                     {
                         "node_id": seg_meta.get("node_id"),
@@ -567,7 +622,11 @@ class DocumentSearchService:
                         "score": round(score, 4),
                         "start_index": seg_meta.get("start_index"),
                         "end_index": seg_meta.get("end_index"),
-                        "source_anchor": seg_meta.get("source_anchor"),
+                        "source_anchor": segment_trace["source_anchor"],
+                        "retrieval_source": segment_trace["retrieval_source"],
+                        "confidence": segment_trace["confidence"],
+                        "why_selected": segment_trace["why_selected"],
+                        "display_label": segment_trace["display_label"],
                     }
                 )
 
@@ -579,6 +638,7 @@ class DocumentSearchService:
                 score = float(info["best_score"])
                 if preferred_set and doc_id in preferred_set:
                     score = min(score + 0.08, 1.0)
+                top_segment = segments[0] if segments else {}
                 results.append(
                     SearchResult(
                         doc_id=doc_id,
@@ -588,6 +648,11 @@ class DocumentSearchService:
                         if search_method == "bm25_rerank"
                         else "BM25节点级关键词匹配",
                         matched_segments=segments,
+                        retrieval_source="document_search",
+                        confidence=score,
+                        why_selected="Matched document search index.",
+                        source_anchor=top_segment.get("source_anchor"),
+                        display_label=top_segment.get("display_label"),
                     )
                 )
 

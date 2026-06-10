@@ -512,6 +512,13 @@ class ToolExecutor:
                         "relevance": round(r.score, 3),
                         "reason": r.reason,
                         "matched_segments": getattr(r, "matched_segments", []),
+                        "retrieval_source": getattr(
+                            r, "retrieval_source", "document_search"
+                        ),
+                        "confidence": getattr(r, "confidence", r.score),
+                        "why_selected": getattr(r, "why_selected", r.reason),
+                        "source_anchor": getattr(r, "source_anchor", None),
+                        "display_label": getattr(r, "display_label", None),
                     }
                 )
 

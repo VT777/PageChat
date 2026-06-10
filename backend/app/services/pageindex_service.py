@@ -16,6 +16,7 @@ from pageindex.page_index import page_index_main, page_index_main_with_page_list
 from pageindex.utils import config, get_nodes, get_page_tokens, structure_to_list
 from pageindex.page_index_md import md_to_tree
 from pageindex.quality_validation import TocQualityChecker
+from app.models.retrieval import build_source_display_label
 from app.core.config import (
     INDEXES_DIR,
     build_effective_pageindex_config,
@@ -4234,6 +4235,41 @@ Return strict JSON only:
         return summary_rows
 
     @staticmethod
+    def _page_source_anchor(
+        doc_name: str, start_index: Any, end_index: Any
+    ) -> Optional[Dict[str, Any]]:
+        if start_index is None:
+            return None
+        suffix = Path(doc_name).suffix.lstrip(".").lower() or "pdf"
+        return {
+            "format": suffix,
+            "unit_type": "page",
+            "start_page": start_index,
+            "end_page": end_index if end_index is not None else start_index,
+        }
+
+    @classmethod
+    def _retrieval_trace_fields(
+        cls,
+        doc_name: str,
+        start_index: Any,
+        end_index: Any,
+        relevance: float,
+        retrieval_source: str,
+        why_selected: str,
+    ) -> Dict[str, Any]:
+        anchor = cls._page_source_anchor(doc_name, start_index, end_index)
+        return {
+            "retrieval_source": retrieval_source,
+            "confidence": relevance,
+            "why_selected": why_selected,
+            "source_anchor": anchor,
+            "display_label": (
+                build_source_display_label(doc_name, anchor) if anchor else None
+            ),
+        }
+
+    @staticmethod
     def _visual_summary_keyword_search(
         query: str,
         visual_summaries: List[Dict[str, Any]],
@@ -4287,6 +4323,7 @@ Return strict JSON only:
                 continue
 
             score = min(0.92, 0.45 + 0.08 * hit_count)
+            relevance = round(score, 3)
             candidates.append(
                 {
                     "document_id": doc_id,
@@ -4298,8 +4335,16 @@ Return strict JSON only:
                     "summary": summary[:300],
                     "full_text": summary,
                     "reasoning": f"visual_summary_hit:p.{page}",
-                    "relevance": round(score, 3),
+                    "relevance": relevance,
                     "source": "visual_summary",
+                    **PageIndexService._retrieval_trace_fields(
+                        doc_name,
+                        target.get("start_index"),
+                        target.get("end_index"),
+                        relevance,
+                        "visual_summary",
+                        "Matched visual page summary.",
+                    ),
                 }
             )
 
@@ -4492,6 +4537,7 @@ Return JSON only."""
 
             # 绗竴绾э細鍏ㄤ覆鍖归厤
             if query_clean in search_content:
+                relevance = 0.9
                 results.append(
                     {
                         "document_id": doc_id,
@@ -4501,7 +4547,15 @@ Return JSON only."""
                         "start_index": node.get("start_index"),
                         "end_index": node.get("end_index"),
                         "summary": text[:200] if text else "",
-                        "relevance": 0.9,
+                        "relevance": relevance,
+                        **self._retrieval_trace_fields(
+                            doc_name,
+                            node.get("start_index"),
+                            node.get("end_index"),
+                            relevance,
+                            "keyword_fallback",
+                            "Matched fallback keyword search.",
+                        ),
                     }
                 )
                 continue
@@ -4516,6 +4570,9 @@ Return JSON only."""
                     base = 0.3 + hit_count * 0.05
                     title_bonus = title_hits * 0.15
                     text_density = min(text_hits * 0.02, 0.2)
+                    relevance = round(
+                        min(base + title_bonus + text_density, 0.89), 2
+                    )
                     results.append(
                         {
                             "document_id": doc_id,
@@ -4525,8 +4582,14 @@ Return JSON only."""
                             "start_index": node.get("start_index"),
                             "end_index": node.get("end_index"),
                             "summary": text[:200] if text else "",
-                            "relevance": round(
-                                min(base + title_bonus + text_density, 0.89), 2
+                            "relevance": relevance,
+                            **self._retrieval_trace_fields(
+                                doc_name,
+                                node.get("start_index"),
+                                node.get("end_index"),
+                                relevance,
+                                "keyword_fallback",
+                                "Matched fallback keyword search.",
                             ),
                         }
                     )
