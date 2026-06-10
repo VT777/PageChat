@@ -1,1037 +1,0 @@
-INFO:     Will watch for changes in these directories: ['D:\\projects\\page_chat\\backend']
-INFO:     Uvicorn running on http://0.0.0.0:8000 (Press CTRL+C to quit)
-INFO:     Started reloader process [2212] using StatReload
-D:\projects\page_chat\backend\venv\Lib\site-packages\jieba\_compat.py:18: UserWarning: pkg_resources is deprecated as an API. See https://setuptools.pypa.io/en/latest/pkg_resources.html. The pkg_resources package is slated for removal as early as 2025-11-30. Refrain from using this package or pin to Setuptools<81.
-  import pkg_resources
-Building prefix dict from the default dictionary ...
-Loading model from cache C:\Users\TT_WT\AppData\Local\Temp\jieba.cache
-Loading model cost 0.772 seconds.
-Prefix dict has been built successfully.
-BM25S Create Vocab:   0%|          | 0/429 [00:00<?, ?it/s]                                                           BM25S Convert tokens to indices:   0%|          | 0/429 [00:00<?, ?it/s]                                                                        BM25S Count Tokens:   0%|          | 0/429 [00:00<?, ?it/s]                                                           BM25S Compute Scores:   0%|          | 0/429 [00:00<?, ?it/s]                                                             BM25S Retrieve:   0%|          | 0/1 [00:00<?, ?it/s]                                                     BM25S Retrieve:   0%|          | 0/1 [00:00<?, ?it/s]                                                     BM25S Retrieve:   0%|          | 0/1 [00:00<?, ?it/s]                                                     BM25S Retrieve:   0%|          | 0/1 [00:00<?, ?it/s]                                                     BM25S Create Vocab:   0%|          | 0/687 [00:00<?, ?it/s]                                                           BM25S Convert tokens to indices:   0%|          | 0/687 [00:00<?, ?it/s]                                                                        BM25S Count Tokens:   0%|          | 0/687 [00:00<?, ?it/s]                                                           BM25S Compute Scores:   0%|          | 0/687 [00:00<?, ?it/s]                                                             WARNING:  StatReload detected changes in 'app\models\schemas.py'. Reloading...
-D:\projects\page_chat\backend\venv\Lib\site-packages\jieba\_compat.py:18: UserWarning: pkg_resources is deprecated as an API. See https://setuptools.pypa.io/en/latest/pkg_resources.html. The pkg_resources package is slated for removal as early as 2025-11-30. Refrain from using this package or pin to Setuptools<81.
-  import pkg_resources
-Building prefix dict from the default dictionary ...
-Loading model from cache C:\Users\TT_WT\AppData\Local\Temp\jieba.cache
-Loading model cost 0.783 seconds.
-Prefix dict has been built successfully.
-BM25S Create Vocab:   0%|          | 0/687 [00:00<?, ?it/s]                                                           BM25S Convert tokens to indices:   0%|          | 0/687 [00:00<?, ?it/s]                                                                        BM25S Count Tokens:   0%|          | 0/687 [00:00<?, ?it/s]                                                           BM25S Compute Scores:   0%|          | 0/687 [00:00<?, ?it/s]                                                             BM25S Create Vocab:   0%|          | 0/687 [00:00<?, ?it/s]                                                           BM25S Convert tokens to indices:   0%|          | 0/687 [00:00<?, ?it/s]                                                                        BM25S Count Tokens:   0%|          | 0/687 [00:00<?, ?it/s]                                                           BM25S Compute Scores:   0%|          | 0/687 [00:00<?, ?it/s]                                                             BM25S Create Vocab:   0%|          | 0/662 [00:00<?, ?it/s]                                                           BM25S Convert tokens to indices:   0%|          | 0/662 [00:00<?, ?it/s]                                                                        BM25S Count Tokens:   0%|          | 0/662 [00:00<?, ?it/s]                                                           BM25S Compute Scores:   0%|          | 0/662 [00:00<?, ?it/s]                                                             BM25S Create Vocab:   0%|          | 0/687 [00:00<?, ?it/s]                                                           BM25S Convert tokens to indices:   0%|          | 0/687 [00:00<?, ?it/s]                                                                        BM25S Count Tokens:   0%|          | 0/687 [00:00<?, ?it/s]                                                           BM25S Compute Scores:   0%|          | 0/687 [00:00<?, ?it/s]                                                             BM25S Create Vocab:   0%|          | 0/687 [00:00<?, ?it/s]                                                           BM25S Convert tokens to indices:   0%|          | 0/687 [00:00<?, ?it/s]                                                                        BM25S Count Tokens:   0%|          | 0/687 [00:00<?, ?it/s]                                                           BM25S Compute Scores:   0%|          | 0/687 [00:00<?, ?it/s]                                                             WARNING:  StatReload detected changes in 'app\api\documents.py'. Reloading...
-D:\projects\page_chat\backend\venv\Lib\site-packages\jieba\_compat.py:18: UserWarning: pkg_resources is deprecated as an API. See https://setuptools.pypa.io/en/latest/pkg_resources.html. The pkg_resources package is slated for removal as early as 2025-11-30. Refrain from using this package or pin to Setuptools<81.
-  import pkg_resources
-Building prefix dict from the default dictionary ...
-Loading model from cache C:\Users\TT_WT\AppData\Local\Temp\jieba.cache
-Loading model cost 0.726 seconds.
-Prefix dict has been built successfully.
-BM25S Create Vocab:   0%|          | 0/687 [00:00<?, ?it/s]                                                           BM25S Convert tokens to indices:   0%|          | 0/687 [00:00<?, ?it/s]                                                                        BM25S Count Tokens:   0%|          | 0/687 [00:00<?, ?it/s]                                                           BM25S Compute Scores:   0%|          | 0/687 [00:00<?, ?it/s]                                                             BM25S Create Vocab:   0%|          | 0/693 [00:00<?, ?it/s]                                                           BM25S Convert tokens to indices:   0%|          | 0/693 [00:00<?, ?it/s]                                                                        BM25S Count Tokens:   0%|          | 0/693 [00:00<?, ?it/s]                                                           BM25S Compute Scores:   0%|          | 0/693 [00:00<?, ?it/s]BM25S Compute Scores:  86%|████████▌ | 597/693 [00:00<00:00, 5967.81it/s]                                                                         BM25S Create Vocab:   0%|          | 0/695 [00:00<?, ?it/s]                                                           BM25S Convert tokens to indices:   0%|          | 0/695 [00:00<?, ?it/s]                                                                        BM25S Count Tokens:   0%|          | 0/695 [00:00<?, ?it/s]                                                           BM25S Compute Scores:   0%|          | 0/695 [00:00<?, ?it/s]                                                             WARNING:  StatReload detected changes in 'app\api\documents.py'. Reloading...
-D:\projects\page_chat\backend\venv\Lib\site-packages\jieba\_compat.py:18: UserWarning: pkg_resources is deprecated as an API. See https://setuptools.pypa.io/en/latest/pkg_resources.html. The pkg_resources package is slated for removal as early as 2025-11-30. Refrain from using this package or pin to Setuptools<81.
-  import pkg_resources
-Building prefix dict from the default dictionary ...
-Loading model from cache C:\Users\TT_WT\AppData\Local\Temp\jieba.cache
-Loading model cost 0.711 seconds.
-Prefix dict has been built successfully.
-BM25S Create Vocab:   0%|          | 0/695 [00:00<?, ?it/s]                                                           BM25S Convert tokens to indices:   0%|          | 0/695 [00:00<?, ?it/s]                                                                        BM25S Count Tokens:   0%|          | 0/695 [00:00<?, ?it/s]                                                           BM25S Compute Scores:   0%|          | 0/695 [00:00<?, ?it/s]                                                             BM25S Create Vocab:   0%|          | 0/651 [00:00<?, ?it/s]                                                           BM25S Convert tokens to indices:   0%|          | 0/651 [00:00<?, ?it/s]                                                                        BM25S Count Tokens:   0%|          | 0/651 [00:00<?, ?it/s]                                                           BM25S Compute Scores:   0%|          | 0/651 [00:00<?, ?it/s]                                                             BM25S Create Vocab:   0%|          | 0/657 [00:00<?, ?it/s]                                                           BM25S Convert tokens to indices:   0%|          | 0/657 [00:00<?, ?it/s]                                                                        BM25S Count Tokens:   0%|          | 0/657 [00:00<?, ?it/s]                                                           BM25S Compute Scores:   0%|          | 0/657 [00:00<?, ?it/s]                                                             WARNING:  StatReload detected changes in 'app\api\documents.py'. Reloading...
-D:\projects\page_chat\backend\venv\Lib\site-packages\jieba\_compat.py:18: UserWarning: pkg_resources is deprecated as an API. See https://setuptools.pypa.io/en/latest/pkg_resources.html. The pkg_resources package is slated for removal as early as 2025-11-30. Refrain from using this package or pin to Setuptools<81.
-  import pkg_resources
-Building prefix dict from the default dictionary ...
-Loading model from cache C:\Users\TT_WT\AppData\Local\Temp\jieba.cache
-Loading model cost 0.741 seconds.
-Prefix dict has been built successfully.
-BM25S Create Vocab:   0%|          | 0/657 [00:00<?, ?it/s]                                                           BM25S Convert tokens to indices:   0%|          | 0/657 [00:00<?, ?it/s]                                                                        BM25S Count Tokens:   0%|          | 0/657 [00:00<?, ?it/s]                                                           BM25S Compute Scores:   0%|          | 0/657 [00:00<?, ?it/s]BM25S Compute Scores:  98%|█████████▊| 647/657 [00:00<00:00, 6468.99it/s]                                                                         Exception in ASGI application
-Traceback (most recent call last):
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\uvicorn\protocols\http\h11_impl.py", line 406, in run_asgi
-    result = await app(  # type: ignore[func-returns-value]
-             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-        self.scope, self.receive, self.send
-        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-    )
-    ^
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\uvicorn\middleware\proxy_headers.py", line 70, in __call__
-    return await self.app(scope, receive, send)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\fastapi\applications.py", line 1054, in __call__
-    await super().__call__(scope, receive, send)
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\starlette\applications.py", line 113, in __call__
-    await self.middleware_stack(scope, receive, send)
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\starlette\middleware\errors.py", line 187, in __call__
-    raise exc
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\starlette\middleware\errors.py", line 165, in __call__
-    await self.app(scope, receive, _send)
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\starlette\middleware\cors.py", line 85, in __call__
-    await self.app(scope, receive, send)
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\starlette\middleware\exceptions.py", line 62, in __call__
-    await wrap_app_handling_exceptions(self.app, conn)(scope, receive, send)
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\starlette\_exception_handler.py", line 62, in wrapped_app
-    raise exc
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\starlette\_exception_handler.py", line 51, in wrapped_app
-    await app(scope, receive, sender)
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\starlette\routing.py", line 715, in __call__
-    await self.middleware_stack(scope, receive, send)
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\starlette\routing.py", line 735, in app
-    await route.handle(scope, receive, send)
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\starlette\routing.py", line 288, in handle
-    await self.app(scope, receive, send)
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\starlette\routing.py", line 76, in app
-    await wrap_app_handling_exceptions(app, request)(scope, receive, send)
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\starlette\_exception_handler.py", line 62, in wrapped_app
-    raise exc
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\starlette\_exception_handler.py", line 51, in wrapped_app
-    await app(scope, receive, sender)
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\starlette\routing.py", line 73, in app
-    response = await f(request)
-               ^^^^^^^^^^^^^^^^
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\fastapi\routing.py", line 301, in app
-    raw_response = await run_endpoint_function(
-                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-    ...<3 lines>...
-    )
-    ^
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\fastapi\routing.py", line 212, in run_endpoint_function
-    return await dependant.call(**values)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "D:\projects\page_chat\backend\app\api\documents.py", line 726, in get_document_processing_steps
-    current_stage_idx = stage_order.index(current_step) if current_step else -1
-                                                           ^^^^^^^^^^^^
-UnboundLocalError: cannot access local variable 'current_step' where it is not associated with a value
-BM25S Create Vocab:   0%|          | 0/657 [00:00<?, ?it/s]                                                           BM25S Convert tokens to indices:   0%|          | 0/657 [00:00<?, ?it/s]                                                                        BM25S Count Tokens:   0%|          | 0/657 [00:00<?, ?it/s]                                                           BM25S Compute Scores:   0%|          | 0/657 [00:00<?, ?it/s]                                                             WARNING:  StatReload detected changes in 'app\prompts\pageindex_prompts.py'. Reloading...
-D:\projects\page_chat\backend\venv\Lib\site-packages\jieba\_compat.py:18: UserWarning: pkg_resources is deprecated as an API. See https://setuptools.pypa.io/en/latest/pkg_resources.html. The pkg_resources package is slated for removal as early as 2025-11-30. Refrain from using this package or pin to Setuptools<81.
-  import pkg_resources
-Building prefix dict from the default dictionary ...
-Loading model from cache C:\Users\TT_WT\AppData\Local\Temp\jieba.cache
-Loading model cost 1.235 seconds.
-Prefix dict has been built successfully.
-BM25S Create Vocab:   0%|          | 0/657 [00:00<?, ?it/s]                                                           BM25S Convert tokens to indices:   0%|          | 0/657 [00:00<?, ?it/s]                                                                        BM25S Count Tokens:   0%|          | 0/657 [00:00<?, ?it/s]                                                           BM25S Compute Scores:   0%|          | 0/657 [00:00<?, ?it/s]BM25S Compute Scores:  96%|█████████▋| 634/657 [00:00<00:00, 6334.28it/s]                                                                         Exception in ASGI application
-Traceback (most recent call last):
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\uvicorn\protocols\http\h11_impl.py", line 406, in run_asgi
-    result = await app(  # type: ignore[func-returns-value]
-             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-        self.scope, self.receive, self.send
-        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-    )
-    ^
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\uvicorn\middleware\proxy_headers.py", line 70, in __call__
-    return await self.app(scope, receive, send)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\fastapi\applications.py", line 1054, in __call__
-    await super().__call__(scope, receive, send)
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\starlette\applications.py", line 113, in __call__
-    await self.middleware_stack(scope, receive, send)
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\starlette\middleware\errors.py", line 187, in __call__
-    raise exc
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\starlette\middleware\errors.py", line 165, in __call__
-    await self.app(scope, receive, _send)
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\starlette\middleware\cors.py", line 85, in __call__
-    await self.app(scope, receive, send)
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\starlette\middleware\exceptions.py", line 62, in __call__
-    await wrap_app_handling_exceptions(self.app, conn)(scope, receive, send)
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\starlette\_exception_handler.py", line 62, in wrapped_app
-    raise exc
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\starlette\_exception_handler.py", line 51, in wrapped_app
-    await app(scope, receive, sender)
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\starlette\routing.py", line 715, in __call__
-    await self.middleware_stack(scope, receive, send)
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\starlette\routing.py", line 735, in app
-    await route.handle(scope, receive, send)
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\starlette\routing.py", line 288, in handle
-    await self.app(scope, receive, send)
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\starlette\routing.py", line 76, in app
-    await wrap_app_handling_exceptions(app, request)(scope, receive, send)
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\starlette\_exception_handler.py", line 62, in wrapped_app
-    raise exc
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\starlette\_exception_handler.py", line 51, in wrapped_app
-    await app(scope, receive, sender)
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\starlette\routing.py", line 73, in app
-    response = await f(request)
-               ^^^^^^^^^^^^^^^^
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\fastapi\routing.py", line 301, in app
-    raw_response = await run_endpoint_function(
-                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-    ...<3 lines>...
-    )
-    ^
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\fastapi\routing.py", line 212, in run_endpoint_function
-    return await dependant.call(**values)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "D:\projects\page_chat\backend\app\api\documents.py", line 726, in get_document_processing_steps
-    current_stage_idx = stage_order.index(current_step) if current_step else -1
-                                                           ^^^^^^^^^^^^
-UnboundLocalError: cannot access local variable 'current_step' where it is not associated with a value
-Exception in ASGI application
-Traceback (most recent call last):
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\uvicorn\protocols\http\h11_impl.py", line 406, in run_asgi
-    result = await app(  # type: ignore[func-returns-value]
-             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-        self.scope, self.receive, self.send
-        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-    )
-    ^
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\uvicorn\middleware\proxy_headers.py", line 70, in __call__
-    return await self.app(scope, receive, send)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\fastapi\applications.py", line 1054, in __call__
-    await super().__call__(scope, receive, send)
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\starlette\applications.py", line 113, in __call__
-    await self.middleware_stack(scope, receive, send)
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\starlette\middleware\errors.py", line 187, in __call__
-    raise exc
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\starlette\middleware\errors.py", line 165, in __call__
-    await self.app(scope, receive, _send)
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\starlette\middleware\cors.py", line 85, in __call__
-    await self.app(scope, receive, send)
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\starlette\middleware\exceptions.py", line 62, in __call__
-    await wrap_app_handling_exceptions(self.app, conn)(scope, receive, send)
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\starlette\_exception_handler.py", line 62, in wrapped_app
-    raise exc
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\starlette\_exception_handler.py", line 51, in wrapped_app
-    await app(scope, receive, sender)
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\starlette\routing.py", line 715, in __call__
-    await self.middleware_stack(scope, receive, send)
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\starlette\routing.py", line 735, in app
-    await route.handle(scope, receive, send)
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\starlette\routing.py", line 288, in handle
-    await self.app(scope, receive, send)
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\starlette\routing.py", line 76, in app
-    await wrap_app_handling_exceptions(app, request)(scope, receive, send)
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\starlette\_exception_handler.py", line 62, in wrapped_app
-    raise exc
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\starlette\_exception_handler.py", line 51, in wrapped_app
-    await app(scope, receive, sender)
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\starlette\routing.py", line 73, in app
-    response = await f(request)
-               ^^^^^^^^^^^^^^^^
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\fastapi\routing.py", line 301, in app
-    raw_response = await run_endpoint_function(
-                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-    ...<3 lines>...
-    )
-    ^
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\fastapi\routing.py", line 212, in run_endpoint_function
-    return await dependant.call(**values)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "D:\projects\page_chat\backend\app\api\documents.py", line 726, in get_document_processing_steps
-    current_stage_idx = stage_order.index(current_step) if current_step else -1
-                                                           ^^^^^^^^^^^^
-UnboundLocalError: cannot access local variable 'current_step' where it is not associated with a value
-Exception in ASGI application
-Traceback (most recent call last):
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\uvicorn\protocols\http\h11_impl.py", line 406, in run_asgi
-    result = await app(  # type: ignore[func-returns-value]
-             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-        self.scope, self.receive, self.send
-        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-    )
-    ^
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\uvicorn\middleware\proxy_headers.py", line 70, in __call__
-    return await self.app(scope, receive, send)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\fastapi\applications.py", line 1054, in __call__
-    await super().__call__(scope, receive, send)
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\starlette\applications.py", line 113, in __call__
-    await self.middleware_stack(scope, receive, send)
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\starlette\middleware\errors.py", line 187, in __call__
-    raise exc
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\starlette\middleware\errors.py", line 165, in __call__
-    await self.app(scope, receive, _send)
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\starlette\middleware\cors.py", line 85, in __call__
-    await self.app(scope, receive, send)
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\starlette\middleware\exceptions.py", line 62, in __call__
-    await wrap_app_handling_exceptions(self.app, conn)(scope, receive, send)
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\starlette\_exception_handler.py", line 62, in wrapped_app
-    raise exc
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\starlette\_exception_handler.py", line 51, in wrapped_app
-    await app(scope, receive, sender)
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\starlette\routing.py", line 715, in __call__
-    await self.middleware_stack(scope, receive, send)
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\starlette\routing.py", line 735, in app
-    await route.handle(scope, receive, send)
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\starlette\routing.py", line 288, in handle
-    await self.app(scope, receive, send)
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\starlette\routing.py", line 76, in app
-    await wrap_app_handling_exceptions(app, request)(scope, receive, send)
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\starlette\_exception_handler.py", line 62, in wrapped_app
-    raise exc
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\starlette\_exception_handler.py", line 51, in wrapped_app
-    await app(scope, receive, sender)
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\starlette\routing.py", line 73, in app
-    response = await f(request)
-               ^^^^^^^^^^^^^^^^
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\fastapi\routing.py", line 301, in app
-    raw_response = await run_endpoint_function(
-                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-    ...<3 lines>...
-    )
-    ^
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\fastapi\routing.py", line 212, in run_endpoint_function
-    return await dependant.call(**values)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "D:\projects\page_chat\backend\app\api\documents.py", line 726, in get_document_processing_steps
-    current_stage_idx = stage_order.index(current_step) if current_step else -1
-                                                           ^^^^^^^^^^^^
-UnboundLocalError: cannot access local variable 'current_step' where it is not associated with a value
-Exception in ASGI application
-Traceback (most recent call last):
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\uvicorn\protocols\http\h11_impl.py", line 406, in run_asgi
-    result = await app(  # type: ignore[func-returns-value]
-             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-        self.scope, self.receive, self.send
-        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-    )
-    ^
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\uvicorn\middleware\proxy_headers.py", line 70, in __call__
-    return await self.app(scope, receive, send)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\fastapi\applications.py", line 1054, in __call__
-    await super().__call__(scope, receive, send)
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\starlette\applications.py", line 113, in __call__
-    await self.middleware_stack(scope, receive, send)
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\starlette\middleware\errors.py", line 187, in __call__
-    raise exc
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\starlette\middleware\errors.py", line 165, in __call__
-    await self.app(scope, receive, _send)
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\starlette\middleware\cors.py", line 85, in __call__
-    await self.app(scope, receive, send)
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\starlette\middleware\exceptions.py", line 62, in __call__
-    await wrap_app_handling_exceptions(self.app, conn)(scope, receive, send)
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\starlette\_exception_handler.py", line 62, in wrapped_app
-    raise exc
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\starlette\_exception_handler.py", line 51, in wrapped_app
-    await app(scope, receive, sender)
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\starlette\routing.py", line 715, in __call__
-    await self.middleware_stack(scope, receive, send)
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\starlette\routing.py", line 735, in app
-    await route.handle(scope, receive, send)
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\starlette\routing.py", line 288, in handle
-    await self.app(scope, receive, send)
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\starlette\routing.py", line 76, in app
-    await wrap_app_handling_exceptions(app, request)(scope, receive, send)
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\starlette\_exception_handler.py", line 62, in wrapped_app
-    raise exc
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\starlette\_exception_handler.py", line 51, in wrapped_app
-    await app(scope, receive, sender)
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\starlette\routing.py", line 73, in app
-    response = await f(request)
-               ^^^^^^^^^^^^^^^^
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\fastapi\routing.py", line 301, in app
-    raw_response = await run_endpoint_function(
-                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-    ...<3 lines>...
-    )
-    ^
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\fastapi\routing.py", line 212, in run_endpoint_function
-    return await dependant.call(**values)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "D:\projects\page_chat\backend\app\api\documents.py", line 726, in get_document_processing_steps
-    current_stage_idx = stage_order.index(current_step) if current_step else -1
-                                                           ^^^^^^^^^^^^
-UnboundLocalError: cannot access local variable 'current_step' where it is not associated with a value
-Exception in ASGI application
-Traceback (most recent call last):
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\uvicorn\protocols\http\h11_impl.py", line 406, in run_asgi
-    result = await app(  # type: ignore[func-returns-value]
-             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-        self.scope, self.receive, self.send
-        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-    )
-    ^
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\uvicorn\middleware\proxy_headers.py", line 70, in __call__
-    return await self.app(scope, receive, send)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\fastapi\applications.py", line 1054, in __call__
-    await super().__call__(scope, receive, send)
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\starlette\applications.py", line 113, in __call__
-    await self.middleware_stack(scope, receive, send)
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\starlette\middleware\errors.py", line 187, in __call__
-    raise exc
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\starlette\middleware\errors.py", line 165, in __call__
-    await self.app(scope, receive, _send)
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\starlette\middleware\cors.py", line 85, in __call__
-    await self.app(scope, receive, send)
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\starlette\middleware\exceptions.py", line 62, in __call__
-    await wrap_app_handling_exceptions(self.app, conn)(scope, receive, send)
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\starlette\_exception_handler.py", line 62, in wrapped_app
-    raise exc
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\starlette\_exception_handler.py", line 51, in wrapped_app
-    await app(scope, receive, sender)
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\starlette\routing.py", line 715, in __call__
-    await self.middleware_stack(scope, receive, send)
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\starlette\routing.py", line 735, in app
-    await route.handle(scope, receive, send)
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\starlette\routing.py", line 288, in handle
-    await self.app(scope, receive, send)
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\starlette\routing.py", line 76, in app
-    await wrap_app_handling_exceptions(app, request)(scope, receive, send)
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\starlette\_exception_handler.py", line 62, in wrapped_app
-    raise exc
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\starlette\_exception_handler.py", line 51, in wrapped_app
-    await app(scope, receive, sender)
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\starlette\routing.py", line 73, in app
-    response = await f(request)
-               ^^^^^^^^^^^^^^^^
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\fastapi\routing.py", line 301, in app
-    raw_response = await run_endpoint_function(
-                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-    ...<3 lines>...
-    )
-    ^
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\fastapi\routing.py", line 212, in run_endpoint_function
-    return await dependant.call(**values)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "D:\projects\page_chat\backend\app\api\documents.py", line 726, in get_document_processing_steps
-    current_stage_idx = stage_order.index(current_step) if current_step else -1
-                                                           ^^^^^^^^^^^^
-UnboundLocalError: cannot access local variable 'current_step' where it is not associated with a value
-Exception in ASGI application
-Traceback (most recent call last):
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\uvicorn\protocols\http\h11_impl.py", line 406, in run_asgi
-    result = await app(  # type: ignore[func-returns-value]
-             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-        self.scope, self.receive, self.send
-        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-    )
-    ^
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\uvicorn\middleware\proxy_headers.py", line 70, in __call__
-    return await self.app(scope, receive, send)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\fastapi\applications.py", line 1054, in __call__
-    await super().__call__(scope, receive, send)
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\starlette\applications.py", line 113, in __call__
-    await self.middleware_stack(scope, receive, send)
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\starlette\middleware\errors.py", line 187, in __call__
-    raise exc
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\starlette\middleware\errors.py", line 165, in __call__
-    await self.app(scope, receive, _send)
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\starlette\middleware\cors.py", line 85, in __call__
-    await self.app(scope, receive, send)
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\starlette\middleware\exceptions.py", line 62, in __call__
-    await wrap_app_handling_exceptions(self.app, conn)(scope, receive, send)
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\starlette\_exception_handler.py", line 62, in wrapped_app
-    raise exc
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\starlette\_exception_handler.py", line 51, in wrapped_app
-    await app(scope, receive, sender)
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\starlette\routing.py", line 715, in __call__
-    await self.middleware_stack(scope, receive, send)
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\starlette\routing.py", line 735, in app
-    await route.handle(scope, receive, send)
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\starlette\routing.py", line 288, in handle
-    await self.app(scope, receive, send)
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\starlette\routing.py", line 76, in app
-    await wrap_app_handling_exceptions(app, request)(scope, receive, send)
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\starlette\_exception_handler.py", line 62, in wrapped_app
-    raise exc
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\starlette\_exception_handler.py", line 51, in wrapped_app
-    await app(scope, receive, sender)
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\starlette\routing.py", line 73, in app
-    response = await f(request)
-               ^^^^^^^^^^^^^^^^
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\fastapi\routing.py", line 301, in app
-    raw_response = await run_endpoint_function(
-                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-    ...<3 lines>...
-    )
-    ^
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\fastapi\routing.py", line 212, in run_endpoint_function
-    return await dependant.call(**values)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "D:\projects\page_chat\backend\app\api\documents.py", line 726, in get_document_processing_steps
-    current_stage_idx = stage_order.index(current_step) if current_step else -1
-                                                           ^^^^^^^^^^^^
-UnboundLocalError: cannot access local variable 'current_step' where it is not associated with a value
-Exception in ASGI application
-Traceback (most recent call last):
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\uvicorn\protocols\http\h11_impl.py", line 406, in run_asgi
-    result = await app(  # type: ignore[func-returns-value]
-             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-        self.scope, self.receive, self.send
-        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-    )
-    ^
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\uvicorn\middleware\proxy_headers.py", line 70, in __call__
-    return await self.app(scope, receive, send)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\fastapi\applications.py", line 1054, in __call__
-    await super().__call__(scope, receive, send)
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\starlette\applications.py", line 113, in __call__
-    await self.middleware_stack(scope, receive, send)
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\starlette\middleware\errors.py", line 187, in __call__
-    raise exc
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\starlette\middleware\errors.py", line 165, in __call__
-    await self.app(scope, receive, _send)
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\starlette\middleware\cors.py", line 85, in __call__
-    await self.app(scope, receive, send)
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\starlette\middleware\exceptions.py", line 62, in __call__
-    await wrap_app_handling_exceptions(self.app, conn)(scope, receive, send)
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\starlette\_exception_handler.py", line 62, in wrapped_app
-    raise exc
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\starlette\_exception_handler.py", line 51, in wrapped_app
-    await app(scope, receive, sender)
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\starlette\routing.py", line 715, in __call__
-    await self.middleware_stack(scope, receive, send)
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\starlette\routing.py", line 735, in app
-    await route.handle(scope, receive, send)
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\starlette\routing.py", line 288, in handle
-    await self.app(scope, receive, send)
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\starlette\routing.py", line 76, in app
-    await wrap_app_handling_exceptions(app, request)(scope, receive, send)
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\starlette\_exception_handler.py", line 62, in wrapped_app
-    raise exc
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\starlette\_exception_handler.py", line 51, in wrapped_app
-    await app(scope, receive, sender)
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\starlette\routing.py", line 73, in app
-    response = await f(request)
-               ^^^^^^^^^^^^^^^^
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\fastapi\routing.py", line 301, in app
-    raw_response = await run_endpoint_function(
-                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-    ...<3 lines>...
-    )
-    ^
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\fastapi\routing.py", line 212, in run_endpoint_function
-    return await dependant.call(**values)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "D:\projects\page_chat\backend\app\api\documents.py", line 726, in get_document_processing_steps
-    current_stage_idx = stage_order.index(current_step) if current_step else -1
-                                                           ^^^^^^^^^^^^
-UnboundLocalError: cannot access local variable 'current_step' where it is not associated with a value
-BM25S Create Vocab:   0%|          | 0/677 [00:00<?, ?it/s]                                                           BM25S Convert tokens to indices:   0%|          | 0/677 [00:00<?, ?it/s]                                                                        BM25S Count Tokens:   0%|          | 0/677 [00:00<?, ?it/s]                                                           BM25S Compute Scores:   0%|          | 0/677 [00:00<?, ?it/s]                                                             WARNING:  StatReload detected changes in 'pageindex\balanced_toc.py'. Reloading...
-D:\projects\page_chat\backend\venv\Lib\site-packages\jieba\_compat.py:18: UserWarning: pkg_resources is deprecated as an API. See https://setuptools.pypa.io/en/latest/pkg_resources.html. The pkg_resources package is slated for removal as early as 2025-11-30. Refrain from using this package or pin to Setuptools<81.
-  import pkg_resources
-Building prefix dict from the default dictionary ...
-Loading model from cache C:\Users\TT_WT\AppData\Local\Temp\jieba.cache
-Loading model cost 0.711 seconds.
-Prefix dict has been built successfully.
-BM25S Create Vocab:   0%|          | 0/677 [00:00<?, ?it/s]                                                           BM25S Convert tokens to indices:   0%|          | 0/677 [00:00<?, ?it/s]                                                                        BM25S Count Tokens:   0%|          | 0/677 [00:00<?, ?it/s]                                                           BM25S Compute Scores:   0%|          | 0/677 [00:00<?, ?it/s]                                                             WARNING:  StatReload detected changes in 'pageindex\balanced_toc.py'. Reloading...
-D:\projects\page_chat\backend\venv\Lib\site-packages\jieba\_compat.py:18: UserWarning: pkg_resources is deprecated as an API. See https://setuptools.pypa.io/en/latest/pkg_resources.html. The pkg_resources package is slated for removal as early as 2025-11-30. Refrain from using this package or pin to Setuptools<81.
-  import pkg_resources
-Building prefix dict from the default dictionary ...
-Loading model from cache C:\Users\TT_WT\AppData\Local\Temp\jieba.cache
-Loading model cost 0.839 seconds.
-Prefix dict has been built successfully.
-BM25S Create Vocab:   0%|          | 0/677 [00:00<?, ?it/s]                                                           BM25S Convert tokens to indices:   0%|          | 0/677 [00:00<?, ?it/s]                                                                        BM25S Count Tokens:   0%|          | 0/677 [00:00<?, ?it/s]                                                           BM25S Compute Scores:   0%|          | 0/677 [00:00<?, ?it/s]                                                             WARNING:  StatReload detected changes in 'pageindex\balanced_toc.py'. Reloading...
-D:\projects\page_chat\backend\venv\Lib\site-packages\jieba\_compat.py:18: UserWarning: pkg_resources is deprecated as an API. See https://setuptools.pypa.io/en/latest/pkg_resources.html. The pkg_resources package is slated for removal as early as 2025-11-30. Refrain from using this package or pin to Setuptools<81.
-  import pkg_resources
-Building prefix dict from the default dictionary ...
-Loading model from cache C:\Users\TT_WT\AppData\Local\Temp\jieba.cache
-Loading model cost 0.842 seconds.
-Prefix dict has been built successfully.
-BM25S Create Vocab:   0%|          | 0/677 [00:00<?, ?it/s]                                                           BM25S Convert tokens to indices:   0%|          | 0/677 [00:00<?, ?it/s]                                                                        BM25S Count Tokens:   0%|          | 0/677 [00:00<?, ?it/s]                                                           BM25S Compute Scores:   0%|          | 0/677 [00:00<?, ?it/s]                                                             WARNING:  StatReload detected changes in 'app\core\config.py'. Reloading...
-D:\projects\page_chat\backend\venv\Lib\site-packages\jieba\_compat.py:18: UserWarning: pkg_resources is deprecated as an API. See https://setuptools.pypa.io/en/latest/pkg_resources.html. The pkg_resources package is slated for removal as early as 2025-11-30. Refrain from using this package or pin to Setuptools<81.
-  import pkg_resources
-Building prefix dict from the default dictionary ...
-Loading model from cache C:\Users\TT_WT\AppData\Local\Temp\jieba.cache
-Loading model cost 0.796 seconds.
-Prefix dict has been built successfully.
-BM25S Create Vocab:   0%|          | 0/677 [00:00<?, ?it/s]                                                           BM25S Convert tokens to indices:   0%|          | 0/677 [00:00<?, ?it/s]                                                                        BM25S Count Tokens:   0%|          | 0/677 [00:00<?, ?it/s]                                                           BM25S Compute Scores:   0%|          | 0/677 [00:00<?, ?it/s]                                                             Exception in ASGI application
-Traceback (most recent call last):
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\uvicorn\protocols\http\h11_impl.py", line 406, in run_asgi
-    result = await app(  # type: ignore[func-returns-value]
-             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-        self.scope, self.receive, self.send
-        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-    )
-    ^
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\uvicorn\middleware\proxy_headers.py", line 70, in __call__
-    return await self.app(scope, receive, send)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\fastapi\applications.py", line 1054, in __call__
-    await super().__call__(scope, receive, send)
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\starlette\applications.py", line 113, in __call__
-    await self.middleware_stack(scope, receive, send)
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\starlette\middleware\errors.py", line 187, in __call__
-    raise exc
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\starlette\middleware\errors.py", line 165, in __call__
-    await self.app(scope, receive, _send)
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\starlette\middleware\cors.py", line 85, in __call__
-    await self.app(scope, receive, send)
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\starlette\middleware\exceptions.py", line 62, in __call__
-    await wrap_app_handling_exceptions(self.app, conn)(scope, receive, send)
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\starlette\_exception_handler.py", line 62, in wrapped_app
-    raise exc
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\starlette\_exception_handler.py", line 51, in wrapped_app
-    await app(scope, receive, sender)
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\starlette\routing.py", line 715, in __call__
-    await self.middleware_stack(scope, receive, send)
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\starlette\routing.py", line 735, in app
-    await route.handle(scope, receive, send)
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\starlette\routing.py", line 288, in handle
-    await self.app(scope, receive, send)
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\starlette\routing.py", line 76, in app
-    await wrap_app_handling_exceptions(app, request)(scope, receive, send)
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\starlette\_exception_handler.py", line 62, in wrapped_app
-    raise exc
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\starlette\_exception_handler.py", line 51, in wrapped_app
-    await app(scope, receive, sender)
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\starlette\routing.py", line 73, in app
-    response = await f(request)
-               ^^^^^^^^^^^^^^^^
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\fastapi\routing.py", line 301, in app
-    raw_response = await run_endpoint_function(
-                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-    ...<3 lines>...
-    )
-    ^
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\fastapi\routing.py", line 212, in run_endpoint_function
-    return await dependant.call(**values)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "D:\projects\page_chat\backend\app\api\documents.py", line 726, in get_document_processing_steps
-    current_stage_idx = stage_order.index(current_step) if current_step else -1
-                                                           ^^^^^^^^^^^^
-UnboundLocalError: cannot access local variable 'current_step' where it is not associated with a value
-Exception in ASGI application
-Traceback (most recent call last):
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\uvicorn\protocols\http\h11_impl.py", line 406, in run_asgi
-    result = await app(  # type: ignore[func-returns-value]
-             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-        self.scope, self.receive, self.send
-        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-    )
-    ^
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\uvicorn\middleware\proxy_headers.py", line 70, in __call__
-    return await self.app(scope, receive, send)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\fastapi\applications.py", line 1054, in __call__
-    await super().__call__(scope, receive, send)
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\starlette\applications.py", line 113, in __call__
-    await self.middleware_stack(scope, receive, send)
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\starlette\middleware\errors.py", line 187, in __call__
-    raise exc
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\starlette\middleware\errors.py", line 165, in __call__
-    await self.app(scope, receive, _send)
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\starlette\middleware\cors.py", line 85, in __call__
-    await self.app(scope, receive, send)
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\starlette\middleware\exceptions.py", line 62, in __call__
-    await wrap_app_handling_exceptions(self.app, conn)(scope, receive, send)
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\starlette\_exception_handler.py", line 62, in wrapped_app
-    raise exc
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\starlette\_exception_handler.py", line 51, in wrapped_app
-    await app(scope, receive, sender)
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\starlette\routing.py", line 715, in __call__
-    await self.middleware_stack(scope, receive, send)
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\starlette\routing.py", line 735, in app
-    await route.handle(scope, receive, send)
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\starlette\routing.py", line 288, in handle
-    await self.app(scope, receive, send)
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\starlette\routing.py", line 76, in app
-    await wrap_app_handling_exceptions(app, request)(scope, receive, send)
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\starlette\_exception_handler.py", line 62, in wrapped_app
-    raise exc
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\starlette\_exception_handler.py", line 51, in wrapped_app
-    await app(scope, receive, sender)
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\starlette\routing.py", line 73, in app
-    response = await f(request)
-               ^^^^^^^^^^^^^^^^
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\fastapi\routing.py", line 301, in app
-    raw_response = await run_endpoint_function(
-                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-    ...<3 lines>...
-    )
-    ^
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\fastapi\routing.py", line 212, in run_endpoint_function
-    return await dependant.call(**values)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "D:\projects\page_chat\backend\app\api\documents.py", line 726, in get_document_processing_steps
-    current_stage_idx = stage_order.index(current_step) if current_step else -1
-                                                           ^^^^^^^^^^^^
-UnboundLocalError: cannot access local variable 'current_step' where it is not associated with a value
-Exception in ASGI application
-Traceback (most recent call last):
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\uvicorn\protocols\http\h11_impl.py", line 406, in run_asgi
-    result = await app(  # type: ignore[func-returns-value]
-             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-        self.scope, self.receive, self.send
-        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-    )
-    ^
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\uvicorn\middleware\proxy_headers.py", line 70, in __call__
-    return await self.app(scope, receive, send)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\fastapi\applications.py", line 1054, in __call__
-    await super().__call__(scope, receive, send)
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\starlette\applications.py", line 113, in __call__
-    await self.middleware_stack(scope, receive, send)
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\starlette\middleware\errors.py", line 187, in __call__
-    raise exc
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\starlette\middleware\errors.py", line 165, in __call__
-    await self.app(scope, receive, _send)
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\starlette\middleware\cors.py", line 85, in __call__
-    await self.app(scope, receive, send)
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\starlette\middleware\exceptions.py", line 62, in __call__
-    await wrap_app_handling_exceptions(self.app, conn)(scope, receive, send)
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\starlette\_exception_handler.py", line 62, in wrapped_app
-    raise exc
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\starlette\_exception_handler.py", line 51, in wrapped_app
-    await app(scope, receive, sender)
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\starlette\routing.py", line 715, in __call__
-    await self.middleware_stack(scope, receive, send)
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\starlette\routing.py", line 735, in app
-    await route.handle(scope, receive, send)
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\starlette\routing.py", line 288, in handle
-    await self.app(scope, receive, send)
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\starlette\routing.py", line 76, in app
-    await wrap_app_handling_exceptions(app, request)(scope, receive, send)
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\starlette\_exception_handler.py", line 62, in wrapped_app
-    raise exc
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\starlette\_exception_handler.py", line 51, in wrapped_app
-    await app(scope, receive, sender)
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\starlette\routing.py", line 73, in app
-    response = await f(request)
-               ^^^^^^^^^^^^^^^^
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\fastapi\routing.py", line 301, in app
-    raw_response = await run_endpoint_function(
-                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-    ...<3 lines>...
-    )
-    ^
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\fastapi\routing.py", line 212, in run_endpoint_function
-    return await dependant.call(**values)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "D:\projects\page_chat\backend\app\api\documents.py", line 726, in get_document_processing_steps
-    current_stage_idx = stage_order.index(current_step) if current_step else -1
-                                                           ^^^^^^^^^^^^
-UnboundLocalError: cannot access local variable 'current_step' where it is not associated with a value
-Exception in ASGI application
-Traceback (most recent call last):
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\uvicorn\protocols\http\h11_impl.py", line 406, in run_asgi
-    result = await app(  # type: ignore[func-returns-value]
-             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-        self.scope, self.receive, self.send
-        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-    )
-    ^
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\uvicorn\middleware\proxy_headers.py", line 70, in __call__
-    return await self.app(scope, receive, send)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\fastapi\applications.py", line 1054, in __call__
-    await super().__call__(scope, receive, send)
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\starlette\applications.py", line 113, in __call__
-    await self.middleware_stack(scope, receive, send)
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\starlette\middleware\errors.py", line 187, in __call__
-    raise exc
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\starlette\middleware\errors.py", line 165, in __call__
-    await self.app(scope, receive, _send)
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\starlette\middleware\cors.py", line 85, in __call__
-    await self.app(scope, receive, send)
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\starlette\middleware\exceptions.py", line 62, in __call__
-    await wrap_app_handling_exceptions(self.app, conn)(scope, receive, send)
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\starlette\_exception_handler.py", line 62, in wrapped_app
-    raise exc
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\starlette\_exception_handler.py", line 51, in wrapped_app
-    await app(scope, receive, sender)
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\starlette\routing.py", line 715, in __call__
-    await self.middleware_stack(scope, receive, send)
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\starlette\routing.py", line 735, in app
-    await route.handle(scope, receive, send)
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\starlette\routing.py", line 288, in handle
-    await self.app(scope, receive, send)
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\starlette\routing.py", line 76, in app
-    await wrap_app_handling_exceptions(app, request)(scope, receive, send)
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\starlette\_exception_handler.py", line 62, in wrapped_app
-    raise exc
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\starlette\_exception_handler.py", line 51, in wrapped_app
-    await app(scope, receive, sender)
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\starlette\routing.py", line 73, in app
-    response = await f(request)
-               ^^^^^^^^^^^^^^^^
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\fastapi\routing.py", line 301, in app
-    raw_response = await run_endpoint_function(
-                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-    ...<3 lines>...
-    )
-    ^
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\fastapi\routing.py", line 212, in run_endpoint_function
-    return await dependant.call(**values)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "D:\projects\page_chat\backend\app\api\documents.py", line 726, in get_document_processing_steps
-    current_stage_idx = stage_order.index(current_step) if current_step else -1
-                                                           ^^^^^^^^^^^^
-UnboundLocalError: cannot access local variable 'current_step' where it is not associated with a value
-Exception in ASGI application
-Traceback (most recent call last):
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\uvicorn\protocols\http\h11_impl.py", line 406, in run_asgi
-    result = await app(  # type: ignore[func-returns-value]
-             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-        self.scope, self.receive, self.send
-        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-    )
-    ^
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\uvicorn\middleware\proxy_headers.py", line 70, in __call__
-    return await self.app(scope, receive, send)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\fastapi\applications.py", line 1054, in __call__
-    await super().__call__(scope, receive, send)
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\starlette\applications.py", line 113, in __call__
-    await self.middleware_stack(scope, receive, send)
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\starlette\middleware\errors.py", line 187, in __call__
-    raise exc
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\starlette\middleware\errors.py", line 165, in __call__
-    await self.app(scope, receive, _send)
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\starlette\middleware\cors.py", line 85, in __call__
-    await self.app(scope, receive, send)
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\starlette\middleware\exceptions.py", line 62, in __call__
-    await wrap_app_handling_exceptions(self.app, conn)(scope, receive, send)
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\starlette\_exception_handler.py", line 62, in wrapped_app
-    raise exc
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\starlette\_exception_handler.py", line 51, in wrapped_app
-    await app(scope, receive, sender)
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\starlette\routing.py", line 715, in __call__
-    await self.middleware_stack(scope, receive, send)
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\starlette\routing.py", line 735, in app
-    await route.handle(scope, receive, send)
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\starlette\routing.py", line 288, in handle
-    await self.app(scope, receive, send)
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\starlette\routing.py", line 76, in app
-    await wrap_app_handling_exceptions(app, request)(scope, receive, send)
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\starlette\_exception_handler.py", line 62, in wrapped_app
-    raise exc
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\starlette\_exception_handler.py", line 51, in wrapped_app
-    await app(scope, receive, sender)
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\starlette\routing.py", line 73, in app
-    response = await f(request)
-               ^^^^^^^^^^^^^^^^
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\fastapi\routing.py", line 301, in app
-    raw_response = await run_endpoint_function(
-                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-    ...<3 lines>...
-    )
-    ^
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\fastapi\routing.py", line 212, in run_endpoint_function
-    return await dependant.call(**values)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "D:\projects\page_chat\backend\app\api\documents.py", line 726, in get_document_processing_steps
-    current_stage_idx = stage_order.index(current_step) if current_step else -1
-                                                           ^^^^^^^^^^^^
-UnboundLocalError: cannot access local variable 'current_step' where it is not associated with a value
-Exception in ASGI application
-Traceback (most recent call last):
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\uvicorn\protocols\http\h11_impl.py", line 406, in run_asgi
-    result = await app(  # type: ignore[func-returns-value]
-             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-        self.scope, self.receive, self.send
-        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-    )
-    ^
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\uvicorn\middleware\proxy_headers.py", line 70, in __call__
-    return await self.app(scope, receive, send)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\fastapi\applications.py", line 1054, in __call__
-    await super().__call__(scope, receive, send)
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\starlette\applications.py", line 113, in __call__
-    await self.middleware_stack(scope, receive, send)
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\starlette\middleware\errors.py", line 187, in __call__
-    raise exc
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\starlette\middleware\errors.py", line 165, in __call__
-    await self.app(scope, receive, _send)
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\starlette\middleware\cors.py", line 85, in __call__
-    await self.app(scope, receive, send)
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\starlette\middleware\exceptions.py", line 62, in __call__
-    await wrap_app_handling_exceptions(self.app, conn)(scope, receive, send)
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\starlette\_exception_handler.py", line 62, in wrapped_app
-    raise exc
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\starlette\_exception_handler.py", line 51, in wrapped_app
-    await app(scope, receive, sender)
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\starlette\routing.py", line 715, in __call__
-    await self.middleware_stack(scope, receive, send)
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\starlette\routing.py", line 735, in app
-    await route.handle(scope, receive, send)
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\starlette\routing.py", line 288, in handle
-    await self.app(scope, receive, send)
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\starlette\routing.py", line 76, in app
-    await wrap_app_handling_exceptions(app, request)(scope, receive, send)
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\starlette\_exception_handler.py", line 62, in wrapped_app
-    raise exc
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\starlette\_exception_handler.py", line 51, in wrapped_app
-    await app(scope, receive, sender)
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\starlette\routing.py", line 73, in app
-    response = await f(request)
-               ^^^^^^^^^^^^^^^^
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\fastapi\routing.py", line 301, in app
-    raw_response = await run_endpoint_function(
-                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-    ...<3 lines>...
-    )
-    ^
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\fastapi\routing.py", line 212, in run_endpoint_function
-    return await dependant.call(**values)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "D:\projects\page_chat\backend\app\api\documents.py", line 726, in get_document_processing_steps
-    current_stage_idx = stage_order.index(current_step) if current_step else -1
-                                                           ^^^^^^^^^^^^
-UnboundLocalError: cannot access local variable 'current_step' where it is not associated with a value
-BM25S Create Vocab:   0%|          | 0/671 [00:00<?, ?it/s]                                                           BM25S Convert tokens to indices:   0%|          | 0/671 [00:00<?, ?it/s]                                                                        BM25S Count Tokens:   0%|          | 0/671 [00:00<?, ?it/s]                                                           BM25S Compute Scores:   0%|          | 0/671 [00:00<?, ?it/s]                                                             Exception in ASGI application
-Traceback (most recent call last):
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\uvicorn\protocols\http\h11_impl.py", line 406, in run_asgi
-    result = await app(  # type: ignore[func-returns-value]
-             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-        self.scope, self.receive, self.send
-        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-    )
-    ^
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\uvicorn\middleware\proxy_headers.py", line 70, in __call__
-    return await self.app(scope, receive, send)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\fastapi\applications.py", line 1054, in __call__
-    await super().__call__(scope, receive, send)
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\starlette\applications.py", line 113, in __call__
-    await self.middleware_stack(scope, receive, send)
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\starlette\middleware\errors.py", line 187, in __call__
-    raise exc
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\starlette\middleware\errors.py", line 165, in __call__
-    await self.app(scope, receive, _send)
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\starlette\middleware\cors.py", line 85, in __call__
-    await self.app(scope, receive, send)
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\starlette\middleware\exceptions.py", line 62, in __call__
-    await wrap_app_handling_exceptions(self.app, conn)(scope, receive, send)
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\starlette\_exception_handler.py", line 62, in wrapped_app
-    raise exc
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\starlette\_exception_handler.py", line 51, in wrapped_app
-    await app(scope, receive, sender)
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\starlette\routing.py", line 715, in __call__
-    await self.middleware_stack(scope, receive, send)
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\starlette\routing.py", line 735, in app
-    await route.handle(scope, receive, send)
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\starlette\routing.py", line 288, in handle
-    await self.app(scope, receive, send)
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\starlette\routing.py", line 76, in app
-    await wrap_app_handling_exceptions(app, request)(scope, receive, send)
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\starlette\_exception_handler.py", line 62, in wrapped_app
-    raise exc
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\starlette\_exception_handler.py", line 51, in wrapped_app
-    await app(scope, receive, sender)
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\starlette\routing.py", line 73, in app
-    response = await f(request)
-               ^^^^^^^^^^^^^^^^
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\fastapi\routing.py", line 301, in app
-    raw_response = await run_endpoint_function(
-                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-    ...<3 lines>...
-    )
-    ^
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\fastapi\routing.py", line 212, in run_endpoint_function
-    return await dependant.call(**values)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "D:\projects\page_chat\backend\app\api\documents.py", line 726, in get_document_processing_steps
-    current_stage_idx = stage_order.index(current_step) if current_step else -1
-                                                           ^^^^^^^^^^^^
-UnboundLocalError: cannot access local variable 'current_step' where it is not associated with a value
-Exception in ASGI application
-Traceback (most recent call last):
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\uvicorn\protocols\http\h11_impl.py", line 406, in run_asgi
-    result = await app(  # type: ignore[func-returns-value]
-             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-        self.scope, self.receive, self.send
-        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-    )
-    ^
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\uvicorn\middleware\proxy_headers.py", line 70, in __call__
-    return await self.app(scope, receive, send)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\fastapi\applications.py", line 1054, in __call__
-    await super().__call__(scope, receive, send)
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\starlette\applications.py", line 113, in __call__
-    await self.middleware_stack(scope, receive, send)
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\starlette\middleware\errors.py", line 187, in __call__
-    raise exc
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\starlette\middleware\errors.py", line 165, in __call__
-    await self.app(scope, receive, _send)
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\starlette\middleware\cors.py", line 85, in __call__
-    await self.app(scope, receive, send)
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\starlette\middleware\exceptions.py", line 62, in __call__
-    await wrap_app_handling_exceptions(self.app, conn)(scope, receive, send)
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\starlette\_exception_handler.py", line 62, in wrapped_app
-    raise exc
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\starlette\_exception_handler.py", line 51, in wrapped_app
-    await app(scope, receive, sender)
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\starlette\routing.py", line 715, in __call__
-    await self.middleware_stack(scope, receive, send)
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\starlette\routing.py", line 735, in app
-    await route.handle(scope, receive, send)
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\starlette\routing.py", line 288, in handle
-    await self.app(scope, receive, send)
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\starlette\routing.py", line 76, in app
-    await wrap_app_handling_exceptions(app, request)(scope, receive, send)
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\starlette\_exception_handler.py", line 62, in wrapped_app
-    raise exc
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\starlette\_exception_handler.py", line 51, in wrapped_app
-    await app(scope, receive, sender)
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\starlette\routing.py", line 73, in app
-    response = await f(request)
-               ^^^^^^^^^^^^^^^^
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\fastapi\routing.py", line 301, in app
-    raw_response = await run_endpoint_function(
-                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-    ...<3 lines>...
-    )
-    ^
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\fastapi\routing.py", line 212, in run_endpoint_function
-    return await dependant.call(**values)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "D:\projects\page_chat\backend\app\api\documents.py", line 726, in get_document_processing_steps
-    current_stage_idx = stage_order.index(current_step) if current_step else -1
-                                                           ^^^^^^^^^^^^
-UnboundLocalError: cannot access local variable 'current_step' where it is not associated with a value
-WARNING:  StatReload detected changes in 'app\api\documents.py'. Reloading...
-D:\projects\page_chat\backend\venv\Lib\site-packages\jieba\_compat.py:18: UserWarning: pkg_resources is deprecated as an API. See https://setuptools.pypa.io/en/latest/pkg_resources.html. The pkg_resources package is slated for removal as early as 2025-11-30. Refrain from using this package or pin to Setuptools<81.
-  import pkg_resources
-Building prefix dict from the default dictionary ...
-Loading model from cache C:\Users\TT_WT\AppData\Local\Temp\jieba.cache
-Loading model cost 0.809 seconds.
-Prefix dict has been built successfully.
-BM25S Create Vocab:   0%|          | 0/671 [00:00<?, ?it/s]                                                           BM25S Convert tokens to indices:   0%|          | 0/671 [00:00<?, ?it/s]                                                                        BM25S Count Tokens:   0%|          | 0/671 [00:00<?, ?it/s]                                                           BM25S Compute Scores:   0%|          | 0/671 [00:00<?, ?it/s]                                                             WARNING:  StatReload detected changes in 'pageindex\balanced_toc.py'. Reloading...
-D:\projects\page_chat\backend\venv\Lib\site-packages\jieba\_compat.py:18: UserWarning: pkg_resources is deprecated as an API. See https://setuptools.pypa.io/en/latest/pkg_resources.html. The pkg_resources package is slated for removal as early as 2025-11-30. Refrain from using this package or pin to Setuptools<81.
-  import pkg_resources
-Building prefix dict from the default dictionary ...
-Loading model from cache C:\Users\TT_WT\AppData\Local\Temp\jieba.cache
-Loading model cost 0.863 seconds.
-Prefix dict has been built successfully.
-BM25S Create Vocab:   0%|          | 0/671 [00:00<?, ?it/s]                                                           BM25S Convert tokens to indices:   0%|          | 0/671 [00:00<?, ?it/s]                                                                        BM25S Count Tokens:   0%|          | 0/671 [00:00<?, ?it/s]                                                           BM25S Compute Scores:   0%|          | 0/671 [00:00<?, ?it/s]                                                             BM25S Create Vocab:   0%|          | 0/671 [00:00<?, ?it/s]                                                           BM25S Convert tokens to indices:   0%|          | 0/671 [00:00<?, ?it/s]                                                                        BM25S Count Tokens:   0%|          | 0/671 [00:00<?, ?it/s]                                                           BM25S Compute Scores:   0%|          | 0/671 [00:00<?, ?it/s]                                                             Traceback (most recent call last):
-  File "<frozen ntpath>", line 694, in realpath
-OSError: [WinError 1450] 系统资源不足，无法完成请求的服务。: 'D:\\projects\\page_chat\\backend\\venv\\Lib\\site-packages\\torch\\testing\\_internal\\opinfo\\definitions\\linalg.py'
-
-During handling of the above exception, another exception occurred:
-
-Traceback (most recent call last):
-  File "<frozen runpy>", line 198, in _run_module_as_main
-  File "<frozen runpy>", line 88, in _run_code
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\uvicorn\__main__.py", line 4, in <module>
-    uvicorn.main()
-    ~~~~~~~~~~~~^^
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\click\core.py", line 1514, in __call__
-    return self.main(*args, **kwargs)
-           ~~~~~~~~~^^^^^^^^^^^^^^^^^
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\click\core.py", line 1435, in main
-    rv = self.invoke(ctx)
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\click\core.py", line 1298, in invoke
-    return ctx.invoke(self.callback, **ctx.params)
-           ~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\click\core.py", line 853, in invoke
-    return callback(*args, **kwargs)
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\uvicorn\main.py", line 410, in main
-    run(
-    ~~~^
-        app,
-        ^^^^
-    ...<45 lines>...
-        h11_max_incomplete_event_size=h11_max_incomplete_event_size,
-        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-    )
-    ^
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\uvicorn\main.py", line 572, in run
-    ChangeReload(config, target=server.run, sockets=[sock]).run()
-    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\uvicorn\supervisors\basereload.py", line 52, in run
-    for changes in self:
-                   ^^^^
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\uvicorn\supervisors\basereload.py", line 71, in __next__
-    return self.should_restart()
-           ~~~~~~~~~~~~~~~~~~~^^
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\uvicorn\supervisors\statreload.py", line 31, in should_restart
-    for file in self.iter_py_files():
-                ~~~~~~~~~~~~~~~~~~^^
-  File "D:\projects\page_chat\backend\venv\Lib\site-packages\uvicorn\supervisors\statreload.py", line 52, in iter_py_files
-    yield path.resolve()
-          ~~~~~~~~~~~~^^
-  File "C:\Users\TT_WT\AppData\Local\Python\pythoncore-3.14-64\Lib\pathlib\__init__.py", line 938, in resolve
-    return self.with_segments(os.path.realpath(self, strict=strict))
-                              ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^
-  File "<frozen ntpath>", line 706, in realpath
-  File "<frozen ntpath>", line 631, in _getfinalpathname_nonstrict
-OSError: [WinError 1450] 系统资源不足，无法完成请求的服务。: 'D:\\projects\\page_chat\\backend\\venv\\Lib\\site-packages\\torch\\testing\\_internal\\opinfo\\definitions\\linalg.py'
-Exception ignored in thread started by <bound method Thread._bootstrap of <Connection(Thread-3564, initial)>>:
-MemoryError: 

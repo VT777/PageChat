@@ -53,6 +53,38 @@ backend/data/
 backend/data/documents/
 backend/data/indexes/
 
+# Test and tool caches
+.pytest_cache/
+pytest-cache-files-*/
+backend/.pytest_cache/
+backend/pytest-cache-files-*/
+
+# Local temporary outputs
+tmp_*/
+backend/tmp*/
+*.err
+*.backup
+*_output.txt
+*_results.txt
+
+# Generated analysis artifacts
+/*.png
+/data/thumbnail_*.png
+/test_experiments/
+/.opencode/
+
+# Ad-hoc local scripts
+/analyze_*.py
+/check_*.py
+/comprehensive_*.py
+/debug_*.py
+/diagnose_*.py
+/render_*.py
+/test_*.py
+/verify_*.py
+/backend/check_*.py
+/backend/test_*.py
+
 # Environment variables
 .env
 .env.local
