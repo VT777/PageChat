@@ -1,0 +1,313 @@
+# Phase 6 Frontend Evidence And Settings Integration Implementation Plan
+
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+
+**Goal:** Surface source evidence, index quality, scoped retrieval, and model settings in the frontend without redesigning the whole product at once.
+
+**Architecture:** Integrate stable backend fields from Phases 2-5 into existing Vue views and stores. Keep the document management layout familiar, avoid wholesale copying from the design demo, and make evidence visibility useful without making chat noisy.
+
+**Tech Stack:** Vue frontend, Vite, Pinia stores, existing API client, `ChatView.vue`, `DocumentView.vue`, preview components, Settings view, backend APIs from prior phases.
+
+---
+
+## Entry Criteria
+
+Start after:
+
+- Phase 2 for citation labels and source anchors.
+- Phase 3 for quality display.
+- Phase 5 for model settings UI.
+
+Phase 4 is recommended if chat scope UI is included.
+
+## Files And Responsibilities
+
+- Modify: `frontend/src/api/index.ts`
+  - Add model settings API methods and chat scope fields.
+- Modify: `frontend/src/stores/document.ts`
+  - Preserve source anchors and quality metadata.
+- Modify: `frontend/src/stores/folder.ts`
+  - Expose selected folder scope for chat if needed.
+- Modify: `frontend/src/views/ChatView.vue`
+  - Show source labels and fallback disclosure.
+  - Include optional selected scope in chat requests.
+- Modify: `frontend/src/views/DocumentView.vue`
+  - Show index quality state and warnings.
+  - Keep current document management workflow.
+- Modify: `frontend/src/components/SourcePreviewDrawer.vue`
+  - Display anchor-aware labels.
+- Modify: `frontend/src/components/preview/MarkdownViewer.vue`
+- Modify: `frontend/src/components/preview/TextViewer.vue`
+- Modify: `frontend/src/components/preview/TableViewer.vue`
+- Modify: `frontend/src/components/preview/DocxViewer.vue`
+- Modify: `frontend/src/components/preview/PptxViewer.vue`
+  - Show correct units for line, row, paragraph, and slide anchors.
+- Modify: `frontend/src/views/SettingsView.vue`
+  - Add Models section.
+- Create: `frontend/src/components/settings/ModelProviderSettings.vue`
+- Create: `frontend/src/components/settings/ModelRouteSettings.vue`
+
+## UI Principles
+
+- Use existing design language.
+- Keep controls dense and work-focused.
+- Avoid a marketing-style settings page.
+- Do not expose raw config names such as `llm.default_fast_model`.
+- API keys are never displayed after saving.
+- Evidence labels should be concise:
+  - `report.pdf p.12`
+  - `notes.md lines 20-42`
+  - `contract.docx paragraphs 10-18`
+  - `sales.xlsx Sheet1 rows 2-80`
+  - `deck.pptx slide 7`
+
+## Task 1: Evidence Labels In Chat And Preview
+
+**Files:**
+
+- Modify: `frontend/src/views/ChatView.vue`
+- Modify: `frontend/src/components/SourcePreviewDrawer.vue`
+- Modify: `frontend/src/components/preview/MarkdownViewer.vue`
+- Modify: `frontend/src/components/preview/TextViewer.vue`
+- Modify: `frontend/src/components/preview/TableViewer.vue`
+- Modify: `frontend/src/components/preview/DocxViewer.vue`
+- Modify: `frontend/src/components/preview/PptxViewer.vue`
+
+- [ ] **Step 1: Add frontend label helper**
+
+Create or colocate a helper that formats `source_anchor` the same way as backend labels.
+
+- [ ] **Step 2: Add evidence label tests if frontend test framework exists**
+
+If no frontend test framework is configured, document this as a verification limitation and rely on build plus manual checks.
+
+- [ ] **Step 3: Update citation rendering**
+
+Use backend `display_label` when present. Fall back to frontend helper when only `source_anchor` exists.
+
+- [ ] **Step 4: Add fallback disclosure**
+
+If evidence contains `retrieval_source` of `keyword_fallback` or `visual_summary`, show a subtle note.
+
+- [ ] **Step 5: Run build**
+
+```powershell
+cd frontend
+npm.cmd run build
+```
+
+- [ ] **Step 6: Commit**
+
+```powershell
+git add frontend/src/views/ChatView.vue frontend/src/components/SourcePreviewDrawer.vue frontend/src/components/preview
+git commit -m "feat: show anchor-aware evidence labels"
+```
+
+## Task 2: Document Quality Display
+
+**Files:**
+
+- Modify: `frontend/src/views/DocumentView.vue`
+- Modify: `frontend/src/stores/document.ts`
+- Modify: `frontend/src/api/index.ts`
+
+- [ ] **Step 1: Add quality fields to types/store**
+
+Support optional:
+
+- `quality_report.status`
+- `quality_report.score`
+- `quality_report.warnings`
+- `quality_report.node_count`
+- `quality_report.page_range_coverage`
+
+- [ ] **Step 2: Update detail panel**
+
+Show:
+
+- Completed
+- Needs review
+- Failed
+
+For `needs_review`, show concrete warning reasons.
+
+- [ ] **Step 3: Keep layout stable**
+
+Do not redesign the whole page. Add quality status inside the existing detail/status area.
+
+- [ ] **Step 4: Run build**
+
+```powershell
+cd frontend
+npm.cmd run build
+```
+
+- [ ] **Step 5: Commit**
+
+```powershell
+git add frontend/src/views/DocumentView.vue frontend/src/stores/document.ts frontend/src/api/index.ts
+git commit -m "feat: surface document index quality"
+```
+
+## Task 3: Chat Scope UI
+
+**Files:**
+
+- Modify: `frontend/src/views/ChatView.vue`
+- Modify: `frontend/src/stores/document.ts`
+- Modify: `frontend/src/stores/folder.ts`
+- Modify: `frontend/src/api/index.ts`
+
+- [ ] **Step 1: Add chat request scope type**
+
+Support:
+
+- `folder_id`
+- `include_subfolders`
+- `document_ids`
+- `strict_scope`
+
+- [ ] **Step 2: Show current scope compactly**
+
+Examples:
+
+- Current document
+- Current folder
+- Folder including subfolders
+- All documents
+
+- [ ] **Step 3: Add explicit all-documents option**
+
+Avoid silently expanding from selected folder/document to all documents.
+
+- [ ] **Step 4: Run build**
+
+```powershell
+cd frontend
+npm.cmd run build
+```
+
+- [ ] **Step 5: Commit**
+
+```powershell
+git add frontend/src/views/ChatView.vue frontend/src/stores/document.ts frontend/src/stores/folder.ts frontend/src/api/index.ts
+git commit -m "feat: add chat retrieval scope controls"
+```
+
+## Task 4: Model Settings UI
+
+**Files:**
+
+- Modify: `frontend/src/views/SettingsView.vue`
+- Modify: `frontend/src/api/index.ts`
+- Create: `frontend/src/components/settings/ModelProviderSettings.vue`
+- Create: `frontend/src/components/settings/ModelRouteSettings.vue`
+
+- [ ] **Step 1: Add API client methods**
+
+Add methods for:
+
+- Provider presets.
+- Provider config list/create/update/delete.
+- Test connection.
+- Route mapping read/update.
+
+- [ ] **Step 2: Build provider settings component**
+
+Fields:
+
+- Provider preset.
+- API key input.
+- Base URL for custom providers.
+- Model IDs.
+- Test connection.
+- Masked saved key state.
+
+- [ ] **Step 3: Build route settings component**
+
+Route slots:
+
+- General chat.
+- Document Q&A.
+- Query expansion.
+- Index generation.
+- Vision/OCR.
+
+- [ ] **Step 4: Integrate into SettingsView**
+
+Use grouped settings, not low-level config names.
+
+- [ ] **Step 5: Run build**
+
+```powershell
+cd frontend
+npm.cmd run build
+```
+
+- [ ] **Step 6: Commit**
+
+```powershell
+git add frontend/src/views/SettingsView.vue frontend/src/api/index.ts frontend/src/components/settings
+git commit -m "feat: add model settings interface"
+```
+
+## Task 5: Final Verification And Completion Gate
+
+- [ ] **Step 1: Run frontend build**
+
+```powershell
+cd frontend
+npm.cmd run build
+```
+
+- [ ] **Step 2: Run backend regression if API types changed**
+
+```powershell
+C:\Users\TT_WT\.local\bin\uv.exe run pytest -q
+```
+
+- [ ] **Step 3: Manual verification**
+
+Check:
+
+- Chat answer citations show correct units.
+- Source preview opens for page, line, row, paragraph, and slide anchors where supported.
+- `needs_review` documents show concrete warnings.
+- Model settings save without displaying raw saved keys.
+- Chat scope can be switched explicitly.
+
+- [ ] **Step 4: Run completion gate audit**
+
+Use `docs/superpowers/completion-gate-gap-audit.md`.
+
+Inputs:
+
+- This Phase 6 plan.
+- `docs/superpowers/2026-06-10-next-phase-roadmap.md`
+- `docs/superpowers/2026-06-10-phase-1-improvement-report.md`
+- Source plan: `<source-plan-copy>\docs\superpowers\plans\2026-06-10-core-tree-retrieval-quality-plan.md`
+- Source plan: `<source-plan-copy>\docs\superpowers\plans\2026-06-10-user-configurable-models.md`
+- Source plan: `<source-plan-copy>\docs\superpowers\plans\2026-06-10-frontend-design-plan.md`
+- Current git status.
+- Build output and any backend test output from Steps 1-3.
+
+## Done Criteria
+
+Phase 6 is complete when:
+
+- Chat and preview show anchor-aware labels.
+- Retrieval fallback is disclosed subtly when present.
+- Document detail shows quality status and warnings.
+- Chat request can carry explicit retrieval scope.
+- Settings page supports model provider and route configuration.
+- API keys are write-only from UI perspective.
+- Frontend build passes.
+- Backend tests pass if APIs changed.
+- Completion gate passes or only records accepted P2 follow-ups.
+
+## Out Of Scope
+
+- Full document management redesign.
+- New landing page or marketing UI.
+- Model billing, quotas, or proxy administration.
+- Legacy Office conversion UI.
