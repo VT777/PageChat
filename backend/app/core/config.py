@@ -26,6 +26,11 @@ VISUAL_DAILY_STATS_PATH = DATA_DIR / "visual_daily_stats.json"
 # 数据库
 DATABASE_URL = f"sqlite+aiosqlite:///{DATA_DIR}/knowclaw.db"
 
+# JWT signing configuration. Keep local/test fallback stable across restarts.
+JWT_SECRET = os.getenv("JWT_SECRET") or os.getenv("SECRET_KEY")
+if not JWT_SECRET:
+    JWT_SECRET = "dev-only-change-me-page-chat-jwt-secret"
+
 # LLM 基础配置
 LLM_API_KEY = os.getenv("LLM_API_KEY")
 LLM_BASE_URL = os.getenv(
