@@ -41,7 +41,7 @@ async def _create_documents_table(db: aiosqlite.Connection) -> None:
 
 def _test_documents_dir() -> Path:
     root = Path(__file__).resolve().parent / "tmp_upload_documents" / uuid.uuid4().hex
-    root.mkdir(exist_ok=True)
+    root.mkdir(parents=True, exist_ok=True)
     return root
 
 
