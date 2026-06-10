@@ -18,6 +18,7 @@ from app.services.pageindex_service import PageIndexService
 from app.services.document_service import DocumentService
 from app.services.tool_executor import ToolExecutor, AGENT_TOOLS
 from app.core.llm import chat_by_scenario, async_chat_completion
+from app.models.retrieval import RetrievalScope
 from app.prompts import build_agent_system_prompt, QA_SYSTEM_PROMPT
 
 
@@ -38,8 +39,14 @@ def clear_conversation_cache(conversation_id: Optional[str] = None):
     """
     global _CONVERSATION_CACHES
     if conversation_id:
-        if conversation_id in _CONVERSATION_CACHES:
-            del _CONVERSATION_CACHES[conversation_id]
+        keys_to_delete = [
+            key
+            for key in _CONVERSATION_CACHES
+            if key == conversation_id or key.startswith(f"{conversation_id}:")
+        ]
+        for key in keys_to_delete:
+            del _CONVERSATION_CACHES[key]
+        if keys_to_delete:
             print(f"[CACHE] Cleared cache for conversation: {conversation_id}")
     else:
         _CONVERSATION_CACHES.clear()
@@ -75,6 +82,41 @@ class AgentService:
 
         return f"event: {event}\ndata: {_json.dumps(data, ensure_ascii=False)}\n\n"
 
+    @staticmethod
+    def _scope_cache_key(user_id: str, document_ids: Optional[List[str]]) -> str:
+        allowed_doc_ids = (
+            tuple(document_ids) if document_ids is not None else None
+        )
+        return RetrievalScope(
+            user_id=user_id, allowed_doc_ids=allowed_doc_ids
+        ).cache_key
+
+    @staticmethod
+    def _build_tool_cache_key(
+        tool_name: str,
+        tool_args: Dict[str, Any],
+        user_id: str,
+        document_ids: Optional[List[str]],
+    ) -> str:
+        if tool_name == "get_page_content":
+            norm_args = {
+                k: v for k, v in tool_args.items() if k != "include_image"
+            }
+        else:
+            norm_args = dict(tool_args)
+        scope_key = AgentService._scope_cache_key(user_id, document_ids)
+        return (
+            f"{scope_key}:{tool_name}:"
+            f"{json.dumps(norm_args, ensure_ascii=False, sort_keys=True)}"
+        )
+
+    @staticmethod
+    def _conversation_state_key(
+        conversation_id: str, user_id: str, document_ids: Optional[List[str]]
+    ) -> str:
+        scope_key = AgentService._scope_cache_key(user_id, document_ids)
+        return f"{conversation_id}:{scope_key}"
+
     async def run_agent_stream(
         self,
         question: str,
@@ -101,6 +143,11 @@ class AgentService:
 
         docs = await self.document_service.get_indexed_documents(user_id=user_id)
         doc_count = len(document_ids) if document_ids is not None else len(docs)
+        conversation_state_key = (
+            self._conversation_state_key(conversation_id, user_id, document_ids)
+            if conversation_id
+            else None
+        )
 
         # 将当前请求允许访问的文档范围注入工具执行器（防止越权）
         tool_executor = ToolExecutor(
@@ -125,9 +172,12 @@ class AgentService:
             return
 
         # 使用持久化的会话消息历史（包含工具调用记录）
-        if conversation_id and conversation_id in _CONVERSATION_MESSAGES:
+        if (
+            conversation_state_key
+            and conversation_state_key in _CONVERSATION_MESSAGES
+        ):
             # 复用缓存消息历史，但强制刷新系统提示与文档范围提示，避免旧会话污染
-            messages = _CONVERSATION_MESSAGES[conversation_id].copy()
+            messages = _CONVERSATION_MESSAGES[conversation_state_key].copy()
 
             # 更新/补充主系统提示
             system_prompt = build_agent_system_prompt(AGENT_TOOLS, lang=user_lang)
@@ -296,19 +346,16 @@ class AgentService:
 
                 if should_cache:
                     # 缓存 key：忽略 include_image 差异，同一页面只缓存一份
-                    if tool_name == "get_page_content":
-                        norm_args = {
-                            k: v for k, v in tool_args.items() if k != "include_image"
-                        }
-                        cache_key = (
-                            f"{tool_name}:{json.dumps(norm_args, sort_keys=True)}"
-                        )
-                    else:
-                        cache_key = (
-                            f"{tool_name}:{json.dumps(tool_args, sort_keys=True)}"
-                        )
+                    cache_key = self._build_tool_cache_key(
+                        tool_name,
+                        tool_args,
+                        user_id=user_id,
+                        document_ids=document_ids,
+                    )
 
-                    conv_cache = _CONVERSATION_CACHES.get(conversation_id, {})
+                    conv_cache = _CONVERSATION_CACHES.get(
+                        conversation_state_key, {}
+                    )
                     if cache_key in conv_cache:
                         result = conv_cache[cache_key]
                         elapsed_ms = int((time.perf_counter() - started_at) * 1000)
@@ -318,10 +365,10 @@ class AgentService:
                     else:
                         result = await tool_executor.execute(tool_name, tool_args)
                         elapsed_ms = int((time.perf_counter() - started_at) * 1000)
-                        if conversation_id:
-                            _CONVERSATION_CACHES.setdefault(conversation_id, {})[
-                                cache_key
-                            ] = result
+                        if conversation_state_key:
+                            _CONVERSATION_CACHES.setdefault(
+                                conversation_state_key, {}
+                            )[cache_key] = result
                         tool_logger.info(f"{tool_name} completed in {elapsed_ms}ms")
                 else:
                     # 不缓存的工具：直接执行
@@ -446,8 +493,8 @@ class AgentService:
         )
 
         # 保存完整消息历史到全局缓存（包含工具调用记录，供下一轮使用）
-        if conversation_id:
-            _CONVERSATION_MESSAGES[conversation_id] = messages.copy()
+        if conversation_state_key:
+            _CONVERSATION_MESSAGES[conversation_state_key] = messages.copy()
 
     def _build_tool_content(self, tool_name: str, result: dict) -> str:
         """

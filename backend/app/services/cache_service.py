@@ -116,12 +116,16 @@ class CacheService:
 
     # ==================== 搜索结果缓存 ====================
 
-    def get_search_result(self, query: str, doc_ids: List[str]) -> Optional[List[Dict]]:
-        key = self._make_key("search", query, sorted(doc_ids))
+    def get_search_result(
+        self, user_id: str, query: str, doc_ids: List[str]
+    ) -> Optional[List[Dict]]:
+        key = self._make_key("search", user_id, query, sorted(doc_ids))
         return self._search_cache.get(key)
 
-    def set_search_result(self, query: str, doc_ids: List[str], results: List[Dict]):
-        key = self._make_key("search", query, sorted(doc_ids))
+    def set_search_result(
+        self, user_id: str, query: str, doc_ids: List[str], results: List[Dict]
+    ):
+        key = self._make_key("search", user_id, query, sorted(doc_ids))
         self._search_cache.set(key, results)
 
     # ==================== LLM响应缓存 ====================
@@ -136,31 +140,35 @@ class CacheService:
 
     # ==================== 文档结构缓存 ====================
 
-    def get_structure(self, doc_id: str) -> Optional[Dict]:
-        return self._structure_cache.get(doc_id)
+    def get_structure(self, user_id: str, doc_id: str) -> Optional[Dict]:
+        key = self._make_key("structure", user_id, doc_id)
+        return self._structure_cache.get(key)
 
-    def set_structure(self, doc_id: str, structure: Dict):
-        self._structure_cache.set(doc_id, structure)
+    def set_structure(self, user_id: str, doc_id: str, structure: Dict):
+        key = self._make_key("structure", user_id, doc_id)
+        self._structure_cache.set(key, structure)
 
     # ==================== 页面内容缓存 ====================
 
     def get_page_content(
         self,
+        user_id: str,
         doc_id: str,
         page_num: int,
         include_image: bool,
     ) -> Optional[Dict[str, Any]]:
-        key = self._make_key("page", doc_id, page_num, include_image)
+        key = self._make_key("page", user_id, doc_id, page_num, include_image)
         return self._page_content_cache.get(key)
 
     def set_page_content(
         self,
+        user_id: str,
         doc_id: str,
         page_num: int,
         include_image: bool,
         result: Dict[str, Any],
     ):
-        key = self._make_key("page", doc_id, page_num, include_image)
+        key = self._make_key("page", user_id, doc_id, page_num, include_image)
         self._page_content_cache.set(key, result)
 
     # ==================== 统计信息 ====================

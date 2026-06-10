@@ -4315,13 +4315,18 @@ Return strict JSON only:
         return list(dedup.values())[:3]
 
     async def search_in_structure_async(
-        self, structure: Dict[str, Any], query: str, doc_id: str, doc_name: str
+        self,
+        structure: Dict[str, Any],
+        query: str,
+        doc_id: str,
+        doc_name: str,
+        user_id: str = "legacy",
     ) -> List[Dict[str, Any]]:
         """Use LLM reasoning to search the tree structure."""
         from app.core.llm import async_chat_completion
         from app.services.cache_service import cache_service
 
-        cached_result = cache_service.get_search_result(query, [doc_id])
+        cached_result = cache_service.get_search_result(user_id, query, [doc_id])
         if cached_result is not None:
             print(f"[CACHE] Search cache hit for query: {query[:30]}...")
             return cached_result
@@ -4443,7 +4448,7 @@ Return JSON only."""
             final_results = results[:3]
 
             # 缂撳瓨缁撴灉
-            cache_service.set_search_result(query, [doc_id], final_results)
+            cache_service.set_search_result(user_id, query, [doc_id], final_results)
 
             return final_results
 

@@ -193,7 +193,7 @@ class ToolExecutor:
         if not doc:
             return {"error": f"文档 {doc_id} 不存在"}
 
-        cached_toc = cache_service.get_structure(doc_id)
+        cached_toc = cache_service.get_structure(self.user_id, doc_id)
         if cached_toc is not None:
             return {
                 "doc_id": doc_id,
@@ -216,7 +216,7 @@ class ToolExecutor:
             nodes = []
 
         toc = self._extract_structure(nodes, doc.file_type)
-        cache_service.set_structure(doc_id, toc)
+        cache_service.set_structure(self.user_id, doc_id, toc)
 
         return {
             "doc_id": doc_id,
