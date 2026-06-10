@@ -7,6 +7,7 @@ import json
 import PyPDF2
 import copy
 import asyncio
+import weakref
 import pymupdf
 from io import BytesIO
 from dotenv import load_dotenv
@@ -21,7 +22,8 @@ _llm_api_key = os.getenv("LLM_API_KEY", "")
 _llm_base_url = os.getenv("LLM_BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1")
 
 _sync_client = None
-_async_client = None
+_async_clients_by_loop = weakref.WeakKeyDictionary()
+_sync_async_client = None
 
 def _get_sync_client():
     global _sync_client
@@ -30,10 +32,18 @@ def _get_sync_client():
     return _sync_client
 
 def _get_async_client():
-    global _async_client
-    if _async_client is None:
-        _async_client = AsyncOpenAI(api_key=_llm_api_key, base_url=_llm_base_url)
-    return _async_client
+    global _sync_async_client
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        if _sync_async_client is None:
+            _sync_async_client = AsyncOpenAI(api_key=_llm_api_key, base_url=_llm_base_url)
+        return _sync_async_client
+    client = _async_clients_by_loop.get(loop)
+    if client is None:
+        client = AsyncOpenAI(api_key=_llm_api_key, base_url=_llm_base_url)
+        _async_clients_by_loop[loop] = client
+    return client
 
 def count_tokens(text, model=None):
     if not text:

@@ -154,6 +154,28 @@ PAGEINDEX_FAST_ENABLED = PAGEINDEX_MODE in {"fast", "smart"} or _env_bool(
 # 如果超过10分钟仍未完成，说明处理卡住，应标记为失败
 PAGEINDEX_MAX_INDEX_SECONDS = int(os.getenv("PAGEINDEX_MAX_INDEX_SECONDS", "600"))
 
+# Batch indexing controls. Upload bursts enqueue jobs and let a small worker pool
+# consume them, preventing per-document LLM/VLM concurrency from multiplying.
+PAGEINDEX_QUEUE_ENABLED = _env_bool("PAGEINDEX_QUEUE_ENABLED", True)
+PAGEINDEX_MAX_CONCURRENT_JOBS = max(
+    1, int(os.getenv("PAGEINDEX_MAX_CONCURRENT_JOBS", "1"))
+)
+
+# Balanced-mode summary enrichment budgets. The base index should remain usable
+# even when individual summary requests are slow or rate-limited.
+PAGEINDEX_SUMMARY_CONCURRENCY = max(
+    1, int(os.getenv("PAGEINDEX_SUMMARY_CONCURRENCY", "2"))
+)
+PAGEINDEX_SUMMARY_NODE_TIMEOUT_SECONDS = float(
+    os.getenv("PAGEINDEX_SUMMARY_NODE_TIMEOUT_SECONDS", "25")
+)
+PAGEINDEX_SUMMARY_TOTAL_BUDGET_SECONDS = float(
+    os.getenv("PAGEINDEX_SUMMARY_TOTAL_BUDGET_SECONDS", "120")
+)
+PAGEINDEX_SUMMARY_MAX_LLM_NODES = max(
+    0, int(os.getenv("PAGEINDEX_SUMMARY_MAX_LLM_NODES", "30"))
+)
+
 # 启动时回收长时间处于 processing 的任务（分钟）
 INDEXING_STUCK_THRESHOLD_MINUTES = int(
     os.getenv("INDEXING_STUCK_THRESHOLD_MINUTES", "30")

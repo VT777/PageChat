@@ -122,3 +122,32 @@ def test_assess_no_toc_range_quality_accepts_well_spread_pages() -> None:
     ]
     q = page_index_module._assess_no_toc_range_quality(toc, page_count=21)
     assert q["score"] >= 0.8
+
+
+def test_fix_incorrect_toc_tolerates_missing_physical_index_result(monkeypatch) -> None:
+    toc = [{"title": "A", "physical_index": 1}]
+    incorrect = [{"list_index": 0, "title": "A", "page_number": 1}]
+
+    monkeypatch.setattr(page_index_module, "detect_divider_pages_robust", lambda *_a: [])
+
+    async def _broken_fixer(*_args, **_kwargs):
+        return None
+
+    async def _missing_physical_index_check(*_args, **_kwargs):
+        return {"answer": "yes"}
+
+    monkeypatch.setattr(page_index_module, "single_toc_item_index_fixer", _broken_fixer)
+    monkeypatch.setattr(page_index_module, "check_title_appearance", _missing_physical_index_check)
+
+    fixed, invalid = asyncio.run(
+        page_index_module.fix_incorrect_toc(
+            toc,
+            [("A body", 1)],
+            incorrect,
+            start_index=1,
+            logger=_Logger(),
+        )
+    )
+
+    assert fixed[0]["physical_index"] == 1
+    assert invalid == [{"list_index": 0, "title": "A", "physical_index": 1}]

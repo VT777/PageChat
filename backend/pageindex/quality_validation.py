@@ -7,6 +7,7 @@
 """
 
 import asyncio
+from collections import Counter
 from typing import Any, Dict, List, Optional
 
 from pageindex.vlm_utils import render_pages_to_images, vlm_call_with_images, parse_vlm_json
@@ -271,14 +272,15 @@ def decide_extraction_path(toc_check: Dict, divider_check: Dict) -> Dict[str, st
         {"path": "BRANCH_A|BRANCH_B|BRANCH_C", "reason": "决策原因"}
     """
     toc_valid = toc_check.get("is_valid", False)
+    toc_skeleton_valid = toc_check.get("skeleton_valid", toc_valid)
     toc_has_hierarchy = toc_check.get("has_hierarchy", False)
     divider_valid = divider_check.get("is_valid", False)
     
-    # 规则1：TOC合格且有层级
-    if toc_valid and toc_has_hierarchy:
+    # 规则1：TOC骨架可信时优先保留；页码和子层级可在 Branch A 内继续修正/补充
+    if toc_skeleton_valid:
         return {
             "path": "BRANCH_A",
-            "reason": "TOC质量合格且有层级结构"
+            "reason": "TOC骨架可信，优先保留目录页结构"
         }
     
     # 规则2：Divider合格（无论TOC状态）
@@ -308,47 +310,272 @@ def decide_extraction_path(toc_check: Dict, divider_check: Dict) -> Dict[str, st
 # ===========================================================================
 
 class TocQualityChecker:
-    """TOC质量检查器。"""
-    
-    def check(self, toc_items: List[Dict], toc_pages: List[int]) -> Dict[str, Any]:
-        """检查TOC质量。
-        
-        Args:
-            toc_items: TOC条目列表
-            toc_pages: 目录页码列表
-            
-        Returns:
-            {
-                "is_valid": bool,
-                "has_hierarchy": bool,
-                "top_level_count": int,
-                "reason": str
+    """Validate whether an extracted TOC is good enough to preserve."""
+
+    PAGE_FIELDS = ("start_index", "page", "logical_page", "physical_index")
+    SYNTHETIC_ROOT_TITLES = {
+        "目录",
+        "目 录",
+        "contents",
+        "table of contents",
+        "preface",
+    }
+
+    @staticmethod
+    def _positive_int(value: Any) -> Optional[int]:
+        if isinstance(value, bool):
+            return None
+        if isinstance(value, int) and value > 0:
+            return value
+        if isinstance(value, str):
+            stripped = value.strip()
+            if stripped.isdigit():
+                parsed = int(stripped)
+                return parsed if parsed > 0 else None
+        return None
+
+    def _page_stats(self, toc_items: List[Dict]) -> Dict[str, Any]:
+        best_field = None
+        best_pages: List[int] = []
+
+        for field in self.PAGE_FIELDS:
+            pages = []
+            for item in toc_items:
+                parsed = self._positive_int(item.get(field))
+                if parsed is not None:
+                    pages.append(parsed)
+            if len(pages) > len(best_pages):
+                best_field = field
+                best_pages = pages
+
+        monotonic = all(
+            best_pages[i] <= best_pages[i + 1]
+            for i in range(len(best_pages) - 1)
+        )
+        unique_ratio = len(set(best_pages)) / len(best_pages) if best_pages else 0.0
+        diffs = [
+            best_pages[i + 1] - best_pages[i]
+            for i in range(len(best_pages) - 1)
+            if best_pages[i + 1] >= best_pages[i]
+        ]
+        common_step = Counter(diffs).most_common(1)[0][0] if diffs else None
+
+        return {
+            "valid_page_field": best_field,
+            "valid_page_count": len(best_pages),
+            "page_monotonic": monotonic,
+            "page_unique_ratio": unique_ratio,
+            "common_page_step": common_step,
+        }
+
+    @staticmethod
+    def _page_mapping_valid(
+        *,
+        item_count: int,
+        valid_pages: int,
+        page_monotonic: bool,
+        unique_ratio: float,
+        common_step: Optional[int],
+    ) -> bool:
+        if item_count <= 0 or valid_pages <= 0:
+            return False
+
+        enough_pages = valid_pages >= max(2, item_count * 0.5)
+        if not enough_pages or not page_monotonic:
+            return False
+
+        if valid_pages == 1:
+            return item_count == 1
+
+        if unique_ratio < 0.5:
+            return False
+
+        if common_step == 0:
+            return False
+
+        return True
+
+    @classmethod
+    def _is_synthetic_root(cls, item: Dict) -> bool:
+        title = str(item.get("title", "")).strip().lower()
+        return title in cls.SYNTHETIC_ROOT_TITLES
+
+    def _has_page_value(self, item: Dict) -> bool:
+        return any(self._positive_int(item.get(field)) is not None for field in self.PAGE_FIELDS)
+
+    def _infer_structural_synthetic_root(
+        self,
+        real_items: List[Dict],
+        levels: List[int],
+    ) -> Optional[Dict[str, Any]]:
+        """Detect a single wrapper title above the actual TOC groups."""
+        if not levels:
+            return None
+
+        min_level = min(levels)
+        top_items = [
+            item for item in real_items
+            if item.get("level", min_level) == min_level
+        ]
+        if len(top_items) != 1:
+            return None
+
+        child_level = min((level for level in levels if level > min_level), default=None)
+        if child_level is None:
+            return None
+
+        child_items = [
+            item for item in real_items
+            if item.get("level", min_level) == child_level
+        ]
+        paged_descendants = [
+            item for item in real_items
+            if item.get("level", min_level) > child_level and self._has_page_value(item)
+        ]
+
+        root = top_items[0]
+        root_has_page = self._has_page_value(root)
+        if len(child_items) >= 2 and paged_descendants and not root_has_page:
+            return {
+                "items": child_items,
+                "detected": True,
+                "reason": (
+                    "single unpaged top-level wrapper with "
+                    f"{len(child_items)} child groups"
+                ),
             }
-        """
+        return None
+
+    def _effective_top_level_info(self, toc_items: List[Dict]) -> Dict[str, Any]:
+        """Count real top-level groups after ignoring synthetic TOC roots."""
+        real_items = [
+            item for item in toc_items
+            if str(item.get("title", "")).strip()
+            and not self._is_synthetic_root(item)
+        ]
+        if not real_items:
+            return {
+                "items": [],
+                "synthetic_root_detected": False,
+                "synthetic_root_reason": "",
+                "raw_min_level_count": 0,
+                "level_distribution": {},
+            }
+
+        levels = [
+            item.get("level", 1)
+            for item in real_items
+            if isinstance(item.get("level", 1), int)
+            and not isinstance(item.get("level", 1), bool)
+        ]
+        if not levels:
+            return {
+                "items": real_items,
+                "synthetic_root_detected": False,
+                "synthetic_root_reason": "no numeric levels",
+                "raw_min_level_count": len(real_items),
+                "level_distribution": {},
+            }
+
+        min_level = min(levels)
+        raw_top_level = [
+            item for item in real_items
+            if item.get("level", min_level) == min_level
+        ]
+        level_distribution = dict(Counter(levels))
+
+        inferred = self._infer_structural_synthetic_root(real_items, levels)
+        if inferred:
+            return {
+                "items": inferred["items"],
+                "synthetic_root_detected": True,
+                "synthetic_root_reason": inferred["reason"],
+                "raw_min_level_count": len(raw_top_level),
+                "level_distribution": level_distribution,
+            }
+
+        explicit_root_count = len(toc_items) - len(real_items)
+        return {
+            "items": raw_top_level,
+            "synthetic_root_detected": explicit_root_count > 0,
+            "synthetic_root_reason": (
+                "explicit synthetic root title" if explicit_root_count > 0 else ""
+            ),
+            "raw_min_level_count": len(raw_top_level),
+            "level_distribution": level_distribution,
+        }
+
+    def _effective_top_level(self, toc_items: List[Dict]) -> List[Dict]:
+        return self._effective_top_level_info(toc_items)["items"]
+
+    def check(self, toc_items: List[Dict], toc_pages: List[int]) -> Dict[str, Any]:
         if not toc_items:
             return {
                 "is_valid": False,
+                "skeleton_valid": False,
+                "page_mapping_valid": False,
+                "hierarchy_valid": False,
+                "decision": "REJECT",
                 "has_hierarchy": False,
                 "top_level_count": 0,
-                "reason": "无TOC条目"
+                "item_count": 0,
+                "valid_page_field": None,
+                "valid_page_count": 0,
+                "page_monotonic": False,
+                "page_unique_ratio": 0.0,
+                "common_page_step": None,
+                "reason": "no TOC items",
             }
-        
-        # 统计层级
-        top_level = [item for item in toc_items if item.get("level", 1) == 1]
+
+        top_level_info = self._effective_top_level_info(toc_items)
+        top_level = top_level_info["items"]
         has_hierarchy = any(item.get("level", 1) > 1 for item in toc_items)
-        
-        # 检查页码有效性
-        valid_pages = sum(
+        page_stats = self._page_stats(toc_items)
+        valid_pages = page_stats["valid_page_count"]
+        non_empty_titles = sum(
             1 for item in toc_items
-            if isinstance(item.get("start_index"), int) and item["start_index"] > 0
+            if str(item.get("title", "")).strip()
         )
-        
-        # TOC有效：至少50%条目有有效页码，且至少有2个一级条目
-        is_valid = valid_pages >= len(toc_items) * 0.5 and len(top_level) >= 2
-        
-        return {
+        title_ratio = non_empty_titles / len(toc_items)
+
+        skeleton_valid = (
+            len(top_level) >= 2
+            and title_ratio >= 0.8
+        )
+        hierarchy_valid = has_hierarchy
+        page_mapping_valid = self._page_mapping_valid(
+            item_count=len(toc_items),
+            valid_pages=valid_pages,
+            page_monotonic=page_stats["page_monotonic"],
+            unique_ratio=page_stats["page_unique_ratio"],
+            common_step=page_stats["common_page_step"],
+        )
+        if skeleton_valid and page_mapping_valid:
+            decision = "USE_DIRECT"
+        elif skeleton_valid:
+            decision = "USE_SKELETON_MAP_LATER"
+        else:
+            decision = "REJECT"
+
+        is_valid = skeleton_valid and page_mapping_valid
+
+        result = {
             "is_valid": is_valid,
+            "skeleton_valid": skeleton_valid,
+            "page_mapping_valid": page_mapping_valid,
+            "hierarchy_valid": hierarchy_valid,
+            "decision": decision,
             "has_hierarchy": has_hierarchy,
             "top_level_count": len(top_level),
-            "reason": f"{len(top_level)}个一级条目，{'有' if has_hierarchy else '无'}层级"
+            "item_count": len(toc_items),
+            "title_ratio": title_ratio,
+            "reason": f"{len(top_level)} top-level items, {'has' if has_hierarchy else 'no'} hierarchy",
         }
+        result.update(page_stats)
+        result.update({
+            "synthetic_root_detected": top_level_info["synthetic_root_detected"],
+            "synthetic_root_reason": top_level_info["synthetic_root_reason"],
+            "raw_min_level_count": top_level_info["raw_min_level_count"],
+            "level_distribution": top_level_info["level_distribution"],
+        })
+        return result

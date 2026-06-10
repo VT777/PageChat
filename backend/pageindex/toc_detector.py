@@ -235,10 +235,21 @@ async def find_toc_pages(
     Returns:
         目录页物理页码列表（1-indexed），未找到返回 None
     """
-    # 判断文档类型
-    is_image_doc = (
-        analysis.get("is_image_only_pdf", False)
-        or analysis.get("image_coverage", 0.0) >= 0.3
+    # Prefer text detection when extracted text is usable. Many text PDFs embed
+    # images on most pages; image_coverage alone should not make them visual docs.
+    text_coverage = float(analysis.get("text_coverage") or 0.0)
+    image_coverage = float(analysis.get("image_coverage") or 0.0)
+    structure_policy = str(analysis.get("structure_policy") or "").lower()
+    layout_type = str(analysis.get("layout_type") or "").lower()
+    if structure_policy == "visual_required":
+        print(
+            f"[TOC-DETECT] profile={layout_type or 'unknown'} "
+            f"policy=visual_required, using VLM visual detection"
+        )
+        return await detect_toc_pages_visual(file_path, model)
+
+    is_image_doc = bool(analysis.get("is_image_only_pdf", False)) or (
+        text_coverage < 0.3 and image_coverage >= 0.3
     )
     
     page_texts = analysis.get("page_texts", [])

@@ -1,6 +1,8 @@
 """VLM 工具模块：页面渲染 + Qwen3.5-flash 视觉 API 调用封装。"""
 
 import base64
+import asyncio
+import weakref
 import json
 import os
 import re
@@ -10,6 +12,10 @@ import pymupdf
 from openai import AsyncOpenAI
 
 from app.core.config import LLM_API_KEY, LLM_BASE_URL, LLM_FLASH_MODEL
+from app.core.logging_config import silence_noisy_http_loggers
+
+
+silence_noisy_http_loggers()
 
 
 # ---------------------------------------------------------------------------
@@ -146,17 +152,30 @@ def render_thumbnail_grids(
 # VLM API 调用
 # ---------------------------------------------------------------------------
 
-_vlm_client: Optional[AsyncOpenAI] = None
+_vlm_clients_by_loop: "weakref.WeakKeyDictionary[Any, AsyncOpenAI]" = weakref.WeakKeyDictionary()
+_sync_vlm_client: Optional[AsyncOpenAI] = None
 
 
 def _get_vlm_client() -> AsyncOpenAI:
-    global _vlm_client
-    if _vlm_client is None:
-        _vlm_client = AsyncOpenAI(
+    global _sync_vlm_client
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        if _sync_vlm_client is None:
+            _sync_vlm_client = AsyncOpenAI(
+                api_key=LLM_API_KEY,
+                base_url=LLM_BASE_URL,
+            )
+        return _sync_vlm_client
+
+    client = _vlm_clients_by_loop.get(loop)
+    if client is None:
+        client = AsyncOpenAI(
             api_key=LLM_API_KEY,
             base_url=LLM_BASE_URL,
         )
-    return _vlm_client
+        _vlm_clients_by_loop[loop] = client
+    return client
 
 
 async def vlm_call_with_images(

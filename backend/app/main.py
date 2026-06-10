@@ -3,6 +3,8 @@ import os
 import sys
 from pathlib import Path
 
+from app.core.logging_config import silence_noisy_http_loggers
+
 LOG_DIR = Path(__file__).resolve().parent.parent.parent / "logs"
 LOG_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -24,6 +26,7 @@ root_logger.addHandler(root_handler)
 # 同步 IO 会间歇性阻塞 asyncio event loop 导致请求延迟 5-15 秒
 logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
 logging.getLogger("uvicorn.error").propagate = False
+silence_noisy_http_loggers()
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware

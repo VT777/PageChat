@@ -2,11 +2,30 @@ import os
 import base64
 import io
 from openai import OpenAI, AsyncOpenAI
-from app.core.config import LLM_API_KEY, LLM_BASE_URL, LLM_MODEL, MODEL_CONFIG
+from app.core.config import (
+    LLM_API_KEY,
+    LLM_BASE_URL,
+    LLM_MODEL,
+    MODEL_CONFIG,
+    MODEL_FLASH_TIMEOUT_SECONDS,
+    MODEL_PLUS_TIMEOUT_SECONDS,
+)
+from app.core.logging_config import silence_noisy_http_loggers
+
+
+silence_noisy_http_loggers()
 
 
 def _should_disable_thinking(model_name: str) -> bool:
     return "flash" in (model_name or "").lower()
+
+
+def _default_timeout_for_model(model_name: str) -> float:
+    return (
+        float(MODEL_FLASH_TIMEOUT_SECONDS)
+        if "flash" in (model_name or "").lower()
+        else float(MODEL_PLUS_TIMEOUT_SECONDS)
+    )
 
 
 def get_llm_client() -> OpenAI:
@@ -88,8 +107,7 @@ def chat_completion(
     }
     if _should_disable_thinking(resolved_model):
         params["extra_body"] = {"enable_thinking": False}
-    if timeout is not None:
-        params["timeout"] = timeout
+    params["timeout"] = timeout if timeout is not None else _default_timeout_for_model(resolved_model)
     params.update(kwargs)
     return client.chat.completions.create(**params)
 
@@ -113,8 +131,7 @@ async def async_chat_completion(
     }
     if _should_disable_thinking(resolved_model):
         params["extra_body"] = {"enable_thinking": False}
-    if timeout is not None:
-        params["timeout"] = timeout
+    params["timeout"] = timeout if timeout is not None else _default_timeout_for_model(resolved_model)
     params.update(kwargs)
     return await client.chat.completions.create(**params)
 
@@ -149,8 +166,7 @@ async def chat_by_scenario(
     if _should_disable_thinking(resolved_model):
         params["extra_body"] = {"enable_thinking": False}
 
-    if timeout is not None:
-        params["timeout"] = timeout
+    params["timeout"] = timeout if timeout is not None else _default_timeout_for_model(resolved_model)
 
     # 添加 max_tokens (如果配置了)
     if config.get("max_tokens"):

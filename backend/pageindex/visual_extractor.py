@@ -107,23 +107,29 @@ async def extract_visual_toc(
     3. 长文档 → 先提取框架 → 逐章展开
     """
     page_count = analysis.get("page_count", 0)
+    ocr_text_map = kwargs.get("ocr_text_map")
     
     print(f"[VISUAL-V2] Starting visual extraction: {page_count} pages")
     
     if page_count <= SHORT_DOC_MAX_PAGES:
         print(f"[VISUAL-V2] Short document ({page_count} pages), full extraction")
-        result = await _extract_short_doc(file_path, page_count, model)
+        result = await _extract_short_doc(file_path, analysis, model)
     else:
         print(f"[VISUAL-V2] Long document ({page_count} pages), hierarchical extraction")
-        result = await _extract_long_doc(file_path, page_count, model, anchors)
+        result = await _extract_long_doc(
+            file_path, analysis, model, anchors, ocr_text_map
+        )
     
     if result and result.get("items"):
         print(f"[VISUAL-V2] Extracted {len(result['items'])} top-level items")
         return {
             "items": result["items"],
             "structure": "hierarchical",
-            "source": "visual_v2",
+            "source": result.get("source", "visual_v2"),
             "confidence": result.get("confidence", 0.8),
+            "mapped": result.get("mapped", False),
+            "semi_frozen": bool(result.get("semi_frozen", False)),
+            "prevalidated": bool(result.get("prevalidated", False)),
         }
     
     return None
@@ -131,12 +137,13 @@ async def extract_visual_toc(
 
 async def _extract_short_doc(
     file_path: str,
-    page_count: int,
+    analysis: Dict[str, Any],
     model: Optional[str] = None,
 ) -> Optional[Dict[str, Any]]:
     """短文档：全文VLM提取。"""
     # 渲染所有页面（或分批）
     from pageindex.vlm_utils import render_pages_to_images
+    page_count = int(analysis.get("page_count", 0))
     
     page_indices = list(range(min(page_count, SHORT_DOC_MAX_PAGES)))
     images = render_pages_to_images(file_path, page_indices, dpi=150)
@@ -158,14 +165,26 @@ async def _extract_short_doc(
     from pageindex.balanced_toc import build_balanced_toc_visual
     result = await build_balanced_toc_visual(
         file_path=file_path,
-        analysis={"page_count": page_count},
+        analysis=analysis,
         model=model,
     )
     
+    if result and result.get("toc_items"):
+        return {
+            "items": result.get("toc_items", []),
+            "source": result.get("source", "balanced_visual"),
+            "confidence": result.get("confidence", 0.8),
+            "mapped": bool(result.get("mapped", True)),
+            "semi_frozen": bool(result.get("semi_frozen", False)),
+            "prevalidated": bool(result.get("prevalidated", False)),
+        }
+
     if result and result.get("structure"):
         return {
             "items": result.get("structure", []),
+            "source": result.get("source", "balanced_visual"),
             "confidence": 0.7,
+            "mapped": False,
         }
     
     return None
@@ -173,29 +192,44 @@ async def _extract_short_doc(
 
 async def _extract_long_doc(
     file_path: str,
-    page_count: int,
+    analysis: Dict[str, Any],
     model: Optional[str] = None,
     anchors: Optional[Dict] = None,
+    ocr_text_map: Optional[Dict[int, str]] = None,
 ) -> Optional[Dict[str, Any]]:
     """长文档：分层提取。"""
     # TODO: 实现Phase 1/2/3分层提取
     # 由于VLM图片调用复杂，先回退到旧代码
     
-    print("[VISUAL-V2] Long doc hierarchical extraction not fully implemented")
-    print("[VISUAL-V2] Falling back to legacy visual extraction")
+    page_count = int(analysis.get("page_count", 0))
+    print("[VISUAL-V2] Long visual document: using anchored TOC skeleton pipeline")
+    print("[VISUAL-V2] Stage: toc_skeleton -> page_mapping -> child_expansion")
     
     from pageindex.balanced_toc import build_balanced_toc_visual
     result = await build_balanced_toc_visual(
         file_path=file_path,
-        analysis={"page_count": page_count},
+        analysis=analysis,
         model=model,
         anchors=anchors,
+        ocr_text_map=ocr_text_map,
     )
     
+    if result and result.get("toc_items"):
+        return {
+            "items": result.get("toc_items", []),
+            "source": result.get("source", "balanced_visual"),
+            "confidence": result.get("confidence", 0.8),
+            "mapped": bool(result.get("mapped", True)),
+            "semi_frozen": bool(result.get("semi_frozen", False)),
+            "prevalidated": bool(result.get("prevalidated", False)),
+        }
+
     if result and result.get("structure"):
         return {
             "items": result.get("structure", []),
+            "source": result.get("source", "balanced_visual"),
             "confidence": 0.7,
+            "mapped": False,
         }
     
     return None

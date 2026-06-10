@@ -15,6 +15,10 @@ from app.core.config import (
     OCR_MODEL,
     OCR_RATE_LIMIT_RPS,
 )
+from app.core.logging_config import silence_noisy_http_loggers
+
+
+silence_noisy_http_loggers()
 
 
 @dataclass
@@ -61,6 +65,28 @@ class OCRService:
             max_concurrent=OCR_MAX_CONCURRENCY,
             max_rps=OCR_RATE_LIMIT_RPS,
         )
+
+    @staticmethod
+    def _extract_text_from_response(payload: Dict[str, Any]) -> str:
+        md = str(payload.get("md_results") or "").strip()
+        if md:
+            return md
+
+        layout_details = payload.get("layout_details") or []
+        lines: List[str] = []
+        for page in layout_details:
+            if not isinstance(page, list):
+                continue
+            for item in page:
+                if not isinstance(item, dict):
+                    continue
+                label = str(item.get("label") or "").strip().lower()
+                if label not in {"text", "table", "formula"}:
+                    continue
+                content = str(item.get("content") or "").strip()
+                if content:
+                    lines.append(content)
+        return "\n".join(lines).strip()
 
     async def ocr_image_base64(self, image_base64: str, page_num: int) -> OCRPageResult:
         """对单张图片执行 OCR。"""

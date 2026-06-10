@@ -12,6 +12,31 @@ import re
 from typing import Any, Dict, List, Optional, Tuple
 
 
+def merge_toc_sources_v4_1(
+    file_path: str,
+    toc_from_page: Optional[List[Dict]],
+    toc_from_search: Optional[List[Dict]],
+    dividers: Optional[List[int]],
+    extracted_items: Optional[List[Dict]],
+) -> List[Dict]:
+    """Safely merge v4.1 TOC sources without dropping no-TOC extracted items."""
+    base_items = toc_from_page or extracted_items or []
+    merged: Dict[str, Dict] = {
+        str(item.get("structure", index + 1)): dict(item)
+        for index, item in enumerate(base_items)
+    }
+
+    for item in toc_from_search or []:
+        structure = str(item.get("structure", ""))
+        if structure in merged and item.get("physical_index") and not merged[structure].get("physical_index"):
+            merged[structure]["physical_index"] = item["physical_index"]
+
+    return sorted(
+        merged.values(),
+        key=lambda item: item.get("physical_index") or 10**9,
+    )
+
+
 # ---------------------------------------------------------------------------
 # Step 1: 数据清洗
 # ---------------------------------------------------------------------------
@@ -46,6 +71,15 @@ def clean_toc_items(toc_items: List[Dict]) -> List[Dict]:
             "physical_index": pi,
             "page_type": page_type,
         }
+        if item.get("_fixed_range"):
+            cleaned_item["_fixed_range"] = True
+            if isinstance(item.get("start_index"), int):
+                cleaned_item["start_index"] = item["start_index"]
+            if isinstance(item.get("end_index"), int):
+                cleaned_item["end_index"] = item["end_index"]
+        level = item.get("level")
+        if isinstance(level, int) and not isinstance(level, bool):
+            cleaned_item["level"] = level
         # 保留 number 字段（用于图表分类）
         number = item.get("number")
         if number is not None:
@@ -158,6 +192,99 @@ def validate_indices(toc_items: List[Dict], page_count: int) -> List[Dict]:
 # ---------------------------------------------------------------------------
 
 
+def promote_single_catalog_root(tree: List[Dict], page_count: int) -> List[Dict]:
+    """Promote children when a synthetic Contents root wraps the whole tree."""
+    if len(tree) != 1:
+        return tree
+    root = tree[0]
+    title = str(root.get("title", "")).strip()
+    if title not in {"目录", "Contents", "Table of Contents"}:
+        return tree
+    children = root.get("nodes") or []
+    if len(children) < 2:
+        return tree
+    start = root.get("start_index")
+    end = root.get("end_index")
+    covers_document = (
+        isinstance(start, int)
+        and isinstance(end, int)
+        and start <= 2
+        and end >= max(1, page_count - 1)
+    )
+    if not covers_document:
+        return tree
+    child_pages = [
+        child.get("start_index")
+        for child in children
+        if isinstance(child.get("start_index"), int)
+    ]
+    if len(child_pages) < len(children):
+        return tree
+    if any(child_pages[i] > child_pages[i + 1] for i in range(len(child_pages) - 1)):
+        return tree
+    print(f"[POST] Promoted synthetic catalog root '{title}' with {len(children)} children")
+    return children
+
+
+def repair_case_continuation_roots(tree: List[Dict]) -> List[Dict]:
+    """Move case continuation roots back under the preceding case/award chapter."""
+    if len(tree) < 2:
+        return tree
+
+    repaired: List[Dict] = []
+    for node in tree:
+        title = str(node.get("title", "")).strip()
+        previous = repaired[-1] if repaired else None
+        previous_title = str(previous.get("title", "")).strip() if previous else ""
+        is_case_continuation = bool(
+            re.match(r"^[\u4e00-\u9fa5A-Za-z]+AI[:：]", title)
+            and previous
+            and any(keyword in previous_title for keyword in ("突破奖", "案例", "应用"))
+        )
+        if not is_case_continuation:
+            repaired.append(node)
+            continue
+
+        previous.setdefault("nodes", [])
+        moved = dict(node)
+        moved["nodes"] = []
+        previous["nodes"].append(moved)
+        previous["nodes"].extend(node.get("nodes") or [])
+        if isinstance(node.get("end_index"), int):
+            previous["end_index"] = max(
+                previous.get("end_index") or node["end_index"],
+                node["end_index"],
+            )
+        print(f"[POST] Moved continuation case '{title[:30]}' under '{previous_title[:30]}'")
+
+    return repaired
+
+
+def repair_placeholder_chapter_titles(tree: List[Dict]) -> List[Dict]:
+    """Replace bare Chapter labels with concise child-derived titles."""
+    for node in tree:
+        children = node.get("nodes") or []
+        if children:
+            node["nodes"] = repair_placeholder_chapter_titles(children)
+
+        title = str(node.get("title", "")).strip()
+        if not re.match(r"^第[一二三四五六七八九十]+章\s*Chapter\s*\d+$", title, re.IGNORECASE):
+            continue
+        child_titles = [str(child.get("title", "")).strip() for child in node.get("nodes") or []]
+        prefixes = []
+        for child_title in child_titles:
+            match = re.match(r"^([^:：]{2,12})[:：]", child_title)
+            if match:
+                prefixes.append(match.group(1).strip())
+        if len(prefixes) >= 2:
+            node["original_title"] = title
+            node["title"] = "与".join(prefixes[:2])
+        elif child_titles:
+            node["original_title"] = title
+            node["title"] = child_titles[0]
+    return tree
+
+
 def add_preface(toc_items: List[Dict]) -> List[Dict]:
     """如果第一个条目不在第 1 页，插入 Preface 节点。"""
     if not toc_items:
@@ -195,6 +322,12 @@ def add_preface(toc_items: List[Dict]) -> List[Dict]:
 def assign_page_ranges(toc_items: List[Dict], page_count: int) -> List[Dict]:
     """为每个条目设置 start_index 和 end_index。"""
     for i, item in enumerate(toc_items):
+        if (
+            item.get("_fixed_range")
+            and isinstance(item.get("start_index"), int)
+            and isinstance(item.get("end_index"), int)
+        ):
+            continue
         physical_index = item.get("physical_index") or 1
         item["start_index"] = physical_index
 
@@ -260,6 +393,88 @@ def build_tree(toc_items: List[Dict]) -> List[Dict]:
         stack.append(item)
 
     return root_nodes
+
+
+def _leaf_signature_stats(tree: List[Dict]) -> Dict[str, Any]:
+    """Return leaf count and duplicate count for TOC integrity checks."""
+    signatures = []
+
+    def visit(nodes: List[Dict]) -> None:
+        for node in nodes:
+            children = node.get("nodes") or []
+            if children:
+                visit(children)
+            elif node.get("node_type") != "catalog_group":
+                title = re.sub(r"\s+", "", str(node.get("title", ""))).lower()
+                signatures.append((title, node.get("physical_index")))
+
+    visit(tree)
+    unique = set(signatures)
+    return {
+        "leaf_count": len(signatures),
+        "duplicate_count": len(signatures) - len(unique),
+    }
+
+
+def _grouping_preserves_toc(original_tree: List[Dict], grouped_tree: List[Dict]) -> bool:
+    original = _leaf_signature_stats(original_tree)
+    grouped = _leaf_signature_stats(grouped_tree)
+    if grouped["duplicate_count"] > 0:
+        print(
+            f"[POST] Rejecting LLM grouping: "
+            f"duplicates={grouped['duplicate_count']}"
+        )
+        return False
+    if grouped["leaf_count"] < original["leaf_count"]:
+        print(
+            f"[POST] Rejecting LLM grouping: "
+            f"leaf_count {grouped['leaf_count']} < {original['leaf_count']}"
+        )
+        return False
+    return True
+
+
+def _is_case_catalog_group(node: Dict) -> bool:
+    title = str(node.get("title", "")).strip().lower()
+    return title.startswith("ai+")
+
+
+def _is_numbered_case_item(node: Dict) -> bool:
+    title = str(node.get("title", "")).strip()
+    return bool(re.match(r"^\d{1,2}\s+", title))
+
+
+def _group_frozen_case_catalogs(tree: List[Dict]) -> List[Dict]:
+    """Nest numbered case items under preceding AI+ catalog groups."""
+    group_count = sum(1 for node in tree if _is_case_catalog_group(node))
+    numbered_count = sum(1 for node in tree if _is_numbered_case_item(node))
+    if group_count < 2 or numbered_count < 2:
+        return tree
+
+    grouped: List[Dict] = []
+    current_group: Optional[Dict] = None
+    moved = 0
+
+    for node in tree:
+        if _is_case_catalog_group(node):
+            current_group = node
+            current_group["nodes"] = list(current_group.get("nodes") or [])
+            grouped.append(current_group)
+        elif current_group is not None and _is_numbered_case_item(node):
+            current_group["nodes"].append(node)
+            moved += 1
+        else:
+            grouped.append(node)
+            current_group = None
+
+    if moved:
+        print(
+            f"[POST] Frozen TOC deterministic grouping: "
+            f"{group_count} groups, {moved} case items"
+        )
+        fix_parent_ranges(grouped)
+        return grouped
+    return tree
 
 
 def _get_depth(structure: str) -> int:
@@ -1036,6 +1251,59 @@ def post_process_toc(
         print("[POST] No valid items after cleaning")
         items = [{"structure": "1", "title": "Document Content", "physical_index": 1}]
 
+    top_level_frozen = bool(
+        analysis
+        and (
+            analysis.get("top_level_frozen")
+            or analysis.get("toc_frozen")
+            or (analysis.get("build_state") or {}).get("top_level_frozen")
+        )
+    )
+    explicit_toc_frozen = bool(analysis and analysis.get("toc_frozen"))
+    if explicit_toc_frozen and not (
+        analysis.get("toc_semi_frozen")
+        or analysis.get("allow_child_expansion") is True
+    ):
+        allow_child_expansion = False
+    else:
+        allow_child_expansion = bool(
+            not analysis
+            or analysis.get(
+                "allow_child_expansion",
+                (analysis.get("build_state") or {}).get("allow_child_expansion", True),
+            )
+        )
+    frozen_source = (
+        (analysis.get("build_state") or {}).get("top_level_source")
+        if analysis
+        else None
+    ) or (analysis.get("toc_frozen_source") if analysis else None)
+
+    is_slide_outline = bool(frozen_source in {"slide_outline", "agenda_outline"})
+    if not is_slide_outline:
+        try:
+            from pageindex.text_heading_extractor import repair_numbered_structures
+            items = repair_numbered_structures(items)
+        except Exception:
+            pass
+
+    semi_frozen = bool(
+        analysis
+        and (
+            analysis.get("toc_semi_frozen")
+            or (top_level_frozen and allow_child_expansion)
+        )
+    )
+    text_rich_protected = bool(
+        analysis
+        and (
+            top_level_frozen
+            or semi_frozen
+            or frozen_source in {"text_heading", "agenda_outline"}
+            or analysis.get("text_coverage", 0) >= 0.8
+        )
+    )
+
     # Step 1.2: 过滤图录/表录节点
     items, _ = filter_figure_catalogs(items)
     if not items:
@@ -1043,11 +1311,11 @@ def post_process_toc(
         items = [{"structure": "1", "title": "Document Content", "physical_index": 1}]
 
     # Step 1.5: P3 Unified Refinement (dividers-based)
-    if dividers:
+    if dividers and not text_rich_protected:
         items = refine_toc_with_dividers(items, dividers, page_count)
 
     # Step 1.6: 基于divider重建层级structure（修复VLM平铺提取）
-    if dividers and len(dividers) >= 2:
+    if dividers and len(dividers) >= 2 and not text_rich_protected:
         items = rebuild_structure_by_dividers(items, dividers, page_count)
 
     # Step 2: 边界校验
@@ -1158,13 +1426,22 @@ def post_process_toc(
     fix_parent_ranges(tree)
 
     # Step 6.5: LLM 目录分组（新架构）
-    if use_llm_grouping and analysis and analysis.get("toc_page", {}).get("has_toc_page"):
+    toc_frozen = top_level_frozen and not allow_child_expansion
+    if toc_frozen:
+        tree = _group_frozen_case_catalogs(tree)
+        print("[POST] TOC frozen, skipping LLM catalog grouping")
+    elif semi_frozen:
+        print("[POST] TOC semi-frozen, skipping LLM catalog grouping")
+    elif use_llm_grouping and analysis and analysis.get("toc_page", {}).get("has_toc_page"):
         try:
             print("[POST] Step 6.5: LLM catalog grouping")
             grouped_result = _llm_group_catalogs(tree, analysis, page_count, model)
             if grouped_result:
-                print(f"[POST] LLM grouping success: {len(grouped_result)} groups")
-                tree = grouped_result
+                if _grouping_preserves_toc(tree, grouped_result):
+                    print(f"[POST] LLM grouping success: {len(grouped_result)} groups")
+                    tree = grouped_result
+                else:
+                    print("[POST] LLM grouping rejected, keeping original tree")
             else:
                 print("[POST] LLM grouping returned empty, using single tree")
                 tree = _build_single_tree(tree, page_count)
@@ -1183,6 +1460,10 @@ def post_process_toc(
         # 旧逻辑（向后兼容，已废弃）
         print("[POST] Using legacy grouping (deprecated)")
         tree = _legacy_group_catalogs(tree, page_count)
+
+    tree = promote_single_catalog_root(tree, page_count)
+    tree = repair_case_continuation_roots(tree)
+    tree = repair_placeholder_chapter_titles(tree)
 
     # Step 7: 完整性检查
     completeness = check_completeness(tree, page_count)
@@ -1224,6 +1505,32 @@ async def llm_quality_check(
             "needs_repair": bool,
         }
     """
+    if source in {"text_heading", "slide_outline", "agenda_outline"}:
+        completeness = check_completeness(tree, page_count)
+        child_count = sum(1 for node in tree if node.get("nodes"))
+        large_leaf_nodes = [
+            {
+                "title": node.get("title", ""),
+                "span": (node.get("end_index") or 0) - (node.get("start_index") or 0) + 1,
+                "issue": "missing_children",
+            }
+            for node in tree
+            if not node.get("nodes")
+            and isinstance(node.get("start_index"), int)
+            and isinstance(node.get("end_index"), int)
+            and (node.get("end_index") - node.get("start_index") + 1) > 20
+        ]
+        if completeness.get("ok") and child_count > 0 and not large_leaf_nodes:
+            print(f"[LLM-QC] {source} structure accepted locally")
+            return {
+                "structure_score": 90,
+                "large_nodes": [],
+                "missing_chapters": [],
+                "overall_score": 90,
+                "suggestions": [],
+                "needs_repair": False,
+            }
+
     try:
         from pageindex.vlm_utils import parse_vlm_json
         from pageindex.utils import ChatGPT_API_async

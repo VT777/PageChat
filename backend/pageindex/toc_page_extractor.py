@@ -79,6 +79,58 @@ _ALL_PATTERNS = [
 ]
 
 
+def normalize_toc_entries_v4_1(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Normalize TOC entries to the v4.1 structure/title/page/physical_index shape."""
+    counters: List[int] = []
+
+    def normalize_item(item: Dict[str, Any]) -> Dict[str, Any]:
+        nonlocal counters
+
+        if item.get("page_type") == "catalog_group":
+            return {
+                **item,
+                "nodes": normalize_toc_entries_v4_1(item.get("nodes", [])),
+            }
+
+        structure = item.get("structure")
+        level = int(item.get("level") or 1)
+        if not structure:
+            while len(counters) < level:
+                counters.append(0)
+            counters = counters[:level]
+            counters[level - 1] += 1
+            structure = ".".join(str(part) for part in counters)
+
+        normalized = {
+            "structure": str(structure),
+            "title": item.get("title", "").strip(),
+            "page": item.get("page"),
+            "physical_index": item.get("physical_index"),
+        }
+        if item.get("nodes"):
+            normalized["nodes"] = normalize_toc_entries_v4_1(item["nodes"])
+        return normalized
+
+    return [normalize_item(item) for item in items]
+
+
+def extract_main_chapters_v4_1(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Extract top-level chapters without relying only on dotted numeric structure."""
+    main_chapters = []
+    for item in items:
+        structure = str(item.get("structure") or "").strip()
+        title = item.get("title", "").strip()
+        if re.fullmatch(r"\d+", structure):
+            main_chapters.append(item)
+        elif re.fullmatch(r"[一二三四五六七八九十百]+", structure):
+            main_chapters.append(item)
+        elif re.search(r"\b(Part|Chapter)\s*\d+\b", structure, re.IGNORECASE):
+            main_chapters.append(item)
+        elif re.match(r"第[一二三四五六七八九十百\d]+章", title):
+            main_chapters.append(item)
+    return main_chapters
+
+
 # ---------------------------------------------------------------------------
 # LLM 分组 Prompt
 # ---------------------------------------------------------------------------
@@ -100,15 +152,15 @@ CATALOG_GROUPING_PROMPT = """你是一个PDF目录分析专家。请分析以下
     {{
       "title": "目录",
       "type": "chapter_catalog",
-      "start_index": 1,
-      "end_index": 22
+      "entry_start": 1,
+      "entry_end": 22
     }}
   ],
   "reasoning": "简要说明分组依据"
 }}
 
 注意：
-- start_index 和 end_index 是条目在列表中的序号（从1开始，包含两端）
+- entry_start 和 entry_end 是条目在列表中的序号（从1开始，包含两端），不是 PDF 页码范围
 - 必须覆盖所有条目，不能有遗漏或重叠
 - 如果只有一组，groups 数组长度为1
 - type 字段可选值：chapter_catalog（正文/章节目录）、table_catalog（表目录）、figure_catalog（图目录）
@@ -156,6 +208,7 @@ def extract_toc_from_pages(
         print("[TOC-PAGE] Trying coordinate-based extraction (v4)")
         result = _extract_toc_coordinate(doc_path, toc_page_indices, doc_page_count, model, page_texts)
         if result and _check_quality(result, doc_page_count):
+            result["items"] = normalize_toc_entries_v4_1(result.get("items", []))
             print(f"[TOC-PAGE] Coordinate extraction success: {len(result['items'])} items")
             result["extraction_method"] = "coordinate"
             return result
@@ -172,6 +225,7 @@ def extract_toc_from_pages(
             print("[TOC-PAGE] Trying regex fallback")
             result = _extract_toc_regex(page_texts, toc_page_indices, doc_page_count)
             if result and _check_quality(result, doc_page_count):
+                result["items"] = normalize_toc_entries_v4_1(result.get("items", []))
                 print(f"[TOC-PAGE] Regex fallback success: {len(result['items'])} items")
                 result["extraction_method"] = "regex"
                 return result
@@ -557,13 +611,14 @@ def _extract_json_from_response(response: str) -> str:
 
 def _validate_groups(groups: List[Dict], total_entries: int) -> bool:
     """校验LLM返回的分组是否合法。"""
+    groups = _normalize_group_ranges(groups)
     if not groups:
         return False
 
     covered = set()
     for g in groups:
-        start = g.get("start_index", 0)
-        end = g.get("end_index", 0)
+        start = g.get("entry_start", 0)
+        end = g.get("entry_end", 0)
         if start < 1 or end > total_entries or start > end:
             print(f"[LLM-GROUP] Invalid range: {start}-{end} (total={total_entries})")
             return False
@@ -580,13 +635,28 @@ def _validate_groups(groups: List[Dict], total_entries: int) -> bool:
     return True
 
 
+def _normalize_group_ranges(groups: List[Dict]) -> List[Dict]:
+    """Normalize LLM grouping item ranges away from page range field names."""
+    normalized = []
+    for group in groups or []:
+        item = dict(group)
+        entry_start = item.pop("entry_start", None)
+        entry_end = item.pop("entry_end", None)
+        legacy_start = item.pop("start_index", None)
+        legacy_end = item.pop("end_index", None)
+        item["entry_start"] = entry_start if entry_start is not None else legacy_start
+        item["entry_end"] = entry_end if entry_end is not None else legacy_end
+        normalized.append(item)
+    return normalized
+
+
 def _fallback_grouping(entries: List[Dict]) -> List[Dict]:
     """LLM分组失败时的回退：所有条目作为一组。"""
     return [{
         "title": "目录",
         "type": "chapter_catalog",
-        "start_index": 1,
-        "end_index": len(entries)
+        "entry_start": 1,
+        "entry_end": len(entries)
     }]
 
 
@@ -611,11 +681,12 @@ def _llm_group_entries(entries: List[Dict], model: str) -> List[Dict]:
         json_str = _extract_json_from_response(response)
         data = json.loads(json_str)
         groups = data.get("groups", [])
+        groups = _normalize_group_ranges(groups)
 
         if _validate_groups(groups, len(entries)):
             print(f"[LLM-GROUP] Success: {len(groups)} groups")
             for g in groups:
-                print(f"  - {g['title']}: items {g['start_index']}-{g['end_index']}")
+                print(f"  - {g['title']}: items {g['entry_start']}-{g['entry_end']}")
             return groups
         else:
             print("[LLM-GROUP] Validation failed, using fallback")
@@ -637,8 +708,9 @@ def _build_tree_by_groups(entries: List[Dict], groups: List[Dict]) -> List[Dict]
 
     result = []
     for group in groups:
-        start = group["start_index"] - 1
-        end = group["end_index"]
+        normalized_group = _normalize_group_ranges([group])[0]
+        start = normalized_group["entry_start"] - 1
+        end = normalized_group["entry_end"]
         subset = entries[start:end]
 
         if not subset:
@@ -647,7 +719,7 @@ def _build_tree_by_groups(entries: List[Dict], groups: List[Dict]) -> List[Dict]
         subtree = _build_subtree(subset)
 
         result.append({
-            "title": group["title"],
+            "title": normalized_group["title"],
             "page_type": "catalog_group",
             "children": subtree,
         })

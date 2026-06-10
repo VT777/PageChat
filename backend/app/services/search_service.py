@@ -6,6 +6,11 @@
 import asyncio
 from typing import List, Dict, Optional, Any
 from dataclasses import dataclass, field
+import warnings
+
+warnings.filterwarnings("ignore", category=SyntaxWarning, module=r"jieba(\.|$)")
+warnings.filterwarnings("ignore", category=UserWarning, module=r"jieba\._compat")
+
 import bm25s
 import jieba
 import numpy as np
@@ -23,7 +28,6 @@ try:
 
     SENTENCE_TRANSFORMERS_AVAILABLE = True
 except ImportError:
-    print("[SearchService] Warning: sentence-transformers not available")
     SentenceTransformer = None
     util = None
     SENTENCE_TRANSFORMERS_AVAILABLE = False
@@ -303,6 +307,9 @@ class DocumentSearchService:
                                 "doc_name": doc_name,
                                 "node_id": node.get("node_id"),
                                 "title": title,
+                                "node_type": node.get("node_type"),
+                                "catalog_type": node.get("catalog_type"),
+                                "is_auxiliary": bool(node.get("is_auxiliary")),
                                 "start_index": node.get("start_index"),
                                 "end_index": node.get("end_index"),
                                 "source_anchor": node.get("source_anchor"),
@@ -520,6 +527,9 @@ class DocumentSearchService:
                     {
                         "node_id": seg_meta.get("node_id"),
                         "title": seg_meta.get("title", ""),
+                        "node_type": seg_meta.get("node_type"),
+                        "catalog_type": seg_meta.get("catalog_type"),
+                        "is_auxiliary": bool(seg_meta.get("is_auxiliary")),
                         "snippet": seg_meta.get("snippet", ""),
                         "score": round(score, 4),
                         "start_index": seg_meta.get("start_index"),

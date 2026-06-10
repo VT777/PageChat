@@ -4,6 +4,12 @@ import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from app.services.pageindex_service import PageIndexService
+from pageindex.router import (
+    PATH_HIERARCHICAL,
+    PATH_TOC_PAGE,
+    decide_extraction_path,
+    normalize_confidence,
+)
 
 
 def test_route_smart_escalates_when_unparseable_pages_reach_threshold() -> None:
@@ -106,3 +112,67 @@ def test_vision_first_required_rules() -> None:
         )
         is False
     )
+
+
+def test_router_normalizes_string_toc_confidence() -> None:
+    assert normalize_confidence("anchor") == 0.7
+    assert normalize_confidence("detected") == 0.7
+    assert normalize_confidence("high") == 0.9
+    assert normalize_confidence(0.62) == 0.62
+
+
+def test_router_accepts_anchor_confidence_without_type_error() -> None:
+    decision = decide_extraction_path(
+        {
+            "page_count": 201,
+            "text_coverage": 1.0,
+            "is_image_only_pdf": False,
+            "is_garbled_pdf": False,
+            "text_quality": {"meaningful_ratio": 1.0},
+            "chapter_dividers": list(range(5, 105, 5)),
+            "toc_page": {
+                "has_toc_page": True,
+                "pages": [2],
+                "confidence": "anchor",
+            },
+        },
+        mode="smart",
+    )
+
+    assert decision["path"] == PATH_TOC_PAGE
+
+
+def test_router_does_not_choose_batch_for_slide_outline_candidate() -> None:
+    decision = decide_extraction_path(
+        {
+            "page_count": 68,
+            "text_coverage": 0.97,
+            "is_image_only_pdf": False,
+            "is_garbled_pdf": False,
+            "text_quality": {"meaningful_ratio": 1.0},
+            "chapter_dividers": [2, 3, 13, 35, 49, 61],
+            "toc_page": {"has_toc_page": False, "confidence": 0},
+            "slide_outline_candidate": True,
+        },
+        mode="smart",
+    )
+
+    assert decision["path"] == PATH_HIERARCHICAL
+
+
+def test_router_does_not_choose_batch_for_agenda_outline_candidate() -> None:
+    decision = decide_extraction_path(
+        {
+            "page_count": 21,
+            "text_coverage": 1.0,
+            "is_image_only_pdf": False,
+            "is_garbled_pdf": False,
+            "text_quality": {"meaningful_ratio": 1.0},
+            "chapter_dividers": [3, 9, 16, 18, 20],
+            "toc_page": {"has_toc_page": False, "confidence": 0},
+            "agenda_outline_candidate": True,
+        },
+        mode="smart",
+    )
+
+    assert decision["path"] == PATH_HIERARCHICAL

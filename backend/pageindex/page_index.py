@@ -1603,6 +1603,11 @@ def find_toc_pages_by_rules(page_list):
 
         # 2. 大量点线 + 页码模式（.... 12）→ +0.4
         dot_page_matches = re.findall(r'[.·…]{3,}\s*\d{1,4}', text_stripped)
+        toc_like_lines = [
+            line.strip()
+            for line in text_stripped.splitlines()
+            if re.search(r'[.·…]{3,}\s*\d{1,4}\s*$', line.strip())
+        ]
         if len(dot_page_matches) >= 5:
             score += 0.4
         elif len(dot_page_matches) >= 3:
@@ -1614,10 +1619,16 @@ def find_toc_pages_by_rules(page_list):
             score += 0.3
         elif len(matches) >= 3:
             score += 0.15
+        elif len(toc_like_lines) >= 3:
+            score += 0.15
 
         # 判定：score >= 0.5 视为目录页，或同时满足：大量编号行 + 点线页码
         # FIX: 避免将时间线/图表页误判为目录（如 "2.1 标题\n2014" 这种无点线的匹配）
-        is_toc = score >= 0.5 or (len(matches) >= 5 and len(dot_page_matches) >= 1)
+        is_toc = (
+            score >= 0.5
+            or (len(matches) >= 5 and len(dot_page_matches) >= 1)
+            or (len(toc_like_lines) >= 4 and len(dot_page_matches) >= 4)
+        )
 
         if is_toc:
             toc_pages.append(i)
@@ -2201,6 +2212,19 @@ async def single_toc_item_index_fixer(
     return convert_physical_index_to_int(json_content["physical_index"])
 
 
+def _fallback_physical_index_for_fix_result(result, toc_with_page_number):
+    if result.get("physical_index") is not None:
+        return result.get("physical_index")
+    if result.get("page_number") is not None:
+        return result.get("page_number")
+
+    list_index = result.get("list_index")
+    if isinstance(list_index, int) and 0 <= list_index < len(toc_with_page_number):
+        return toc_with_page_number[list_index].get("physical_index")
+
+    return None
+
+
 async def fix_incorrect_toc(
     toc_with_page_number,
     page_list,
@@ -2285,6 +2309,15 @@ async def fix_incorrect_toc(
         physical_index_int = await single_toc_item_index_fixer(
             incorrect_item["title"], content_range, model
         )
+        if physical_index_int is None:
+            return {
+                "list_index": list_index,
+                "title": incorrect_item["title"],
+                "physical_index": _fallback_physical_index_for_fix_result(
+                    incorrect_item, toc_with_page_number
+                ),
+                "is_valid": False,
+            }
 
         # Check if the result is correct
         check_item = incorrect_item.copy()
@@ -2312,20 +2345,21 @@ async def fix_incorrect_toc(
     # Update the toc_with_page_number with the fixed indices and check for any invalid results
     invalid_results = []
     for result in results:
+        physical_index = _fallback_physical_index_for_fix_result(
+            result, toc_with_page_number
+        )
         if result["is_valid"]:
             # Add bounds checking to prevent IndexError
             list_idx = result["list_index"]
-            if 0 <= list_idx < len(toc_with_page_number):
-                toc_with_page_number[list_idx]["physical_index"] = result[
-                    "physical_index"
-                ]
+            if 0 <= list_idx < len(toc_with_page_number) and physical_index is not None:
+                toc_with_page_number[list_idx]["physical_index"] = physical_index
             else:
                 # Index is out of bounds, treat as invalid
                 invalid_results.append(
                     {
                         "list_index": result["list_index"],
                         "title": result["title"],
-                        "physical_index": result["physical_index"],
+                        "physical_index": physical_index,
                     }
                 )
         else:
@@ -2333,7 +2367,7 @@ async def fix_incorrect_toc(
                 {
                     "list_index": result["list_index"],
                     "title": result["title"],
-                    "physical_index": result["physical_index"],
+                    "physical_index": physical_index,
                 }
             )
 
@@ -2847,8 +2881,24 @@ async def meta_processor(
 
 
 async def process_large_node_recursively(node, page_list, opt=None, logger=None):
-    # P5-fix: 跳过 catalog_group 节点（图目录/表目录），避免破坏分组结构
-    if node.get("node_type") == "catalog_group" or node.get("page_type") == "catalog_group":
+    title = str(node.get("title") or "").strip().lower()
+    auxiliary_catalog_titles = (
+        "图目录",
+        "表目录",
+        "插图目录",
+        "表格目录",
+        "figure catalog",
+        "table catalog",
+        "list of figures",
+        "list of tables",
+    )
+    is_auxiliary_catalog = (
+        bool(node.get("is_auxiliary"))
+        or node.get("node_type") in {"auxiliary_catalog", "auxiliary_catalog_item"}
+        or node.get("page_type") in {"figure_catalog", "table_catalog"}
+        or any(marker in title for marker in auxiliary_catalog_titles)
+    )
+    if is_auxiliary_catalog:
         return node
     
     node_page_list = page_list[node["start_index"] - 1 : node["end_index"]]

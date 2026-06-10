@@ -23,6 +23,8 @@ from app.core.config import (
     DATA_DIR,
     INDEXES_DIR,
     PAGEINDEX_MAX_INDEX_SECONDS,
+    PAGEINDEX_MAX_CONCURRENT_JOBS,
+    PAGEINDEX_QUEUE_ENABLED,
     INDEXING_STUCK_THRESHOLD_MINUTES,
 )
 from app.api.auth import require_auth
@@ -34,6 +36,13 @@ INDEX_TIMEOUT_SECONDS = 60 * 30
 _search_rebuild_lock = threading.Lock()
 _search_rebuild_running = False
 _search_rebuild_pending = False
+
+_index_queue_lock = threading.Lock()
+_index_queue_condition = threading.Condition(_index_queue_lock)
+_index_queue: list[tuple[str, str, Optional[str]]] = []
+_index_worker_started = False
+_index_running_jobs = 0
+_index_queue_generation = 0
 
 
 class ReindexRequest(BaseModel):
@@ -288,10 +297,132 @@ def recover_stuck_indexing_tasks_sync(db_path: str):
         conn.commit()
 
 
+def _run_index_job(
+    doc_id: str, file_path: str, mode_override: Optional[str] = None
+) -> None:
+    """Run one index job inside its own event loop."""
+    if os.name == "nt":
+        loop = asyncio.SelectorEventLoop()
+    else:
+        loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    try:
+        loop.run_until_complete(
+            _generate_index_async(doc_id, file_path, mode_override=mode_override)
+        )
+    except Exception as e:
+        crash_msg = f"INDEX_RUNTIME_EVENT_LOOP_CRASH: {e}"
+        print(f"[INDEX] Runtime crash for {doc_id}: {crash_msg}")
+        traceback.print_exc()
+        try:
+            db_path = str(DATA_DIR / "knowclaw.db")
+            _mark_document_failed_sync(
+                db_path,
+                doc_id,
+                "failed:index_runtime_event_loop_crash",
+                crash_msg,
+            )
+        except Exception as write_err:
+            print(f"[INDEX] Failed to persist runtime crash status: {write_err}")
+    finally:
+        loop.close()
+
+
+def _index_queue_worker(generation: int) -> None:
+    """Consume queued index jobs with a process-wide worker limit."""
+    global _index_running_jobs
+
+    while True:
+        with _index_queue_condition:
+            if generation != _index_queue_generation:
+                return
+            while not _index_queue:
+                _index_queue_condition.wait()
+                if generation != _index_queue_generation:
+                    return
+            doc_id, file_path, mode_override = _index_queue.pop(0)
+            _index_running_jobs += 1
+            _index_queue_condition.notify_all()
+
+        try:
+            print(f"[INDEX] Starting queued job for {doc_id}")
+            _run_index_job(doc_id, file_path, mode_override=mode_override)
+        finally:
+            with _index_queue_condition:
+                _index_running_jobs = max(0, _index_running_jobs - 1)
+                _index_queue_condition.notify_all()
+
+
+def _ensure_index_queue_worker_started() -> None:
+    global _index_worker_started
+
+    with _index_queue_condition:
+        if _index_worker_started:
+            return
+        _index_worker_started = True
+        for idx in range(PAGEINDEX_MAX_CONCURRENT_JOBS):
+            worker = threading.Thread(
+                target=_index_queue_worker,
+                args=(_index_queue_generation,),
+                name=f"pageindex-queue-worker-{idx + 1}",
+                daemon=True,
+            )
+            worker.start()
+
+
+def _enqueue_index_job(
+    doc_id: str, file_path: str, mode_override: Optional[str] = None
+) -> None:
+    try:
+        _update_document_status_sync(
+            str(DATA_DIR / "knowclaw.db"),
+            doc_id,
+            "processing:queued",
+        )
+    except Exception as e:
+        print(f"[INDEX] Failed to mark {doc_id} as queued: {e}")
+
+    _ensure_index_queue_worker_started()
+    with _index_queue_condition:
+        _index_queue.append((doc_id, file_path, mode_override))
+        queued = len(_index_queue)
+        _index_queue_condition.notify_all()
+    print(f"[INDEX] Queued index job for {doc_id} (queue={queued})")
+
+
+def _reset_index_queue_for_tests() -> None:
+    global _index_worker_started, _index_running_jobs, _index_queue_generation
+
+    with _index_queue_condition:
+        _index_queue.clear()
+        _index_running_jobs = 0
+        _index_worker_started = False
+        _index_queue_generation += 1
+        _index_queue_condition.notify_all()
+
+
+def _wait_for_index_queue_state_for_tests(
+    *, running: int, queued: int, timeout: float
+) -> bool:
+    deadline = datetime.now().timestamp() + timeout
+    with _index_queue_condition:
+        while True:
+            if _index_running_jobs == running and len(_index_queue) == queued:
+                return True
+            remaining = deadline - datetime.now().timestamp()
+            if remaining <= 0:
+                return False
+            _index_queue_condition.wait(timeout=min(remaining, 0.05))
+
+
 def start_index_process(
     doc_id: str, file_path: str, mode_override: Optional[str] = None
 ):
     """启动索引生成（使用线程代替进程避免 Windows spawn 问题）"""
+    if PAGEINDEX_QUEUE_ENABLED:
+        _enqueue_index_job(doc_id, file_path, mode_override=mode_override)
+        return
+
     import threading
 
     def run_index():
@@ -474,6 +605,8 @@ async def _generate_index_async(
                 else "Indexing timed out"
             )
             print(f"[INDEX] Timeout for {doc_id}: {timeout_msg}")
+            if await _mark_completed_from_partial_index_if_exists(db, doc_id, timeout_msg):
+                return
             await db.execute(
                 "UPDATE documents SET status = ?, error_message = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
                 ("failed:indexing_timeout", timeout_msg, doc_id),
@@ -523,6 +656,37 @@ async def _generate_index_async(
                 print(f"[INDEX] Safety check failed for {doc_id}: {safety_err}")
 
 
+async def _mark_completed_from_partial_index_if_exists(
+    db,
+    doc_id: str,
+    timeout_msg: str,
+) -> bool:
+    partial_index_path = str(INDEXES_DIR / f"{doc_id}.json")
+    if not os.path.exists(partial_index_path):
+        return False
+
+    await db.execute(
+        """UPDATE documents
+           SET status = ?, index_path = COALESCE(index_path, ?),
+               error_message = ?, updated_at = CURRENT_TIMESTAMP
+           WHERE id = ?""",
+        (
+            "completed",
+            partial_index_path,
+            f"{timeout_msg}; using base index without full enrichment",
+            doc_id,
+        ),
+    )
+    await db.commit()
+    print(f"[INDEX] Timeout after base index save for {doc_id}; marked completed")
+    try:
+        trigger_search_rebuild_background()
+        print(f"[INDEX] Search index rebuild triggered for {doc_id}")
+    except Exception as e:
+        print(f"[INDEX] Failed to trigger search index rebuild: {e}")
+    return True
+
+
 def _update_progress_sync(
     db_path: str, doc_id: str, total_pages: int, stop_event: threading.Event
 ):
@@ -537,7 +701,6 @@ def _update_progress_sync(
 
         try:
             _update_processed_pages_sync(db_path, doc_id, processed_pages=current_page)
-            print(f"[INDEX] Progress for {doc_id}: {current_page}/{total_pages}")
         except Exception as e:
             print(f"[INDEX] Failed to update progress for {doc_id}: {e}")
 
@@ -545,7 +708,6 @@ def _update_progress_sync(
     if not stop_event.is_set():
         try:
             _update_processed_pages_sync(db_path, doc_id, processed_pages=total_pages)
-            print(f"[INDEX] Progress for {doc_id}: All pages done")
         except Exception as e:
             print(f"[INDEX] Failed to finalize progress for {doc_id}: {e}")
 

@@ -3204,6 +3204,14 @@ Return strict JSON only:
             pages=page_count,
             text_coverage=f"{analysis['text_coverage']:.0%}",
         )
+        print(
+            "[INDEX-V3] Profile: "
+            f"layout_type={analysis.get('layout_type', 'unknown')}, "
+            f"text_layer_quality={analysis.get('text_layer_quality', 'unknown')}, "
+            f"structure_policy={analysis.get('structure_policy', 'unknown')}, "
+            f"ocr_policy={analysis.get('ocr_policy', 'unknown')}, "
+            f"visual_dependency_score={analysis.get('visual_dependency_score', 0)}"
+        )
 
         # 璺敱鍐崇瓥
         execution_mode = self._select_initial_execution_mode(requested_mode, analysis)
@@ -3438,24 +3446,38 @@ Return strict JSON only:
         )
         if execution_mode == "balanced" and not new_architecture_used and not skip_legacy_toc_detection:
             # 鈹€鈹€鈹€ Step 1: 鏌ユ壘鐩綍椤?鈹€鈹€鈹€
-            print("[INDEX-V3] Phase 1: searching for toc pages")
             from pageindex.toc_detector import find_toc_pages
-            
-            toc_pages = await find_toc_pages(analysis, str(file_path), model)
-            self._sync_toc_context(analysis, toc_pages, confidence="detected")
-            
+
+            anchor_toc_pages = list((anchors or {}).get("toc_pages") or analysis.get("toc_pages") or [])
+            if anchor_toc_pages:
+                toc_pages = anchor_toc_pages
+                print(f"[INDEX-V3] Phase 1: using anchor toc_pages={toc_pages}")
+            else:
+                print("[INDEX-V3] Phase 1: searching for toc pages")
+                toc_pages = await find_toc_pages(analysis, str(file_path), model)
+                self._sync_toc_context(analysis, toc_pages, confidence="detected")
+
+            visual_required = self._requires_visual_outline_provider(analysis)
+
             if toc_pages:
                 print(f"[INDEX-V3] Found toc pages: {toc_pages}")
                 from pageindex.toc_page_extractor import extract_toc_from_pages
                 from pageindex.quality_validator import validate_toc
                 
-                toc_result = extract_toc_from_pages(
-                    doc_path=str(file_path),
-                    toc_page_indices=[p - 1 for p in toc_pages],  # 杞?0-indexed
-                    doc_page_count=page_count,
-                    model=model,
-                    page_texts=analysis.get("page_texts", []),
-                )
+                toc_result = None
+                if visual_required:
+                    print(
+                        "[TOC-PAGE] Skip text/regex extraction: "
+                        f"structure_policy={analysis.get('structure_policy')}"
+                    )
+                else:
+                    toc_result = extract_toc_from_pages(
+                        doc_path=str(file_path),
+                        toc_page_indices=[p - 1 for p in toc_pages],
+                        doc_page_count=page_count,
+                        model=model,
+                        page_texts=analysis.get("page_texts", []),
+                    )
                 
                 if toc_result and toc_result.get("items"):
                     # 璐ㄩ噺楠岃瘉
@@ -3474,13 +3496,18 @@ Return strict JSON only:
                         print(f"[INDEX-V3] v4 quality low ({validation['score']:.2f}), falling back")
                         toc_items = None
                 else:
-                    print("[INDEX-V3] v4 extraction failed, falling back")
+                    if visual_required:
+                        print("[TOC-PAGE] Text/regex extraction skipped; using balanced visual path")
+                    else:
+                        print("[INDEX-V3] v4 extraction failed, falling back")
                     toc_items = None
                 
                 if toc_items is None:
                     is_image_doc = self._is_effectively_image_doc(analysis)
                     
-                    if is_image_doc:
+                    if visual_required:
+                        print("[INDEX-V3] Skip legacy TOC fallback: structure_policy=visual_required")
+                    elif is_image_doc:
                         # 鍥剧墖鍨?鈫?VLM瑙嗚鎻愬彇
                         print("[INDEX-V3] Fallback: VLM visual extraction for image doc")
                         
@@ -3535,7 +3562,10 @@ Return strict JSON only:
                 
                 # 濡傛灉闄嶇骇涔熷け璐ユ垨鍙湁涓€绾ч渶瑕佸垎鏀疊锛岀户缁蛋鍘熸湁balanced閫昏緫
                 if toc_items is None:
-                    print("[INDEX-V3] Fallback incomplete, continuing with balanced path for sub-chapter extraction")
+                    if visual_required:
+                        print("[INDEX-V3] Visual skeleton extraction delegated to balanced visual path")
+                    else:
+                        print("[INDEX-V3] Fallback incomplete, continuing with balanced path for sub-chapter extraction")
             else:
                 print("[INDEX-V3] No toc pages found, continuing with traditional balanced path")
                 toc_items = None
@@ -3618,6 +3648,8 @@ Return strict JSON only:
                 f"[INDEX-V3] Content OCR: {len(analysis.get('image_only_pages', []))} image "
                 f"+ {len(analysis.get('garbled_pages', []))} garbled pages"
             )
+            if self._requires_visual_outline_provider(analysis):
+                print("[INDEX-V3] OCR role=content_fill; structure providers remain visual-only")
             page_list = await ocr_image_pages(
                 analysis,
                 page_list,
@@ -3759,10 +3791,10 @@ Return strict JSON only:
             
             # 鏍规嵁璐ㄦ缁撴灉淇
             if quality_result.get("needs_repair"):
-                print(f"[INDEX-V3] LLM quality check suggests repairs")
+                print("[INDEX-V3] LLM-QC advisory suggestions detected")
                 for suggestion in quality_result.get("suggestions", []):
                     if any(token in suggestion for token in ("子章节", "拆分", "sub-chapter", "split")):
-                        print(f"[INDEX-V3] Triggering sub-chapter extraction for large nodes")
+                        print("[INDEX-V3] LLM-QC advisory: large-node detail can be improved")
                         # 鏍囪闇€瑕佸瓙绔犺妭鎻愬彇
                         break
         except Exception as e:

@@ -3,6 +3,13 @@
 import asyncio
 from typing import Any, Dict, List, Optional, Tuple
 
+from app.core.config import (
+    PAGEINDEX_SUMMARY_CONCURRENCY,
+    PAGEINDEX_SUMMARY_MAX_LLM_NODES,
+    PAGEINDEX_SUMMARY_NODE_TIMEOUT_SECONDS,
+    PAGEINDEX_SUMMARY_TOTAL_BUDGET_SECONDS,
+)
+
 
 # ---------------------------------------------------------------------------
 # 节点文本填充
@@ -20,6 +27,15 @@ def fill_node_text(
         page_list: [(text, token_count), ...] 0-indexed
     """
     for node in toc_tree:
+        if node.get("exclude_from_text") or node.get("node_type") in {
+            "auxiliary_catalog",
+            "auxiliary_catalog_item",
+        }:
+            node["text"] = ""
+            if "nodes" in node and node["nodes"]:
+                fill_node_text(node["nodes"], page_list)
+            continue
+
         start = node.get("start_index")
         end = node.get("end_index")
         if start is not None and end is not None:
@@ -142,26 +158,63 @@ async def _generate_summaries_balanced(
     model: Optional[str] = None,
 ) -> None:
     """Balanced 模式：LLM 生成摘要（并发）。"""
-    from pageindex.utils import generate_node_summary
-
     # 收集所有需要生成摘要的节点
     all_nodes = []
     _collect_nodes(toc_tree, all_nodes)
+    all_nodes = [
+        node
+        for node in all_nodes
+        if not node.get("exclude_from_llm_qc")
+        and node.get("node_type") not in {"auxiliary_catalog", "auxiliary_catalog_item"}
+    ]
+    if not all_nodes:
+        return
+
+    llm_nodes = all_nodes[:PAGEINDEX_SUMMARY_MAX_LLM_NODES]
+    fallback_nodes = all_nodes[PAGEINDEX_SUMMARY_MAX_LLM_NODES:]
+    for node in fallback_nodes:
+        _set_fast_summary(node)
 
     # 并发生成（限制并发度）
-    semaphore = asyncio.Semaphore(5)
+    semaphore = asyncio.Semaphore(PAGEINDEX_SUMMARY_CONCURRENCY)
 
     async def _gen(node):
         async with semaphore:
             try:
-                await generate_node_summary(node, model=model)
-            except Exception as e:
+                summary = await asyncio.wait_for(
+                    _call_generate_node_summary(node, model=model),
+                    timeout=PAGEINDEX_SUMMARY_NODE_TIMEOUT_SECONDS,
+                )
+                node["summary"] = summary
+            except Exception:
                 # Fallback to fast summary
-                title = node.get("title", "")
-                text = node.get("text", "")
-                node["summary"] = f"{title}。{text[:150]}" if text else title
+                _set_fast_summary(node)
 
-    await asyncio.gather(*[_gen(node) for node in all_nodes])
+    try:
+        await asyncio.wait_for(
+            asyncio.gather(*[_gen(node) for node in llm_nodes]),
+            timeout=PAGEINDEX_SUMMARY_TOTAL_BUDGET_SECONDS,
+        )
+    except Exception:
+        for node in llm_nodes:
+            if not node.get("summary"):
+                _set_fast_summary(node)
+
+
+async def _call_generate_node_summary(
+    node: Dict,
+    model: Optional[str] = None,
+) -> str:
+    from pageindex.utils import generate_node_summary
+
+    return await generate_node_summary(node, model=model)
+
+
+def _set_fast_summary(node: Dict) -> None:
+    title = node.get("title", "")
+    text = node.get("text", "")
+    preview = str(text or "")[:150]
+    node["summary"] = f"{title} {preview}".strip() if preview else title
 
 
 def _collect_nodes(tree: List[Dict], result: List[Dict]) -> None:

@@ -1,42 +1,53 @@
-chcp 65001 > nul
 @echo off
+chcp 65001 >nul
+setlocal
+
+title PageChat Frontend
+
+set "PROJECT_DIR=D:\projects\page_chat"
+set "FRONTEND_DIR=%PROJECT_DIR%\frontend"
+set "HOST=0.0.0.0"
+set "PORT=5173"
+
 echo ==========================================
-echo   PageChat Frontend (with cache clean)
+echo   PageChat Frontend
 echo ==========================================
 echo.
 
-cd /d D:\projects\page_chat\frontend
-
-echo [1/3] Cleaning Vite cache...
-if exist "node_modules\.vite" (
-    rmdir /s /q "node_modules\.vite"
-    echo       OK Vite cache cleared
-) else (
-    echo       - No Vite cache to clean
+if not exist "%FRONTEND_DIR%" (
+    echo [ERROR] Frontend directory not found:
+    echo         %FRONTEND_DIR%
+    echo.
+    pause
+    exit /b 1
 )
 
-echo.
-echo [2/3] Checking node_modules...
+cd /d "%FRONTEND_DIR%" || (
+    echo [ERROR] Failed to enter frontend directory.
+    echo.
+    pause
+    exit /b 1
+)
+
+echo [1/2] Checking node dependencies...
 if not exist "node_modules" (
-    echo [WARNING] node_modules not found, installing...
-    call npm.cmd install
-    if errorlevel 1 (
-        echo [ERROR] npm install failed
-        pause
-        exit /b 1
-    )
-) else (
-    echo       OK node_modules ready
+    echo [ERROR] node_modules not found:
+    echo         %FRONTEND_DIR%\node_modules
+    echo.
+    echo Please run npm install in the frontend directory first.
+    pause
+    exit /b 1
 )
-
-echo.
-echo [3/3] Starting frontend dev server...
-echo       URL: http://localhost:5173
-echo       Press Ctrl+C to stop
+echo       OK node_modules ready
 echo.
 
-start "PageChat Frontend" cmd /k "cd /d D:\projects\page_chat\frontend && npm.cmd run dev"
-
-echo       OK Frontend window opened
+echo [2/2] Starting frontend dev server...
+echo       URL: http://localhost:%PORT%
+echo       Press Ctrl+C to stop.
 echo.
+
+call npm.cmd run dev -- --host %HOST% --port %PORT%
+
+echo.
+echo [INFO] Frontend process exited.
 pause
