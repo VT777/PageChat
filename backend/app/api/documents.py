@@ -1110,7 +1110,12 @@ async def get_document_page(
 
     # 使用 ToolExecutor 获取页面内容
     pageindex_service = PageIndexService()
-    tool_executor = ToolExecutor(pageindex_service, doc_service)
+    tool_executor = ToolExecutor(
+        pageindex_service,
+        doc_service,
+        user_id=current_user["id"],
+        allowed_doc_ids=[doc_id],
+    )
 
     try:
         # 调用批量获取接口（传入单页数组）

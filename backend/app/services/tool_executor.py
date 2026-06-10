@@ -133,11 +133,18 @@ class ToolExecutor:
         self,
         pageindex_service: PageIndexService,
         document_service: DocumentService,
+        user_id: str = None,
+        allowed_doc_ids: Optional[List[str]] = None,
     ):
+        if not user_id:
+            raise ValueError("ToolExecutor requires user_id")
         self.pageindex_service = pageindex_service
         self.document_service = document_service
         self.table_analysis_service = TableAnalysisService()
-        self.allowed_doc_ids: Optional[set[str]] = None
+        self.user_id = user_id
+        self.allowed_doc_ids: Optional[set[str]] = (
+            set(allowed_doc_ids) if allowed_doc_ids is not None else None
+        )
 
     def set_allowed_doc_ids(self, document_ids: Optional[List[str]]):
         """设置当前会话允许访问的文档范围（用户隔离）"""
@@ -182,7 +189,7 @@ class ToolExecutor:
 
     async def _get_document_structure(self, doc_id: str) -> dict:
         """获取文档目录结构 - PageIndex 核心工具"""
-        doc = await self.document_service.get_document(doc_id)
+        doc = await self.document_service.get_document(doc_id, user_id=self.user_id)
         if not doc:
             return {"error": f"文档 {doc_id} 不存在"}
 
@@ -249,7 +256,7 @@ class ToolExecutor:
             page_nums = [page_nums]
         page_nums = page_nums[:5]
 
-        doc = await self.document_service.get_document(doc_id)
+        doc = await self.document_service.get_document(doc_id, user_id=self.user_id)
         if not doc:
             return {"status": "error", "data": {}, "error": f"文档 {doc_id} 不存在"}
 
@@ -397,7 +404,7 @@ class ToolExecutor:
 
     async def _get_document_image(self, doc_id: str, page_num: int) -> dict:
         """获取指定页面的图片（base64格式）- 单独调用避免token超限"""
-        doc = await self.document_service.get_document(doc_id)
+        doc = await self.document_service.get_document(doc_id, user_id=self.user_id)
         if not doc:
             return {"status": "error", "data": {}, "error": f"文档 {doc_id} 不存在"}
 
@@ -694,7 +701,7 @@ class ToolExecutor:
 
     async def _list_documents(self) -> dict:
         """获取文档列表"""
-        docs = await self.document_service.get_indexed_documents()
+        docs = await self.document_service.get_indexed_documents(user_id=self.user_id)
         if self.allowed_doc_ids is not None:
             docs = [d for d in docs if d.id in self.allowed_doc_ids]
         return {
@@ -713,7 +720,7 @@ class ToolExecutor:
     async def _aggregate_tables(
         self, document_ids: List[str], operation_spec: Dict[str, Any]
     ) -> dict:
-        docs = await self.document_service.get_indexed_documents()
+        docs = await self.document_service.get_indexed_documents(user_id=self.user_id)
         doc_map = {d.id: d for d in docs}
 
         selected = []

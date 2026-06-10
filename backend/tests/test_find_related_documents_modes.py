@@ -20,7 +20,7 @@ def test_find_related_selected_only_mode() -> None:
     )
     pageindex_service = SimpleNamespace(load_index=AsyncMock(return_value={}))
 
-    executor = ToolExecutor(pageindex_service, document_service)
+    executor = ToolExecutor(pageindex_service, document_service, user_id="user-1")
 
     async def fake_search(**kwargs):
         return SimpleNamespace(
@@ -75,7 +75,7 @@ def test_find_related_stats_query_prefers_aggregate_tables() -> None:
     )
     pageindex_service = SimpleNamespace(load_index=AsyncMock(return_value={}))
 
-    executor = ToolExecutor(pageindex_service, document_service)
+    executor = ToolExecutor(pageindex_service, document_service, user_id="user-1")
 
     async def fake_search(**kwargs):
         return SimpleNamespace(
@@ -118,7 +118,7 @@ def test_find_related_selected_then_global_mode() -> None:
     )
     pageindex_service = SimpleNamespace(load_index=AsyncMock(return_value={}))
 
-    executor = ToolExecutor(pageindex_service, document_service)
+    executor = ToolExecutor(pageindex_service, document_service, user_id="user-1")
 
     async def fake_search(**kwargs):
         return SimpleNamespace(
@@ -160,7 +160,7 @@ def test_find_related_low_confidence_next_step_no_auto_legacy() -> None:
     )
     pageindex_service = SimpleNamespace(load_index=AsyncMock(return_value={}))
 
-    executor = ToolExecutor(pageindex_service, document_service)
+    executor = ToolExecutor(pageindex_service, document_service, user_id="user-1")
 
     async def fake_search(**kwargs):
         return SimpleNamespace(

@@ -68,7 +68,6 @@ class AgentService:
         self.db = db
         self.pageindex_service = PageIndexService()
         self.document_service = DocumentService(db)
-        self.tool_executor = ToolExecutor(self.pageindex_service, self.document_service)
 
     def _format_sse(self, event: str, data: dict) -> str:
         """格式化 SSE 事件"""
@@ -82,6 +81,7 @@ class AgentService:
         conversation_id: Optional[str] = None,
         document_ids: Optional[List[str]] = None,
         preferred_document_ids: Optional[List[str]] = None,
+        user_id: str = None,
         max_steps: int = 8,
         history_messages: Optional[List[Dict[str, Any]]] = None,
     ) -> AsyncGenerator[str, None]:
@@ -96,11 +96,19 @@ class AgentService:
         - done: 完成
         """
         # 检查是否有可用文档
-        docs = await self.document_service.get_indexed_documents()
+        if not user_id:
+            raise ValueError("user_id is required")
+
+        docs = await self.document_service.get_indexed_documents(user_id=user_id)
         doc_count = len(document_ids) if document_ids is not None else len(docs)
 
         # 将当前请求允许访问的文档范围注入工具执行器（防止越权）
-        self.tool_executor.set_allowed_doc_ids(document_ids)
+        tool_executor = ToolExecutor(
+            self.pageindex_service,
+            self.document_service,
+            user_id=user_id,
+            allowed_doc_ids=document_ids,
+        )
 
         # 检测用户语言，注入 prompt
         user_lang = detect_language(question)
@@ -308,7 +316,7 @@ class AgentService:
                             f"{tool_name} completed in {elapsed_ms}ms (session cache hit)"
                         )
                     else:
-                        result = await self.tool_executor.execute(tool_name, tool_args)
+                        result = await tool_executor.execute(tool_name, tool_args)
                         elapsed_ms = int((time.perf_counter() - started_at) * 1000)
                         if conversation_id:
                             _CONVERSATION_CACHES.setdefault(conversation_id, {})[
@@ -317,7 +325,7 @@ class AgentService:
                         tool_logger.info(f"{tool_name} completed in {elapsed_ms}ms")
                 else:
                     # 不缓存的工具：直接执行
-                    result = await self.tool_executor.execute(tool_name, tool_args)
+                    result = await tool_executor.execute(tool_name, tool_args)
                     elapsed_ms = int((time.perf_counter() - started_at) * 1000)
                     tool_logger.info(
                         f"{tool_name} completed in {elapsed_ms}ms (no cache)"

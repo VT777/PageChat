@@ -224,6 +224,7 @@ class ChatService:
             conversation_id=conversation_id,
             document_ids=document_ids,
             preferred_document_ids=preferred_document_ids,
+            user_id=user_id,
             history_messages=history,
         ):
             yield event
