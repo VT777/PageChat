@@ -4425,6 +4425,8 @@ Return JSON only."""
                     node = node_dict[node_id]
                     # 鑾峰彇鏂囨湰鍐呭
                     text = node.get("text", "")
+                    relevance = item.get("relevance_score", 0.5)
+                    reasoning = item.get("reasoning", "")
 
                     results.append(
                         {
@@ -4436,8 +4438,16 @@ Return JSON only."""
                             "end_index": node.get("end_index"),
                             "summary": text[:300] if text else "",  # 鎽樿鐢ㄤ簬灞曠ず
                             "full_text": text,  # 瀹屾暣鍘熸枃鐢ㄤ簬鎺ㄧ悊
-                            "reasoning": item.get("reasoning", ""),
-                            "relevance": item.get("relevance_score", 0.5),
+                            "reasoning": reasoning,
+                            "relevance": relevance,
+                            **self._retrieval_trace_fields(
+                                doc_name,
+                                node.get("start_index"),
+                                node.get("end_index"),
+                                relevance,
+                                "tree_reasoning",
+                                reasoning or "Selected by tree reasoning.",
+                            ),
                         }
                     )
 

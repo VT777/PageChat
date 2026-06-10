@@ -178,3 +178,57 @@ def test_keyword_fallback_results_include_retrieval_trace_metadata() -> None:
         "end_page": 3,
     }
     assert result["display_label"] == "report.pdf p.3"
+
+
+def test_tree_reasoning_results_include_retrieval_trace_metadata(monkeypatch) -> None:
+    async def fake_chat_completion(**kwargs):
+        return SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    message=SimpleNamespace(
+                        content=(
+                            '[{"node_id": "n1", "reasoning": "matched section", '
+                            '"relevance_score": 0.83}]'
+                        )
+                    )
+                )
+            ]
+        )
+
+    async def fake_verify_candidate_nodes(**kwargs):
+        return kwargs["candidates"]
+
+    monkeypatch.setattr("app.core.llm.async_chat_completion", fake_chat_completion)
+    monkeypatch.setattr(
+        "app.services.pageindex_service.verify_candidate_nodes",
+        fake_verify_candidate_nodes,
+    )
+
+    async def run() -> None:
+        pageindex = PageIndexService()
+        results = await pageindex.search_in_structure_async(
+            {
+                "structure": [
+                    {
+                        "node_id": "n1",
+                        "title": "Alpha",
+                        "text": "alpha revenue",
+                        "start_index": 4,
+                        "end_index": 5,
+                    }
+                ]
+            },
+            query="alpha",
+            doc_id="doc-a",
+            doc_name="report.pdf",
+            user_id="trace-tree-user",
+        )
+
+        result = results[0]
+        assert result["retrieval_source"] == "tree_reasoning"
+        assert result["confidence"] == result["relevance"]
+        assert result["why_selected"] == result["reasoning"]
+        assert result["source_anchor"]["unit_type"] == "page"
+        assert result["display_label"]
+
+    asyncio.run(run())
