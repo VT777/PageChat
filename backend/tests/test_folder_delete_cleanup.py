@@ -7,6 +7,7 @@ import aiosqlite
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from app.services.cache_service import cache_service
+from app.services import agent_service
 from app.services.folder_service import FolderService
 
 
@@ -155,6 +156,10 @@ def test_delete_folder_cleans_documents_files_indexes_and_caches(
         cache_service.set_structure("user-a", "doc-a", {"cached": "structure"})
         cache_service.set_page_content("user-a", "doc-a", 1, False, {"cached": "page"})
         cache_service.set_search_result("user-a", "alpha", ["doc-a"], [{"doc": "a"}])
+        agent_service._CONVERSATION_CACHES["conv:scope:tool"] = {"old": True}
+        agent_service._CONVERSATION_MESSAGES["conv:scope"] = [
+            {"role": "assistant", "content": "old"}
+        ]
 
         service = FolderService()
         service._db_path = str(db_path)
@@ -177,5 +182,32 @@ def test_delete_folder_cleans_documents_files_indexes_and_caches(
         assert cache_service.get_structure("user-a", "doc-a") is None
         assert cache_service.get_page_content("user-a", "doc-a", 1, False) is None
         assert cache_service.get_search_result("user-a", "alpha", ["doc-a"]) is None
+        assert agent_service._CONVERSATION_CACHES == {}
+        assert agent_service._CONVERSATION_MESSAGES == {}
 
     asyncio.run(run())
+
+
+def test_clear_conversation_cache_clears_tool_and_message_state() -> None:
+    agent_service._CONVERSATION_CACHES.clear()
+    agent_service._CONVERSATION_MESSAGES.clear()
+    agent_service._CONVERSATION_CACHES["conv:scope:tool"] = {"old": True}
+    agent_service._CONVERSATION_CACHES["other:scope:tool"] = {"keep": True}
+    agent_service._CONVERSATION_MESSAGES["conv:scope"] = [
+        {"role": "assistant", "content": "old"}
+    ]
+    agent_service._CONVERSATION_MESSAGES["other:scope"] = [
+        {"role": "assistant", "content": "keep"}
+    ]
+
+    agent_service.clear_conversation_cache("conv")
+
+    assert agent_service._CONVERSATION_CACHES == {"other:scope:tool": {"keep": True}}
+    assert agent_service._CONVERSATION_MESSAGES == {
+        "other:scope": [{"role": "assistant", "content": "keep"}]
+    }
+
+    agent_service.clear_conversation_cache()
+
+    assert agent_service._CONVERSATION_CACHES == {}
+    assert agent_service._CONVERSATION_MESSAGES == {}

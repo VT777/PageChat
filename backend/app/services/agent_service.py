@@ -37,19 +37,27 @@ def clear_conversation_cache(conversation_id: Optional[str] = None):
     Args:
         conversation_id: 指定会话ID则清除该会话缓存，None则清除所有缓存
     """
-    global _CONVERSATION_CACHES
+    global _CONVERSATION_CACHES, _CONVERSATION_MESSAGES
     if conversation_id:
-        keys_to_delete = [
+        cache_keys_to_delete = [
             key
             for key in _CONVERSATION_CACHES
             if key == conversation_id or key.startswith(f"{conversation_id}:")
         ]
-        for key in keys_to_delete:
+        message_keys_to_delete = [
+            key
+            for key in _CONVERSATION_MESSAGES
+            if key == conversation_id or key.startswith(f"{conversation_id}:")
+        ]
+        for key in cache_keys_to_delete:
             del _CONVERSATION_CACHES[key]
-        if keys_to_delete:
+        for key in message_keys_to_delete:
+            del _CONVERSATION_MESSAGES[key]
+        if cache_keys_to_delete or message_keys_to_delete:
             print(f"[CACHE] Cleared cache for conversation: {conversation_id}")
     else:
         _CONVERSATION_CACHES.clear()
+        _CONVERSATION_MESSAGES.clear()
         print("[CACHE] Cleared all conversation caches")
 
 

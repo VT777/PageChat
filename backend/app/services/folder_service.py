@@ -494,6 +494,9 @@ class FolderService:
                     await db.execute(folder_query, folder_params)
 
                 await db.execute("COMMIT")
+                from app.services.agent_service import clear_conversation_cache
+
+                clear_conversation_cache()
                 return True
             except Exception:
                 await db.execute("ROLLBACK")
