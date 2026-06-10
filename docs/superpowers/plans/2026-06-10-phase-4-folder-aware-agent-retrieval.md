@@ -12,7 +12,7 @@
 
 ## Entry Criteria
 
-Start this phase after Phase 2 is complete. Phase 3 is recommended but not strictly blocking.
+Start this phase after Phase 3 is complete.
 
 Required:
 
@@ -20,6 +20,9 @@ Required:
 - User and allowed document scope remains mandatory and tested.
 - Folder metadata exists in search segment metadata.
 - Phase 2 report is available as the evidence-anchor baseline.
+- Phase 3 report is available as the tree-quality baseline.
+- New folder-aware retrieval behavior uses `quality_report` when deciding whether to trust document structure, disclose fallback evidence, or ask for clarification.
+- Tree-first policy and fallback threshold tests from Phase 3 continue to pass.
 
 ## Files And Responsibilities
 

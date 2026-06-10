@@ -464,6 +464,10 @@ class DocumentSearchService:
         user_id: str = None,
         allowed_doc_ids: Optional[List[str]] = None,
         preferred_doc_ids: Optional[List[str]] = None,
+        folder_id: Optional[str] = None,
+        folder_path: Optional[str] = None,
+        include_subfolders: bool = False,
+        document_ids: Optional[List[str]] = None,
     ) -> SearchResponse:
         """
         搜索主入口 - BM25 + bge-small rerank + 自动查询扩展
@@ -502,6 +506,8 @@ class DocumentSearchService:
             allowed_set = (
                 set(allowed_doc_ids) if allowed_doc_ids is not None else None
             )
+            document_set = set(document_ids) if document_ids is not None else None
+            scope_folder_path = folder_path or self._folder_path_for_scope(folder_id)
 
             # ===== Stage 0: 查询扩展（自动）=====
             if expanded_query:
@@ -549,6 +555,23 @@ class DocumentSearchService:
                     (idx, score)
                     for idx, score in candidate_pairs
                     if self.segment_metadata[idx].get("doc_id") in allowed_set
+                ]
+            if document_set is not None:
+                candidate_pairs = [
+                    (idx, score)
+                    for idx, score in candidate_pairs
+                    if self.segment_metadata[idx].get("doc_id") in document_set
+                ]
+            if folder_id or scope_folder_path:
+                candidate_pairs = [
+                    (idx, score)
+                    for idx, score in candidate_pairs
+                    if self._segment_matches_folder_scope(
+                        self.segment_metadata[idx],
+                        folder_id=folder_id,
+                        folder_path=scope_folder_path,
+                        include_subfolders=include_subfolders,
+                    )
                 ]
 
             # 控制重排规模：先保留BM25前N候选
@@ -619,6 +642,16 @@ class DocumentSearchService:
                     continue
                 if allowed_set is not None and doc_id not in allowed_set:
                     continue
+                if document_set is not None and doc_id not in document_set:
+                    continue
+                if folder_id or scope_folder_path:
+                    if not self._segment_matches_folder_scope(
+                        seg_meta,
+                        folder_id=folder_id,
+                        folder_path=scope_folder_path,
+                        include_subfolders=include_subfolders,
+                    ):
+                        continue
                 score = float(final_scores[i])
                 current = doc_grouped.get(doc_id)
                 if current is None:
@@ -723,6 +756,42 @@ class DocumentSearchService:
                 query_used=query,
                 query_effective=query,
             )
+
+    def _folder_path_for_scope(self, folder_id: Optional[str]) -> Optional[str]:
+        if not folder_id:
+            return None
+        for meta in self.doc_metadata.values():
+            if meta.get("folder_id") == folder_id and meta.get("folder_path"):
+                return meta.get("folder_path")
+        for meta in self.segment_metadata:
+            if meta.get("folder_id") == folder_id and meta.get("folder_path"):
+                return meta.get("folder_path")
+        return None
+
+    @staticmethod
+    def _segment_matches_folder_scope(
+        meta: Dict[str, Any],
+        folder_id: Optional[str] = None,
+        folder_path: Optional[str] = None,
+        include_subfolders: bool = False,
+    ) -> bool:
+        segment_folder_id = meta.get("folder_id")
+        segment_folder_path = meta.get("folder_path")
+
+        if folder_id and segment_folder_id == folder_id:
+            return True
+
+        if not folder_path:
+            return False
+
+        if segment_folder_path == folder_path:
+            return True
+
+        return bool(
+            include_subfolders
+            and isinstance(segment_folder_path, str)
+            and segment_folder_path.startswith(f"{folder_path}/")
+        )
 
     async def get_document_count(self) -> int:
         """获取文档数量"""

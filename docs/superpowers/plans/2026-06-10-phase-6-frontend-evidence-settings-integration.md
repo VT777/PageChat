@@ -20,6 +20,17 @@ Start after:
 
 Phase 4 is recommended if chat scope UI is included.
 
+Phase 6 can be executed in slices. Do not block all frontend evidence work on model settings or chat scope if the required backend fields for a smaller slice are already stable:
+
+| Slice | Required backend baseline |
+| --- | --- |
+| Evidence labels in chat and preview | Phase 2 source anchors and display labels |
+| Document quality display | Phase 3 `quality_report` metadata |
+| Chat scope UI | Phase 4 folder/document scope request and trace behavior |
+| Model settings UI | Phase 5 settings API and write-only key contract |
+
+If a slice starts before the later slices are ready, keep API types tolerant of missing fields and record the deferred slices in the completion gate.
+
 ## Files And Responsibilities
 
 - Modify: `frontend/src/api/index.ts`

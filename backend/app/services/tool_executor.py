@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Dict, Any, List, Optional
 from app.services.pageindex_service import PageIndexService
 from app.services.document_service import DocumentService
+from app.services.folder_service import FolderService
 from app.services.cache_service import cache_service
 from app.services.table_analysis_service import TableAnalysisService
 from app.services.source_anchor_resolver import resolve_source_anchor
@@ -30,8 +31,44 @@ AGENT_TOOLS = [
                         "type": "string",
                         "description": "文档ID",
                     },
+                    "compact": {
+                        "type": "boolean",
+                        "description": "Return hierarchy-preserving compact tree for agent retrieval.",
+                    },
                 },
                 "required": ["doc_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "list_folder_tree",
+            "description": "Get the current user's folder tree before scoped retrieval when the user mentions a folder, category, library area, or current scope.",
+            "parameters": {"type": "object", "properties": {}},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "list_folder_contents",
+            "description": "Get compact child folders and documents for a folder without returning full document text.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "folder_id": {
+                        "type": "string",
+                        "description": "Folder ID. Omit for the root folder level.",
+                    },
+                    "page": {
+                        "type": "integer",
+                        "description": "Document page number for paginated contents.",
+                    },
+                    "page_size": {
+                        "type": "integer",
+                        "description": "Number of documents per page.",
+                    },
+                },
             },
         },
     },
@@ -89,6 +126,23 @@ AGENT_TOOLS = [
                     "query": {
                         "type": "string",
                         "description": "查询内容或关键词",
+                    },
+                    "folder_id": {
+                        "type": "string",
+                        "description": "Optional folder ID for scoped search.",
+                    },
+                    "include_subfolders": {
+                        "type": "boolean",
+                        "description": "Whether folder search includes descendants.",
+                    },
+                    "document_ids": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Optional document ID scope.",
+                    },
+                    "strict_scope": {
+                        "type": "boolean",
+                        "description": "When true, do not search outside selected scope.",
                     },
                 },
                 "required": ["query"],
@@ -180,6 +234,10 @@ class ToolExecutor:
                 return await self._get_document_image(**arguments)
             elif tool_name == "find_related_documents":
                 return await self._find_related_documents(**arguments)
+            elif tool_name == "list_folder_tree":
+                return await self._list_folder_tree()
+            elif tool_name == "list_folder_contents":
+                return await self._list_folder_contents(**arguments)
             elif tool_name == "list_documents":
                 return await self._list_documents()
             elif tool_name == "aggregate_tables":
@@ -189,14 +247,14 @@ class ToolExecutor:
         except Exception as e:
             return {"error": f"工具 {tool_name} 执行失败: {str(e)}"}
 
-    async def _get_document_structure(self, doc_id: str) -> dict:
+    async def _get_document_structure(self, doc_id: str, compact: bool = False) -> dict:
         """获取文档目录结构 - PageIndex 核心工具"""
         doc = await self.document_service.get_document(doc_id, user_id=self.user_id)
         if not doc:
             return {"error": f"文档 {doc_id} 不存在"}
 
         cached_toc = cache_service.get_structure(self.user_id, doc_id)
-        if cached_toc is not None:
+        if cached_toc is not None and not compact:
             return {
                 "doc_id": doc_id,
                 "doc_name": doc.original_name,
@@ -217,10 +275,13 @@ class ToolExecutor:
         if not isinstance(nodes, list):
             nodes = []
 
-        toc = self._extract_structure(nodes, doc.file_type)
-        cache_service.set_structure(self.user_id, doc_id, toc)
+        if compact:
+            toc = self._build_compact_structure(nodes)
+        else:
+            toc = self._extract_structure(nodes, doc.file_type)
+            cache_service.set_structure(self.user_id, doc_id, toc)
 
-        return {
+        result = {
             "doc_id": doc_id,
             "doc_name": doc.original_name,
             "file_type": doc.file_type,
@@ -228,6 +289,17 @@ class ToolExecutor:
             "structure": toc,
             "cache_hit": False,
         }
+        if compact:
+            result["structure_format"] = "compact_tree"
+            quality_report = (
+                structure.get("quality_report") if isinstance(structure, dict) else None
+            )
+            if isinstance(quality_report, dict):
+                result["quality_report"] = quality_report
+                result["retrieval_guidance"] = self._structure_retrieval_guidance(
+                    quality_report
+                )
+        return result
 
     def _extract_structure(self, nodes: list, file_type: str, level: int = 0) -> list:
         """提取结构化目录信息"""
@@ -387,6 +459,39 @@ class ToolExecutor:
 
         return result
 
+    def _build_compact_structure(self, nodes: list) -> list:
+        result = []
+        for node in nodes:
+            if not isinstance(node, dict):
+                continue
+            item = {
+                "node_id": node.get("node_id", ""),
+                "title": node.get("title", ""),
+                "start_page": node.get("start_index"),
+                "end_page": node.get("end_index"),
+                "summary": (node.get("summary", "") or "")[:300],
+                "children": self._build_compact_structure(node.get("nodes") or []),
+            }
+            if node.get("source_anchor"):
+                item["source_anchor"] = node.get("source_anchor")
+            result.append(item)
+        return result
+
+    @staticmethod
+    def _structure_retrieval_guidance(quality_report: Dict[str, Any]) -> Dict[str, Any]:
+        status = quality_report.get("status")
+        if status in {"needs_review", "failed:indexing"}:
+            return {
+                "recommended_next_action": "verify_with_source_content",
+                "fallback_suggested": True,
+                "reason": "Index quality needs review; verify compact structure against source content before final claims.",
+            }
+        return {
+            "recommended_next_action": "use_structure",
+            "fallback_suggested": False,
+            "reason": "Index quality is acceptable for tree-first retrieval.",
+        }
+
     async def _resolve_source_anchor_content(self, doc, source_anchor: dict) -> dict:
         return resolve_source_anchor(
             file_path=Path(doc.file_path),
@@ -487,14 +592,32 @@ class ToolExecutor:
         expanded_query: str = None,
         user_selected_document_ids: Optional[List[str]] = None,
         allow_global_expansion: bool = True,
+        folder_id: Optional[str] = None,
+        include_subfolders: bool = False,
+        document_ids: Optional[List[str]] = None,
+        strict_scope: Optional[bool] = None,
         **kwargs,
     ) -> dict:
         """根据查询内容找相关文档（优先用户指定范围，不自动回退 legacy）"""
         from app.services.search_service import search_service
 
-        selected_ids = set(user_selected_document_ids or [])
+        uses_explicit_scope = document_ids is not None or folder_id is not None
+        requested_document_ids = document_ids if document_ids is not None else user_selected_document_ids
+        selected_ids = set(requested_document_ids or [])
         if kwargs.get("doc_id"):
             selected_ids.add(kwargs.get("doc_id"))
+        explicit_scope = bool(uses_explicit_scope and (selected_ids or folder_id))
+        effective_strict_scope = strict_scope
+        if effective_strict_scope is None:
+            effective_strict_scope = explicit_scope
+        search_document_ids = list(selected_ids) if selected_ids and effective_strict_scope else None
+        retrieval_scope = {
+            "requested_document_ids": list(selected_ids),
+            "requested_folder_id": folder_id,
+            "include_subfolders": include_subfolders,
+            "strict_scope": bool(effective_strict_scope),
+            "expanded_to_user_library": bool(explicit_scope and not effective_strict_scope),
+        }
 
         try:
             response = await search_service.search(
@@ -508,6 +631,9 @@ class ToolExecutor:
                 if self.allowed_doc_ids is not None
                 else None,
                 preferred_doc_ids=list(selected_ids) if selected_ids else None,
+                document_ids=search_document_ids,
+                folder_id=folder_id if effective_strict_scope else None,
+                include_subfolders=include_subfolders,
             )
 
             all_docs = []
@@ -532,8 +658,10 @@ class ToolExecutor:
                 )
 
             selected_docs = [d for d in all_docs if d["doc_id"] in selected_ids]
-            retrieval_mode = "selected_only"
+            retrieval_mode = "strict_scope" if explicit_scope and effective_strict_scope else "selected_only"
             used_docs = selected_docs if selected_ids else all_docs
+            if folder_id and effective_strict_scope:
+                used_docs = all_docs
 
             selected_confidence = "none"
             if selected_docs:
@@ -545,13 +673,19 @@ class ToolExecutor:
                 else:
                     selected_confidence = "low"
 
-            if selected_ids and allow_global_expansion:
+            if explicit_scope and not effective_strict_scope:
+                retrieval_mode = "selected_then_user_library"
+                used_docs = all_docs
+            elif selected_ids and allow_global_expansion and strict_scope is None:
                 need_expand = not selected_docs or selected_docs[0]["relevance"] < 0.55
                 if need_expand and all_docs:
                     retrieval_mode = "selected_then_global"
                     used_docs = all_docs
 
             confidence = response.confidence if used_docs else "low"
+            recommended_next_action = self._recommended_next_action(
+                used_docs, confidence, is_stats_query=self._is_stats_query(query)
+            )
 
             if not used_docs:
                 return {
@@ -564,8 +698,10 @@ class ToolExecutor:
                         "query_used": getattr(response, "query_used", query),
                         "query_effective": getattr(response, "query_effective", query),
                         "retrieval_mode": retrieval_mode,
+                        "scope": retrieval_scope,
                         "relevance_to_selected": selected_confidence,
                         "recommended_document_ids": [],
+                        "recommended_next_action": "list_folder_contents" if folder_id else "ask_user",
                         "fallback_available": True,
                         "fallback_suggested": True,
                         "index_snapshot": search_service.get_index_snapshot(
@@ -589,6 +725,9 @@ class ToolExecutor:
                 }
 
             is_stats_query = self._is_stats_query(query)
+            recommended_next_action = self._recommended_next_action(
+                used_docs, confidence, is_stats_query=is_stats_query
+            )
 
             if is_stats_query and used_docs:
                 next_steps = {
@@ -635,8 +774,10 @@ class ToolExecutor:
                     "query_used": getattr(response, "query_used", query),
                     "query_effective": getattr(response, "query_effective", query),
                     "retrieval_mode": retrieval_mode,
+                    "scope": retrieval_scope,
                     "relevance_to_selected": selected_confidence,
                     "recommended_document_ids": [d["doc_id"] for d in used_docs],
+                    "recommended_next_action": recommended_next_action,
                     "matched_segments": {
                         d["doc_id"]: d.get("matched_segments", [])[:2]
                         for d in used_docs
@@ -668,8 +809,16 @@ class ToolExecutor:
                     "query_used": query,
                     "query_effective": query,
                     "retrieval_mode": "selected_only",
+                    "scope": {
+                        "requested_document_ids": list(selected_ids),
+                        "requested_folder_id": folder_id,
+                        "include_subfolders": include_subfolders,
+                        "strict_scope": bool(effective_strict_scope),
+                        "expanded_to_user_library": False,
+                    },
                     "relevance_to_selected": "none",
                     "recommended_document_ids": [],
+                    "recommended_next_action": "ask_user",
                     "fallback_available": True,
                     "fallback_suggested": True,
                     "index_snapshot": search_service.get_index_snapshot(
@@ -688,6 +837,26 @@ class ToolExecutor:
                     "options": ["先列文档后手动定位", "稍后重试检索"],
                 },
             }
+
+    @staticmethod
+    def _recommended_next_action(
+        documents: List[Dict[str, Any]],
+        confidence: str,
+        is_stats_query: bool = False,
+    ) -> str:
+        if is_stats_query and documents:
+            return "aggregate_tables"
+        if not documents:
+            return "ask_user"
+
+        top_segments = documents[0].get("matched_segments") or []
+        top_segment = top_segments[0] if top_segments else {}
+        if top_segment.get("source_anchor") or top_segment.get("start_index"):
+            if confidence in {"high", "medium"}:
+                return "get_page_content"
+        if confidence in {"high", "medium"}:
+            return "get_document_structure"
+        return "ask_user"
 
     @staticmethod
     def _is_stats_query(query: str) -> bool:
@@ -742,6 +911,57 @@ class ToolExecutor:
                 for doc in docs
             ]
         }
+
+    async def _list_folder_tree(self) -> dict:
+        folder_service = FolderService()
+        folders = await folder_service.get_compact_folder_tree(user_id=self.user_id)
+        return {
+            "status": "success",
+            "data": {
+                "folders": folders,
+                "total_folders": self._count_folder_nodes(folders),
+            },
+            "next_steps": {
+                "action": "call_tool",
+                "suggested_tool": "list_folder_contents",
+                "reason": "Folder tree loaded; inspect a folder before scoped retrieval.",
+                "options": ["Call list_folder_contents with the selected folder_id"],
+            },
+        }
+
+    async def _list_folder_contents(
+        self,
+        folder_id: Optional[str] = None,
+        page: int = 1,
+        page_size: int = 20,
+    ) -> dict:
+        folder_service = FolderService()
+        data = await folder_service.get_compact_folder_contents(
+            folder_id=folder_id,
+            page=page,
+            page_size=page_size,
+            user_id=self.user_id,
+        )
+        return {
+            "status": "success",
+            "data": data,
+            "next_steps": {
+                "action": "call_tool",
+                "suggested_tool": "find_related_documents",
+                "reason": "Folder contents loaded; search within this scope if the question needs evidence.",
+                "options": ["Call find_related_documents with folder_id and strict_scope=true"],
+            },
+        }
+
+    @classmethod
+    def _count_folder_nodes(cls, folders: List[Dict[str, Any]]) -> int:
+        total = 0
+        for folder in folders:
+            total += 1
+            children = folder.get("children") or []
+            if isinstance(children, list):
+                total += cls._count_folder_nodes(children)
+        return total
 
     async def _aggregate_tables(
         self, document_ids: List[str], operation_spec: Dict[str, Any]

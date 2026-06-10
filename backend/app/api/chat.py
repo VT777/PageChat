@@ -33,6 +33,9 @@ async def chat_stream(
                 async for event in chat_service.stream_chat(
                     question=request.question,
                     document_ids=request.document_ids,
+                    folder_id=request.folder_id,
+                    include_subfolders=request.include_subfolders,
+                    strict_scope=request.strict_scope,
                     conversation_id=request.conversation_id,
                     user_id=current_user["id"],
                 ):

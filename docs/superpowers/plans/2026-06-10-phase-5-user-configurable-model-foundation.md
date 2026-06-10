@@ -45,6 +45,21 @@ Default recommendation:
 - Configure route slots: `general_chat`, `document_qa`, `query_expansion`, `indexing`, `vision`.
 - Use provider presets plus editable model IDs.
 
+### Decision Record Required Before Start
+
+Before Task 1 begins, record the approved decisions in this section or in the Phase 5 completion notes. Do not leave these as implementation-time assumptions:
+
+| Decision | Required before |
+| --- | --- |
+| Settings ownership: per-user, admin-global, or both | Any persistence schema or API shape is created |
+| API key storage mode: encrypted, development-only plaintext, or external secret manager | Any provider config write endpoint is implemented |
+| Secret source for encryption or production enforcement | Any production-capable model settings path is enabled |
+| Configurable route slots for v1 | `ModelGateway` route mapping is changed |
+| Custom OpenAI-compatible provider support | Provider preset API and frontend shape are finalized |
+| Model list behavior: live discovery, curated presets, or manual IDs | Provider validation and settings UI are finalized |
+
+If a decision is intentionally deferred, the implementation must fail closed in production and the completion gate must record the deferral explicitly.
+
 ## Security Gate
 
 Do not implement Tasks 1-4 for production use until these gate items are decided and recorded in this plan or a phase report:

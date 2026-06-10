@@ -143,6 +143,9 @@ class ChatService:
         question: str,
         conversation_id: Optional[str] = None,
         document_ids: Optional[List[str]] = None,
+        folder_id: Optional[str] = None,
+        include_subfolders: bool = False,
+        strict_scope: Optional[bool] = None,
         user_id: str = None,
     ) -> AsyncGenerator[str, None]:
         """
@@ -224,6 +227,9 @@ class ChatService:
             conversation_id=conversation_id,
             document_ids=document_ids,
             preferred_document_ids=preferred_document_ids,
+            folder_id=folder_id,
+            include_subfolders=include_subfolders,
+            strict_scope=strict_scope,
             user_id=user_id,
             history_messages=history,
         ):

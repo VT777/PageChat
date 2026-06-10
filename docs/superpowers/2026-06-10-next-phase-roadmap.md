@@ -10,7 +10,17 @@ The Phase 1 report recommended model configuration as the next candidate phase. 
 
 ## Current Baseline
 
-Phase 2 is the current foundation baseline.
+Phase 3 is the current foundation baseline.
+
+Verified baseline from the Phase 3 report:
+
+- Phase 3 focused backend suite: `19 passed`
+- Full backend suite: `308 passed, 8 skipped`
+- Tree quality reports are persisted as additive PDF index metadata.
+- Document responses can expose optional `quality_report` metadata.
+- Retrieval regression fixtures cover index quality and source anchors.
+- The agent prompt has an explicit tree-first retrieval policy with visible fallback expectations.
+- Pushed commit: `e8ce754 feat: add phase 2 and 3 retrieval foundations`
 
 Verified baseline from the Phase 2 report:
 
@@ -97,14 +107,27 @@ Phase 5 can begin after Phase 2 if team capacity allows, but it should not modif
 
 ## Immediate Recommendation
 
-Start with Phase 3.
+Start with Phase 4.
 
 Why:
 
-- Phase 2 already stabilized the source-anchor and current multi-format evidence foundation.
-- The next unlock is making tree retrieval quality measurable through quality reports, regression fixtures, fallback thresholds, and tree-first policy tests.
-- Phase 4 folder-aware retrieval and Phase 6 evidence UI should depend on explicit quality signals instead of ad hoc retrieval behavior.
-- Later adapter migration can preserve the Phase 2 anchor contract while Phase 3 protects retrieval quality from regressions.
+- Phase 3 has already made tree retrieval quality measurable through quality reports, regression fixtures, fallback thresholds, and tree-first policy tests.
+- The next unlock is making retrieval scope explicit across folders, selected document sets, and current-user library search.
+- Phase 4 should use Phase 3 quality signals when deciding whether to trust document structure or disclose fallback evidence.
+- Phase 6 evidence UI can start with Phase 2/3 fields, but chat scope UI should wait for Phase 4 backend behavior.
+- Phase 5 can proceed in parallel only after the model-settings ownership and secret-storage decisions are recorded.
+
+Recommended immediate execution order:
+
+1. Phase 4 Task 1: folder-aware search filtering.
+2. Phase 4 Task 2: folder navigation tools.
+3. Phase 4 Task 3: scope-aware `find_related_documents`.
+4. Phase 4 Task 4: compact tree structure output.
+5. Phase 4 Task 5: lightweight retrieval planner.
+
+Parallel candidate:
+
+- Phase 5 may begin only after its security gate decisions are resolved. It should not change retrieval cache semantics unless user, scope, and model-route cache contracts stay explicit.
 
 ## Cross-Phase Rules
 

@@ -34,6 +34,7 @@ D. 综合分析（"总结/评估"）
    → get_document_structure → 若摘要已足够则不调 get_page_content
 
 ## tree-first retrieval policy
+- When the user mentions a folder, category, library area, or current scope, use list_folder_tree or list_folder_contents before scoped document search.
 - When a document is selected, use get_document_structure before get_page_content.
 - When no document is selected, use find_related_documents only to identify candidate documents, then inspect structure.
 - Always fetch source content before final answer when factual claims need citations.

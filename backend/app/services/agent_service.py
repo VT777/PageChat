@@ -17,6 +17,7 @@ agent_logger = logging.getLogger("agent")
 from app.services.pageindex_service import PageIndexService
 from app.services.document_service import DocumentService
 from app.services.tool_executor import ToolExecutor, AGENT_TOOLS
+from app.services.retrieval_planner import RetrievalPlanner
 from app.core.llm import chat_by_scenario, async_chat_completion
 from app.models.retrieval import RetrievalScope
 from app.prompts import build_agent_system_prompt, QA_SYSTEM_PROMPT
@@ -91,13 +92,29 @@ class AgentService:
         return f"event: {event}\ndata: {_json.dumps(data, ensure_ascii=False)}\n\n"
 
     @staticmethod
-    def _scope_cache_key(user_id: str, document_ids: Optional[List[str]]) -> str:
+    def _scope_cache_key(
+        user_id: str,
+        document_ids: Optional[List[str]],
+        folder_id: Optional[str] = None,
+        include_subfolders: bool = False,
+        strict_scope: Optional[bool] = None,
+    ) -> str:
         allowed_doc_ids = (
             tuple(document_ids) if document_ids is not None else None
         )
-        return RetrievalScope(
-            user_id=user_id, allowed_doc_ids=allowed_doc_ids
-        ).cache_key
+        base = json.loads(
+            RetrievalScope(
+                user_id=user_id, allowed_doc_ids=allowed_doc_ids
+            ).cache_key
+        )
+        base.update(
+            {
+                "folder_id": folder_id,
+                "include_subfolders": bool(include_subfolders),
+                "strict_scope": strict_scope,
+            }
+        )
+        return json.dumps(base, ensure_ascii=False, sort_keys=True)
 
     @staticmethod
     def _build_tool_cache_key(
@@ -105,6 +122,9 @@ class AgentService:
         tool_args: Dict[str, Any],
         user_id: str,
         document_ids: Optional[List[str]],
+        folder_id: Optional[str] = None,
+        include_subfolders: bool = False,
+        strict_scope: Optional[bool] = None,
     ) -> str:
         if tool_name == "get_page_content":
             norm_args = {
@@ -112,7 +132,13 @@ class AgentService:
             }
         else:
             norm_args = dict(tool_args)
-        scope_key = AgentService._scope_cache_key(user_id, document_ids)
+        scope_key = AgentService._scope_cache_key(
+            user_id,
+            document_ids,
+            folder_id=folder_id,
+            include_subfolders=include_subfolders,
+            strict_scope=strict_scope,
+        )
         return (
             f"{scope_key}:{tool_name}:"
             f"{json.dumps(norm_args, ensure_ascii=False, sort_keys=True)}"
@@ -120,9 +146,20 @@ class AgentService:
 
     @staticmethod
     def _conversation_state_key(
-        conversation_id: str, user_id: str, document_ids: Optional[List[str]]
+        conversation_id: str,
+        user_id: str,
+        document_ids: Optional[List[str]],
+        folder_id: Optional[str] = None,
+        include_subfolders: bool = False,
+        strict_scope: Optional[bool] = None,
     ) -> str:
-        scope_key = AgentService._scope_cache_key(user_id, document_ids)
+        scope_key = AgentService._scope_cache_key(
+            user_id,
+            document_ids,
+            folder_id=folder_id,
+            include_subfolders=include_subfolders,
+            strict_scope=strict_scope,
+        )
         return f"{conversation_id}:{scope_key}"
 
     async def run_agent_stream(
@@ -131,6 +168,9 @@ class AgentService:
         conversation_id: Optional[str] = None,
         document_ids: Optional[List[str]] = None,
         preferred_document_ids: Optional[List[str]] = None,
+        folder_id: Optional[str] = None,
+        include_subfolders: bool = False,
+        strict_scope: Optional[bool] = None,
         user_id: str = None,
         max_steps: int = 8,
         history_messages: Optional[List[Dict[str, Any]]] = None,
@@ -152,9 +192,24 @@ class AgentService:
         docs = await self.document_service.get_indexed_documents(user_id=user_id)
         doc_count = len(document_ids) if document_ids is not None else len(docs)
         conversation_state_key = (
-            self._conversation_state_key(conversation_id, user_id, document_ids)
+            self._conversation_state_key(
+                conversation_id,
+                user_id,
+                document_ids,
+                folder_id=folder_id,
+                include_subfolders=include_subfolders,
+                strict_scope=strict_scope,
+            )
             if conversation_id
             else None
+        )
+
+        has_explicit_scope = bool(document_ids or folder_id)
+        effective_strict_scope = strict_scope
+        if effective_strict_scope is None:
+            effective_strict_scope = has_explicit_scope
+        executor_allowed_doc_ids = (
+            document_ids if document_ids is not None and effective_strict_scope else None
         )
 
         # 将当前请求允许访问的文档范围注入工具执行器（防止越权）
@@ -162,14 +217,14 @@ class AgentService:
             self.pageindex_service,
             self.document_service,
             user_id=user_id,
-            allowed_doc_ids=document_ids,
+            allowed_doc_ids=executor_allowed_doc_ids,
         )
 
         # 检测用户语言，注入 prompt
         user_lang = detect_language(question)
 
-        # 如果没有文档或未指定文档ID，直接走简单聊天模式（不调用工具）
-        if doc_count == 0 or not document_ids:
+        # 如果没有文档库且没有显式检索范围，直接走简单聊天模式（不调用工具）
+        if doc_count == 0 and not has_explicit_scope:
             print(
                 f"[Agent] No documents or no document_ids specified, using simple chat mode"
             )
@@ -223,6 +278,18 @@ class AgentService:
         # 工具调用历史（用于传递给最终答案生成）
         tool_results_for_answer = []
         assistant_content = ""
+
+        initial_evidence = await self._execute_initial_retrieval_plan(
+            question=question,
+            tool_executor=tool_executor,
+            preferred_document_ids=preferred_document_ids,
+            folder_id=folder_id,
+            include_subfolders=include_subfolders,
+            strict_scope=strict_scope,
+        )
+        for evidence in initial_evidence:
+            tool_results_for_answer.append(evidence)
+            messages.append(self._planner_evidence_message(evidence))
 
         # Agent 循环
         for step_num in range(max_steps):
@@ -329,7 +396,13 @@ class AgentService:
                     tool_args = {"query": fallback_query}
 
                 tool_args = self._inject_default_doc_id(
-                    tool_name, tool_args, document_ids, preferred_document_ids
+                    tool_name,
+                    tool_args,
+                    document_ids,
+                    preferred_document_ids,
+                    folder_id=folder_id,
+                    include_subfolders=include_subfolders,
+                    strict_scope=strict_scope,
                 )
 
                 # 发送工具调用事件
@@ -359,6 +432,9 @@ class AgentService:
                         tool_args,
                         user_id=user_id,
                         document_ids=document_ids,
+                        folder_id=folder_id,
+                        include_subfolders=include_subfolders,
+                        strict_scope=strict_scope,
                     )
 
                     conv_cache = _CONVERSATION_CACHES.get(
@@ -532,6 +608,53 @@ class AgentService:
         return json.dumps(result, ensure_ascii=False)
 
     @staticmethod
+    async def _execute_initial_retrieval_plan(
+        question: str,
+        tool_executor: ToolExecutor,
+        preferred_document_ids: Optional[List[str]],
+        folder_id: Optional[str],
+        include_subfolders: bool,
+        strict_scope: Optional[bool],
+    ) -> List[Dict[str, Any]]:
+        planner = RetrievalPlanner()
+        plan = planner.plan(
+            question=question,
+            document_ids=preferred_document_ids,
+            folder_id=folder_id,
+            include_subfolders=include_subfolders,
+            strict_scope=strict_scope,
+        )
+
+        evidence: List[Dict[str, Any]] = []
+        for step in plan.steps[:1]:
+            arguments = {
+                key: value
+                for key, value in step.arguments.items()
+                if value is not None
+            }
+            result = await tool_executor.execute(step.tool_name, arguments)
+            evidence.append(
+                {
+                    "tool_name": step.tool_name,
+                    "arguments": arguments,
+                    "result": result,
+                    "retrieval_plan_route": plan.route.value,
+                }
+            )
+        return evidence
+
+    @staticmethod
+    def _planner_evidence_message(evidence: Dict[str, Any]) -> Dict[str, str]:
+        cleaned = AgentService._sanitize_tool_result_for_history(evidence)
+        return {
+            "role": "assistant",
+            "content": (
+                "Initial retrieval evidence:\n"
+                f"{json.dumps(cleaned, ensure_ascii=False)}"
+            ),
+        }
+
+    @staticmethod
     def _sanitize_tool_result_for_history(result: Any) -> Any:
         """移除工具结果中的大体积 base64 字段，避免上下文膨胀。"""
         if isinstance(result, dict):
@@ -658,6 +781,9 @@ class AgentService:
         tool_args: Dict[str, Any],
         document_ids: Optional[List[str]],
         preferred_document_ids: Optional[List[str]],
+        folder_id: Optional[str] = None,
+        include_subfolders: bool = False,
+        strict_scope: Optional[bool] = None,
     ) -> Dict[str, Any]:
         patched = dict(tool_args)
 
@@ -672,6 +798,14 @@ class AgentService:
         if tool_name == "find_related_documents":
             if preferred_document_ids and not patched.get("user_selected_document_ids"):
                 patched["user_selected_document_ids"] = preferred_document_ids
+            if preferred_document_ids and not patched.get("document_ids"):
+                patched["document_ids"] = preferred_document_ids
+            if folder_id and not patched.get("folder_id"):
+                patched["folder_id"] = folder_id
+            if include_subfolders and "include_subfolders" not in patched:
+                patched["include_subfolders"] = include_subfolders
+            if strict_scope is not None and "strict_scope" not in patched:
+                patched["strict_scope"] = strict_scope
             if "allow_global_expansion" not in patched:
                 patched["allow_global_expansion"] = True
             return patched
