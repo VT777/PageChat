@@ -494,6 +494,7 @@ class ToolExecutor:
                 top_k=5,
                 recall_k=min(20, len(search_service.doc_corpus)),
                 high_confidence_threshold=0.7,
+                user_id=self.user_id,
                 allowed_doc_ids=list(self.allowed_doc_ids)
                 if self.allowed_doc_ids is not None
                 else None,
@@ -552,9 +553,12 @@ class ToolExecutor:
                         "fallback_available": True,
                         "fallback_suggested": True,
                         "index_snapshot": search_service.get_index_snapshot(
-                            list(self.allowed_doc_ids)
-                            if self.allowed_doc_ids is not None
-                            else None
+                            user_id=self.user_id,
+                            allowed_doc_ids=(
+                                list(self.allowed_doc_ids)
+                                if self.allowed_doc_ids is not None
+                                else None
+                            ),
                         ),
                     },
                     "next_steps": {
@@ -624,9 +628,12 @@ class ToolExecutor:
                     "fallback_available": True,
                     "fallback_suggested": confidence == "low",
                     "index_snapshot": search_service.get_index_snapshot(
-                        list(self.allowed_doc_ids)
-                        if self.allowed_doc_ids is not None
-                        else None
+                        user_id=self.user_id,
+                        allowed_doc_ids=(
+                            list(self.allowed_doc_ids)
+                            if self.allowed_doc_ids is not None
+                            else None
+                        ),
                     ),
                 },
                 "related_documents": used_docs,
@@ -650,9 +657,12 @@ class ToolExecutor:
                     "fallback_available": True,
                     "fallback_suggested": True,
                     "index_snapshot": search_service.get_index_snapshot(
-                        list(self.allowed_doc_ids)
-                        if self.allowed_doc_ids is not None
-                        else None
+                        user_id=self.user_id,
+                        allowed_doc_ids=(
+                            list(self.allowed_doc_ids)
+                            if self.allowed_doc_ids is not None
+                            else None
+                        ),
                     ),
                 },
                 "next_steps": {

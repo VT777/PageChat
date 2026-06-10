@@ -97,7 +97,7 @@ class DocumentSearchService:
         self.doc_metadata = {}  # doc_id -> {name, description}
         self.rerank_model = None
         self._initialized = False
-        self._query_cache = {}  # 查询扩展缓存 {query: (expanded_query, timestamp)}
+        self._query_cache = {}  # 查询扩展缓存 {(user_id, query): (expanded_query, timestamp)}
         self._cache_ttl = 300  # 缓存5分钟
         self._rebuild_lock: Optional[asyncio.Lock] = None
         self.last_rebuild_at: Optional[str] = None
@@ -171,7 +171,7 @@ class DocumentSearchService:
         if needs_rebuild:
             await self.rebuild_index()
 
-    async def _expand_query(self, query: str) -> str:
+    async def _expand_query(self, query: str, user_id: str) -> str:
         """使用轻量级LLM自动扩展查询（带缓存）
 
         Args:
@@ -182,9 +182,11 @@ class DocumentSearchService:
         """
         import time
 
+        cache_key = (user_id, query)
+
         # 检查缓存
-        if query in self._query_cache:
-            expanded, timestamp = self._query_cache[query]
+        if cache_key in self._query_cache:
+            expanded, timestamp = self._query_cache[cache_key]
             if time.time() - timestamp < self._cache_ttl:
                 print(
                     f"[SearchService] Query cache hit: '{query}' -> '{expanded[:50]}...'"
@@ -218,7 +220,7 @@ class DocumentSearchService:
             )
 
             # 缓存结果
-            self._query_cache[query] = (expanded, time.time())
+            self._query_cache[cache_key] = (expanded, time.time())
 
             return expanded
 
@@ -246,7 +248,11 @@ class DocumentSearchService:
         try:
             async with aiosqlite.connect(str(db_path)) as db:
                 cursor = await db.execute(
-                    "SELECT id, original_name, description, updated_at FROM documents WHERE status = 'completed'"
+                    """
+                    SELECT id, original_name, description, updated_at, user_id, folder_id, folder_path
+                    FROM documents
+                    WHERE status = 'completed'
+                    """
                 )
                 rows = await cursor.fetchall()
 
@@ -258,6 +264,9 @@ class DocumentSearchService:
                         "name": row[1],
                         "description": row[2],
                         "updated_at": row[3],
+                        "user_id": row[4],
+                        "folder_id": row[5],
+                        "folder_path": row[6],
                     }
                 )
 
@@ -280,8 +289,17 @@ class DocumentSearchService:
                 doc_id = doc["id"]
                 doc_name = doc["name"]
                 doc_desc = doc["description"]
+                doc_user_id = doc.get("user_id")
+                doc_folder_id = doc.get("folder_id")
+                doc_folder_path = doc.get("folder_path")
                 desc = doc_desc or doc_name
-                metadata[doc_id] = {"name": doc_name, "description": desc}
+                metadata[doc_id] = {
+                    "name": doc_name,
+                    "description": desc,
+                    "user_id": doc_user_id,
+                    "folder_id": doc_folder_id,
+                    "folder_path": doc_folder_path,
+                }
 
                 index_data = await index_service.load_index(doc_id)
                 nodes = []
@@ -305,6 +323,9 @@ class DocumentSearchService:
                             {
                                 "doc_id": doc_id,
                                 "doc_name": doc_name,
+                                "user_id": doc_user_id,
+                                "folder_id": doc_folder_id,
+                                "folder_path": doc_folder_path,
                                 "node_id": node.get("node_id"),
                                 "title": title,
                                 "node_type": node.get("node_type"),
@@ -325,6 +346,9 @@ class DocumentSearchService:
                             {
                                 "doc_id": doc_id,
                                 "doc_name": doc_name,
+                                "user_id": doc_user_id,
+                                "folder_id": doc_folder_id,
+                                "folder_path": doc_folder_path,
                                 "node_id": None,
                                 "title": "文档摘要",
                                 "start_index": None,
@@ -363,6 +387,7 @@ class DocumentSearchService:
         recall_k: int = 20,
         high_confidence_threshold: float = 0.7,
         auto_expand: bool = True,  # 是否自动扩展查询
+        user_id: str = None,
         allowed_doc_ids: Optional[List[str]] = None,
         preferred_doc_ids: Optional[List[str]] = None,
     ) -> SearchResponse:
@@ -380,6 +405,9 @@ class DocumentSearchService:
         Returns:
             SearchResponse: 统一格式的搜索结果
         """
+        if not user_id:
+            raise ValueError("user_id is required for document search")
+
         if not self._initialized:
             await self.initialize()
 
@@ -397,7 +425,9 @@ class DocumentSearchService:
             )
 
         try:
-            allowed_set = set(allowed_doc_ids or [])
+            allowed_set = (
+                set(allowed_doc_ids) if allowed_doc_ids is not None else None
+            )
 
             # ===== Stage 0: 查询扩展（自动）=====
             if expanded_query:
@@ -408,7 +438,7 @@ class DocumentSearchService:
                 )
             elif auto_expand and self._should_expand_query(query):
                 # 自动扩展查询
-                search_query = await self._expand_query(query)
+                search_query = await self._expand_query(query, user_id=user_id)
             else:
                 # 使用原查询
                 search_query = query
@@ -416,11 +446,7 @@ class DocumentSearchService:
             # ===== Stage 1: BM25召回 =====
             effective_query = search_query
             query_tokens = jieba.lcut(effective_query.lower())
-            retrieve_k = (
-                len(self.doc_corpus)
-                if allowed_set
-                else min(recall_k, len(self.doc_corpus))
-            )
+            retrieve_k = len(self.doc_corpus)
             bm25_results = self.bm25_index.retrieve([query_tokens], k=retrieve_k)
 
             raw_indices = np.asarray(bm25_results[0])
@@ -438,8 +464,13 @@ class DocumentSearchService:
                 except Exception:
                     continue
 
-            # 先按允许范围过滤，再进行后续重排，避免大量无关候选拖慢速度
-            if allowed_set:
+            # 先按用户和允许范围过滤，再进行后续重排，避免跨用户候选进入结果
+            candidate_pairs = [
+                (idx, score)
+                for idx, score in candidate_pairs
+                if self.segment_metadata[idx].get("user_id") == user_id
+            ]
+            if allowed_set is not None:
                 candidate_pairs = [
                     (idx, score)
                     for idx, score in candidate_pairs
@@ -510,7 +541,9 @@ class DocumentSearchService:
                 doc_id = seg_meta.get("doc_id")
                 if not doc_id:
                     continue
-                if allowed_set and doc_id not in allowed_set:
+                if seg_meta.get("user_id") != user_id:
+                    continue
+                if allowed_set is not None and doc_id not in allowed_set:
                     continue
                 score = float(final_scores[i])
                 current = doc_grouped.get(doc_id)
@@ -621,7 +654,7 @@ class DocumentSearchService:
         return True
 
     def get_index_snapshot(
-        self, allowed_doc_ids: Optional[List[str]] = None
+        self, user_id: str = None, allowed_doc_ids: Optional[List[str]] = None
     ) -> Dict[str, Any]:
         snapshot = {
             "doc_count": self.last_index_doc_count,
@@ -629,12 +662,40 @@ class DocumentSearchService:
             "last_rebuild_at": self.last_rebuild_at,
             "last_index_max_updated": self.last_index_max_updated,
         }
-        if allowed_doc_ids is not None:
+        if user_id:
+            allowed_set = (
+                set(allowed_doc_ids) if allowed_doc_ids is not None else None
+            )
+            scope_doc_ids = []
+            for doc_id, meta in self.doc_metadata.items():
+                if meta.get("user_id") != user_id:
+                    continue
+                if allowed_set is not None and doc_id not in allowed_set:
+                    continue
+                scope_doc_ids.append(doc_id)
+            snapshot["scope_doc_count"] = len(scope_doc_ids)
+            snapshot["scope_segment_count"] = len(
+                [
+                    meta
+                    for meta in self.segment_metadata
+                    if meta.get("user_id") == user_id
+                    and (allowed_set is None or meta.get("doc_id") in allowed_set)
+                ]
+            )
+            snapshot["scope_ids"] = scope_doc_ids[:10]
+        elif allowed_doc_ids is not None:
             allowed_set = set(allowed_doc_ids)
             scope_doc_ids = [
                 doc_id for doc_id in self.doc_metadata.keys() if doc_id in allowed_set
             ]
             snapshot["scope_doc_count"] = len(scope_doc_ids)
+            snapshot["scope_segment_count"] = len(
+                [
+                    meta
+                    for meta in self.segment_metadata
+                    if meta.get("doc_id") in allowed_set
+                ]
+            )
             snapshot["scope_ids"] = scope_doc_ids[:10]
         return snapshot
 
