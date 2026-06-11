@@ -1,12 +1,17 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { X, FileText } from 'lucide-vue-next'
+import type { SourceAnchor } from '@/types/preview'
+import { formatEvidenceLabel } from '@/utils/evidence'
 
 const props = defineProps<{
   open: boolean
   anchorLabel: string
   anchorLocator: string
   highlightedSnippet: string
+  documentName?: string
+  displayLabel?: string | null
+  sourceAnchor?: SourceAnchor | null
 }>()
 
 const emit = defineEmits<{
@@ -14,7 +19,12 @@ const emit = defineEmits<{
 }>()
 
 const anchorLabel = computed(() => {
-  return props.anchorLabel || ''
+  return formatEvidenceLabel({
+    documentName: props.documentName,
+    displayLabel: props.displayLabel || props.anchorLabel,
+    sourceAnchor: props.sourceAnchor,
+    fallbackLabel: props.anchorLabel,
+  })
 })
 
 const anchorLocator = computed(() => props.anchorLocator || '')

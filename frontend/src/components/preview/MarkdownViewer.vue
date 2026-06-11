@@ -104,6 +104,7 @@ function scrollToLine(lineNumber: number) {
 function handleHeadingClick(heading: { id: string; lineNumber: number; blockId?: string }) {
   const anchor: SourceAnchor = {
     format: 'markdown',
+    unit_type: 'line',
     start_line: heading.lineNumber,
     end_line: heading.lineNumber
   }

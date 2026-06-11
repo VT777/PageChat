@@ -55,6 +55,7 @@ function handleRowClick(rowNumber: number) {
   activeRow.value = rowNumber
   const anchor: SourceAnchor = {
     format: 'csv',
+    unit_type: 'row_range',
     start_row: rowNumber,
     end_row: rowNumber
   }

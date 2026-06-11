@@ -2,6 +2,7 @@ import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
 import { documentApi } from '@/api'
 import type { ProcessingStep } from '@/api'
+import type { QualityReport } from '@/types/retrieval'
 
 export interface Document {
   id: string
@@ -21,6 +22,7 @@ export interface Document {
   parse_reasons?: string[]
   parse_completion?: 'completed' | 'failed' | 'processing' | null
   parse_error_code?: string | null
+  quality_report?: QualityReport | null
   processing_duration?: number
   created_at: string
   updated_at: string

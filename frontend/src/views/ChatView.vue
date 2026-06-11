@@ -3,8 +3,9 @@ import { ref, computed, onMounted, onBeforeUnmount, nextTick, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { useChatStore } from '@/stores/chat'
 import { useDocumentStore } from '@/stores/document'
+import { useFolderStore } from '@/stores/folder'
 import { documentApi, chatApi } from '@/api'
-import type { Message } from '@/stores/chat'
+import type { EvidenceItem, Message } from '@/stores/chat'
 import { 
   Send, 
   FileText,
@@ -33,9 +34,13 @@ import { marked } from 'marked'
 import PdfReferenceViewer from '@/components/PdfReferenceViewer.vue'
 import UniversalPreview from '@/components/preview/UniversalPreview.vue'
 import type { SourceAnchor } from '@/types/preview'
+import type { ChatScopeRequest } from '@/types/retrieval'
+import { formatEvidenceLabel } from '@/utils/evidence'
+import { describeScopeTrace } from '@/utils/retrievalScope'
 
 const chatStore = useChatStore()
 const documentStore = useDocumentStore()
+const folderStore = useFolderStore()
 const router = useRouter()
 
 // UI State
@@ -60,6 +65,7 @@ const previewAnchor = ref<SourceAnchor | null>(null)
 // 右侧引用预览窗口状态
 const showRightPdfViewer = ref(false)
 const showRightUniversalPreview = ref(false)
+const scopeMode = ref<'all' | 'folder' | 'folder_subtree' | 'selected'>('all')
 
 let resumeFromBackgroundNeeded = false
 let scrollListenerAttached = false
@@ -94,7 +100,7 @@ async function handleSend() {
   userPinnedToBottom.value = true
   
   // 先触发发送（会同步插入用户消息与助手占位）
-  const sending = chatStore.sendMessage(question)
+  const sending = chatStore.sendMessage(question, buildChatScope())
 
   // 等待渲染后滚动，确保用户问题可见
   await nextTick()
@@ -115,6 +121,56 @@ function handleKeydown(e: KeyboardEvent) {
     handleSend()
   }
 }
+
+function buildChatScope(): ChatScopeRequest | undefined {
+  if (scopeMode.value === 'selected' && documentStore.selectedIds.size > 0) {
+    return { document_ids: Array.from(documentStore.selectedIds), strict_scope: true }
+  }
+  if ((scopeMode.value === 'folder' || scopeMode.value === 'folder_subtree') && folderStore.currentFolderId) {
+    return {
+      folder_id: folderStore.currentFolderId,
+      include_subfolders: scopeMode.value === 'folder_subtree',
+      strict_scope: true,
+    }
+  }
+  return undefined
+}
+
+const currentScopeLabel = computed(() => {
+  if (scopeMode.value === 'selected') {
+    const count = documentStore.selectedIds.size
+    return count > 0 ? `Selected documents (${count})` : 'Selected documents'
+  }
+  if (scopeMode.value === 'folder' && folderStore.currentFolder) {
+    return `Folder: ${folderStore.currentFolder.name}`
+  }
+  if (scopeMode.value === 'folder_subtree' && folderStore.currentFolder) {
+    return `Folder + subfolders: ${folderStore.currentFolder.name}`
+  }
+  return 'All documents'
+})
+
+function fallbackDisclosure(message: Message): string {
+  const labels = new Set((message.retrievalFallbacks || []).map((item) =>
+    item === 'keyword_fallback' ? 'keyword fallback' : item === 'visual_summary' ? 'visual summary' : item
+  ))
+  return Array.from(labels).join(', ')
+}
+
+function evidenceLabel(item: EvidenceItem): string {
+  return formatEvidenceLabel({
+    documentName: item.documentName,
+    displayLabel: item.displayLabel,
+    sourceAnchor: item.sourceAnchor,
+  })
+}
+
+const previewAnchorLabel = computed(() =>
+  formatEvidenceLabel({
+    documentName: previewDocName.value,
+    sourceAnchor: previewAnchor.value,
+  })
+)
 
 // 切换思考过程的折叠状态
 function toggleThinking(msgId: string) {
@@ -272,6 +328,7 @@ async function handleCitationClick(
     showRightUniversalPreview.value = true
   } else if (fileType === '.pptx' || fileType === '.ppt') {
     // PPT 使用幻灯片号
+    anchor.unit_type = 'slide'
     anchor.slide = posValue
     showRightPdfViewer.value = false
     showRightUniversalPreview.value = true
@@ -1070,6 +1127,25 @@ async function resumeConversationIfNeeded() {
                     </template>
                     <template v-else>
                       <div class="markdown-body" v-html="renderMessageContent(message)"></div>
+                      <div v-if="!message.isLoading" class="evidence-meta">
+                        <span>{{ describeScopeTrace(message.retrievalScope) }}</span>
+                        <span v-if="message.retrievalScope?.expanded_to_user_library" class="evidence-warning">
+                          Scope expanded
+                        </span>
+                        <span v-if="fallbackDisclosure(message)" class="evidence-warning">
+                          Used {{ fallbackDisclosure(message) }}
+                        </span>
+                      </div>
+                      <div v-if="message.evidenceItems?.length" class="evidence-chip-row">
+                        <span
+                          v-for="item in message.evidenceItems"
+                          :key="evidenceLabel(item)"
+                          class="evidence-chip"
+                          :class="{ fallback: item.retrievalSource === 'keyword_fallback' || item.retrievalSource === 'visual_summary' }"
+                        >
+                          {{ evidenceLabel(item) }}
+                        </span>
+                      </div>
                     </template>
                   </div>
 
@@ -1184,6 +1260,15 @@ async function resumeConversationIfNeeded() {
                 <Plus class="w-4 h-4" />
                 <span>添加文档</span>
               </button>
+              <label class="scope-select">
+                <span>{{ currentScopeLabel }}</span>
+                <select v-model="scopeMode">
+                  <option value="all">All documents</option>
+                  <option value="folder" :disabled="!folderStore.currentFolderId">Current folder</option>
+                  <option value="folder_subtree" :disabled="!folderStore.currentFolderId">Folder + subfolders</option>
+                  <option value="selected" :disabled="documentStore.selectedIds.size === 0">Selected documents</option>
+                </select>
+              </label>
             </div>
             
             <div class="toolbar-hint">
@@ -1226,12 +1311,7 @@ async function resumeConversationIfNeeded() {
             <div class="doc-title-group">
               <span class="doc-title">{{ previewDocName || '文档预览' }}</span>
               <span class="doc-subtitle">
-                {{ previewDocId 
-                  ? (showRightPdfViewer 
-                      ? `第 ${previewAnchor?.start_page || 1} 页` 
-                      : (showRightUniversalPreview ? '已加载' : '选择引用以查看详情'))
-                  : '选择引用以查看详情' 
-                }}
+                {{ previewDocId ? previewAnchorLabel : '选择引用以查看详情' }}
               </span>
             </div>
           </div>
@@ -2644,6 +2724,8 @@ async function resumeConversationIfNeeded() {
 .toolbar-left {
   display: flex;
   gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
 }
 
 .toolbar-btn {
@@ -2668,6 +2750,69 @@ async function resumeConversationIfNeeded() {
 .toolbar-hint {
   font-size: 12px;
   color: var(--text-tertiary);
+}
+
+.scope-select {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 280px;
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
+.scope-select span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.scope-select select {
+  max-width: 150px;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm);
+  background: var(--bg-surface);
+  color: var(--text-secondary);
+  font-size: 12px;
+  padding: 4px 6px;
+}
+
+.evidence-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+  font-size: 11px;
+  color: var(--text-tertiary);
+}
+
+.evidence-warning {
+  color: var(--accent-warning);
+}
+
+.evidence-chip-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.evidence-chip {
+  max-width: 240px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm);
+  background: var(--bg-muted);
+  color: var(--text-secondary);
+  font-size: 11px;
+  padding: 3px 7px;
+}
+
+.evidence-chip.fallback {
+  border-color: rgba(245, 158, 11, 0.35);
+  color: var(--accent-warning);
 }
 
 /* Right Sidebar - Citation Preview */

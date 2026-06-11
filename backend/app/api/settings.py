@@ -21,6 +21,12 @@ class ModelProviderConfigIn(BaseModel):
     api_key: str
 
 
+class ModelProviderUpdateIn(BaseModel):
+    provider: str
+    base_url: str
+    api_key: str | None = None
+
+
 class ModelProviderTestIn(BaseModel):
     model: str
 
@@ -99,6 +105,26 @@ async def delete_model_provider(
     if not deleted:
         raise HTTPException(status_code=404, detail="Provider config not found")
     return {"success": True}
+
+
+@router.patch("/model-providers/{provider_id}")
+async def update_model_provider(
+    provider_id: str,
+    payload: ModelProviderUpdateIn,
+    db: aiosqlite.Connection = Depends(get_db),
+    current_user: dict = Depends(require_auth),
+):
+    service = _model_settings_service(db)
+    try:
+        return await service.update_provider_config_fields(
+            user_id=current_user["id"],
+            provider_id=provider_id,
+            provider=payload.provider,
+            base_url=payload.base_url,
+            api_key=payload.api_key,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
 
 
 @router.post("/model-providers/{provider_id}/test")

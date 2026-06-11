@@ -123,6 +123,7 @@ function handleParagraphClick(paraNumber: number) {
   activeTocParagraph.value = paraNumber
   const anchor: SourceAnchor = {
     format: 'docx',
+    unit_type: 'paragraph',
     start_paragraph: paraNumber,
     end_paragraph: paraNumber
   }
@@ -132,6 +133,7 @@ function handleParagraphClick(paraNumber: number) {
 function handleTocClick(paraNumber: number) {
   const anchor: SourceAnchor = {
     format: 'docx',
+    unit_type: 'paragraph',
     start_paragraph: paraNumber,
     end_paragraph: paraNumber,
   }

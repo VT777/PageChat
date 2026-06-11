@@ -2,8 +2,10 @@
 import { ref, computed, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { useUserStore } from '@/stores/user'
-import { User, LogOut, Settings, ChevronRight, Shield, Bell, Palette, MessageSquare } from 'lucide-vue-next'
+import { User, LogOut, Settings, ChevronRight, Shield, Bell, Palette, MessageSquare, SlidersHorizontal } from 'lucide-vue-next'
 import { settingsApi } from '@/api'
+import ModelProviderSettings from '@/components/settings/ModelProviderSettings.vue'
+import ModelRouteSettings from '@/components/settings/ModelRouteSettings.vue'
 
 const router = useRouter()
 const userStore = useUserStore()
@@ -15,6 +17,7 @@ const sections = [
   { id: 'appearance', label: '外观', icon: Palette, description: '自定义界面主题和显示方式' },
   { id: 'notifications', label: '通知', icon: Bell, description: '配置通知偏好和提醒方式' },
   { id: 'chat', label: '聊天设置', icon: MessageSquare, description: '调整对话行为和响应偏好' },
+  { id: 'models', label: 'Models', icon: SlidersHorizontal, description: 'Configure providers and task routes' },
   { id: 'security', label: '安全', icon: Shield, description: '管理密码和安全性选项' }
 ]
 
@@ -26,6 +29,7 @@ const pageIndexMode = ref<PageIndexMode>('smart')
 const modeLoading = ref(false)
 const modeSaving = ref(false)
 const modeMessage = ref('')
+const routeSettingsRef = ref<InstanceType<typeof ModelRouteSettings> | null>(null)
 
 async function loadPageIndexSettings() {
   modeLoading.value = true
@@ -294,6 +298,15 @@ function handleSwitchAccount() {
                   <p v-if="modeLoading" class="text-sm text-muted-foreground mt-3">正在加载设置...</p>
                   <p v-else-if="modeSaving" class="text-sm text-muted-foreground mt-3">正在保存设置...</p>
                   <p v-if="modeMessage" class="text-sm mt-3" :class="modeMessage.includes('失败') ? 'text-destructive' : 'text-emerald-600'">{{ modeMessage }}</p>
+                </div>
+              </div>
+
+              <div v-else-if="activeSection === 'models'" class="space-y-6">
+                <div class="rounded-lg border p-4 bg-muted/30">
+                  <ModelProviderSettings @changed="routeSettingsRef?.load()" />
+                </div>
+                <div class="rounded-lg border p-4 bg-muted/30">
+                  <ModelRouteSettings ref="routeSettingsRef" />
                 </div>
               </div>
 

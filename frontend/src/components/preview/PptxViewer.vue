@@ -51,6 +51,7 @@ function goToSlide(index: number) {
 function handleSlideClick(slideNumber: number) {
   const anchor: SourceAnchor = {
     format: 'pptx',
+    unit_type: 'slide',
     slide: slideNumber
   }
   emit('anchorClick', anchor)

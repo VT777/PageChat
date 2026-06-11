@@ -114,6 +114,7 @@ function handleLineClick(lineNumber: number) {
   activeTocLine.value = lineNumber
   const anchor: SourceAnchor = {
     format: 'txt',
+    unit_type: 'line',
     start_line: lineNumber,
     end_line: lineNumber
   }
@@ -123,6 +124,7 @@ function handleLineClick(lineNumber: number) {
 function handleTocClick(lineNumber: number) {
   const anchor: SourceAnchor = {
     format: 'txt',
+    unit_type: 'line',
     start_line: lineNumber,
     end_line: lineNumber,
   }

@@ -218,7 +218,67 @@ class ModelSettingsService:
         row = await cursor.fetchone()
         return dict(row) if row else None
 
+    async def update_provider_config_fields(
+        self,
+        *,
+        user_id: str,
+        provider_id: str,
+        provider: str,
+        base_url: str,
+        api_key: str | None = None,
+    ) -> dict[str, Any]:
+        if not user_id:
+            raise ValueError("user_id is required")
+        if not provider_id:
+            raise ValueError("provider_id is required")
+        if not provider:
+            raise ValueError("provider is required")
+        if not base_url:
+            raise ValueError("base_url is required")
+
+        if api_key:
+            api_key_ciphertext = _protect_api_key(api_key)
+            api_key_mask = mask_api_key(api_key)
+            cursor = await self.db.execute(
+                """
+                UPDATE model_provider_configs
+                SET provider = ?, base_url = ?, api_key_ciphertext = ?,
+                    api_key_mask = ?, validation_status = 'untested',
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE user_id = ? AND provider_id = ?
+                """,
+                (
+                    provider,
+                    base_url,
+                    api_key_ciphertext,
+                    api_key_mask,
+                    user_id,
+                    provider_id,
+                ),
+            )
+        else:
+            cursor = await self.db.execute(
+                """
+                UPDATE model_provider_configs
+                SET provider = ?, base_url = ?, validation_status = 'untested',
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE user_id = ? AND provider_id = ?
+                """,
+                (provider, base_url, user_id, provider_id),
+            )
+        await self.db.commit()
+        if cursor.rowcount == 0:
+            raise ValueError("provider config not found")
+        return await self.get_provider_config(user_id, provider_id) or {}
+
     async def delete_provider_config(self, user_id: str, provider_id: str) -> bool:
+        await self.db.execute(
+            """
+            DELETE FROM model_route_mappings
+            WHERE user_id = ? AND provider_id = ?
+            """,
+            (user_id, provider_id),
+        )
         cursor = await self.db.execute(
             "DELETE FROM model_provider_configs WHERE user_id = ? AND provider_id = ?",
             (user_id, provider_id),

@@ -9,6 +9,15 @@ import type {
   ToolResultData,
   DoneData,
 } from '@/types/stream'
+import type { ChatScopeRequest, RetrievalScopeTrace } from '@/types/retrieval'
+import type { SourceAnchor } from '@/types/preview'
+
+export interface EvidenceItem {
+  documentName?: string
+  displayLabel?: string
+  sourceAnchor?: SourceAnchor | null
+  retrievalSource?: string
+}
 
 export interface ToolStep {
   toolName: string
@@ -28,6 +37,9 @@ export interface Message {
   toolSteps: ToolStep[]
   isLoading: boolean
   timestamp?: number
+  retrievalScope?: RetrievalScopeTrace | null
+  retrievalFallbacks?: string[]
+  evidenceItems?: EvidenceItem[]
 }
 
 export interface RollbackState {
@@ -302,6 +314,64 @@ export const useChatStore = defineStore('chat', () => {
     }
   }
 
+  function extractScopeTrace(value: unknown): RetrievalScopeTrace | null {
+    if (!value || typeof value !== 'object') return null
+    const record = value as Record<string, unknown>
+    if (record.scope && typeof record.scope === 'object') {
+      return record.scope as RetrievalScopeTrace
+    }
+    if (record.retrieval_scope && typeof record.retrieval_scope === 'object') {
+      return record.retrieval_scope as RetrievalScopeTrace
+    }
+    if (
+      'folder_id' in record ||
+      'requested_folder_id' in record ||
+      'document_ids' in record ||
+      'requested_document_ids' in record ||
+      'expanded_to_user_library' in record ||
+      'retrieval_mode' in record
+    ) {
+      return record as RetrievalScopeTrace
+    }
+    return null
+  }
+
+  function collectResultMetadata(result: unknown): { scope: RetrievalScopeTrace | null; fallbacks: string[]; evidence: EvidenceItem[] } {
+    const fallbacks = new Set<string>()
+    const evidence: EvidenceItem[] = []
+    let scope: RetrievalScopeTrace | null = extractScopeTrace(result)
+
+    const visit = (value: unknown, depth = 0) => {
+      if (!value || depth > 4) return
+      if (Array.isArray(value)) {
+        value.forEach((item) => visit(item, depth + 1))
+        return
+      }
+      if (typeof value !== 'object') return
+      const record = value as Record<string, unknown>
+      const nestedScope = extractScopeTrace(record)
+      if (!scope && nestedScope) scope = nestedScope
+      const source = record.retrieval_source
+      if (source === 'keyword_fallback' || source === 'visual_summary') {
+        fallbacks.add(String(source))
+      }
+      if (record.display_label || record.source_anchor) {
+        evidence.push({
+          documentName: String(record.document_name || record.name || ''),
+          displayLabel: typeof record.display_label === 'string' ? record.display_label : undefined,
+          sourceAnchor: (record.source_anchor || null) as SourceAnchor | null,
+          retrievalSource: typeof record.retrieval_source === 'string' ? record.retrieval_source : undefined,
+        })
+      }
+      for (const nested of Object.values(record)) {
+        if (typeof nested === 'object') visit(nested, depth + 1)
+      }
+    }
+
+    visit(result)
+    return { scope, fallbacks: Array.from(fallbacks), evidence }
+  }
+
   function syncBackendConversationId(backendConversationId: string) {
     if (!backendConversationId) return
     conversationId.value = backendConversationId
@@ -385,7 +455,14 @@ export const useChatStore = defineStore('chat', () => {
           }
           const newToolSteps = [...last.toolSteps]
           newToolSteps[stepIndex] = updatedStep
-          messages.value[lastIndex] = { ...last, toolSteps: newToolSteps }
+          const metadata = collectResultMetadata(data.result)
+          messages.value[lastIndex] = {
+            ...last,
+            toolSteps: newToolSteps,
+            retrievalScope: metadata.scope || last.retrievalScope || null,
+            retrievalFallbacks: Array.from(new Set([...(last.retrievalFallbacks || []), ...metadata.fallbacks])),
+            evidenceItems: dedupeEvidence([...(last.evidenceItems || []), ...metadata.evidence]),
+          }
         }
         break
       }
@@ -401,7 +478,14 @@ export const useChatStore = defineStore('chat', () => {
         if (doneData.conversation_id) {
           syncBackendConversationId(doneData.conversation_id)
         }
-        messages.value[lastIndex] = { ...last, isLoading: false }
+        const metadata = collectResultMetadata(doneData.tool_results || [])
+        messages.value[lastIndex] = {
+          ...last,
+          isLoading: false,
+          retrievalScope: metadata.scope || last.retrievalScope || null,
+          retrievalFallbacks: Array.from(new Set([...(last.retrievalFallbacks || []), ...metadata.fallbacks])),
+          evidenceItems: dedupeEvidence([...(last.evidenceItems || []), ...metadata.evidence]),
+        }
         
         // 更新对话记录的消息数
         const currentConv = conversations.value.find(c => c.id === currentSessionId.value)
@@ -414,6 +498,19 @@ export const useChatStore = defineStore('chat', () => {
         break
       }
     }
+  }
+
+  function dedupeEvidence(items: EvidenceItem[]): EvidenceItem[] {
+    const seen = new Set<string>()
+    const result: EvidenceItem[] = []
+    for (const item of items) {
+      const key = item.displayLabel || `${item.documentName || ''}:${JSON.stringify(item.sourceAnchor || {})}`
+      if (!key || seen.has(key)) continue
+      seen.add(key)
+      result.push(item)
+      if (result.length >= 8) break
+    }
+    return result
   }
 
   function clearMessages() {
@@ -486,7 +583,7 @@ export const useChatStore = defineStore('chat', () => {
     }
   }
 
-  async function sendMessage(question: string, documentIds?: string[]) {
+  async function sendMessage(question: string, scope?: ChatScopeRequest) {
     if (isLoading.value) return
     
     isLoading.value = true
@@ -496,7 +593,7 @@ export const useChatStore = defineStore('chat', () => {
     try {
       const response = await chatApi.stream({
         question,
-        document_ids: documentIds,
+        ...scope,
         conversation_id: conversationId.value || undefined,
       })
 

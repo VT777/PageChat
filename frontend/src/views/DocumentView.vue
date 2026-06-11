@@ -26,6 +26,7 @@ import {
   CheckSquare2,
 } from 'lucide-vue-next'
 import type { Document } from '@/stores/document'
+import type { QualityReport } from '@/types/retrieval'
 import PdfReferenceViewer from '@/components/PdfReferenceViewer.vue'
 import UniversalPreview from '@/components/preview/UniversalPreview.vue'
 import FolderTree from '@/components/folder/FolderTree.vue'
@@ -79,6 +80,7 @@ interface PreviewData {
   page_count: number
   description?: string
   processing_duration?: number
+  quality_report?: QualityReport | null
   created_at: string
   updated_at: string
   toc: TocItem[]
@@ -349,6 +351,22 @@ function formatDuration(seconds: number): string {
   const hours = Math.floor(mins / 60)
   const remainingMins = mins % 60
   return `${hours}小时${remainingMins}分`
+}
+
+function qualityLabel(report?: QualityReport | null): string {
+  if (!report?.status) return 'Not available'
+  if (report.status === 'completed') return 'Completed'
+  if (report.status === 'needs_review') return 'Needs review'
+  if (String(report.status).startsWith('failed')) return 'Failed'
+  return String(report.status)
+}
+
+function qualityTone(report?: QualityReport | null): string {
+  if (!report?.status) return 'text-muted-foreground bg-muted/40 border-border'
+  if (report.status === 'completed') return 'text-emerald-700 bg-emerald-50 border-emerald-200'
+  if (report.status === 'needs_review') return 'text-amber-700 bg-amber-50 border-amber-200'
+  if (String(report.status).startsWith('failed')) return 'text-red-700 bg-red-50 border-red-200'
+  return 'text-muted-foreground bg-muted/40 border-border'
 }
 </script>
 
@@ -693,6 +711,34 @@ function formatDuration(seconds: number): string {
                       <span class="text-muted-foreground">解析用时</span>
                       <span>{{ formatDuration(previewData.processing_duration) }}</span>
                     </div>
+                  </div>
+                </div>
+
+                <div>
+                  <h4 class="text-xs font-medium text-muted-foreground uppercase tracking-wide mb-2">Index quality</h4>
+                  <div
+                    class="rounded-lg border p-3 text-sm"
+                    :class="qualityTone(previewData.quality_report)"
+                  >
+                    <div class="flex items-center justify-between gap-3">
+                      <span class="font-medium">{{ qualityLabel(previewData.quality_report) }}</span>
+                      <span v-if="previewData.quality_report?.score !== undefined" class="text-xs">
+                        {{ Math.round((previewData.quality_report.score || 0) * 100) }}%
+                      </span>
+                    </div>
+                    <div v-if="previewData.quality_report" class="mt-2 grid grid-cols-2 gap-2 text-xs">
+                      <span v-if="previewData.quality_report.node_count !== undefined">
+                        Nodes {{ previewData.quality_report.node_count }}
+                      </span>
+                      <span v-if="previewData.quality_report.page_range_coverage !== undefined">
+                        Coverage {{ Math.round((previewData.quality_report.page_range_coverage || 0) * 100) }}%
+                      </span>
+                    </div>
+                    <ul v-if="previewData.quality_report?.warnings?.length" class="mt-2 space-y-1 text-xs">
+                      <li v-for="warning in previewData.quality_report.warnings" :key="warning">
+                        {{ warning }}
+                      </li>
+                    </ul>
                   </div>
                 </div>
 
