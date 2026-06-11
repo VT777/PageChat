@@ -37,7 +37,6 @@ class ContentExtractionService:
             ".csv",
             ".tsv",
             ".xlsx",
-            ".xls",
             ".docx",
             ".pptx",
         }
@@ -57,6 +56,10 @@ class ContentExtractionService:
         """
         suffix = (format_hint or file_path.suffix).lower()
 
+        canonical = self._extract_canonical_content(file_path, suffix)
+        if canonical is not None:
+            return canonical
+
         if suffix == ".txt":
             return self._extract_txt_content(file_path)
         elif suffix in [".md", ".markdown"]:
@@ -73,6 +76,41 @@ class ContentExtractionService:
             return self._extract_pptx_content(file_path)
         else:
             raise ValueError(f"Unsupported format: {suffix}")
+
+    def _extract_canonical_content(
+        self, file_path: Path, suffix: str
+    ) -> Optional[Dict[str, Any]]:
+        try:
+            from app.services.format_adapters import (
+                parse_docx,
+                parse_markdown,
+                parse_pptx,
+                parse_table,
+                parse_text,
+            )
+
+            if suffix == ".txt":
+                content = parse_text(file_path)
+            elif suffix in {".md", ".markdown"}:
+                content = parse_markdown(file_path)
+            elif suffix in {".csv", ".tsv", ".xlsx"}:
+                content = parse_table(file_path)
+            elif suffix == ".docx":
+                content = parse_docx(file_path)
+            elif suffix == ".pptx":
+                content = parse_pptx(file_path)
+            else:
+                return None
+            payload: Dict[str, Any] = {
+                "format": content.format,
+                "blocks": [block.to_dict() for block in content.blocks],
+                "metadata": dict(content.metadata),
+            }
+            if "image_count" in content.metadata:
+                payload["images"] = []
+            return payload
+        except Exception:
+            return None
 
     def _extract_txt_content(self, file_path: Path) -> Dict[str, Any]:
         """提取 TXT 内容"""
@@ -488,6 +526,13 @@ class ContentExtractionService:
     def _cell_value(self, cell: ET.Element, shared_strings: List[str]) -> str:
         """获取 XLSX 单元格值"""
         ctype = cell.attrib.get("t")
+        if ctype == "inlineStr":
+            parts = []
+            for child in cell.iter():
+                if self._xml_ns(child.tag) == "t" and child.text:
+                    parts.append(child.text)
+            return "".join(parts).strip()
+
         value_el = None
         for child in cell:
             if self._xml_ns(child.tag) == "v":

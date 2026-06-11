@@ -990,20 +990,35 @@ def _extract_xlsx(file_path: Path) -> Dict[str, Any]:
     return _build_result(nodes, doc_description, file_path.suffix.lower())
 
 
-def generate_multi_format_index(file_path: Path) -> Optional[Dict[str, Any]]:
+def _parse_canonical_content(file_path: Path):
+    from app.services.format_adapters import (
+        document_content_to_index,
+        parse_docx,
+        parse_markdown,
+        parse_pptx,
+        parse_table,
+        parse_text,
+    )
+
     suffix = file_path.suffix.lower()
     if suffix == ".txt":
-        return _extract_txt(file_path)
+        return parse_text(file_path), document_content_to_index
     if suffix in {".md", ".markdown"}:
-        return _extract_markdown(file_path)
-    if suffix == ".csv":
-        return _extract_csv_like(file_path, delimiter=",")
-    if suffix == ".tsv":
-        return _extract_csv_like(file_path, delimiter="\t")
+        return parse_markdown(file_path), document_content_to_index
+    if suffix in {".csv", ".tsv", ".xlsx"}:
+        return parse_table(file_path), document_content_to_index
     if suffix == ".docx":
-        return _extract_docx(file_path)
+        return parse_docx(file_path), document_content_to_index
     if suffix == ".pptx":
-        return _extract_pptx(file_path)
-    if suffix == ".xlsx":
-        return _extract_xlsx(file_path)
+        return parse_pptx(file_path), document_content_to_index
     return None
+
+
+def generate_multi_format_index(file_path: Path) -> Optional[Dict[str, Any]]:
+    parsed = _parse_canonical_content(file_path)
+    if parsed is None:
+        return None
+    content, to_index = parsed
+    result = to_index(content)
+    result["format"] = file_path.suffix.lower()
+    return result

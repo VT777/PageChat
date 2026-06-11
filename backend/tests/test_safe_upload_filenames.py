@@ -81,6 +81,19 @@ def test_validate_file_accepts_normal_unicode_display_name() -> None:
     asyncio.run(run())
 
 
+def test_validate_file_rejects_legacy_office_formats() -> None:
+    async def run() -> None:
+        async with aiosqlite.connect(":memory:") as db:
+            service = DocumentService(db)
+
+            for filename in ("legacy.doc", "legacy.xls", "legacy.ppt"):
+                is_valid, message = service.validate_file(filename, 10)
+                assert not is_valid, filename
+                assert Path(filename).suffix.lower() in message
+
+    asyncio.run(run())
+
+
 def test_save_document_uses_generated_storage_name_and_keeps_display_name(
     monkeypatch,
 ) -> None:

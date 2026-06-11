@@ -40,3 +40,37 @@ def test_groupby_sum_on_csv(tmp_path: Path) -> None:
     assert table[0]["city"] == "beijing"
     assert table[0]["sum_amount"] == 30
     assert any(c["doc_id"] == "doc-1" for c in result["citations"])
+
+
+def test_table_aggregation_citation_preserves_source_anchor_and_label(
+    tmp_path: Path,
+) -> None:
+    csv_path = tmp_path / "sales.csv"
+    csv_path.write_text(
+        "city,amount\n\nbeijing,10\nshanghai,20\n",
+        encoding="utf-8",
+    )
+
+    doc = type(
+        "Doc",
+        (),
+        {
+            "id": "doc-1",
+            "original_name": "sales.csv",
+            "file_type": ".csv",
+            "file_path": str(csv_path),
+        },
+    )()
+
+    service = TableAnalysisService()
+    loaded = service.load_table_documents([doc])
+    result = service.aggregate(loaded["datasets"], {"operation": "count"})
+
+    citation = result["citations"][0]
+    assert citation["source_anchor"] == {
+        "format": "csv",
+        "unit_type": "row_range",
+        "start_row": 1,
+        "end_row": 4,
+    }
+    assert citation["display_label"] == "sales.csv rows 1-4"

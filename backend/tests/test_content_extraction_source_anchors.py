@@ -59,6 +59,42 @@ def test_csv_preview_blocks_include_row_source_anchor(tmp_path: Path) -> None:
     }
 
 
+def test_xlsx_preview_blocks_include_sheet_row_source_anchor(tmp_path: Path) -> None:
+    file_path = tmp_path / "sales.xlsx"
+    _write_zip(
+        file_path,
+        {
+            "xl/workbook.xml": """
+            <workbook xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+              <sheets><sheet name="Sales" sheetId="1"/></sheets>
+            </workbook>
+            """,
+            "xl/worksheets/sheet1.xml": """
+            <worksheet>
+              <sheetData>
+                <row r="1"><c r="A1" t="inlineStr"><is><t>city</t></is></c></row>
+                <row r="2"><c r="A2" t="inlineStr"><is><t>beijing</t></is></c><c r="B2"><v>10</v></c></row>
+              </sheetData>
+            </worksheet>
+            """,
+        },
+    )
+
+    result = ContentExtractionService().extract_content(file_path)
+
+    sheet = result["blocks"][0]
+    assert sheet["content"]["name"] == "Sales"
+    assert sheet["content"]["rows"][0]["cells"][0]["value"] == "city"
+    assert sheet["content"]["rows"][1]["cells"][0]["value"] == "beijing"
+    assert sheet["source_anchor"] == {
+        "format": "xlsx",
+        "unit_type": "row_range",
+        "sheet": "Sales",
+        "start_row": 1,
+        "end_row": 2,
+    }
+
+
 def test_docx_preview_blocks_include_paragraph_source_anchor(tmp_path: Path) -> None:
     file_path = tmp_path / "contract.docx"
     _write_zip(
