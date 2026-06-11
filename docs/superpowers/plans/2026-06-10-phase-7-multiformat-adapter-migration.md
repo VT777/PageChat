@@ -12,15 +12,56 @@
 
 ## Entry Criteria
 
-Start after Phase 2 is complete.
+Start after Phase 6 is complete and its working tree state is either committed or explicitly accepted as the current implementation baseline.
 
 Required:
 
-- Canonical adapter dataclasses exist.
-- Existing adapters emit `unit_type` in anchors.
+- Canonical adapter dataclasses exist in `backend/app/services/format_adapters/base.py`.
+- `backend/app/services/format_adapters/__init__.py` exports the canonical adapter model.
+- Existing non-PDF paths emit `unit_type` in anchors.
 - Source-anchor resolver has tests for line/row anchors and explicit Office behavior.
-- Full backend suite passes after Phase 2.
+- Phase 6 frontend evidence, preview, quality, scope, and settings contracts are available as the UI baseline.
+- Full backend suite passes after Phase 6.
 - `docs/superpowers/2026-06-10-phase-2-improvement-report.md` is available as the adapter-contract baseline.
+- `docs/superpowers/2026-06-11-phase-6-implementation-report.md` is available as the current frontend and verification baseline.
+
+Do not rebuild the canonical base layer during Phase 7 unless a gap is found. Phase 7 should migrate concrete format adapters onto the existing canonical model and preserve `multi_format_adapter.py` as the compatibility facade.
+
+Before implementation starts, check `git status --short`. If Phase 6 files are still uncommitted, either commit them first or record that Phase 7 is intentionally building on that dirty baseline. Do not mix unrelated Phase 6 frontend/settings cleanup into Phase 7 adapter commits.
+
+## Phase 6 Contracts To Preserve
+
+Phase 7 changes backend parsing internals, but it must not regress the frontend contracts made visible in Phase 6.
+
+Preserve these response semantics:
+
+- Prefer backend `display_label` when present.
+- Keep `source_anchor` additive and format-aware.
+- Preserve `retrieval_source`, `confidence`, and `why_selected` metadata through search and tool results.
+- Keep `quality_report` optional and additive.
+- Keep retrieval scope trace metadata independent from parser migration.
+- Do not expose model provider secrets or route metadata secrets when adapter output includes model route metadata.
+
+For user-visible evidence, the same labels should remain valid after migration:
+
+- PDF: `report.pdf p.12-15`
+- Markdown/TXT: `notes.md lines 20-42`
+- DOCX: `contract.docx paragraphs 10-18`
+- CSV/TSV/XLSX: `sales.xlsx Sheet1 rows 2-80`
+- PPTX: `deck.pptx slide 7`
+
+## End-To-End Migration Contract
+
+Each migrated format is not complete when its adapter tests pass alone. It is complete only when the same canonical output can flow through:
+
+- Index generation via `generate_multi_format_index(file_path)`.
+- Preview extraction through `ContentExtractionService`.
+- Source-anchor resolution through `source_anchor_resolver.py`.
+- Search/index metadata preservation through `SearchService` where applicable.
+- Agent/tool evidence resolution through `ToolExecutor` without breaking existing PDF `get_page_content`.
+- Phase 6 frontend citation and preview labels without requiring frontend schema rewrites.
+
+For each fixture family, add or update tests that compare index anchors and preview anchors for the same source content. This guards against parser drift returning one location in retrieval and a different location in preview.
 
 ## Parsing Limits And Safety Rules
 
@@ -28,12 +69,14 @@ All new adapters must be bounded and deterministic.
 
 Initial limits should be conservative and configurable where practical:
 
-- Maximum rows indexed per table chunk.
-- Maximum table chunks per sheet.
-- Maximum sheets indexed per workbook before summary-only fallback.
-- Maximum text characters per DOCX/PPTX node.
-- Maximum slides inspected per PPTX before summary-only fallback.
-- Maximum source-anchor resolver range for lines, rows, paragraphs, and slides.
+- `MULTIFORMAT_MAX_ROWS_PER_CHUNK`: maximum rows indexed per table chunk.
+- `MULTIFORMAT_MAX_TABLE_CHUNKS_PER_SHEET`: maximum table chunks per sheet.
+- `MULTIFORMAT_MAX_SHEETS_PER_WORKBOOK`: maximum sheets indexed per workbook before summary-only fallback.
+- `MULTIFORMAT_MAX_TEXT_CHARS_PER_NODE`: maximum text characters per TXT/Markdown/DOCX/PPTX node.
+- `MULTIFORMAT_MAX_SLIDES_PER_DECK`: maximum slides inspected per PPTX before summary-only fallback.
+- `SOURCE_ANCHOR_MAX_RANGE_UNITS`: maximum source-anchor resolver range for lines, rows, paragraphs, and slides.
+
+If these are implemented as settings, place them with the existing backend configuration style. If they are implemented as module constants first, keep the names consistent so they can be promoted to configuration later without changing test intent.
 
 Error handling rules:
 
@@ -77,6 +120,12 @@ Do not claim complete extraction for DOCX/PPTX content that is mainly images, ch
   - Use table adapter datasets.
 - Modify: `backend/app/services/source_anchor_resolver.py`
   - Replace explicit Office unsupported responses with real parser-backed resolution.
+- Modify as needed: `backend/app/services/search_service.py`
+  - Preserve canonical `source_anchor`, `display_label`, `retrieval_source`, `confidence`, and `why_selected` through indexed search segments.
+- Modify as needed: `backend/app/services/tool_executor.py`
+  - Resolve non-PDF source anchors without regressing existing `get_page_content` compatibility.
+- Modify as needed: `backend/app/services/pageindex_service.py`
+  - Ensure non-PDF indexing routes through the compatibility facade and keeps route/cache metadata additive.
 - Modify: `backend/requirements.txt`
   - Add parser dependencies only when needed.
 - Create: `backend/tests/test_text_markdown_adapters.py`
@@ -84,7 +133,10 @@ Do not claim complete extraction for DOCX/PPTX content that is mainly images, ch
 - Create: `backend/tests/test_word_adapter.py`
 - Create: `backend/tests/test_presentation_adapter.py`
 - Create: `backend/tests/test_content_extraction_canonical.py`
-- Create: `backend/tests/test_legacy_office_conversion.py`
+- Create if Task 6 is accepted into the main phase: `backend/tests/test_legacy_office_conversion.py`
+- Modify as needed: `backend/tests/test_non_pdf_source_anchors.py`
+- Modify as needed: `backend/tests/test_retrieval_trace_contract.py`
+- Modify as needed: `backend/tests/test_retrieval_quality_regression.py`
 
 ## Task 1: Migrate TXT And Markdown
 
@@ -119,7 +171,7 @@ Cover:
 - [ ] **Step 3: Run tests and verify failure**
 
 ```powershell
-C:\Users\TT_WT\.local\bin\uv.exe run pytest tests/test_text_markdown_adapters.py -q
+C:\Users\TT_WT\.local\bin\uv.exe run pytest backend\tests\test_text_markdown_adapters.py -q
 ```
 
 - [ ] **Step 4: Implement adapters**
@@ -135,7 +187,7 @@ Markdown should use headings as tree boundaries and preserve code fences as cont
 - [ ] **Step 6: Run tests**
 
 ```powershell
-C:\Users\TT_WT\.local\bin\uv.exe run pytest tests/test_text_markdown_adapters.py tests/test_multi_format_adapter.py -q
+C:\Users\TT_WT\.local\bin\uv.exe run pytest backend\tests\test_text_markdown_adapters.py backend\tests\test_multi_format_adapter.py -q
 ```
 
 - [ ] **Step 7: Commit**
@@ -184,7 +236,7 @@ Cover:
 - [ ] **Step 3: Run tests**
 
 ```powershell
-C:\Users\TT_WT\.local\bin\uv.exe run pytest tests/test_table_adapter.py -q
+C:\Users\TT_WT\.local\bin\uv.exe run pytest backend\tests\test_table_adapter.py -q
 ```
 
 - [ ] **Step 4: Implement table adapter**
@@ -202,7 +254,7 @@ Replace duplicated CSV/XLSX parsing with table adapter calls.
 - [ ] **Step 6: Run tests**
 
 ```powershell
-C:\Users\TT_WT\.local\bin\uv.exe run pytest tests/test_table_adapter.py tests/test_table_analysis_service.py tests/test_multi_format_adapter.py tests/test_source_anchor_resolution_office.py -q
+C:\Users\TT_WT\.local\bin\uv.exe run pytest backend\tests\test_table_adapter.py backend\tests\test_table_analysis_service.py backend\tests\test_multi_format_adapter.py backend\tests\test_source_anchor_resolution_office.py -q
 ```
 
 - [ ] **Step 7: Commit**
@@ -250,7 +302,7 @@ Cover:
 - [ ] **Step 3: Run tests**
 
 ```powershell
-C:\Users\TT_WT\.local\bin\uv.exe run pytest tests/test_word_adapter.py -q
+C:\Users\TT_WT\.local\bin\uv.exe run pytest backend\tests\test_word_adapter.py -q
 ```
 
 - [ ] **Step 4: Implement DOCX adapter**
@@ -272,7 +324,7 @@ Extract:
 - [ ] **Step 6: Run tests**
 
 ```powershell
-C:\Users\TT_WT\.local\bin\uv.exe run pytest tests/test_word_adapter.py tests/test_multi_format_adapter.py tests/test_source_anchor_resolution_office.py -q
+C:\Users\TT_WT\.local\bin\uv.exe run pytest backend\tests\test_word_adapter.py backend\tests\test_multi_format_adapter.py backend\tests\test_source_anchor_resolution_office.py -q
 ```
 
 - [ ] **Step 7: Commit**
@@ -319,7 +371,7 @@ Cover:
 - [ ] **Step 3: Run tests**
 
 ```powershell
-C:\Users\TT_WT\.local\bin\uv.exe run pytest tests/test_presentation_adapter.py -q
+C:\Users\TT_WT\.local\bin\uv.exe run pytest backend\tests\test_presentation_adapter.py -q
 ```
 
 - [ ] **Step 4: Implement PPTX adapter**
@@ -335,7 +387,7 @@ Extract:
 - [ ] **Step 5: Run tests**
 
 ```powershell
-C:\Users\TT_WT\.local\bin\uv.exe run pytest tests/test_presentation_adapter.py tests/test_multi_format_adapter.py tests/test_source_anchor_resolution_office.py -q
+C:\Users\TT_WT\.local\bin\uv.exe run pytest backend\tests\test_presentation_adapter.py backend\tests\test_multi_format_adapter.py backend\tests\test_source_anchor_resolution_office.py -q
 ```
 
 - [ ] **Step 6: Commit**
@@ -360,7 +412,7 @@ Ensure each non-PDF format returns canonical blocks and source anchors.
 - [ ] **Step 2: Run tests**
 
 ```powershell
-C:\Users\TT_WT\.local\bin\uv.exe run pytest tests/test_content_extraction_canonical.py -q
+C:\Users\TT_WT\.local\bin\uv.exe run pytest backend\tests\test_content_extraction_canonical.py -q
 ```
 
 - [ ] **Step 3: Use canonical blocks**
@@ -370,7 +422,7 @@ Prefer adapter `ContentBlock` output. Keep direct extraction fallback only for o
 - [ ] **Step 4: Run tests and frontend build**
 
 ```powershell
-C:\Users\TT_WT\.local\bin\uv.exe run pytest tests/test_content_extraction_canonical.py -q
+C:\Users\TT_WT\.local\bin\uv.exe run pytest backend\tests\test_content_extraction_canonical.py -q
 cd frontend
 npm.cmd run build
 ```
@@ -382,7 +434,11 @@ git add backend/app/services/content_extraction_service.py backend/app/api/docum
 git commit -m "feat: use canonical blocks for non-pdf preview"
 ```
 
-## Task 6: Legacy Office Conversion Path
+## Task 6: Legacy Office Conversion Path (P2 / Phase 7b)
+
+This task is optional for the main Phase 7 migration. The main Phase 7 can complete with legacy `.doc`, `.xls`, and `.ppt` still rejected, as long as current whitelisted formats are migrated and verified.
+
+Only execute this task in the main Phase 7 if Tasks 1-5 are complete, focused/full verification is healthy, and there is capacity to test conversion, cleanup, and user-facing rejection behavior. Otherwise, record it as an accepted P2 follow-up or split it into a Phase 7b plan.
 
 **Files:**
 
@@ -422,10 +478,12 @@ Only then allow:
 - [ ] **Step 5: Run tests**
 
 ```powershell
-C:\Users\TT_WT\.local\bin\uv.exe run pytest tests/test_legacy_office_conversion.py -q
+C:\Users\TT_WT\.local\bin\uv.exe run pytest backend\tests\test_legacy_office_conversion.py -q
 ```
 
 Tests should verify that deleting a converted legacy document removes both the uploaded source and converted artifact.
+
+If LibreOffice is unavailable in the local environment, tests should still verify the controlled rejection path and must not add legacy extensions to `ALLOWED_EXTENSIONS`.
 
 - [ ] **Step 6: Commit**
 
@@ -439,23 +497,38 @@ git commit -m "feat: add legacy office conversion path"
 - [ ] **Step 1: Run focused suite**
 
 ```powershell
-C:\Users\TT_WT\.local\bin\uv.exe run pytest tests/test_text_markdown_adapters.py tests/test_table_adapter.py tests/test_word_adapter.py tests/test_presentation_adapter.py tests/test_content_extraction_canonical.py tests/test_legacy_office_conversion.py tests/test_multi_format_adapter.py tests/test_table_analysis_service.py tests/test_source_anchor_resolution_office.py -q
+C:\Users\TT_WT\.local\bin\uv.exe run pytest backend\tests\test_text_markdown_adapters.py backend\tests\test_table_adapter.py backend\tests\test_word_adapter.py backend\tests\test_presentation_adapter.py backend\tests\test_content_extraction_canonical.py backend\tests\test_legacy_office_conversion.py backend\tests\test_multi_format_adapter.py backend\tests\test_table_analysis_service.py backend\tests\test_source_anchor_resolution_office.py -q
 ```
 
-- [ ] **Step 2: Run full backend suite**
+If Task 6 is deferred to Phase 7b, omit `backend\tests\test_legacy_office_conversion.py` from this command and record the deferral in the completion gate.
+
+- [ ] **Step 2: Run retrieval and citation contract suite**
+
+```powershell
+C:\Users\TT_WT\.local\bin\uv.exe run pytest backend\tests\test_non_pdf_source_anchors.py backend\tests\test_retrieval_trace_contract.py backend\tests\test_retrieval_quality_regression.py backend\tests\test_content_extraction_source_anchors.py -q
+```
+
+Expected coverage:
+
+- Search results preserve canonical source anchors and display labels.
+- Tool execution can resolve non-PDF anchors into bounded source content.
+- Preview blocks and index nodes agree on line, row, paragraph, and slide anchors for representative fixtures.
+- Phase 6 evidence label expectations remain valid.
+
+- [ ] **Step 3: Run full backend suite**
 
 ```powershell
 C:\Users\TT_WT\.local\bin\uv.exe run pytest -q
 ```
 
-- [ ] **Step 3: Run frontend build**
+- [ ] **Step 4: Run frontend build**
 
 ```powershell
 cd frontend
 npm.cmd run build
 ```
 
-- [ ] **Step 4: Run completion gate audit**
+- [ ] **Step 5: Run completion gate audit**
 
 Use `docs/superpowers/completion-gate-gap-audit.md`.
 
@@ -465,9 +538,13 @@ Inputs:
 - `docs/superpowers/2026-06-10-next-phase-roadmap.md`
 - `docs/superpowers/2026-06-10-phase-1-improvement-report.md`
 - `docs/superpowers/2026-06-10-phase-2-improvement-report.md`
+- `docs/superpowers/2026-06-10-phase-3-improvement-report.md`
+- `docs/superpowers/2026-06-11-phase-4-improvement-report.md`
+- `docs/superpowers/2026-06-11-phase-5-and-5-1-execution-report.md`
+- `docs/superpowers/2026-06-11-phase-6-implementation-report.md`
 - Source plan: `<source-plan-copy>\docs\superpowers\plans\2026-06-10-multi-format-document-support-plan.md`
 - Current git status.
-- Test and build output from Steps 1-3.
+- Test and build output from Steps 1-4.
 
 ## Done Criteria
 
@@ -478,9 +555,12 @@ Phase 7 is complete when:
 - Preview extraction uses canonical blocks where available.
 - Table aggregation uses the table adapter dataset.
 - Source-anchor resolver handles line, row, paragraph, and slide anchors with real parser-backed content.
+- Search and tool evidence preserve canonical `source_anchor` and `display_label` metadata.
+- Phase 6 citation and source preview labels still work for migrated non-PDF formats.
+- Index anchors and preview anchors are checked against the same fixtures for representative non-PDF formats.
 - Large and malformed non-PDF files have bounded behavior and controlled errors.
 - Visual-heavy DOCX/PPTX content is explicitly flagged instead of silently treated as fully extracted text.
-- Legacy `.doc`, `.xls`, and `.ppt` remain rejected unless conversion support is enabled and tested.
+- Legacy `.doc`, `.xls`, and `.ppt` remain rejected unless conversion support is enabled, tested, and cleanup-safe.
 - Focused and full backend tests pass.
 - Frontend build passes.
 - Completion gate passes or only records accepted P2 follow-ups.

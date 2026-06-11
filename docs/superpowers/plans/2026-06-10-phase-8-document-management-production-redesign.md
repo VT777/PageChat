@@ -12,7 +12,13 @@
 
 ## Entry Criteria
 
-Start after Phase 6 if evidence labels and quality fields are already integrated.
+Start after Phase 7 is complete or explicitly accepted as the current baseline.
+
+Required baselines:
+
+- Phase 6 evidence labels, retrieval scope controls, settings integration, and optional `quality_report` display are available.
+- Phase 7 canonical non-PDF adapters, canonical preview extraction, and source-anchor labels are available.
+- Phase 7 legacy Office decision is preserved: `.doc`, `.xls`, and `.ppt` remain rejected unless Phase 7b conversion support is implemented and tested first.
 
 Required backend fields should be confirmed before implementing the right detail panel:
 
@@ -31,6 +37,22 @@ Required backend fields should be confirmed before implementing the right detail
 - Optional `quality_report`.
 
 If some fields are unavailable, implement graceful placeholders and record backend follow-ups.
+
+Before editing production UI, record a field availability matrix for:
+
+- `backend/app/models/schemas.py`
+- `backend/app/api/documents.py`
+- `frontend/src/stores/document.ts`
+- `frontend/src/api/index.ts`
+- `frontend/src/views/DocumentView.vue`
+
+Classify each desired detail-panel field as:
+
+- Available from document list response.
+- Available from document preview/detail response.
+- Derivable from existing index metadata.
+- Missing and covered by a placeholder.
+- Missing and requiring a backend follow-up.
 
 Before visual implementation, prepare sample states for QA:
 
@@ -61,6 +83,32 @@ Before visual implementation, prepare sample states for QA:
   - Support selected folder state and counts if needed.
 - Modify: `frontend/src/api/index.ts`
   - Add missing document metadata fields if backend exposes them.
+
+## Task 0: Entry Audit And Field Matrix
+
+**Files:**
+
+- Read: `backend/app/models/schemas.py`
+- Read: `backend/app/api/documents.py`
+- Read: `frontend/src/stores/document.ts`
+- Read: `frontend/src/api/index.ts`
+- Read: `frontend/src/views/DocumentView.vue`
+
+- [ ] **Step 1: Confirm current baselines**
+
+Record that Phase 6 frontend contracts and Phase 7 canonical preview/source-anchor contracts are the starting point for the redesign.
+
+- [ ] **Step 2: Build the document metadata matrix**
+
+For each desired detail-panel field, record whether it is available from the list response, preview/detail response, derived index metadata, or unavailable.
+
+- [ ] **Step 3: Decide placeholder behavior**
+
+For unavailable fields, define neutral placeholders and backend follow-ups. Do not invent values in the UI.
+
+- [ ] **Step 4: Preserve no-regression constraints**
+
+List the existing document workflows and preview/source-label behaviors that Task 1 through Task 4 must preserve.
 
 ## Task 1: Three-Column Workbench Layout
 
@@ -324,6 +372,13 @@ Inputs:
 - `docs/superpowers/2026-06-10-next-phase-roadmap.md`
 - `docs/superpowers/2026-06-10-phase-1-improvement-report.md`
 - `docs/superpowers/2026-06-10-phase-2-improvement-report.md`
+- `docs/superpowers/2026-06-10-phase-3-improvement-report.md`
+- `docs/superpowers/2026-06-11-phase-4-improvement-report.md`
+- `docs/superpowers/plans/2026-06-11-phase-4-gap-closure.md`
+- `docs/superpowers/2026-06-11-phase-5-and-5-1-execution-report.md`
+- `docs/superpowers/plans/2026-06-11-phase-5-1-indexing-route-closure.md`
+- `docs/superpowers/2026-06-11-phase-6-implementation-report.md`
+- `docs/superpowers/2026-06-11-phase-7-implementation-report.md`
 - Source plan: `<source-plan-copy>\docs\superpowers\plans\2026-06-10-frontend-design-plan.md`
 - Current git status.
 - Build output, manual QA notes, and any backend test output from Steps 1-3.
@@ -337,6 +392,8 @@ Phase 8 is complete when:
 - File type colors follow existing `FileTypeIcon.vue` language.
 - Detail panel shows identity, attributes, index status, full summary, and actions.
 - Preview modal keeps TOC on the left and original content on the right.
+- Phase 6 evidence labels and Phase 7 canonical preview/source-anchor labels are not regressed.
+- The field availability matrix records real, derived, placeholder, and backend-follow-up fields.
 - Frontend build passes.
 - Manual responsive QA is recorded with screenshots or explicit notes for the required states.
 - Long text, batch mode, and detail-panel scrolling are verified against overflow and layout-shift regressions.

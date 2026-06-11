@@ -10,7 +10,7 @@ The Phase 1 report recommended model configuration as the next candidate phase. 
 
 ## Current Baseline
 
-Phase 4 is the current foundation baseline.
+Phase 7 is the current implementation baseline. Phase 4 remains the retrieval-scope foundation baseline that later frontend and adapter phases must preserve.
 
 Verified baseline from the Phase 4 report:
 
@@ -130,38 +130,94 @@ Current Phase 5 evidence:
 - Completion gate result: conditional pass with no P0/P1 gaps
 - Accepted P2 follow-up: deep PageIndex indexing calls needed user-aware route integration before the frontend could treat indexing model controls as production-ready.
 
-Phase 5.1 closes that P2 follow-up:
+Phase 5.1 has closed that P2 follow-up:
 
 - `docs/superpowers/plans/2026-06-11-phase-5-1-indexing-route-closure.md`
+- `docs/superpowers/2026-06-11-phase-5-and-5-1-execution-report.md`
+
+Current Phase 5.1 evidence:
+
+- Phase 5.1 focused backend suite: `25 passed`
+- Indexing regression suite: `34 passed, 4 skipped`
+- Full backend suite after Phase 5.1: `379 passed, 8 skipped`
+- Final commit: `f3fb13d feat: add user-configurable model routing foundation`
 
 Use the Phase 5.1 report and verification output as the backend baseline for indexing model controls.
 
+## Post-Phase-6 Baseline
+
+Phase 6 is now implemented as the frontend evidence and settings integration layer.
+
+Current Phase 6 evidence:
+
+- Frontend evidence and retrieval-scope utility tests: `9 passed`
+- Model settings API focused backend suite: `9 passed`
+- Frontend production build: passed
+- Full backend suite after Phase 6: `383 passed, 8 skipped`
+- Completion gate result: pass, with no P0/P1 gaps
+- Browser smoke verification covered login/register, chat scope controls and evidence preview shell, document empty-state rendering, provider key replacement, and route mapping save.
+
+Use the Phase 6 implementation report as the current frontend contract for:
+
+- Anchor-aware evidence labels in chat and source preview.
+- Retrieval fallback disclosure.
+- Retrieval scope controls and trace display.
+- Optional document `quality_report` display.
+- Write-only model provider credentials and route mapping fallback behavior.
+
+Phase 7 must preserve these Phase 6 UI contracts while migrating non-PDF parsing internals. New adapter output should remain additive and compatible with the Phase 6 frontend evidence, preview, quality, and scope displays.
+
+## Post-Phase-7 Baseline
+
+Phase 7 is now implemented as the main multi-format adapter migration.
+
+Current Phase 7 evidence:
+
+- Phase 7 focused backend suite: `42 passed`
+- Retrieval and citation contract suite: `14 passed`
+- Full backend suite after Phase 7: `412 passed, 8 skipped`
+- Frontend production build: passed
+- Completion gate result: pass, with no P0/P1 gaps
+- Accepted P2 follow-up: legacy `.doc`, `.xls`, and `.ppt` conversion remains deferred as Phase 7b.
+
+Use the Phase 7 implementation report as the current backend parsing contract for:
+
+- Canonical TXT, Markdown, CSV/TSV, XLSX, DOCX, and PPTX adapters.
+- `multi_format_adapter.py` as the compatibility facade for non-PDF index generation.
+- Canonical preview extraction for supported non-PDF formats where available.
+- Table aggregation citations with canonical `source_anchor` and `display_label`.
+- Parser-backed source-anchor resolution for line, row, paragraph, and slide anchors.
+- Legacy Office rejection unless conversion support is explicitly implemented and tested.
+
+Phase 8 must preserve the Phase 6 frontend evidence contract and the Phase 7 canonical preview/source-anchor behavior while redesigning document management UI.
+
 ## Immediate Recommendation
 
-Start with Phase 5.1 indexing route closure, while allowing Phase 6 frontend slices to begin only where their backend baseline is already complete.
+Proceed to Phase 8: Document Management Production Redesign.
 
 Why:
 
-- Phase 4 has already made retrieval scope explicit across folders, selected document sets, and current-user library search.
-- Phase 5 has added model configuration without changing retrieval authorization or scope behavior.
-- Phase 5.1 is required before indexing model controls are presented as production-ready.
-- Phase 6 evidence UI can start from Phase 2/3 fields and can now include chat scope UI because Phase 4 backend behavior exists.
-- Phase 6 model settings UI can use Phase 5 backend endpoints and write-only key behavior, but indexing controls must wait for Phase 5.1 completion.
-- Phase 7 and Phase 8 should continue to use Phase 2/3/4 evidence, quality, and scope contracts as their baseline.
+- Phase 7 has stabilized non-PDF parsing, preview anchors, table citations, and source-anchor resolution for the current supported formats.
+- Phase 6 already surfaces evidence labels, preview anchors, quality status, retrieval scope traces, and model routes in the frontend.
+- Phase 8 can now redesign document management on top of stable evidence, preview, and quality contracts.
+- Legacy Office conversion remains valuable, but it should only interrupt Phase 8 if the product explicitly prioritizes `.doc`, `.xls`, and `.ppt` upload compatibility.
 
 Recommended immediate execution order:
 
-1. Phase 5.1 indexing route closure.
-2. Phase 6 evidence labels and document quality display slices, if not already complete.
-3. Phase 6 chat scope UI slice, using Phase 4 scope request and trace metadata.
-4. Phase 6 model settings UI for configured routes whose backend paths are complete.
-5. Phase 6 indexing model controls only after Phase 5.1 verification passes.
+1. Confirm Phase 7 worktree changes are committed or explicitly accepted as the current baseline before starting Phase 8 implementation.
+2. Run a Phase 8 entry audit of the current document API/store fields and record graceful placeholders for unavailable detail-panel fields.
+3. Implement the production three-column document workbench layout.
+4. Implement the dense document list, stable batch mode, and compact detail panel.
+5. Refine the preview modal without regressing Phase 6 evidence labels or Phase 7 canonical source anchors.
+6. Run frontend build, responsive/manual QA, and the Phase 8 completion gate.
 
-Parallel candidate:
+Phase 7b branch candidate:
 
-- Phase 6 evidence-label and quality-display slices may proceed in parallel with Phase 5.1 because they do not depend on indexing model routing.
-- Phase 6 model settings UI for `general_chat`, `document_qa`, `query_expansion`, and `vision` may proceed from the Phase 5 baseline.
-- Phase 6 `indexing` route UI must be hidden, disabled, or clearly deferred until Phase 5.1 completion is verified.
+- Add detector and converter modules for legacy Office formats.
+- Detect LibreOffice availability without failing startup.
+- Keep `.doc`, `.xls`, and `.ppt` rejected when conversion is unavailable.
+- Store converted artifacts under a controlled directory and clean them up with document/folder deletion.
+- Add conversion, rejection, and cleanup tests before adding legacy extensions to `ALLOWED_EXTENSIONS`.
 
 ## Cross-Phase Rules
 
@@ -175,7 +231,7 @@ Parallel candidate:
   `docs/superpowers/completion-gate-gap-audit.md`
 - Do not add legacy `.doc`, `.xls`, or `.ppt` upload support until conversion support exists and is tested.
 - Do not expose user API keys back to the frontend after saving model settings.
-- Do not treat Phase 2 as the full multi-format implementation. Phase 2 only stabilizes anchors and current paths; Phase 7 migrates each format to canonical adapters and handles legacy conversion.
+- Do not treat Phase 2 as the full multi-format implementation. Phase 2 only stabilizes anchors and current paths; Phase 7 migrates current whitelisted formats to canonical adapters, and Phase 7b handles legacy Office conversion if prioritized.
 - Treat Phase 2 as complete for roadmap sequencing. Do not reopen Phase 2 scope unless the Phase 2 report or completion gate records a regression.
 - Do not claim tree retrieval quality is complete until tree-first policy, fallback thresholds, and compact tree output are covered in Phases 3 and 4.
 - Keep legacy `NULL user_id` records quarantined from new retrieval, tool, and settings behavior unless a phase explicitly defines a migration or ownership policy.
@@ -194,7 +250,10 @@ Every phase should run the completion gate with these inputs:
 - `docs/superpowers/2026-06-11-phase-4-improvement-report.md`
 - `docs/superpowers/plans/2026-06-11-phase-4-gap-closure.md`
 - `docs/superpowers/2026-06-11-phase-5-improvement-report.md`
+- `docs/superpowers/2026-06-11-phase-5-and-5-1-execution-report.md`
 - `docs/superpowers/plans/2026-06-11-phase-5-1-indexing-route-closure.md`
+- `docs/superpowers/2026-06-11-phase-6-implementation-report.md`
+- `docs/superpowers/2026-06-11-phase-7-implementation-report.md`
 - Any source plan listed in the mapping above that corresponds to the phase.
 - Current git status and test output from the phase verification commands.
 

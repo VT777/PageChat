@@ -32,7 +32,43 @@ Phase 6 can be executed in slices. Do not block all frontend evidence work on mo
 
 If a slice starts before the later slices are ready, keep API types tolerant of missing fields and record the deferred slices in the completion gate.
 
-Phase 6 may build model settings UI after Phase 5, but it must not present index generation model controls as production-ready unless `docs/superpowers/plans/2026-06-11-phase-5-1-indexing-route-closure.md` has been implemented and verified. If Phase 5.1 is not complete, hide, disable, or explicitly defer the indexing route control.
+Phase 5.1 is now complete and verified. Phase 6 may present index generation model controls as production-backed when those controls use the Phase 5 settings APIs and the route mapping contract verified by:
+
+- `docs/superpowers/plans/2026-06-11-phase-5-1-indexing-route-closure.md`
+- `docs/superpowers/2026-06-11-phase-5-and-5-1-execution-report.md`
+
+## Post-Phase-5.1 Backend Baseline
+
+Phase 5.1 closed the PageIndex indexing-route gap that remained after Phase 5.
+
+Verified backend baseline:
+
+- Phase 5.1 focused backend suite: `25 passed`
+- Indexing regression suite: `34 passed, 4 skipped`
+- Full backend suite after Phase 5.1: `379 passed, 8 skipped`
+- PageIndex text model calls can use the configured `indexing` route when user settings exist.
+- PageIndex vision enrichment can use the configured `vision` route when user settings exist.
+- Tree-search cache keys include route version when model settings affect output.
+- Generated index payloads may include sanitized `model_routes` metadata.
+- Route metadata must not expose API keys, ciphertext, or provider secrets.
+
+Frontend implication:
+
+- Model route UI may include all backend route slots: `general_chat`, `document_qa`, `query_expansion`, `indexing`, and `vision`.
+- The UI should label routes by user-facing tasks, not by raw route keys alone.
+- Indexing and vision route controls should clearly explain fallback to server defaults when no user route is configured.
+
+## Execution Slice Priority
+
+Execute Phase 6 in independently verifiable slices:
+
+1. Evidence labels and source preview anchor display.
+2. Document quality display.
+3. Chat scope controls and retrieval scope trace display.
+4. Model provider settings.
+5. Route mapping controls for `general_chat`, `document_qa`, `query_expansion`, `indexing`, and `vision`.
+
+Each slice should run `npm.cmd run build` before moving to the next slice. Run backend tests only when frontend API changes reveal a backend contract mismatch or when a backend compatibility patch is required.
 
 ## Files And Responsibilities
 
@@ -72,6 +108,8 @@ Phase 6 may build model settings UI after Phase 5, but it must not present index
 - Avoid a marketing-style settings page.
 - Do not expose raw config names such as `llm.default_fast_model`.
 - API keys are never displayed after saving.
+- Saved credentials should be represented as a masked or saved state, not as reusable plaintext.
+- Deleting or disabling a provider should make affected route fallback behavior visible.
 - Evidence labels should be concise:
   - `report.pdf p.12`
   - `notes.md lines 20-42`
@@ -131,6 +169,57 @@ type RetrievalScopeTrace = {
   recommended_next_action?: string
 }
 ```
+
+## API And UI Acceptance Matrix
+
+Model provider settings must cover these states:
+
+| Scenario | Expected frontend behavior |
+| --- | --- |
+| List presets | Show curated provider choices and allow custom OpenAI-compatible configuration when supported. |
+| Create provider config | Save provider, base URL when applicable, model IDs, and API key without echoing raw key back into the UI. |
+| Update non-secret fields | Preserve saved-key state unless the user explicitly replaces or clears the key. |
+| Replace API key | Require explicit save and return to masked/saved state after success. |
+| Delete provider config | Warn that routes using the provider will fall back to server defaults or need remapping. |
+| Test connection succeeds | Show success without revealing request payload secrets. |
+| Test connection fails | Show provider validation error without exposing raw API key or ciphertext. |
+| Production secret unavailable | Show a clear save failure when backend refuses model-key writes. |
+
+Route mapping controls must cover these states:
+
+| Route | User-facing label | Expected behavior |
+| --- | --- | --- |
+| `general_chat` | General chat | Select a saved provider/model or fallback to server default. |
+| `document_qa` | Document Q&A | Select a saved provider/model or fallback to server default. |
+| `query_expansion` | Query expansion | Select a saved provider/model or fallback to server default. |
+| `indexing` | Index generation | Enabled as production-backed because Phase 5.1 is verified. |
+| `vision` | Vision/OCR enrichment | Select a vision-capable provider where the backend marks capability support. |
+
+Evidence and quality UI must cover these sample states:
+
+| Data shape | Expected label or state |
+| --- | --- |
+| PDF page anchor | `report.pdf p.12-15` |
+| Markdown/TXT line anchor | `notes.md lines 20-42` |
+| DOCX paragraph anchor | `contract.docx paragraphs 10-18` |
+| XLSX row anchor | `sales.xlsx Sheet1 rows 2-80` |
+| PPTX slide anchor | `deck.pptx slide 7` |
+| `quality_report.status = completed` | Stable completed status. |
+| `quality_report.status = needs_review` | Warning state with concrete warning reasons. |
+| `quality_report.status = failed:indexing` | Failed indexing state without breaking document detail rendering. |
+| Unknown quality status | Neutral metadata state. |
+| Missing quality report | Existing document UI remains usable. |
+
+Chat scope UI must cover these states:
+
+| Scope state | Expected behavior |
+| --- | --- |
+| Current document | Request includes selected document IDs and strict scope unless user expands. |
+| Current folder | Request includes `folder_id`; subfolder inclusion is explicit. |
+| Folder including subfolders | Request includes `folder_id` and `include_subfolders=true`. |
+| All documents | User explicitly chooses all-documents scope. |
+| Backend trace reports expansion | UI discloses expansion without treating it as an error. |
+| Backend trace missing | UI shows neutral current-scope metadata and preserves answer rendering. |
 
 ## Task 1: Evidence Labels In Chat And Preview
 
@@ -317,7 +406,7 @@ Route slots:
 - General chat.
 - Document Q&A.
 - Query expansion.
-- Index generation, only if Phase 5.1 completion has been verified.
+- Index generation, backed by the verified Phase 5.1 indexing-route baseline.
 - Vision/OCR.
 
 - [ ] **Step 4: Integrate into SettingsView**
