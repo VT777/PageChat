@@ -3,6 +3,7 @@ import { ref, computed } from 'vue'
 import { documentApi } from '@/api'
 import type { ProcessingStep } from '@/api'
 import type { QualityReport } from '@/types/retrieval'
+import { buildDocumentListParams, isProcessingStatus } from '@/utils/documentWorkbench'
 
 export interface Document {
   id: string
@@ -27,6 +28,8 @@ export interface Document {
   created_at: string
   updated_at: string
   folder_id?: string | null
+  folder_path?: string | null
+  last_reindex_at?: string | null
 }
 
 export const useDocumentStore = defineStore('document', () => {
@@ -34,8 +37,10 @@ export const useDocumentStore = defineStore('document', () => {
   const loading = ref(false)
   const total = ref(0)
   const currentPage = ref(1)
+  const currentPageSize = ref(20)
   const searchQuery = ref('')
   const currentFolderId = ref<string | null>(null)
+  const currentIncludeSubfolders = ref(false)
 
   // View & selection state
   const viewMode = ref<'grid' | 'list'>('grid')
@@ -85,14 +90,18 @@ export const useDocumentStore = defineStore('document', () => {
     }
   }
 
-  async function fetchDocuments(page = 1, search?: string, folder_id?: string | null, include_subfolders = false) {
+  async function fetchDocuments(page = 1, search?: string, folder_id?: string | null, include_subfolders = false, pageSize = 20) {
     loading.value = true
+    currentPageSize.value = pageSize
+    searchQuery.value = search ?? ''
+    currentFolderId.value = folder_id ?? null
+    currentIncludeSubfolders.value = include_subfolders
     try {
       const { data } = await documentApi.list({
         page,
-        page_size: 20,
-        search,
-        folder_id: folder_id ?? currentFolderId.value,
+        page_size: pageSize,
+        search: searchQuery.value || undefined,
+        folder_id: currentFolderId.value,
         include_subfolders,
       })
       documents.value = data.items
@@ -111,7 +120,7 @@ export const useDocumentStore = defineStore('document', () => {
       documents.value.unshift(data)
       total.value++
       // Start polling if document is processing or pending
-      if (data.status && (data.status.startsWith('processing') || data.status === 'pending')) {
+      if (isProcessingStatus(data.status)) {
         processingDocIds.value.add(data.id)
         ensurePolling()
       }
@@ -218,13 +227,13 @@ export const useDocumentStore = defineStore('document', () => {
       }
       // Refresh current page to get updated statuses
       try {
-        const { data } = await documentApi.list({
-          page: currentPage.value,
-          page_size: 20,
-          search: searchQuery.value || undefined,
-          folder_id: currentFolderId.value,
-          include_subfolders: true,
-        })
+        const { data } = await documentApi.list(buildDocumentListParams({
+          currentPage: currentPage.value,
+          currentPageSize: currentPageSize.value,
+          searchQuery: searchQuery.value,
+          currentFolderId: currentFolderId.value,
+          currentIncludeSubfolders: currentIncludeSubfolders.value,
+        }))
         // Update documents while preserving selection state
         const selected = new Set(selectedIds.value)
         documents.value = data.items
@@ -233,7 +242,7 @@ export const useDocumentStore = defineStore('document', () => {
         // Check which docs are still processing or pending
         const stillProcessing = new Set<string>()
         for (const doc of data.items) {
-          if (doc.status && (doc.status.startsWith('processing') || doc.status === 'pending')) {
+          if (isProcessingStatus(doc.status)) {
             stillProcessing.add(doc.id)
           }
         }
@@ -320,6 +329,7 @@ export const useDocumentStore = defineStore('document', () => {
     loading,
     total,
     currentPage,
+    currentPageSize,
     searchQuery,
     currentFolderId,
     viewMode,

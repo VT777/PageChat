@@ -35,6 +35,7 @@ import PdfReferenceViewer from '@/components/PdfReferenceViewer.vue'
 import UniversalPreview from '@/components/preview/UniversalPreview.vue'
 import type { SourceAnchor } from '@/types/preview'
 import type { ChatScopeRequest } from '@/types/retrieval'
+import { anchorFromCitation, isPreviewSupported, unsupportedPreviewMessage } from '@/utils/documentWorkbench'
 import { formatEvidenceLabel } from '@/utils/evidence'
 import { describeScopeTrace } from '@/utils/retrievalScope'
 
@@ -61,6 +62,7 @@ const previewDocId = ref<string>('')
 const previewDocName = ref<string>('')
 const previewDocType = ref<string>('')
 const previewAnchor = ref<SourceAnchor | null>(null)
+const previewUnsupportedMessage = ref<string>('')
 
 // 右侧引用预览窗口状态
 const showRightPdfViewer = ref(false)
@@ -285,6 +287,7 @@ async function handleCitationClick(
   // 构建锚点信息
   const fileType = (doc.file_type || '').toLowerCase()
   const anchor: SourceAnchor = { format: fileType.replace('.', '') }
+  previewUnsupportedMessage.value = ''
   
   // 解析位置
   const posValue = parseInt(position, 10)
@@ -294,6 +297,10 @@ async function handleCitationClick(
     anchor.start_page = posValue
     anchor.end_page = posValue
     showRightPdfViewer.value = true
+    showRightUniversalPreview.value = false
+  } else if (!isPreviewSupported(fileType)) {
+    previewUnsupportedMessage.value = unsupportedPreviewMessage(fileType)
+    showRightPdfViewer.value = false
     showRightUniversalPreview.value = false
   } else if (fileType === '.txt' || fileType === '.md' || fileType === '.markdown') {
     // 文本文件使用行号或段落号
@@ -313,31 +320,32 @@ async function handleCitationClick(
     anchor.end_row = posValue
     showRightPdfViewer.value = false
     showRightUniversalPreview.value = true
-  } else if (fileType === '.xlsx' || fileType === '.xls') {
+  } else if (fileType === '.xlsx') {
     // Excel 使用行号，支持 sheet 指定
     anchor.start_row = posValue
     anchor.end_row = posValue
     // TODO: 从 position 中解析 sheet 名称
     showRightPdfViewer.value = false
     showRightUniversalPreview.value = true
-  } else if (fileType === '.docx' || fileType === '.doc') {
+  } else if (fileType === '.docx') {
     // Word 使用段落号
     anchor.start_paragraph = posValue
     anchor.end_paragraph = posValue
     showRightPdfViewer.value = false
     showRightUniversalPreview.value = true
-  } else if (fileType === '.pptx' || fileType === '.ppt') {
+  } else if (fileType === '.pptx') {
     // PPT 使用幻灯片号
     anchor.unit_type = 'slide'
     anchor.slide = posValue
+    anchor.start_slide = posValue
+    anchor.end_slide = posValue
     showRightPdfViewer.value = false
     showRightUniversalPreview.value = true
   } else {
     // 不支持的格式，仍然尝试 PDF 预览
-    console.warn('未知的文件类型，尝试 PDF 预览:', fileType)
-    anchor.start_page = posValue
-    anchor.end_page = posValue
-    showRightPdfViewer.value = true
+    console.warn('Unsupported citation preview file type:', fileType)
+    previewUnsupportedMessage.value = unsupportedPreviewMessage(fileType)
+    showRightPdfViewer.value = false
     showRightUniversalPreview.value = false
   }
   
@@ -350,6 +358,51 @@ async function handleCitationClick(
 }
 
 // Markdown 渲染 - 处理引用格式
+async function openEvidencePreview(item: EvidenceItem) {
+  if (documentStore.documents.length === 0) {
+    await documentStore.fetchDocuments(1, undefined, undefined, true)
+  }
+
+  let doc = item.docId
+    ? documentStore.documents.find((candidate) => candidate.id === item.docId)
+    : null
+
+  if (!doc && item.documentName) {
+    const normalizedName = item.documentName.trim().replace(/\s+/g, '')
+    doc = documentStore.documents.find((candidate) => {
+      return candidate.original_name.replace(/\s+/g, '') === normalizedName
+        || candidate.name.replace(/\s+/g, '') === normalizedName
+    }) || null
+  }
+
+  if (!doc && item.documentName) {
+    try {
+      const searchResults = await documentApi.searchByName(item.documentName)
+      doc = searchResults?.[0] || null
+    } catch (error) {
+      console.error('Failed to search evidence document:', error)
+    }
+  }
+
+  if (!doc) return
+
+  const fileType = (doc.file_type || '').toLowerCase()
+  previewDocId.value = doc.id
+  previewDocName.value = doc.original_name
+  previewDocType.value = fileType
+  previewAnchor.value = anchorFromCitation({
+    fileType,
+    sourceAnchor: item.sourceAnchor as Record<string, unknown> | null | undefined,
+  }) as SourceAnchor
+  previewUnsupportedMessage.value = ''
+  showRightPdfViewer.value = fileType === '.pdf'
+  showRightUniversalPreview.value = fileType !== '.pdf' && isPreviewSupported(fileType)
+  if (!showRightPdfViewer.value && !showRightUniversalPreview.value) {
+    previewUnsupportedMessage.value = unsupportedPreviewMessage(fileType)
+  }
+  showRightPanel.value = true
+}
+
 function renderMarkdown(content: string): string {
   if (!content) return ''
   try {
@@ -1137,14 +1190,16 @@ async function resumeConversationIfNeeded() {
                         </span>
                       </div>
                       <div v-if="message.evidenceItems?.length" class="evidence-chip-row">
-                        <span
+                        <button
                           v-for="item in message.evidenceItems"
                           :key="evidenceLabel(item)"
                           class="evidence-chip"
                           :class="{ fallback: item.retrievalSource === 'keyword_fallback' || item.retrievalSource === 'visual_summary' }"
+                          type="button"
+                          @click="openEvidencePreview(item)"
                         >
                           {{ evidenceLabel(item) }}
-                        </span>
+                        </button>
                       </div>
                     </template>
                   </div>
@@ -1327,10 +1382,12 @@ async function resumeConversationIfNeeded() {
             <div class="page-card">
               <div class="page-placeholder">
                 <FileText class="w-12 h-12" />
-                <p class="page-hint">点击引用查看详情</p>
+                <p class="page-hint">
+                  {{ previewUnsupportedMessage || 'Click a citation to preview the source' }}
+                </p>
                 <p class="page-subhint">
-                  支持格式：PDF, TXT, Markdown, CSV, XLSX, DOCX, PPTX<br>
-                  例如：[[文档.pdf p.3]] 或 [[表格.xlsx row.50]]
+                  Supported formats: PDF, TXT, Markdown, CSV, TSV, XLSX, DOCX, PPTX<br>
+                  Example: [[report.pdf p.3]] or [[table.xlsx row.50]]
                 </p>
               </div>
             </div>

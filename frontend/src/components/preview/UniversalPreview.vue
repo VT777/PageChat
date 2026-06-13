@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { ref, computed, watch } from 'vue'
-import { Loader2, AlertCircle, FileText } from 'lucide-vue-next'
+import { computed, ref, watch } from 'vue'
+import { AlertCircle, FileText, Loader2 } from 'lucide-vue-next'
 import TextViewer from './TextViewer.vue'
 import MarkdownViewer from './MarkdownViewer.vue'
 import TableViewer from './TableViewer.vue'
@@ -8,12 +8,14 @@ import DocxViewer from './DocxViewer.vue'
 import PptxViewer from './PptxViewer.vue'
 import { documentApi } from '@/api'
 import type { DocumentContent, SourceAnchor } from '@/types/preview'
+import { formatPreviewKind, isPreviewSupported, unsupportedPreviewMessage } from '@/utils/documentWorkbench'
 
 const props = defineProps<{
   docId: string
   docName: string
   fileType: string
   initialAnchor?: SourceAnchor | null
+  rawOnly?: boolean
 }>()
 
 const emit = defineEmits<{
@@ -21,33 +23,17 @@ const emit = defineEmits<{
   error: [message: string]
 }>()
 
-// 状态
 const content = ref<DocumentContent | null>(null)
 const loading = ref(false)
 const error = ref<string | null>(null)
 
-// 获取到的文档内容
 const hasContent = computed(() => content.value !== null)
+const formatType = computed(() => formatPreviewKind(props.fileType))
+const isSupported = computed(() => isPreviewSupported(props.fileType))
 
-// 获取格式类型
-const formatType = computed(() => {
-  const ext = props.fileType.toLowerCase()
-  if (ext === '.txt') return 'text'
-  if (ext === '.md' || ext === '.markdown') return 'markdown'
-  if (ext === '.csv' || ext === '.tsv') return 'table'
-  if (ext === '.xlsx' || ext === '.xls') return 'table'
-  if (ext === '.docx' || ext === '.doc') return 'docx'
-  if (ext === '.pptx' || ext === '.ppt') return 'pptx'
-  return 'unknown'
-})
-
-// 是否支持该格式
-const isSupported = computed(() => formatType.value !== 'unknown')
-
-// 加载内容
 async function loadContent() {
   if (!isSupported.value) {
-    error.value = `不支持的文件格式: ${props.fileType}`
+    error.value = unsupportedPreviewMessage(props.fileType)
     return
   }
 
@@ -57,73 +43,67 @@ async function loadContent() {
   try {
     const response = await documentApi.getContent(props.docId)
     content.value = response.data as DocumentContent
-    } catch (err: any) {
+  } catch (err: any) {
     console.error('Failed to load document content:', err)
-    error.value = err.response?.data?.detail || '加载文档内容失败'
-    emit('error', error.value || '未知错误')
+    error.value = err.response?.data?.detail || 'Failed to load document content'
+    emit('error', error.value || 'Unknown preview error')
   } finally {
     loading.value = false
   }
 }
 
-// 处理锚点点击
 function handleAnchorClick(anchor: SourceAnchor) {
   emit('anchorClick', anchor)
 }
 
-// 监听 docId 变化，重新加载
 watch(() => props.docId, () => {
+  content.value = null
   loadContent()
 }, { immediate: true })
 
 defineExpose({
-  reload: loadContent
+  reload: loadContent,
 })
 </script>
 
 <template>
   <div class="universal-preview">
-    <!-- 加载中 -->
     <div v-if="loading" class="state-container">
       <Loader2 class="w-8 h-8 animate-spin text-primary" />
-      <span class="mt-4 text-muted-foreground">加载文档内容...</span>
+      <span class="mt-4 text-muted-foreground">Loading document preview...</span>
     </div>
 
-    <!-- 错误 -->
     <div v-else-if="error" class="state-container">
       <AlertCircle class="w-12 h-12 text-destructive" />
       <span class="mt-4 text-muted-foreground">{{ error }}</span>
     </div>
 
-    <!-- 不支持 -->
     <div v-else-if="!isSupported" class="state-container">
       <FileText class="w-12 h-12 text-muted-foreground" />
       <span class="mt-4 text-muted-foreground">
-        不支持预览此格式: {{ fileType }}
+        {{ unsupportedPreviewMessage(fileType) }}
       </span>
     </div>
 
-    <!-- 内容 -->
     <template v-else-if="hasContent && content">
-      <!-- TXT -->
       <TextViewer
         v-if="formatType === 'text'"
         :content="content"
         :toc="content.toc"
         :initial-anchor="initialAnchor"
+        :show-toc="!rawOnly"
         @anchor-click="handleAnchorClick"
       />
 
-      <!-- Markdown -->
       <MarkdownViewer
         v-else-if="formatType === 'markdown'"
         :content="content"
         :toc="content.toc"
         :initial-anchor="initialAnchor"
+        :show-toc="!rawOnly"
         @anchor-click="handleAnchorClick"
       />
 
-      <!-- CSV / TSV / XLSX -->
       <TableViewer
         v-else-if="formatType === 'table'"
         :content="content"
@@ -131,16 +111,15 @@ defineExpose({
         @anchor-click="handleAnchorClick"
       />
 
-      <!-- DOCX -->
       <DocxViewer
         v-else-if="formatType === 'docx'"
         :content="content"
         :toc="content.toc"
         :initial-anchor="initialAnchor"
+        :show-toc="!rawOnly"
         @anchor-click="handleAnchorClick"
       />
 
-      <!-- PPTX -->
       <PptxViewer
         v-else-if="formatType === 'pptx'"
         :content="content"
@@ -166,5 +145,6 @@ defineExpose({
   align-items: center;
   justify-content: center;
   padding: 48px;
+  text-align: center;
 }
 </style>
