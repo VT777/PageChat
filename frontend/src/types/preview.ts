@@ -5,7 +5,7 @@
 // 内容块类型
 export interface ContentBlock {
   id: string
-  type: 'text' | 'heading' | 'paragraph' | 'table_row' | 'sheet' | 'slide' | 'image'
+  type: 'text' | 'heading' | 'paragraph' | 'table' | 'table_row' | 'sheet' | 'slide' | 'image'
   content: any
   metadata: Record<string, any>
   source_anchor?: SourceAnchor

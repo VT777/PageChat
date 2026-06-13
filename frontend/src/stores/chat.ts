@@ -13,6 +13,7 @@ import type { ChatScopeRequest, RetrievalScopeTrace } from '@/types/retrieval'
 import type { SourceAnchor } from '@/types/preview'
 
 export interface EvidenceItem {
+  docId?: string
   documentName?: string
   displayLabel?: string
   sourceAnchor?: SourceAnchor | null
@@ -357,7 +358,12 @@ export const useChatStore = defineStore('chat', () => {
       }
       if (record.display_label || record.source_anchor) {
         evidence.push({
-          documentName: String(record.document_name || record.name || ''),
+          docId: typeof record.doc_id === 'string'
+            ? record.doc_id
+            : typeof record.docId === 'string'
+              ? record.docId
+              : undefined,
+          documentName: String(record.document_name || record.doc_name || record.documentName || record.name || ''),
           displayLabel: typeof record.display_label === 'string' ? record.display_label : undefined,
           sourceAnchor: (record.source_anchor || null) as SourceAnchor | null,
           retrievalSource: typeof record.retrieval_source === 'string' ? record.retrieval_source : undefined,
