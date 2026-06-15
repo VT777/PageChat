@@ -105,7 +105,34 @@ def test_migrations_create_history_and_are_idempotent() -> None:
                 "20260610_001_add_documents_last_reindex_at",
                 "20260610_002_add_core_indexes",
                 "20260611_003_add_model_settings_tables",
+                "20260615_004_add_ocr_settings_tables",
             ]
+
+    asyncio.run(run())
+
+
+def test_migrations_add_ocr_settings_tables() -> None:
+    async def run() -> None:
+        async with aiosqlite.connect(":memory:") as db:
+            await _create_bootstrap_schema(db)
+
+            await run_migrations(db)
+
+            profile_columns = await _column_names(db, "ocr_engine_profiles")
+            override_columns = await _column_names(db, "ocr_task_overrides")
+
+            assert {
+                "profile_id",
+                "user_id",
+                "engine_type",
+                "endpoint",
+                "model",
+                "api_key_ciphertext",
+                "api_key_mask",
+                "profile_version",
+                "is_default",
+            }.issubset(profile_columns)
+            assert {"user_id", "task", "profile_id"}.issubset(override_columns)
 
     asyncio.run(run())
 

@@ -98,10 +98,56 @@ async def _add_model_settings_tables(db: aiosqlite.Connection) -> None:
     )
 
 
+async def _add_ocr_settings_tables(db: aiosqlite.Connection) -> None:
+    await db.execute(
+        """
+        CREATE TABLE IF NOT EXISTS ocr_engine_profiles (
+            profile_id TEXT PRIMARY KEY,
+            user_id TEXT NOT NULL,
+            name TEXT NOT NULL,
+            engine_type TEXT NOT NULL,
+            provider TEXT NOT NULL,
+            endpoint TEXT NOT NULL,
+            model TEXT NOT NULL,
+            api_key_ciphertext TEXT NOT NULL,
+            api_key_mask TEXT NOT NULL,
+            capabilities_json TEXT NOT NULL,
+            options_json TEXT NOT NULL,
+            profile_version TEXT NOT NULL,
+            is_default INTEGER NOT NULL DEFAULT 0,
+            validation_status TEXT NOT NULL DEFAULT 'untested',
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+        """
+    )
+    await db.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_ocr_engine_profiles_user
+        ON ocr_engine_profiles(user_id, updated_at)
+        """
+    )
+    await db.execute(
+        """
+        CREATE TABLE IF NOT EXISTS ocr_task_overrides (
+            user_id TEXT NOT NULL,
+            task TEXT NOT NULL,
+            profile_id TEXT NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (user_id, task),
+            FOREIGN KEY (profile_id) REFERENCES ocr_engine_profiles(profile_id)
+                ON DELETE CASCADE
+        )
+        """
+    )
+
+
 MIGRATIONS: tuple[Migration, ...] = (
     ("20260610_001_add_documents_last_reindex_at", _add_documents_last_reindex_at),
     ("20260610_002_add_core_indexes", _add_core_indexes),
     ("20260611_003_add_model_settings_tables", _add_model_settings_tables),
+    ("20260615_004_add_ocr_settings_tables", _add_ocr_settings_tables),
 )
 
 
