@@ -6,6 +6,9 @@ from app.api.auth import require_auth
 from app.models.database import get_db
 from app.services.litellm_adapter import LiteLLMAdapter
 from app.services.model_settings_service import ModelSettingsService, _unprotect_api_key
+from app.services.ocr_engines.openai_compatible_adapter import OpenAICompatibleOCRAdapter
+from app.services.ocr_engines.paddleocr_job_adapter import PaddleOCRJobAdapter
+from app.services.ocr_settings_service import OCRSettingsService
 from app.services.runtime_settings_service import runtime_settings_service
 
 router = APIRouter(prefix="/api/settings", tags=["settings"])
@@ -42,8 +45,46 @@ class ModelRoutesUpdate(BaseModel):
     routes: list[ModelRouteIn]
 
 
+class OCREngineProfileIn(BaseModel):
+    name: str
+    engine_type: str
+    provider: str
+    endpoint: str
+    model: str
+    api_key: str
+    capabilities: list[str]
+    options: dict = {}
+    is_default: bool = False
+
+
+class OCREngineProfileUpdateIn(BaseModel):
+    name: str
+    engine_type: str
+    provider: str
+    endpoint: str
+    model: str
+    api_key: str | None = None
+    capabilities: list[str]
+    options: dict = {}
+    is_default: bool = False
+
+
+class OCREngineTestIn(BaseModel):
+    task: str = "page_text"
+    image_url: str = "data:image/png;base64,"
+    options: dict = {}
+
+
+class OCRRoutesUpdate(BaseModel):
+    routes: dict[str, str | None]
+
+
 def _model_settings_service(db: aiosqlite.Connection) -> ModelSettingsService:
     return ModelSettingsService(db)
+
+
+def _ocr_settings_service(db: aiosqlite.Connection) -> OCRSettingsService:
+    return OCRSettingsService(db)
 
 
 @router.get("/pageindex")
@@ -190,3 +231,134 @@ async def save_model_routes(
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     return saved
+
+
+@router.get("/ocr-engines")
+async def list_ocr_engines(
+    db: aiosqlite.Connection = Depends(get_db),
+    current_user: dict = Depends(require_auth),
+):
+    service = _ocr_settings_service(db)
+    return await service.list_profiles(current_user["id"])
+
+
+@router.post("/ocr-engines")
+async def save_ocr_engine(
+    payload: OCREngineProfileIn,
+    db: aiosqlite.Connection = Depends(get_db),
+    current_user: dict = Depends(require_auth),
+):
+    service = _ocr_settings_service(db)
+    try:
+        return await service.save_profile(
+            user_id=current_user["id"],
+            name=payload.name,
+            engine_type=payload.engine_type,
+            provider=payload.provider,
+            endpoint=payload.endpoint,
+            model=payload.model,
+            api_key=payload.api_key,
+            capabilities=payload.capabilities,
+            options=payload.options,
+            is_default=payload.is_default,
+        )
+    except (RuntimeError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@router.patch("/ocr-engines/{profile_id}")
+async def update_ocr_engine(
+    profile_id: str,
+    payload: OCREngineProfileUpdateIn,
+    db: aiosqlite.Connection = Depends(get_db),
+    current_user: dict = Depends(require_auth),
+):
+    service = _ocr_settings_service(db)
+    try:
+        return await service.update_profile(
+            user_id=current_user["id"],
+            profile_id=profile_id,
+            name=payload.name,
+            engine_type=payload.engine_type,
+            provider=payload.provider,
+            endpoint=payload.endpoint,
+            model=payload.model,
+            api_key=payload.api_key or None,
+            capabilities=payload.capabilities,
+            options=payload.options,
+            is_default=payload.is_default,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+
+
+@router.delete("/ocr-engines/{profile_id}")
+async def delete_ocr_engine(
+    profile_id: str,
+    db: aiosqlite.Connection = Depends(get_db),
+    current_user: dict = Depends(require_auth),
+):
+    service = _ocr_settings_service(db)
+    deleted = await service.delete_profile(current_user["id"], profile_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="OCR profile not found")
+    return {"success": True}
+
+
+@router.post("/ocr-engines/{profile_id}/test")
+async def test_ocr_engine(
+    profile_id: str,
+    payload: OCREngineTestIn,
+    db: aiosqlite.Connection = Depends(get_db),
+    current_user: dict = Depends(require_auth),
+):
+    service = _ocr_settings_service(db)
+    profile = await service._get_profile_with_secret(current_user["id"], profile_id)
+    if not profile:
+        raise HTTPException(status_code=404, detail="OCR profile not found")
+    try:
+        api_key = _unprotect_api_key(profile["api_key_ciphertext"])
+        if profile["engine_type"] == "paddleocr_job":
+            adapter = PaddleOCRJobAdapter(
+                token=api_key,
+                job_url=profile["endpoint"],
+                model=profile["model"],
+                optional_payload=payload.options or None,
+            )
+        elif profile["engine_type"] == "openai_compatible_ocr":
+            adapter = OpenAICompatibleOCRAdapter(
+                api_key=api_key,
+                base_url=profile["endpoint"],
+                model=profile["model"],
+            )
+        else:
+            raise ValueError(f"Unsupported OCR engine type: {profile['engine_type']}")
+        result = adapter.recognize(payload.image_url, task=payload.task, options=payload.options)
+        if hasattr(result, "__await__"):
+            await result
+        return {"success": True}
+    except Exception as exc:
+        message = str(exc).replace(_unprotect_api_key(profile["api_key_ciphertext"]), "[redacted-api-key]")
+        raise HTTPException(status_code=400, detail=message)
+
+
+@router.get("/ocr-routes")
+async def list_ocr_routes(
+    db: aiosqlite.Connection = Depends(get_db),
+    current_user: dict = Depends(require_auth),
+):
+    service = _ocr_settings_service(db)
+    return await service.list_task_overrides(current_user["id"])
+
+
+@router.put("/ocr-routes")
+async def save_ocr_routes(
+    payload: OCRRoutesUpdate,
+    db: aiosqlite.Connection = Depends(get_db),
+    current_user: dict = Depends(require_auth),
+):
+    service = _ocr_settings_service(db)
+    try:
+        return await service.save_task_overrides(current_user["id"], payload.routes)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
