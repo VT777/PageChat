@@ -6,7 +6,7 @@ from typing import Any, Dict, List, Optional
 
 from pageindex.contracts import make_toc_skeleton_context
 from pageindex.evidence_classifier import classify_bookmarks
-from pageindex.quality_validation import TocQualityChecker
+from pageindex.index_quality import TocQualityChecker
 
 
 class CodeTocProvider:

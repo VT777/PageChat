@@ -23,26 +23,26 @@ MAX_PAGES = 20            # 最大页数
 # Prompt
 # ---------------------------------------------------------------------------
 
-_FAST_PROMPT = """你是文档结构分析专家。请分析以下文档的完整内容，提取完整的目录结构。
+_FAST_PROMPT = """You are a document structure analyst. Analyze the full document excerpts below and extract a complete table-of-contents tree.
 
-要求：
-1. 提取所有级别的章节标题
-2. 每个标题包含：标题文本、级别（1=一级，2=二级...）、页码
-3. 页码从1开始
-4. 保持原始编号
-5. 不要遗漏任何章节
+Requirements:
+1. Extract headings at all hierarchy levels.
+2. For each heading, return title text, level (1 for top-level, 2 for child, etc.), and 1-based physical PDF page number.
+3. Page numbers start at 1.
+4. Keep original numbering when present.
+5. Do not omit visible sections, appendices, references, or other structural headings.
+6. Ignore headers, footers, page numbers, table cells, and decorative text.
 
-输出JSON格式：
+Return JSON only:
 {{
   "chapters": [
-    {{"title": "一级标题", "level": 1, "page": 1, "nodes": [
-      {{"title": "二级标题", "level": 2, "page": 3}}
-    ]}},
-    ...
+    {{"title": "Top-level heading", "level": 1, "page": 1, "nodes": [
+      {{"title": "Child heading", "level": 2, "page": 3}}
+    ]}}
   ]
 }}
 
-文档内容：
+Document excerpts:
 {content}
 """
 
@@ -72,7 +72,7 @@ def extract_fast_text_toc(
     if not page_texts or len(page_texts) > MAX_PAGES:
         return None
 
-    print(f"[FAST-TEXT] Starting fast extraction: {len(page_texts)} pages")
+    print(f"[TOC-CANDIDATE] provider=fast_text action=extract status=started pages={len(page_texts)}")
 
     # 构建内容
     content_lines = []
@@ -113,7 +113,7 @@ def extract_fast_text_toc(
                 if len(page_texts) <= 10:
                     confidence += 0.1
 
-                print(f"[FAST-TEXT] Extracted {len(chapters)} chapters")
+                print(f"[TOC-CANDIDATE] provider=fast_text action=extract status=ok chapters={len(chapters)}")
                 return {
                     "items": tree,
                     "structure": "hierarchical",
@@ -122,7 +122,7 @@ def extract_fast_text_toc(
                 }
 
     except Exception as e:
-        print(f"[FAST-TEXT] Extraction failed: {e}")
+        print(f"[TOC-CANDIDATE] provider=fast_text action=extract status=error error={e}")
 
     return None
 

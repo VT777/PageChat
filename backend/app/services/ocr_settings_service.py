@@ -1,4 +1,4 @@
-"""Persistence and resolution for user-configured OCR engine profiles."""
+﻿"""Persistence and resolution for user-configured OCR engine profiles."""
 
 from __future__ import annotations
 
@@ -248,11 +248,12 @@ class OCRSettingsService:
             override = await self._profile_for_task_override(user_id, task)
             if override:
                 return _resolved_profile(override, source="task_override")
-            default = await self._default_profile(user_id)
-            if default:
-                return _resolved_profile(default, source="default_profile")
-        return _environment_fallback(task)
-
+            default_profile = await self._default_profile(user_id)
+            if default_profile:
+                public = _resolved_profile(default_profile, source="default_profile")
+                if task in set(public.get("capabilities") or []):
+                    return public
+        return ocr_task_default_route(task)
     async def _profile_for_task_override(self, user_id: str, task: str) -> Optional[Dict[str, Any]]:
         cursor = await self.db.execute(
             """
@@ -335,29 +336,35 @@ def _resolved_profile(row: Dict[str, Any], *, source: str) -> Dict[str, Any]:
     return public
 
 
-def _environment_fallback(task: str) -> Dict[str, Any]:
-    engine_type = getattr(config, "OCR_DEFAULT_ENGINE_TYPE", "openai_compatible_ocr")
-    endpoint = getattr(config, "OCR_BASE_URL", "")
-    model = getattr(config, "OCR_MODEL", "")
-    provider = "environment"
+def ocr_task_default_route(task: str) -> Dict[str, Any]:
+    if task not in OCR_TASKS:
+        raise ValueError(f"Unsupported OCR task: {task}")
+    model = getattr(config, "OCR_OPENAI_MODEL", "qwen-vl-ocr-latest")
+    endpoint = getattr(config, "OCR_OPENAI_BASE_URL", getattr(config, "OCR_BASE_URL", ""))
+    api_key = getattr(config, "OCR_OPENAI_API_KEY", getattr(config, "OCR_API_KEY", ""))
+    provider = "dashscope"
+    engine_type = "openai_compatible_ocr"
     return {
         "profile_id": None,
         "user_id": None,
-        "name": "Environment OCR",
+        "name": f"Task default OCR: {task}",
         "engine_type": engine_type,
         "provider": provider,
         "endpoint": endpoint,
         "model": model,
-        "api_key": getattr(config, "OCR_API_KEY", ""),
-        "api_key_mask": mask_api_key(getattr(config, "OCR_API_KEY", "")),
+        "api_key": api_key,
+        "api_key_mask": mask_api_key(api_key),
         "capabilities": [task],
         "options": {},
         "profile_version": _profile_version(engine_type, provider, endpoint, model, task, "{}"),
         "is_default": False,
-        "validation_status": "environment",
-        "source": "environment",
+        "validation_status": "task_default",
+        "source": "task_default",
     }
 
+
+def _environment_fallback(task: str) -> Dict[str, Any]:
+    return ocr_task_default_route(task)
 
 def _profile_version(*parts: str) -> str:
     return hashlib.sha256("|".join(str(part) for part in parts).encode("utf-8")).hexdigest()[:16]
@@ -365,4 +372,6 @@ def _profile_version(*parts: str) -> str:
 
 def _json_dumps(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+
 

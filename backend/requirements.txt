@@ -6,6 +6,7 @@ pillow==12.2.0
 pymupdf==1.26.4
 PyPDF2==3.0.1
 python-dotenv==1.1.0
+requests>=2.32.0
 tiktoken
 pyyaml==6.0.2
 aiosqlite==0.20.0

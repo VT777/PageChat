@@ -7,10 +7,16 @@ from typing import Any, Dict, List
 PATH_TOC_PAGE = "toc_page"
 PATH_HIERARCHICAL = "hierarchical"
 PATH_BATCH = "batch"
-PATH_VISUAL = "visual"
 PATH_FAST_TEXT = "fast_text"
+PATH_PPOCR_LAYOUT = "ppocr_layout"
 
-ALL_PATHS = [PATH_TOC_PAGE, PATH_HIERARCHICAL, PATH_BATCH, PATH_VISUAL, PATH_FAST_TEXT]
+ALL_PATHS = [
+    PATH_TOC_PAGE,
+    PATH_HIERARCHICAL,
+    PATH_BATCH,
+    PATH_FAST_TEXT,
+    PATH_PPOCR_LAYOUT,
+]
 
 
 def normalize_confidence(value: Any) -> float:
@@ -54,6 +60,14 @@ def decide_extraction_path(analysis: Dict[str, Any], mode: str = "smart") -> Dic
     reasons: List[str] = []
     alternatives: List[str] = []
 
+    if is_image_only:
+        reasons.append(f"Image PDF: text_coverage={text_coverage:.0%}")
+        return _make_decision(PATH_PPOCR_LAYOUT, 0.95, reasons, [PATH_BATCH])
+
+    if is_garbled or (quality.get("meaningful_ratio", 1) < 0.15 and text_coverage < 0.3):
+        reasons.append(f"Low quality text: meaningful={quality.get('meaningful_ratio', 0):.0%}")
+        return _make_decision(PATH_PPOCR_LAYOUT, 0.9, reasons, [PATH_BATCH])
+
     if mode == "fast":
         if page_count <= 20 and text_coverage > 0.5 and not is_garbled:
             reasons.append("Fast mode: short text document")
@@ -68,14 +82,6 @@ def decide_extraction_path(analysis: Dict[str, Any], mode: str = "smart") -> Dic
         if toc_page_info.get("has_toc_page") and normalize_confidence(toc_page_info.get("confidence", 0)) >= 0.5:
             reasons.append("Balanced mode: TOC page detected")
             return _make_decision(PATH_TOC_PAGE, 0.8, reasons, [PATH_HIERARCHICAL])
-
-    if is_image_only:
-        reasons.append(f"Image PDF: text_coverage={text_coverage:.0%}")
-        return _make_decision(PATH_VISUAL, 0.95, reasons, [PATH_BATCH])
-
-    if is_garbled or (quality.get("meaningful_ratio", 1) < 0.15 and text_coverage < 0.3):
-        reasons.append(f"Low quality text: meaningful={quality.get('meaningful_ratio', 0):.0%}")
-        return _make_decision(PATH_VISUAL, 0.9, reasons, [PATH_BATCH])
 
     if toc_page_info.get("has_toc_page"):
         toc_conf = normalize_confidence(toc_page_info.get("confidence", 0))
@@ -151,7 +157,7 @@ def get_path_description(path: str) -> str:
         PATH_TOC_PAGE: "TOC page extraction",
         PATH_HIERARCHICAL: "Hierarchical extraction",
         PATH_BATCH: "Batch page extraction",
-        PATH_VISUAL: "Visual extraction",
         PATH_FAST_TEXT: "Fast text extraction",
+        PATH_PPOCR_LAYOUT: "PP-OCRv6 layout extraction",
     }
     return descriptions.get(path, f"Unknown path: {path}")

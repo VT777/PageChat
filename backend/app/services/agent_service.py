@@ -255,7 +255,10 @@ class AgentService:
                     return False
                 content = str(msg.get("content") or "")
                 return (
-                    content.startswith("本轮可用文档ID范围：")
+                    content.startswith("Available document ID scope this turn:")
+                    or content.startswith("Only document ID is allowed this turn:")
+                    or content.startswith("Preferred document IDs this turn:")
+                    or content.startswith("本轮可用文档ID范围：")
                     or content.startswith("本轮仅允许使用文档ID:")
                     or content.startswith("优先检索这些文档ID：")
                 )
@@ -767,16 +770,15 @@ class AgentService:
     def _build_doc_scope_instruction(document_ids: List[str]) -> str:
         if len(document_ids) == 1:
             return (
-                "本轮仅允许使用文档ID: "
-                f"{document_ids[0]}。若工具参数缺少 doc_id，请使用该值。"
+                "Only document ID is allowed this turn: "
+                f"{document_ids[0]}. If tool input is missing doc_id, use this value."
             )
         joined = ", ".join(document_ids[:10])
         return (
-            "本轮可用文档ID范围："
-            f"{joined}。调用 get_document_structure/get_page_content 时，"
-            "doc_id 必须在该范围内。"
+            "Available document ID scope this turn: "
+            f"{joined}. When calling get_document_structure/get_page_content, "
+            "doc_id must stay within this scope."
         )
-
     @staticmethod
     def _inject_default_doc_id(
         tool_name: str,

@@ -2,16 +2,21 @@
 
 from __future__ import annotations
 
+import base64
+import hashlib
+import io
 import json
 import os
 import time
 from typing import Any, Dict, List, Optional
 
 from .contracts import OCRDocumentResult, OCRLine, OCRPageResult, OCRTask
+from .task_prompts import default_task_prompt
 
 
 DEFAULT_JOB_URL = "https://paddleocr.aistudio-app.com/api/v2/ocr/jobs"
 STRUCTURE_MODELS = {"PP-StructureV3", "PaddleOCR-VL-1.6"}
+PROMPT_VERSION = "2026-06-15"
 
 
 class PaddleOCRJobAdapter:
@@ -47,9 +52,26 @@ class PaddleOCRJobAdapter:
         task: OCRTask,
         options: Optional[Dict[str, Any]] = None,
     ) -> OCRDocumentResult:
-        job_id = self._submit_job(file_path_or_url, options or {})
+        options = options or {}
+        prompt, prompt_name = _task_prompt(task, self.model, options)
+        started = time.perf_counter()
+        base_diagnostics = self._diagnostics(
+            task=task,
+            prompt=prompt,
+            prompt_name=prompt_name,
+            input_type=_input_type(file_path_or_url),
+        )
+        job_id = self._submit_job(file_path_or_url, options, prompt=prompt)
         jsonl_url = self._poll_job(job_id)
         pages = self._download_jsonl(jsonl_url)
+        evidence_levels = sorted({page.evidence_level for page in pages})
+        diagnostics = {
+            **base_diagnostics,
+            "job_id": job_id,
+            "elapsed_ms": int((time.perf_counter() - started) * 1000),
+            "result_pages": len(pages),
+            "evidence_level": evidence_levels[0] if len(evidence_levels) == 1 else ",".join(evidence_levels),
+        }
         return OCRDocumentResult(
             task=task,
             engine_type="paddleocr_job",
@@ -57,7 +79,8 @@ class PaddleOCRJobAdapter:
             pages=pages,
             profile_id=self.profile_id,
             profile_version=self.profile_version,
-            raw={"job_id": job_id, "result_url": jsonl_url},
+            diagnostics=diagnostics,
+            raw={"job_id": job_id, "result_url": jsonl_url, "diagnostics": diagnostics},
         )
 
     def _headers(self, *, json_content: bool = False) -> Dict[str, str]:
@@ -66,10 +89,17 @@ class PaddleOCRJobAdapter:
             headers["Content-Type"] = "application/json"
         return headers
 
-    def _submit_job(self, file_path_or_url: str, options: Dict[str, Any]) -> str:
+    def _submit_job(self, file_path_or_url: str, options: Dict[str, Any], *, prompt: str = "") -> str:
         if not self.token:
             raise RuntimeError("PaddleOCR job token is required")
-        optional_payload = {**self.optional_payload, **options}
+        sanitized_options = {
+            key: value
+            for key, value in options.items()
+            if key not in {"prompt", "prompt_name"}
+        }
+        optional_payload = {**self.optional_payload, **sanitized_options}
+        if prompt:
+            optional_payload["prompt"] = prompt
         try:
             if file_path_or_url.startswith("http"):
                 response = self.session.post(
@@ -80,6 +110,19 @@ class PaddleOCRJobAdapter:
                         "optionalPayload": optional_payload,
                     },
                     headers=self._headers(json_content=True),
+                )
+            elif file_path_or_url.startswith("data:"):
+                filename, payload = _decode_data_url(file_path_or_url)
+                handle = io.BytesIO(payload)
+                handle.name = filename
+                response = self.session.post(
+                    self.job_url,
+                    headers=self._headers(),
+                    data={
+                        "model": self.model,
+                        "optionalPayload": json.dumps(optional_payload),
+                    },
+                    files={"file": handle},
                 )
             else:
                 if not os.path.exists(file_path_or_url):
@@ -133,6 +176,28 @@ class PaddleOCRJobAdapter:
             return message.replace(self.token, "[redacted-token]")
         return message
 
+    def _diagnostics(
+        self,
+        *,
+        task: OCRTask,
+        prompt: str,
+        prompt_name: str,
+        input_type: str,
+    ) -> Dict[str, Any]:
+        return {
+            "task": task,
+            "engine_type": "paddleocr_job",
+            "model": self.model,
+            "profile_id": self.profile_id,
+            "profile_version": self.profile_version,
+            "prompt_name": prompt_name or None,
+            "prompt_version": PROMPT_VERSION if prompt else None,
+            "prompt_text": prompt,
+            "prompt_sha256": hashlib.sha256(prompt.encode("utf-8")).hexdigest(),
+            "prompt_chars": len(prompt),
+            "input_type": input_type,
+        }
+
 
 def _default_optional_payload(model: str) -> Dict[str, Any]:
     if model in STRUCTURE_MODELS:
@@ -146,6 +211,38 @@ def _default_optional_payload(model: str) -> Dict[str, Any]:
         "useDocUnwarping": False,
         "useTextlineOrientation": False,
     }
+
+
+def _task_prompt(task: OCRTask, model: str, options: Dict[str, Any]) -> tuple[str, str]:
+    configured = str(options.get("prompt") or "").strip()
+    if configured:
+        return configured, str(options.get("prompt_name") or "custom_prompt")
+    if "vl" not in str(model or "").lower():
+        return "", ""
+    return default_task_prompt(task)
+
+def _decode_data_url(data_url: str) -> tuple[str, bytes]:
+    header, sep, encoded = str(data_url).partition(",")
+    if not sep:
+        raise ValueError("Invalid data URL OCR input")
+    if ";base64" not in header.lower():
+        raise ValueError("Only base64 data URL OCR input is supported")
+    mime_type = header[5:].split(";", 1)[0].lower() or "application/octet-stream"
+    extension = {
+        "image/jpeg": "jpg",
+        "image/jpg": "jpg",
+        "image/png": "png",
+        "image/webp": "webp",
+        "application/pdf": "pdf",
+    }.get(mime_type, "bin")
+    return f"ocr-input.{extension}", base64.b64decode(encoded)
+
+def _input_type(file_path_or_url: str) -> str:
+    if str(file_path_or_url).startswith("data:"):
+        return "data_url"
+    if str(file_path_or_url).startswith(("http://", "https://")):
+        return "remote_url"
+    return "local_file"
 
 
 def _parse_jsonl(text: str, *, model: str) -> List[OCRPageResult]:
@@ -216,4 +313,3 @@ def _normalize_box(box: Any) -> List[float]:
         ys = [float(point[1]) for point in points]
         return [min(xs), min(ys), max(xs), max(ys)]
     return [float(value) for value in box[:4]]
-

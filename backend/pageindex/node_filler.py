@@ -80,13 +80,14 @@ async def ocr_image_pages(
     try:
         ocr_result = await ocr_service_fn(file_path, page_count)
         ocr_pages = ocr_result.get("ocr_pages", [])
+        overlay_all_pages = bool(ocr_result.get("overlay_all_pages"))
 
         for ocr_page in ocr_pages:
             page_num = ocr_page.get("page_num")
             text = ocr_page.get("text", "")
             if page_num and text and 1 <= page_num <= len(page_list):
                 idx = page_num - 1
-                if idx in pages_to_ocr or not page_list[idx][0].strip():
+                if overlay_all_pages or idx in pages_to_ocr or not page_list[idx][0].strip():
                     # 覆盖空文本或图片/乱码页
                     token_approx = max(1, int(len(text) * 0.7))
                     page_list[idx] = (text, token_approx)
@@ -256,8 +257,8 @@ async def generate_doc_description(
     # 构建完整层级结构
     lines = []
     if file_name:
-        lines.append(f"文件名：{file_name}")
-    lines.append("目录结构：")
+        lines.append(f"File name: {file_name}")
+    lines.append("TOC structure:")
     _build_toc_outline(toc_tree, lines)
     structure_summary = "\n".join(lines)
 

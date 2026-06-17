@@ -63,26 +63,26 @@ class SearchResponse:
     query_effective: str = ""
 
 
-# 查询扩展Prompt
-EXPAND_QUERY_PROMPT = """将用户查询扩展为包含多语言同义词的版本，提高文档检索召回率。
+# Query expansion prompt
+EXPAND_QUERY_PROMPT = """Expand the user query with helpful synonyms and aliases to improve document retrieval recall.
 
-用户查询：{query}
+User query: {query}
 
-要求：
-1. 保留原查询的核心语义
-2. 添加英文等价表达（如果有）
-3. 添加常见缩写、别称、同义词
-4. 简洁为主，不要过度扩展
-5. 直接输出扩展后的查询字符串，不要解释
+Requirements:
+1. Preserve the query's core meaning.
+2. Add English equivalents when useful.
+3. Add common abbreviations, aliases, and synonyms.
+4. Keep the expansion concise; do not over-expand.
+5. Output only the expanded query string. Do not explain.
 
-示例：
-输入：介绍下b站
-输出：介绍下b站 B站 bilibili 哔哩哔哩 公司介绍
+Examples:
+Input: introduce Bilibili
+Output: introduce Bilibili video platform company profile
 
-输入：AI Agent市场分析
-输出：AI Agent市场分析 人工智能代理 智能体市场
+Input: AI Agent market analysis
+Output: AI Agent market analysis artificial intelligence agent autonomous agent market
 
-扩展查询："""
+Expanded query:"""
 
 
 class DocumentSearchService:

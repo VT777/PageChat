@@ -1,6 +1,7 @@
 """OCR 服务：使用 DashScope qwen-vl-ocr-latest 通过 OpenAI 兼容 API 调用。"""
 
 import asyncio
+import inspect
 import time
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
@@ -16,6 +17,7 @@ from app.core.config import (
     OCR_RATE_LIMIT_RPS,
 )
 from app.core.logging_config import silence_noisy_http_loggers
+from app.services.ocr_engines.task_prompts import PAGE_TEXT_PROMPT
 
 
 silence_noisy_http_loggers()
@@ -55,16 +57,38 @@ class RateLimiter:
 
 
 class OCRService:
-    def __init__(self) -> None:
+    def __init__(self, *, log_model_identity: bool = True) -> None:
         self.client = AsyncOpenAI(
             api_key=OCR_API_KEY,
             base_url=OCR_BASE_URL,
         )
         self.model = OCR_MODEL
+        self.log_model_identity = bool(log_model_identity)
         self.rate_limiter = RateLimiter(
             max_concurrent=OCR_MAX_CONCURRENCY,
             max_rps=OCR_RATE_LIMIT_RPS,
         )
+        self._model_identity_logged = False
+        self._model_identity_log_lock = asyncio.Lock()
+
+    async def aclose(self) -> None:
+        close = getattr(self.client, "aclose", None) or getattr(self.client, "close", None)
+        if close is None:
+            return
+        result = close()
+        if inspect.isawaitable(result):
+            await result
+
+    async def _log_model_identity_once(self) -> None:
+        if not self.log_model_identity:
+            return
+        if self._model_identity_logged:
+            return
+        async with self._model_identity_log_lock:
+            if self._model_identity_logged:
+                return
+            print(f"[TOC-OCR] task=page_text engine=legacy_openai_ocr model={self.model}")
+            self._model_identity_logged = True
 
     @staticmethod
     def _extract_text_from_response(payload: Dict[str, Any]) -> str:
@@ -88,6 +112,10 @@ class OCRService:
                     lines.append(content)
         return "\n".join(lines).strip()
 
+    @staticmethod
+    def _page_text_prompt() -> str:
+        return PAGE_TEXT_PROMPT
+
     async def ocr_image_base64(self, image_base64: str, page_num: int) -> OCRPageResult:
         """对单张图片执行 OCR。"""
         if not image_base64:
@@ -100,9 +128,12 @@ class OCRService:
 
         last_error = ""
         max_attempts = max(1, int(OCR_MAX_RETRIES) + 1)
+        prompt = self._page_text_prompt()
 
         for attempt in range(1, max_attempts + 1):
             try:
+                if attempt == 1:
+                    await self._log_model_identity_once()
                 async with await self.rate_limiter.acquire():
                     completion = await self.client.chat.completions.create(
                         model=self.model,
@@ -118,15 +149,7 @@ class OCRService:
                                     },
                                     {
                                         "type": "text",
-                                        "text": (
-                                            "请提取图像中的所有文本内容，保持原有排版结构。\n"
-                                            "要求：\n"
-                                            "1. 保留所有文字，不要遗漏\n"
-                                            "2. 保持段落和换行格式\n"
-                                            "3. 表格内容用表格格式输出\n"
-                                            "4. 不要添加任何额外描述或解释\n"
-                                            "5. 如果文字模糊无法识别，用[?]标记\n"
-                                        ),
+                                        "text": prompt,
                                     },
                                 ],
                             }

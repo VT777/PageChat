@@ -101,6 +101,7 @@ class OCRDocumentResult:
     pages: List[OCRPageResult] = field(default_factory=list)
     profile_id: Optional[str] = None
     profile_version: Optional[str] = None
+    diagnostics: Dict[str, Any] = field(default_factory=dict)
     raw: Dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
@@ -110,7 +111,7 @@ class OCRDocumentResult:
             "model": self.model,
             "profile_id": self.profile_id,
             "profile_version": self.profile_version,
+            "diagnostics": dict(self.diagnostics),
             "pages": [page.to_dict() for page in self.pages],
             "raw": dict(self.raw),
         }
-

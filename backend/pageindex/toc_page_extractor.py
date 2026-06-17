@@ -1,6 +1,6 @@
 """TOC页提取路径 — 从文档目录页直接提取结构化目录。
 
-v4 改进：
+coordinate 改进：
 - 主路径：PyMuPDF 坐标提取 + LLM智能分组（高质量、处理分行问题）
 - Fallback：旧正则提取（兼容性）
 - 质量检查：不过关自动降级（返回 None），由调用方处理
@@ -79,8 +79,8 @@ _ALL_PATTERNS = [
 ]
 
 
-def normalize_toc_entries_v4_1(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """Normalize TOC entries to the v4.1 structure/title/page/physical_index shape."""
+def normalize_toc_entries(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Normalize TOC entries to the canonical structure/title/page/physical_index shape."""
     counters: List[int] = []
 
     def normalize_item(item: Dict[str, Any]) -> Dict[str, Any]:
@@ -89,7 +89,7 @@ def normalize_toc_entries_v4_1(items: List[Dict[str, Any]]) -> List[Dict[str, An
         if item.get("page_type") == "catalog_group":
             return {
                 **item,
-                "nodes": normalize_toc_entries_v4_1(item.get("nodes", [])),
+                "nodes": normalize_toc_entries(item.get("nodes", [])),
             }
 
         structure = item.get("structure")
@@ -108,13 +108,13 @@ def normalize_toc_entries_v4_1(items: List[Dict[str, Any]]) -> List[Dict[str, An
             "physical_index": item.get("physical_index"),
         }
         if item.get("nodes"):
-            normalized["nodes"] = normalize_toc_entries_v4_1(item["nodes"])
+            normalized["nodes"] = normalize_toc_entries(item["nodes"])
         return normalized
 
     return [normalize_item(item) for item in items]
 
 
-def extract_main_chapters_v4_1(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+def extract_main_chapters(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """Extract top-level chapters without relying only on dotted numeric structure."""
     main_chapters = []
     for item in items:
@@ -135,35 +135,32 @@ def extract_main_chapters_v4_1(items: List[Dict[str, Any]]) -> List[Dict[str, An
 # LLM 分组 Prompt
 # ---------------------------------------------------------------------------
 
-CATALOG_GROUPING_PROMPT = """你是一个PDF目录分析专家。请分析以下PDF目录条目列表，识别其中包含几个独立的目录组。
+CATALOG_GROUPING_PROMPT = """You are a PDF table-of-contents analyst. Analyze the ordered list of TOC entries below and identify how many independent catalog groups it contains.
 
-条目列表（按原文顺序排列）：
+Entries, in original order:
 {entries_text}
 
-分析要求：
-1. 识别条目属于哪个目录组（如"正文目录/章节目录"、"表目录"、"图目录"等）
-2. 判断目录组的数量和每个组的起止位置（按条目在列表中的序号，从1开始）
-3. 注意：同一类型的条目连续出现才属于同一组；如果中间插入了其他类型，应视为不同组
-4. 必须覆盖所有条目，不能有遗漏或重叠
+Requirements:
+1. Identify each entry group's type, such as chapter catalog, table catalog, or figure catalog.
+2. Return each group's start and end entry numbers. Entry numbers are 1-based positions in the list, not PDF page numbers.
+3. A group is usually a contiguous run of entries of the same catalog type.
+4. Cover every entry exactly once. Do not leave gaps or overlaps.
 
-输出JSON格式（不要有任何其他内容）：
+Return JSON only:
 {{
   "groups": [
     {{
-      "title": "目录",
+      "title": "Contents",
       "type": "chapter_catalog",
       "entry_start": 1,
       "entry_end": 22
     }}
   ],
-  "reasoning": "简要说明分组依据"
+  "reasoning": "brief grouping rationale"
 }}
 
-注意：
-- entry_start 和 entry_end 是条目在列表中的序号（从1开始，包含两端），不是 PDF 页码范围
-- 必须覆盖所有条目，不能有遗漏或重叠
-- 如果只有一组，groups 数组长度为1
-- type 字段可选值：chapter_catalog（正文/章节目录）、table_catalog（表目录）、figure_catalog（图目录）
+Allowed type values: chapter_catalog, table_catalog, figure_catalog.
+If there is only one group, return one object in the groups array.
 """
 
 
@@ -178,7 +175,7 @@ def extract_toc_from_pages(
     model: Optional[str] = None,
     page_texts: Optional[List[str]] = None,
 ) -> Optional[Dict[str, Any]]:
-    """从目录页提取结构化目录（v4 坐标提取 + fallback）。
+    """从目录页提取结构化目录（coordinate 坐标提取 + fallback）。
 
     Args:
         doc_path: PDF文件路径
@@ -203,46 +200,46 @@ def extract_toc_from_pages(
 
     model = model or "qwen3.6-flash"
 
-    # === 主路径：v4 坐标提取 ===
+    # === 主路径：coordinate 坐标提取 ===
     try:
-        print("[TOC-PAGE] Trying coordinate-based extraction (v4)")
+        print("[TOC-CANDIDATE] provider=toc_page action=coordinate_extract status=started")
         result = _extract_toc_coordinate(doc_path, toc_page_indices, doc_page_count, model, page_texts)
         if result and _check_quality(result, doc_page_count):
-            result["items"] = normalize_toc_entries_v4_1(result.get("items", []))
-            print(f"[TOC-PAGE] Coordinate extraction success: {len(result['items'])} items")
+            result["items"] = normalize_toc_entries(result.get("items", []))
+            print(f"[TOC-CANDIDATE] provider=toc_page action=coordinate_extract status=ok items={len(result['items'])}")
             result["extraction_method"] = "coordinate"
             return result
         elif result:
-            print(f"[TOC-PAGE] Coordinate extraction quality insufficient, fallback to regex")
+            print(f"[TOC-CANDIDATE] provider=toc_page action=coordinate_extract status=low_quality fallback=regex")
         else:
-            print("[TOC-PAGE] Coordinate extraction failed, fallback to regex")
+            print("[TOC-CANDIDATE] provider=toc_page action=coordinate_extract status=empty fallback=regex")
     except Exception as e:
-        print(f"[TOC-PAGE] Coordinate extraction error: {e}, fallback to regex")
+        print(f"[TOC-CANDIDATE] provider=toc_page action=coordinate_extract status=error error={e} fallback=regex")
 
     # === Fallback：旧正则提取 ===
     if page_texts:
         try:
-            print("[TOC-PAGE] Trying regex fallback")
+            print("[TOC-CANDIDATE] provider=toc_page action=regex_extract status=started")
             result = _extract_toc_regex(page_texts, toc_page_indices, doc_page_count)
             if result and _check_quality(result, doc_page_count):
-                result["items"] = normalize_toc_entries_v4_1(result.get("items", []))
-                print(f"[TOC-PAGE] Regex fallback success: {len(result['items'])} items")
+                result["items"] = normalize_toc_entries(result.get("items", []))
+                print(f"[TOC-CANDIDATE] provider=toc_page action=regex_extract status=ok items={len(result['items'])}")
                 result["extraction_method"] = "regex"
                 return result
             elif result:
-                print(f"[TOC-PAGE] Regex fallback quality insufficient")
+                print(f"[TOC-CANDIDATE] provider=toc_page action=regex_extract status=low_quality")
             else:
-                print("[TOC-PAGE] Regex fallback failed")
+                print("[TOC-CANDIDATE] provider=toc_page action=regex_extract status=empty")
         except Exception as e:
-            print(f"[TOC-PAGE] Regex fallback error: {e}")
+            print(f"[TOC-CANDIDATE] provider=toc_page action=regex_extract status=error error={e}")
 
     # 所有方法都失败或质量不过关 → 返回 None（降级标记）
-    print("[TOC-PAGE] All extraction methods failed or quality insufficient, returning None")
+    print("[TOC-CANDIDATE] provider=toc_page action=extract status=rejected reason=no_quality_candidate")
     return None
 
 
 # ===========================================================================
-# v4 坐标提取核心
+# coordinate 坐标提取核心
 # ===========================================================================
 
 def _extract_toc_coordinate(
@@ -252,7 +249,7 @@ def _extract_toc_coordinate(
     model: str,
     page_texts: Optional[List[str]] = None,
 ) -> Optional[Dict[str, Any]]:
-    """v4 坐标提取主逻辑。"""
+    """coordinate 坐标提取主逻辑。"""
     import fitz
 
     doc = fitz.open(doc_path)
@@ -308,7 +305,7 @@ def _extract_toc_coordinate(
     offset = _calculate_offset(all_entries, page_texts, toc_page_indices)
     if offset != 0:
         _apply_offset(all_entries, offset)
-        print(f"[TOC-PAGE] Applied offset {offset:+d} to all entries")
+        print(f"[TOC-MAPPING] provider=toc_page action=apply_offset offset={offset:+d}")
 
     # 智能层级推断
     entries_with_level = _infer_hierarchy_smart(all_entries)
@@ -323,7 +320,7 @@ def _extract_toc_coordinate(
     items = _convert_tree_to_items(tree)
 
     # 计算置信度
-    confidence = _calculate_confidence_v4(items, doc_page_count)
+    confidence = _calculate_confidence(items, doc_page_count)
 
     return {
         "items": items,
@@ -450,7 +447,7 @@ def _calculate_offset(entries: List[Dict], page_texts: List[str], toc_page_indic
             if title[:20] in page_text:
                 physical_page = page_idx + 1  # 转 1-indexed
                 offset = physical_page - logical_page
-                print(f"[TOC-OFFSET] Found '{title[:30]}' at physical p.{physical_page}, offset={offset:+d}")
+                print(f"[TOC-MAPPING] provider=toc_page action=title_match status=exact title='{title[:30]}' physical_page={physical_page} offset={offset:+d}")
                 return offset
             
             # 模糊搜索
@@ -459,17 +456,17 @@ def _calculate_offset(entries: List[Dict], page_texts: List[str], toc_page_indic
             if title_clean in page_clean:
                 physical_page = page_idx + 1
                 offset = physical_page - logical_page
-                print(f"[TOC-OFFSET] Found (fuzzy) '{title[:30]}' at physical p.{physical_page}, offset={offset:+d}")
+                print(f"[TOC-MAPPING] provider=toc_page action=title_match status=fuzzy title= '{title[:30]}' physical_page={physical_page} offset={offset:+d}")
                 return offset
     
     # 如果搜索失败，使用基于目录页位置的估算
     # 通常 offset ≈ 目录最后一页的页码
     estimated_offset = last_toc_page + 1 - logical_page
     if estimated_offset > 0:
-        print(f"[TOC-OFFSET] Using estimate based on toc position: offset={estimated_offset:+d}")
+        print(f"[TOC-MAPPING] provider=toc_page action=estimate_offset reason=toc_position offset={estimated_offset:+d}")
         return estimated_offset
     
-    print(f"[TOC-OFFSET] Could not calculate offset, assuming 0")
+    print(f"[TOC-MAPPING] provider=toc_page action=estimate_offset status=failed offset=0")
     return 0
 
 
@@ -483,9 +480,46 @@ def _apply_offset(entries: List[Dict], offset: int) -> None:
             entry["physical_index"] += offset
 
 
+def _is_unpaged_toc_candidate(title: str) -> bool:
+    text = re.sub(r"\s+", " ", str(title or "")).strip()
+    if not text:
+        return False
+    compact = re.sub(r"\s+", "", text)
+    if re.fullmatch(r"\d{1,4}\s*/\s*\d{1,4}", text):
+        return False
+    lower = text.lower()
+    footer_markers = (
+        "important disclosure",
+        "important disclosures",
+        "final rating",
+        "read final",
+        "\u8bf7\u9605\u8bfb",
+        "\u91cd\u8981\u58f0\u660e",
+        "\u8bc4\u7ea7\u8bf4\u660e",
+    )
+    if any(marker in lower or marker in text for marker in footer_markers):
+        return False
+    if "|" in text and len(compact) <= 24:
+        return False
+    if re.fullmatch(r"[A-Za-z\u4e00-\u9fff]{1,12}", compact):
+        return False
+    if re.match(r"^(?:\d+(?:\.\d+)*|[A-Za-z]?\d+)[\s\u3001,\.\uff0c\uff0e-]", text):
+        return True
+    if re.match(r"^(?:figure|table)\s*\d+", lower):
+        return True
+    if re.match(r"^[\u56fe\u8868]\s*\d+", text):
+        return True
+    if re.search(r"[\.\u2026]{3,}$", text):
+        return True
+    return False
+
+
 def _infer_missing_pages(entries: List[Dict]) -> List[Dict]:
-    """推断缺失的页码。"""
-    entries_sorted = sorted(entries, key=lambda e: (e["source_page"], e["y0"]))
+    """Infer missing page numbers only for rows that look like TOC entries."""
+    entries_sorted = sorted(
+        [entry for entry in entries if entry.get("physical_index") is not None or _is_unpaged_toc_candidate(entry.get("title", ""))],
+        key=lambda e: (e["source_page"], e["y0"]),
+    )
 
     for i, entry in enumerate(entries_sorted):
         if entry["physical_index"] is not None:
@@ -620,16 +654,16 @@ def _validate_groups(groups: List[Dict], total_entries: int) -> bool:
         start = g.get("entry_start", 0)
         end = g.get("entry_end", 0)
         if start < 1 or end > total_entries or start > end:
-            print(f"[LLM-GROUP] Invalid range: {start}-{end} (total={total_entries})")
+            print(f"[TOC-GROUP] provider=toc_page Invalid range: {start}-{end} (total={total_entries})")
             return False
         for i in range(start, end + 1):
             if i in covered:
-                print(f"[LLM-GROUP] Overlap at index {i}")
+                print(f"[TOC-GROUP] provider=toc_page Overlap at index {i}")
                 return False
             covered.add(i)
 
     if len(covered) != total_entries:
-        print(f"[LLM-GROUP] Not all entries covered: {len(covered)}/{total_entries}")
+        print(f"[TOC-GROUP] provider=toc_page Not all entries covered: {len(covered)}/{total_entries}")
         return False
 
     return True
@@ -642,10 +676,10 @@ def _normalize_group_ranges(groups: List[Dict]) -> List[Dict]:
         item = dict(group)
         entry_start = item.pop("entry_start", None)
         entry_end = item.pop("entry_end", None)
-        legacy_start = item.pop("start_index", None)
-        legacy_end = item.pop("end_index", None)
-        item["entry_start"] = entry_start if entry_start is not None else legacy_start
-        item["entry_end"] = entry_end if entry_end is not None else legacy_end
+        fallback_start = item.pop("start_index", None)
+        fallback_end = item.pop("end_index", None)
+        item["entry_start"] = entry_start if entry_start is not None else fallback_start
+        item["entry_end"] = entry_end if entry_end is not None else fallback_end
         normalized.append(item)
     return normalized
 
@@ -665,7 +699,7 @@ def _llm_group_entries(entries: List[Dict], model: str) -> List[Dict]:
     if not entries:
         return []
 
-    print(f"[LLM-GROUP] Calling LLM to group {len(entries)} entries...")
+    print(f"[TOC-GROUP] provider=toc_page action=llm_group status=started entries={len(entries)}")
 
     try:
         from pageindex.utils import llm_completion
@@ -675,7 +709,7 @@ def _llm_group_entries(entries: List[Dict], model: str) -> List[Dict]:
 
         response = llm_completion(model, prompt)
         if not response:
-            print("[LLM-GROUP] Empty response, using fallback")
+            print("[TOC-GROUP] provider=toc_page action=llm_group status=empty fallback=single_group")
             return _fallback_grouping(entries)
 
         json_str = _extract_json_from_response(response)
@@ -684,16 +718,16 @@ def _llm_group_entries(entries: List[Dict], model: str) -> List[Dict]:
         groups = _normalize_group_ranges(groups)
 
         if _validate_groups(groups, len(entries)):
-            print(f"[LLM-GROUP] Success: {len(groups)} groups")
+            print(f"[TOC-GROUP] provider=toc_page action=llm_group status=ok groups={len(groups)}")
             for g in groups:
                 print(f"  - {g['title']}: items {g['entry_start']}-{g['entry_end']}")
             return groups
         else:
-            print("[LLM-GROUP] Validation failed, using fallback")
+            print("[TOC-GROUP] provider=toc_page action=llm_group status=rejected fallback=single_group")
             return _fallback_grouping(entries)
 
     except Exception as e:
-        print(f"[LLM-GROUP] Error: {e}")
+        print(f"[TOC-GROUP] provider=toc_page action=llm_group status=error error={e}")
         return _fallback_grouping(entries)
 
 
@@ -1054,7 +1088,7 @@ def _check_quality(result: Dict[str, Any], doc_page_count: int) -> bool:
 
     # 1. 条目数检查
     if len(items) < MIN_ITEMS_COUNT:
-        print(f"[TOC-QUALITY] Too few items: {len(items)} < {MIN_ITEMS_COUNT}")
+        print(f"[TOC-QUALITY] provider=toc_page action=quality_check status=rejected reason=too_few_items items={len(items)} min_items={MIN_ITEMS_COUNT}")
         return False
 
     # 2. 页码覆盖率检查
@@ -1072,12 +1106,12 @@ def _check_quality(result: Dict[str, Any], doc_page_count: int) -> bool:
             last_page = max(page_nums)
             coverage = last_page / doc_page_count
             if coverage < MIN_PAGE_COVERAGE_RATIO:
-                print(f"[TOC-QUALITY] Coverage too low: {coverage:.0%} < {MIN_PAGE_COVERAGE_RATIO:.0%}")
+                print(f"[TOC-QUALITY] provider=toc_page action=quality_check status=rejected reason=low_coverage coverage={coverage:.0%} min_coverage={MIN_PAGE_COVERAGE_RATIO:.0%}")
                 return False
 
     # 3. 置信度检查
     if confidence < MIN_CONFIDENCE:
-        print(f"[TOC-QUALITY] Confidence too low: {confidence:.2f} < {MIN_CONFIDENCE}")
+        print(f"[TOC-QUALITY] provider=toc_page action=quality_check status=rejected reason=low_confidence confidence={confidence:.2f} min_confidence={MIN_CONFIDENCE}")
         return False
 
     # 4. 重复检查
@@ -1091,16 +1125,16 @@ def _check_quality(result: Dict[str, Any], doc_page_count: int) -> bool:
     unique_titles = set(titles)
     if len(unique_titles) < len(titles) * 0.8:  # 超过20%重复
         dup_count = len(titles) - len(unique_titles)
-        print(f"[TOC-QUALITY] Too many duplicates: {dup_count}/{len(titles)}")
+        print(f"[TOC-QUALITY] provider=toc_page action=quality_check status=rejected reason=duplicates count={dup_count}/{len(titles)}")
         return False
 
-    print(f"[TOC-QUALITY] Passed: {len(items)} items, confidence={confidence:.2f}")
+    print(f"[TOC-QUALITY] provider=toc_page action=quality_check status=ok items={len(items)} confidence={confidence:.2f}")
     return True
 
 
-def _calculate_confidence_v4(items: List[Dict], doc_page_count: int) -> float:
-    """计算 v4 提取的置信度。"""
-    confidence = 0.6  # v4 基础分更高
+def _calculate_confidence(items: List[Dict], doc_page_count: int) -> float:
+    """计算 coordinate 提取的置信度。"""
+    confidence = 0.6  # coordinate 基础分更高
 
     # 条目数量
     if len(items) >= 10:
@@ -1156,7 +1190,7 @@ def extract_toc_from_analysis(
 
     Args:
         analysis: pdf_analyzer.analyze_pdf_structure 的输出
-        doc_path: PDF文件路径（v4坐标提取必需）
+        doc_path: PDF文件路径（coordinate坐标提取必需）
 
     Returns:
         提取结果字典，或 None（质量不过关，需降级）

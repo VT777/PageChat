@@ -691,7 +691,7 @@ async def _generate_index_async(
                         "UPDATE documents SET status = ?, error_message = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
                         (
                             "failed:indexing_timeout",
-                            f"处理超时：超过{PAGEINDEX_MAX_INDEX_SECONDS}秒未完成，可能是VLM调用超时",
+                            f"处理超时：超过{PAGEINDEX_MAX_INDEX_SECONDS}秒未完成，索引生成未能按时结束",
                             doc_id
                         ),
                     )
@@ -1318,12 +1318,6 @@ async def get_document_preview(
     toc_quality = (
         index_data.get("toc_quality") if isinstance(index_data, dict) else None
     )
-    visual_page_summaries = (
-        index_data.get("visual_page_summaries")
-        if isinstance(index_data, dict)
-        else None
-    )
-
     return {
         "id": doc.id,
         "name": doc.original_name,
@@ -1341,7 +1335,6 @@ async def get_document_preview(
             "route_decision": route_decision,
             "pre_analysis": pre_analysis,
             "toc_quality": toc_quality,
-            "visual_page_summaries_count": len(visual_page_summaries or []),
         },
         "stats": {
             "node_count": node_count,

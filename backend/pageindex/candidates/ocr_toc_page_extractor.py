@@ -37,6 +37,16 @@ class OCRTOCPageExtractor:
 
 
 def _extract_page_items(page_num: int, page_width: int, lines: List[OCRLayoutLine]) -> List[Dict[str, Any]]:
+    groups = _column_line_groups(lines, page_width)
+    if len(groups) <= 1:
+        return _extract_column_items(page_num, page_width, lines)
+    items: List[Dict[str, Any]] = []
+    for group in groups:
+        items.extend(_extract_column_items(page_num, page_width, group))
+    return items
+
+
+def _extract_column_items(page_num: int, page_width: int, lines: List[OCRLayoutLine]) -> List[Dict[str, Any]]:
     rows = _group_visual_rows(lines)
     number_column_x = _stable_number_column_x(rows, page_width)
     items: List[Dict[str, Any]] = []
@@ -147,6 +157,27 @@ def _group_visual_rows(lines: List[OCRLayoutLine]) -> List[_VisualRow]:
         if not placed:
             rows.append([line])
     return [_VisualRow(row) for row in rows]
+
+
+def _column_line_groups(lines: List[OCRLayoutLine], page_width: int) -> List[List[OCRLayoutLine]]:
+    if not page_width or page_width < 900:
+        return [lines]
+    content_lines = [line for line in lines if line.text.strip() and not _is_toc_heading(line.text)]
+    if len(content_lines) < 6:
+        return [lines]
+
+    midpoint = page_width / 2
+    left = [line for line in content_lines if line.x_center < midpoint]
+    right = [line for line in content_lines if line.x_center >= midpoint]
+    if len(left) < 3 or len(right) < 3:
+        return [lines]
+
+    left_numbers = sum(1 for line in left if _line_page_number(line.text) is not None)
+    right_numbers = sum(1 for line in right if _line_page_number(line.text) is not None)
+    if left_numbers < 1 or right_numbers < 1:
+        return [lines]
+
+    return [sorted(left, key=lambda line: (line.y0, line.x0)), sorted(right, key=lambda line: (line.y0, line.x0))]
 
 
 def _stable_number_column_x(rows: List[_VisualRow], page_width: int) -> float:

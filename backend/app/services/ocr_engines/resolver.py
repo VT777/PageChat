@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from typing import Any, Dict, Optional
 
 from app.core import config
-from app.services.ocr_settings_service import OCRSettingsService, OCR_TASKS
+from app.services.ocr_settings_service import OCRSettingsService, OCR_TASKS, ocr_task_default_route
 
 from .contracts import OCRTask
 from .openai_compatible_adapter import OpenAICompatibleOCRAdapter
@@ -98,27 +98,7 @@ def _build_adapter(route: Dict[str, Any]) -> Any:
 
 
 def _env_route(task: OCRTask) -> Dict[str, Any]:
-    engine_type = getattr(config, "OCR_DEFAULT_ENGINE_TYPE", "openai_compatible_ocr")
-    if engine_type == "paddleocr_job":
-        endpoint = config.OCR_PADDLEOCR_JOB_URL
-        model = config.OCR_PADDLEOCR_MODEL
-        api_key = config.OCR_PADDLEOCR_API_KEY
-    else:
-        endpoint = config.OCR_OPENAI_BASE_URL
-        model = config.OCR_OPENAI_MODEL
-        api_key = config.OCR_OPENAI_API_KEY
-    return {
-        "profile_id": None,
-        "source": "environment",
-        "engine_type": engine_type,
-        "provider": "environment",
-        "endpoint": endpoint,
-        "model": model,
-        "api_key": api_key,
-        "capabilities": [task],
-        "options": {},
-        "profile_version": f"environment:{engine_type}:{model}",
-    }
+    return ocr_task_default_route(task)
 
 
 def _json_loads(value: Any, *, default: Any) -> Any:

@@ -1,4 +1,4 @@
-"""Phase 0: PDF 文档预分析 — 纯代码，零 LLM/VLM 调用，< 100ms。
+"""PDF document probe — pure code, no LLM/image-model calls, < 100ms.
 
 输出文档画像：页面分类、代码 TOC 提取（书签→链接注解→正则）、乱码/图片检测。
 """
@@ -66,7 +66,7 @@ def _compute_meaningful_text_ratio(text: str) -> float:
 
 
 def _detect_toc_pages(page_texts: List[str], max_scan_pages: int = 20) -> Tuple[bool, List[int], float, List[Dict]]:
-    """检测目录页（TOC pages）- v2 分批扫描 + 多维度打分。
+    """检测目录页（TOC pages）- 分批扫描 + 多维度打分。
     
     检测逻辑：
     1. 分批扫描（每批5页，最多4批=20页）
@@ -198,7 +198,7 @@ def _detect_toc_pages(page_texts: List[str], max_scan_pages: int = 20) -> Tuple[
                 max_score = max(max_score, score)
                 batch_has_toc = True
                 
-                print(f"[PDF-ANALYZER] TOC candidate p.{page_idx + 1}: score={score}")
+                print(f"[TOC-PROBE] TOC candidate p.{page_idx + 1}: score={score}")
         
         # 连续性检测逻辑
         if batch_has_toc:
@@ -208,7 +208,7 @@ def _detect_toc_pages(page_texts: List[str], max_scan_pages: int = 20) -> Tuple[
                 next_score, _ = score_page(next_page)
                 if next_score < 60:
                     # 下一页不是目录，且当前批次已找到目录，停止扫描
-                    print(f"[PDF-ANALYZER] TOC sequence ends at p.{detected_pages[-1] + 1}")
+                    print(f"[TOC-PROBE] TOC sequence ends at p.{detected_pages[-1] + 1}")
                     break
                 # 否则继续扫描（下一页也是目录，会在下一批次处理）
             else:
@@ -442,20 +442,20 @@ def _build_document_profile(
     else:
         text_layer_quality = "noisy"
 
-    visual_dependency_score = 0.0
+    layout_dependency_score = 0.0
     if image_coverage >= 0.9:
-        visual_dependency_score += 0.45
+        layout_dependency_score += 0.45
     elif image_coverage >= 0.5:
-        visual_dependency_score += 0.25
+        layout_dependency_score += 0.25
     if image_only_ratio >= 0.2:
-        visual_dependency_score += 0.25
+        layout_dependency_score += 0.25
     elif image_only_ratio > 0:
-        visual_dependency_score += 0.1
+        layout_dependency_score += 0.1
     if has_dividers:
-        visual_dependency_score += 0.2
+        layout_dependency_score += 0.2
     if text_layer_quality in {"partial", "noisy", "garbled"}:
-        visual_dependency_score += 0.15
-    visual_dependency_score = min(1.0, round(visual_dependency_score, 3))
+        layout_dependency_score += 0.15
+    layout_dependency_score = min(1.0, round(layout_dependency_score, 3))
 
     has_reliable_full_text = (
         text_layer_quality == "reliable"
@@ -468,23 +468,23 @@ def _build_document_profile(
     elif image_coverage >= 0.9 and not has_reliable_full_text and (
         image_only_ratio >= 0.15 or has_dividers
     ):
-        layout_type = "mixed_visual_report"
+        layout_type = "mixed_layout_report"
     elif image_coverage >= 0.8 and has_dividers and not has_reliable_full_text:
         layout_type = "slide_like_report"
     else:
         layout_type = "native_text_report"
 
-    if layout_type in {"scanned_image_pdf", "mixed_visual_report", "slide_like_report"}:
-        structure_policy = "visual_required"
-    elif visual_dependency_score >= 0.7:
-        structure_policy = "visual_preferred"
+    if layout_type in {"scanned_image_pdf", "mixed_layout_report", "slide_like_report"}:
+        structure_policy = "layout_required"
+    elif layout_dependency_score >= 0.7:
+        structure_policy = "layout_preferred"
     else:
         structure_policy = "text_allowed"
 
     return {
         "layout_type": layout_type,
         "text_layer_quality": text_layer_quality,
-        "visual_dependency_score": visual_dependency_score,
+        "layout_dependency_score": layout_dependency_score,
         "structure_policy": structure_policy,
         "ocr_policy": "content_fill_only",
     }
@@ -747,7 +747,7 @@ def _infer_structure_from_titles(items: List[Dict]) -> List[Dict]:
 
 
 def analyze_pdf_structure(file_path: str) -> Dict[str, Any]:
-    """文档预分析：纯代码，零 LLM/VLM，< 100ms。"""
+    """文档预分析：纯代码，零 LLM/image-model，< 100ms。"""
     doc = pymupdf.open(file_path)
     page_count = len(doc)
 
@@ -784,9 +784,9 @@ def analyze_pdf_structure(file_path: str) -> Dict[str, Any]:
     # 文本质量深度检测（针对扫描件/图片PDF但有伪文本层的情况）
     quality = _check_text_quality(page_texts)
     if quality["is_low_quality"]:
-        print(f"[PDF-ANALYZER] Low quality text detected: meaningful={quality['meaningful_ratio']:.0%}, "
+        print(f"[TOC-PROBE] Low quality text detected: meaningful={quality['meaningful_ratio']:.0%}, "
               f"duplicate={quality['duplicate_ratio']:.0%}, fragment={quality['fragment_ratio']:.0%}")
-        # 降低 text_coverage，强制路由到 visual 路径
+        # 降低 text_coverage，强制路由到 layout/OCR 路径
         text_coverage = min(text_coverage, 0.3)
         # 标记为乱码PDF
         if not garbled_pages:
@@ -799,7 +799,7 @@ def analyze_pdf_structure(file_path: str) -> Dict[str, Any]:
     # 章节分隔页检测（用于识别"汇报提纲"等特殊文档模式）
     chapter_dividers = _detect_chapter_dividers(page_texts)
     if chapter_dividers:
-        print(f"[PDF-ANALYZER] Chapter dividers detected: {chapter_dividers}")
+        print(f"[TOC-PROBE] Chapter dividers detected: {chapter_dividers}")
 
     document_profile = _build_document_profile(
         page_count=page_count,
@@ -873,3 +873,4 @@ def analyze_pdf_structure(file_path: str) -> Dict[str, Any]:
             "preview_items": toc_preview,
         },
     }
+

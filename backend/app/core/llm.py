@@ -1,6 +1,7 @@
 import os
 import base64
 import io
+import inspect
 from openai import OpenAI, AsyncOpenAI
 from app.core.config import (
     LLM_API_KEY,
@@ -76,6 +77,15 @@ def get_async_llm_client() -> AsyncOpenAI:
         api_key=LLM_API_KEY,
         base_url=LLM_BASE_URL,
     )
+
+
+async def _close_async_client(client) -> None:
+    close = getattr(client, "aclose", None) or getattr(client, "close", None)
+    if close is None:
+        return
+    result = close()
+    if inspect.isawaitable(result):
+        await result
 
 
 def pdf_page_to_base64(pdf_path: str, page_num: int) -> str | None:
@@ -193,7 +203,14 @@ async def async_chat_completion(
         params["extra_body"] = {"enable_thinking": False}
     params["timeout"] = timeout if timeout is not None else _default_timeout_for_model(resolved_model)
     params.update(kwargs)
-    return await client.chat.completions.create(**params)
+    try:
+        response = await client.chat.completions.create(**params)
+    except Exception:
+        await _close_async_client(client)
+        raise
+    if not stream:
+        await _close_async_client(client)
+    return response
 
 
 async def chat_by_scenario(
@@ -260,4 +277,11 @@ async def chat_by_scenario(
     # 合并其他参数
     params.update(kwargs)
 
-    return await client.chat.completions.create(**params)
+    try:
+        response = await client.chat.completions.create(**params)
+    except Exception:
+        await _close_async_client(client)
+        raise
+    if not stream:
+        await _close_async_client(client)
+    return response

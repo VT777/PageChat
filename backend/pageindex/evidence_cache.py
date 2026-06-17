@@ -1,4 +1,4 @@
-"""Cache key and record helpers for OCR/VLM evidence."""
+"""Cache key and record helpers for OCR/layout evidence."""
 
 from __future__ import annotations
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
+import re
 from typing import Any, Dict, List, Optional, Tuple
 
 from pageindex.tree_schema import normalize_title
@@ -30,9 +31,13 @@ def run_balanced_quality_gate(
         repair_actions.extend(actions)
         fixed_tree = body_nodes + auxiliary_nodes
 
-    long_chapter_completeness = _long_chapters_have_children(body_nodes)
-    if not long_chapter_completeness:
-        repair_actions.append("long_chapter_without_children")
+    detected_style = _detect_tree_style(body_nodes)
+    if detected_style == "flat":
+        long_chapter_completeness = True
+    else:
+        long_chapter_completeness = _long_chapters_have_children(body_nodes)
+        if not long_chapter_completeness:
+            repair_actions.append("long_chapter_without_children")
 
     auxiliary_catalog_isolation = all(_is_auxiliary(node) for node in auxiliary_nodes)
     needs_repair = bool(repair_actions) and not (
@@ -40,6 +45,13 @@ def run_balanced_quality_gate(
     )
     if not long_chapter_completeness:
         needs_repair = True
+
+    if detected_style == "flat" and top_level_exact_match and long_chapter_completeness:
+        style_fit = "acceptable"
+    elif long_chapter_completeness:
+        style_fit = "acceptable" if not repair_actions else "warning"
+    else:
+        style_fit = "poor"
 
     result = {
         "top_level_exact_match": top_level_exact_match,
@@ -50,6 +62,8 @@ def run_balanced_quality_gate(
         "long_chapter_completeness": long_chapter_completeness,
         "auxiliary_catalog_isolation": auxiliary_catalog_isolation,
         "title_normalization_match": top_level_exact_match,
+        "detected_style": detected_style,
+        "style_fit": style_fit,
         "repair_actions": repair_actions,
         "needs_repair": needs_repair,
         "tree_complete": top_level_exact_match and long_chapter_completeness,
@@ -102,8 +116,23 @@ def _repair_top_level(
     return repaired, after_titles == expected_keys, actions
 
 
+def _detect_tree_style(nodes: List[Dict[str, Any]]) -> str:
+    if not nodes:
+        return "collapsed"
+    child_count = sum(1 for node in nodes if _has_children(node))
+    if len(nodes) == 1:
+        return "hierarchical" if child_count else "collapsed"
+    if child_count == 0:
+        return "flat"
+    if child_count == len(nodes):
+        return "hierarchical"
+    return "mixed"
+
+
 def _long_chapters_have_children(nodes: List[Dict[str, Any]]) -> bool:
     for node in nodes:
+        if _is_back_matter(node):
+            continue
         start = _positive_int(node.get("start_index"))
         end = _positive_int(node.get("end_index"))
         children = node.get("nodes") or node.get("children") or []
@@ -121,6 +150,37 @@ def _is_auxiliary(node: Dict[str, Any]) -> bool:
         or node.get("exclude_from_coverage")
         or node.get("node_type") in {"auxiliary_catalog", "auxiliary_catalog_item"}
     )
+
+
+def _is_back_matter(node: Dict[str, Any]) -> bool:
+    raw_title = re.sub(r"\s+", " ", str(node.get("title") or "").strip().lower())
+    normalized = normalize_title(raw_title)
+    if not normalized:
+        return False
+    if re.match(
+        r"^(appendix|appendices|annex|annexes|supplement|references?|bibliography|index|acknowledg(?:ement|ments)|afterword|postscript)\b",
+        raw_title,
+    ):
+        return True
+    return normalized.startswith(
+        (
+            "\u9644\u5f55",
+            "\u9644\u9304",
+            "\u53c2\u8003\u6587\u732e",
+            "\u53c3\u8003\u6587\u737b",
+            "\u53c2\u8003\u8d44\u6599",
+            "\u6587\u732e\u76ee\u5f55",
+            "\u7d22\u5f15",
+            "\u540e\u8bb0",
+            "\u5f8c\u8a18",
+            "\u8dcb",
+            "\u81f4\u8c22",
+            "\u81f4\u8b1d",
+        )
+    )
+
+def _has_children(node: Dict[str, Any]) -> bool:
+    return bool(node.get("nodes") or node.get("children"))
 
 
 def _key(title: Any) -> str:

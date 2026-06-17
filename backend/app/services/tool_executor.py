@@ -23,13 +23,13 @@ AGENT_TOOLS = [
         "type": "function",
         "function": {
             "name": "get_document_structure",
-            "description": "获取文档的目录结构，包括各章节的标题、页码范围和摘要。用于判断相关内容在哪些页面。获取后引用时使用 [[文档名 p.页码]] 格式。",
+            "description": "Get the document structure, including section titles, page ranges, and summaries. Use it to decide which pages may contain relevant content. Use citations in [[document_name p.page]] format.",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "doc_id": {
                         "type": "string",
-                        "description": "文档ID",
+                        "description": "Document ID",
                     },
                     "compact": {
                         "type": "boolean",
@@ -76,18 +76,18 @@ AGENT_TOOLS = [
         "type": "function",
         "function": {
             "name": "get_page_content",
-            "description": "批量获取指定页码的文本内容（最多5页）。返回内容包含页码信息，引用时必须使用 [[文档名 p.页码]] 格式。若标记 has_visual_content=true 则需要调用 get_document_image 查看图片。",
+            "description": "Get text content for specific pages, up to 5 pages. Returned content includes page metadata; cite it with [[document_name p.page]]. If has_visual_content=true, call get_document_image to inspect the page image.",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "doc_id": {
                         "type": "string",
-                        "description": "文档ID",
+                        "description": "Document ID",
                     },
                     "page_nums": {
                         "type": "array",
                         "items": {"type": "integer"},
-                        "description": "页码列表（从1开始），最多支持5页",
+                        "description": "1-based page number list, up to 5 pages.",
                     },
                 },
                 "required": ["doc_id", "page_nums"],
@@ -98,17 +98,17 @@ AGENT_TOOLS = [
         "type": "function",
         "function": {
             "name": "get_document_image",
-            "description": "获取指定页面的图片（base64格式）。仅当 get_page_content 返回 has_visual_content=true 时调用。一次只能获取1页图片，避免token超限。",
+            "description": "Get a base64 image for one specific page. Call only when get_page_content returns has_visual_content=true. Fetch one page at a time to avoid token limits.",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "doc_id": {
                         "type": "string",
-                        "description": "文档ID",
+                        "description": "Document ID",
                     },
                     "page_num": {
                         "type": "integer",
-                        "description": "页码（从1开始），一次只能1页",
+                        "description": "1-based page number. Fetch one page at a time.",
                     },
                 },
                 "required": ["doc_id", "page_num"],
@@ -119,13 +119,13 @@ AGENT_TOOLS = [
         "type": "function",
         "function": {
             "name": "find_related_documents",
-            "description": "根据查询内容，从可用文档中找出最相关的文档。当有多个文档可用时，先调此工具确定在哪些文档中查找。",
+            "description": "Find the most relevant documents from the available library. When multiple documents are available, call this first to decide where to search.",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "query": {
                         "type": "string",
-                        "description": "查询内容或关键词",
+                        "description": "Query text or keywords.",
                     },
                     "folder_id": {
                         "type": "string",
@@ -153,7 +153,7 @@ AGENT_TOOLS = [
         "type": "function",
         "function": {
             "name": "list_documents",
-            "description": "获取所有已上传文档的列表。当用户问'我有哪些文档'时使用。",
+            "description": "List all uploaded documents. Use when the user asks what documents are available.",
             "parameters": {"type": "object", "properties": {}},
         },
     },
@@ -161,18 +161,18 @@ AGENT_TOOLS = [
         "type": "function",
         "function": {
             "name": "aggregate_tables",
-            "description": "对多个表格文档执行聚合分析（csv/tsv/xlsx）。支持 sum、avg、count、groupby、concat。分析结果需标注来源文档，使用 [[文档名 p.x]] 格式引用。",
+            "description": "Run aggregate analysis across table documents (csv/tsv/xlsx). Supports sum, avg, count, groupby, and concat. Cite source documents with [[document_name p.x]].",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "document_ids": {
                         "type": "array",
                         "items": {"type": "string"},
-                        "description": "参与分析的文档ID列表",
+                        "description": "Document ID list for analysis.",
                     },
                     "operation_spec": {
                         "type": "object",
-                        "description": "聚合参数，如 operation/group_by/target_column/metric",
+                        "description": "Aggregation parameters such as operation, group_by, target_column, or metric.",
                     },
                 },
                 "required": ["document_ids", "operation_spec"],

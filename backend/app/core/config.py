@@ -100,7 +100,7 @@ OCR_PADDLEOCR_API_KEY = os.getenv(
     "OCR_PADDLEOCR_API_KEY",
     os.getenv("PPOCR_AISTUDIO_TOKEN", OCR_API_KEY or ""),
 )
-OCR_MAX_CONCURRENCY = int(os.getenv("OCR_MAX_CONCURRENCY", "15"))
+OCR_MAX_CONCURRENCY = int(os.getenv("OCR_MAX_CONCURRENCY", "20"))
 OCR_RATE_LIMIT_RPS = int(os.getenv("OCR_RATE_LIMIT_RPS", "15"))
 OCR_MAX_RETRIES = int(os.getenv("OCR_MAX_RETRIES", "2"))
 OCR_TIMEOUT_SECONDS = int(os.getenv("OCR_TIMEOUT_SECONDS", "60"))
@@ -166,6 +166,7 @@ PAGE_TEXT_SHORT_THRESHOLD = int(os.getenv("PAGE_TEXT_SHORT_THRESHOLD", "200"))
 PAGEINDEX_CONFIG = {
     "model": "qwen3.6-flash",  # 淇濇寔 flash 妯″瀷锛屾彁绀鸿瘝浼樺寲鍚庤川閲忚冻澶?
     "toc_check_page_num": 15,  # 澧炲姞鍒?5椤碉紝骞宠　鍑嗙‘鐜囧拰閫熷害
+    "toc_detector_batch_size": int(os.getenv("PAGEINDEX_TOC_DETECTOR_BATCH_SIZE", "5")),
     "max_page_num_each_node": 6,  # 闄嶄綆闃堝€肩‘淇濆ぇ绔犺妭閫掑綊鎷嗗垎涓哄瓙鑺傜偣
     "max_token_num_each_node": 15000,  # 閰嶅悎椤垫暟闃堝€硷紝淇濊瘉妫€绱㈢矑搴?    "if_add_node_id": "yes",
     "if_add_node_summary": "no",
@@ -212,6 +213,15 @@ PAGEINDEX_SUMMARY_MAX_LLM_NODES = max(
     0, int(os.getenv("PAGEINDEX_SUMMARY_MAX_LLM_NODES", "30"))
 )
 
+
+# LLM extraction budget for confirmed TOC pages. This path turns OCR text into
+# structured JSON and is intentionally longer than the general flash timeout.
+PAGEINDEX_TOC_LLM_TIMEOUT_SECONDS = float(
+    os.getenv("PAGEINDEX_TOC_LLM_TIMEOUT_SECONDS", "60")
+)
+PAGEINDEX_TOC_LLM_MAX_TOKENS = int(
+    os.getenv("PAGEINDEX_TOC_LLM_MAX_TOKENS", "4096")
+)
 # 鍚姩鏃跺洖鏀堕暱鏃堕棿澶勪簬 processing 鐨勪换鍔★紙鍒嗛挓锛?
 INDEXING_STUCK_THRESHOLD_MINUTES = int(
     os.getenv("INDEXING_STUCK_THRESHOLD_MINUTES", "30")
@@ -312,3 +322,4 @@ def validate_required_settings() -> None:
         raise RuntimeError(
             "LLM_API_KEY is required. Set it in environment or backend/.env"
         )
+

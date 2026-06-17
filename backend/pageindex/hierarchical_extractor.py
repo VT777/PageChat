@@ -17,43 +17,79 @@ from pageindex.fast_toc import verify_content_match, apply_offset
 # 配置
 # ---------------------------------------------------------------------------
 
-MAX_TOKENS_PER_PHASE1 = 8000      # Phase 1 最大token数
-MAX_TOKENS_PER_PHASE2 = 6000      # Phase 2 每章最大token数
-CHAPTER_BATCH_SIZE = 3            # Phase 2 并发章节数
+MAX_TOKENS_FRAMEWORK = 8000      # stage=framework 最大token数
+MAX_TOKENS_EXPAND = 6000      # stage=expand 每章最大token数
+CHAPTER_BATCH_SIZE = 3            # stage=expand 并发章节数
 MIN_CHAPTER_PAGES = 2             # 章节最小页数
 
 
+
+def _coerce_text(value: Any) -> str:
+    if value is None:
+        return ""
+    return str(value).strip()
+
+
+def _coerce_int(value: Any, default: int = 0) -> int:
+    if isinstance(value, bool) or value is None:
+        return default
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(value)
+    if isinstance(value, str):
+        value = value.strip()
+        if not value:
+            return default
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+_EXPLICIT_NUMBERING_RE = re.compile(
+    r"^\s*(?P<number>\d{1,3}(?:[.]\d{1,3})+)\b"
+)
+
+
+def _explicit_numbering_key(title: str) -> Optional[str]:
+    """Return a stable key for explicit section numbers such as 1.4 or 2.3.1."""
+    normalized = (title or "").replace(chr(0xFF0E), ".")
+    match = _EXPLICIT_NUMBERING_RE.match(normalized)
+    if not match:
+        return None
+    return match.group("number")
+
 # ---------------------------------------------------------------------------
-# Phase 1: 提取一级框架
+# stage=framework: 提取一级框架
 # ---------------------------------------------------------------------------
 
-_PHASE1_PROMPT = """你是文档结构分析专家。请分析以下文档的内容，提取所有一级章节标题。
+_FRAMEWORK_PROMPT = """You are a document structure analyst. Analyze the document excerpts below and extract all top-level chapter titles.
 
-要求：
-1. 只提取一级章节（最大的结构单元，如"第一章"、"1. 引言"等）
-2. 每个章节包含：标题、起始页码
-3. 页码从1开始计数
-4. 不要遗漏任何章节，包括附录、参考文献等
-5. 如果文档有"目录"、"图目录"、"表目录"等前置部分，也请列出
+Requirements:
+1. Extract only top-level chapters, meaning the largest structural units such as "Chapter 1" or "1. Introduction".
+2. For each chapter, return the title and the starting physical page number.
+3. Page numbers are 1-based physical PDF pages.
+4. Do not omit appendices, references, or other top-level back matter.
+5. If the document has front-matter sections such as Contents, Figure List, or Table List, include them only when they are top-level visible document sections.
 
-输出JSON格式：
-{
+Return JSON only:
+{{
   "chapters": [
-    {"title": "章节标题", "start_page": 1},
-    ...
+    {{"title": "Chapter title", "start_page": 1}}
   ]
-}
+}}
 
-文档内容（每页前300字）：
+Document excerpts, up to the first 300 characters per page:
 {content}
 """
 
 
-async def phase1_extract_framework(
+async def extract_framework(
     page_texts: List[str],
     model: Optional[str] = None,
 ) -> Optional[List[Dict]]:
-    """Phase 1: 提取一级章节框架。
+    """Extract the top-level framework for the hierarchical provider.
 
     Args:
         page_texts: 所有页面的文本列表（0-indexed）
@@ -77,7 +113,7 @@ async def phase1_extract_framework(
 
     # 如果内容太长，截断
     tokens = count_tokens(content)
-    if tokens > MAX_TOKENS_PER_PHASE1:
+    if tokens > MAX_TOKENS_FRAMEWORK:
         # 保留首尾，中间采样
         keep_pages = max(3, len(page_texts) // 10)
         head = summaries[:keep_pages]
@@ -87,7 +123,7 @@ async def phase1_extract_framework(
         middle = summaries[keep_pages:len(summaries)-keep_pages:step]
         content = '\n'.join(head + middle + tail)
 
-    prompt = _PHASE1_PROMPT.format(content=content)
+    prompt = _FRAMEWORK_PROMPT.format(content=content)
 
     try:
         response = await llm_acompletion(model, prompt)
@@ -98,7 +134,7 @@ async def phase1_extract_framework(
         from pageindex.utils import extract_json
         data = extract_json(response)
         if not data:
-            print(f"[HIERARCHICAL] Failed to parse JSON from response")
+            print(f"[TOC-CANDIDATE] provider=hierarchical Failed to parse JSON from response")
             return None
         
         chapters = data.get("chapters", [])
@@ -106,8 +142,8 @@ async def phase1_extract_framework(
         # 验证
         valid_chapters = []
         for ch in chapters:
-            title = ch.get("title", "").strip()
-            start_page = ch.get("start_page", 0)
+            title = _coerce_text(ch.get("title"))
+            start_page = _coerce_int(ch.get("start_page"), 0)
             if title and start_page > 0:
                 valid_chapters.append({
                     "title": title,
@@ -115,55 +151,53 @@ async def phase1_extract_framework(
                 })
 
         if len(valid_chapters) >= 2:
-            print(f"[HIERARCHICAL] Phase 1: Extracted {len(valid_chapters)} chapters")
+            print(f"[TOC-CANDIDATE] provider=hierarchical stage=framework status=ok chapters={len(valid_chapters)}")
             return valid_chapters
 
     except Exception as e:
-        print(f"[HIERARCHICAL] Phase 1 failed: {e}")
+        print(f"[TOC-CANDIDATE] provider=hierarchical stage=framework status=error error={e}")
 
     return None
 
 
 # ---------------------------------------------------------------------------
-# Phase 2: 逐章展开子章节
+# stage=expand status=ok chapter= 逐章展开子章节
 # ---------------------------------------------------------------------------
 
-_PHASE2_PROMPT = """你是文档结构分析专家。请分析以下章节的内容，提取该章节的所有子章节标题。
+_EXPAND_PROMPT = """You are a document structure analyst. Analyze the chapter excerpt below and extract all subsection titles inside that chapter.
 
-章节信息：
-- 标题: {chapter_title}
-- 起始页: {start_page}
-- 结束页: {end_page}
+Chapter metadata:
+- Title: {chapter_title}
+- Start page: {start_page}
+- End page: {end_page}
 
-要求：
-1. 提取该章节下的所有子章节（二级、三级等）
-2. 每个子章节包含：标题、级别（2,3,4...）、页码
-3. 页码是文档的绝对页码（从1开始）
-4. 保持原始编号（如"1.1"、"（一）"等）
-5. 不要编造不存在的子章节
+Requirements:
+1. Extract all second-level, third-level, and deeper section headings under this chapter.
+2. For each subsection, return title, hierarchy level (2, 3, 4, ...), and 1-based physical PDF page number.
+3. Keep original numbering when present, such as "1.1" or "(a)".
+4. Do not invent subsections that are not present in the excerpt.
+5. Ignore headers, footers, page numbers, table cells, and decorative text.
 
-输出JSON格式：
-{
+Return JSON only:
+{{
   "sub_chapters": [
-    {"title": "子章节标题", "level": 2, "page": 5},
-    {"title": "子子章节", "level": 3, "page": 7},
-    ...
+    {{"title": "Subsection title", "level": 2, "page": 5}}
   ]
-}
+}}
 
-章节内容：
+Chapter excerpt:
 {content}
 """
 
 
-async def phase2_expand_chapter(
+async def expand_chapter(
     chapter_title: str,
     start_page: int,
     end_page: int,
     page_texts: List[str],
     model: Optional[str] = None,
 ) -> List[Dict]:
-    """Phase 2: 展开单个章节的子章节。
+    """stage=expand status=ok chapter= 展开单个章节的子章节。
 
     Args:
         chapter_title: 章节标题
@@ -187,17 +221,17 @@ async def phase2_expand_chapter(
 
     # 截断过长内容
     tokens = count_tokens(content)
-    if tokens > MAX_TOKENS_PER_PHASE2:
+    if tokens > MAX_TOKENS_EXPAND:
         # 保留每页前300字
         content = '\n'.join(f"[Page {i+start_page}] {t[:300]}" 
                             for i, t in enumerate(chapter_texts))
         tokens = count_tokens(content)
-        if tokens > MAX_TOKENS_PER_PHASE2:
+        if tokens > MAX_TOKENS_EXPAND:
             # 进一步采样：只取奇数页
             content = '\n'.join(f"[Page {i+start_page}] {t[:300]}" 
                                 for i, t in enumerate(chapter_texts) if i % 2 == 0)
 
-    prompt = _PHASE2_PROMPT.format(
+    prompt = _EXPAND_PROMPT.format(
         chapter_title=chapter_title,
         start_page=start_page,
         end_page=end_page,
@@ -213,7 +247,7 @@ async def phase2_expand_chapter(
         from pageindex.utils import extract_json
         data = extract_json(response)
         if not data:
-            print(f"[HIERARCHICAL] Failed to parse JSON for '{chapter_title}'")
+            print(f"[TOC-CANDIDATE] provider=hierarchical Failed to parse JSON for '{chapter_title}'")
             return []
         
         sub_chapters = data.get("sub_chapters", [])
@@ -221,9 +255,9 @@ async def phase2_expand_chapter(
         # 验证和清理
         valid = []
         for sub in sub_chapters:
-            title = sub.get("title", "").strip()
-            level = sub.get("level", 2)
-            page = sub.get("page", 0)
+            title = _coerce_text(sub.get("title"))
+            level = max(2, _coerce_int(sub.get("level"), 2))
+            page = _coerce_int(sub.get("page"), 0)
 
             if title and page >= start_page and page <= end_page:
                 valid.append({
@@ -232,24 +266,24 @@ async def phase2_expand_chapter(
                     "page": page,
                 })
 
-        print(f"[HIERARCHICAL] Phase 2: '{chapter_title}' -> {len(valid)} sub-chapters")
+        print(f"[TOC-CANDIDATE] provider=hierarchical stage=expand status=ok chapter='{chapter_title}' sub_chapters={len(valid)}")
         return valid
 
     except Exception as e:
-        print(f"[HIERARCHICAL] Phase 2 failed for '{chapter_title}': {e}")
+        print(f"[TOC-CANDIDATE] provider=hierarchical stage=expand status=error chapter='{chapter_title}' error={e}")
 
     return []
 
 
-async def phase2_expand_all_chapters(
+async def expand_all_chapters(
     chapters: List[Dict],
     page_texts: List[str],
     model: Optional[str] = None,
 ) -> Dict[int, List[Dict]]:
-    """Phase 2: 并发展开所有章节的子章节。
+    """stage=expand status=ok chapter= 并发展开所有章节的子章节。
 
     Args:
-        chapters: Phase 1 提取的章节列表
+        chapters: chapters extracted by the framework stage
         page_texts: 所有页面文本
         model: LLM模型
 
@@ -284,7 +318,7 @@ async def phase2_expand_all_chapters(
         tasks = []
         for idx in batch_indices:
             info = results[idx]
-            task = phase2_expand_chapter(
+            task = expand_chapter(
                 info["title"],
                 info["start_page"],
                 info["end_page"],
@@ -312,18 +346,18 @@ async def phase2_expand_all_chapters(
 
 
 # ---------------------------------------------------------------------------
-# Phase 3: 合并结果
+# stage=merge: 合并结果
 # ---------------------------------------------------------------------------
 
-def phase3_merge_results(
+def merge_results(
     chapters: List[Dict],
     sub_chapters_map: Dict[int, List[Dict]],
 ) -> List[Dict]:
-    """Phase 3: 将一级章节和子章节合并为完整目录树。
+    """Merge top-level chapters and expanded children into a TOC tree.
 
     Args:
-        chapters: Phase 1 的一级章节
-        sub_chapters_map: Phase 2 的子章节 {章节索引: 子章节列表}
+        chapters: chapters extracted by the framework stage
+        sub_chapters_map: child chapters from the expand stage
 
     Returns:
         完整的目录树结构
@@ -346,7 +380,7 @@ def phase3_merge_results(
         subs = sub_chapters_map.get(i, [])
         if subs:
             # 构建子章节树
-            sub_tree = _build_sub_tree(subs, i + 1)
+            sub_tree = _build_sub_tree(subs, str(i + 1))
             chapter_node["nodes"] = sub_tree
 
         result.append(chapter_node)
@@ -368,21 +402,32 @@ def _build_sub_tree(sub_chapters: List[Dict], parent_structure: str) -> List[Dic
         return []
 
     # 按页码排序
-    sub_chapters = sorted(sub_chapters, key=lambda x: x.get("page", 0))
+    sub_chapters = sorted(sub_chapters, key=lambda x: _coerce_int(x.get("page"), 0))
 
+    parent_prefix = _coerce_text(parent_structure)
     result = []
     stack = []  # (level, node)
 
     # 子章节计数器
     level_counters: Dict[int, int] = {}
+    seen_numbered_nodes: Dict[Tuple[int, str], Dict[str, Any]] = {}
 
     for sub in sub_chapters:
-        level = sub.get("level", 2)
-        title = sub.get("title", "")
-        page = sub.get("page", 0)
+        level = max(2, _coerce_int(sub.get("level"), 2))
+        title = _coerce_text(sub.get("title"))
+        page = _coerce_int(sub.get("page"), 0)
 
         if not title or page <= 0:
             continue
+
+        numbering_key = _explicit_numbering_key(title)
+        if numbering_key:
+            duplicate_node = seen_numbered_nodes.get((level, numbering_key))
+            if duplicate_node is not None:
+                while stack and stack[-1][0] >= level:
+                    stack.pop()
+                stack.append((level, duplicate_node))
+                continue
 
         # 生成structure
         level_counters[level] = level_counters.get(level, 0) + 1
@@ -392,11 +437,11 @@ def _build_sub_tree(sub_chapters: List[Dict], parent_structure: str) -> List[Dic
                 del level_counters[l]
 
         # 构建structure路径
-        parts = [parent_structure]
+        parts = [parent_prefix] if parent_prefix else []
         for l in sorted(level_counters.keys()):
             if l >= 2:
                 parts.append(str(level_counters[l]))
-        structure = '.'.join(parts)
+        structure = '.'.join(str(part) for part in parts if str(part))
 
         node = {
             "title": title,
@@ -404,6 +449,8 @@ def _build_sub_tree(sub_chapters: List[Dict], parent_structure: str) -> List[Dic
             "physical_index": page,
             "nodes": [],
         }
+        if numbering_key:
+            seen_numbered_nodes[(level, numbering_key)] = node
 
         # 找到父节点
         if level <= 2:
@@ -440,7 +487,7 @@ async def extract_hierarchical_toc(
 ) -> Optional[Dict[str, Any]]:
     """分层提取主入口。
 
-    执行完整的 Phase 1 → Phase 2 → Phase 3 流程。
+    Runs the hierarchical provider framework -> expand -> merge flow.
 
     Args:
         page_texts: 所有页面的文本列表
@@ -452,34 +499,34 @@ async def extract_hierarchical_toc(
             "structure": "hierarchical",
             "source": "hierarchical",
             "confidence": float,
-            "phases": {
-                "phase1_chapters": int,
-                "phase2_expanded": int,
+            "stages": {
+                "framework_chapters": int,
+                "expanded_chapters": int,
                 "total_sub_chapters": int,
             }
         }
     """
-    print("[HIERARCHICAL] Starting Phase 1: Framework extraction...")
+    print("[TOC-CANDIDATE] provider=hierarchical stage=framework status=started")
 
-    # Phase 1
-    chapters = await phase1_extract_framework(page_texts, model)
+    # stage=framework
+    chapters = await extract_framework(page_texts, model)
     if not chapters:
-        print("[HIERARCHICAL] Phase 1 failed, aborting")
+        print("[TOC-CANDIDATE] provider=hierarchical stage=framework status=error action=abort")
         return None
 
-    print(f"[HIERARCHICAL] Phase 1 complete: {len(chapters)} chapters")
+    print(f"[TOC-CANDIDATE] provider=hierarchical stage=framework status=done chapters={len(chapters)}")
 
-    # Phase 2
-    print("[HIERARCHICAL] Starting Phase 2: Chapter expansion...")
-    sub_chapters_map = await phase2_expand_all_chapters(chapters, page_texts, model)
+    # stage=expand
+    print("[TOC-CANDIDATE] provider=hierarchical stage=expand status=started")
+    sub_chapters_map = await expand_all_chapters(chapters, page_texts, model)
 
     total_subs = sum(len(subs) for subs in sub_chapters_map.values())
     expanded_count = sum(1 for subs in sub_chapters_map.values() if subs)
-    print(f"[HIERARCHICAL] Phase 2 complete: {expanded_count}/{len(chapters)} chapters expanded, {total_subs} sub-chapters")
+    print(f"[TOC-CANDIDATE] provider=hierarchical stage=expand status=done expanded={expanded_count}/{len(chapters)} sub_chapters={total_subs}")
 
-    # Phase 3
-    print("[HIERARCHICAL] Starting Phase 3: Merge results...")
-    tree = phase3_merge_results(chapters, sub_chapters_map)
+    # stage=merge
+    print("[TOC-CANDIDATE] provider=hierarchical stage=merge status=started")
+    tree = merge_results(chapters, sub_chapters_map)
 
     # 计算置信度
     confidence = 0.5
@@ -495,9 +542,9 @@ async def extract_hierarchical_toc(
         "structure": "hierarchical",
         "source": "hierarchical",
         "confidence": min(confidence, 1.0),
-        "phases": {
-            "phase1_chapters": len(chapters),
-            "phase2_expanded": expanded_count,
+        "stages": {
+            "framework_chapters": len(chapters),
+            "expanded_chapters": expanded_count,
             "total_sub_chapters": total_subs,
         },
     }
