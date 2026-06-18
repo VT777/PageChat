@@ -68,6 +68,7 @@ backend/tmp*/
 *_results.txt
 
 # Generated analysis artifacts
+/artifacts/
 /*.png
 /data/thumbnail_*.png
 /test_experiments/
