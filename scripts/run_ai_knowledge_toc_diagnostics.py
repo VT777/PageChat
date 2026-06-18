@@ -1,7 +1,8 @@
 """Read-only TOC diagnostics for the AI Knowledge PDF baseline.
 
-This script intentionally does not call OCR, LLMs, or index writers. It only
-collects cheap PDF signals used to validate the staged TOC refactor plan.
+The baseline phase does not call OCR, LLMs, or index writers. Later phases may
+call the same OCR preprocessing used by the service when that is required to
+diagnose the planned TOC route, but they still do not write indexes.
 """
 
 from __future__ import annotations
@@ -27,6 +28,7 @@ if str(BACKEND_DIR) not in sys.path:
 from pageindex.pdf_analyzer import analyze_pdf_structure  # noqa: E402
 from pageindex.preprocess_page_text import (  # noqa: E402
     PAGE_TEXT_OCR_PROMPT,
+    infer_content_type,
     preprocess_page_text_map,
 )
 
@@ -43,6 +45,14 @@ def _load_fixture() -> dict[str, Any]:
     if not FIXTURE_PATH.exists():
         return {"input_dir": "", "documents": []}
     return json.loads(FIXTURE_PATH.read_text(encoding="utf-8"))
+
+
+def _fixture_doc_by_file() -> dict[str, dict[str, Any]]:
+    return {
+        doc["file"]: doc
+        for doc in (_load_fixture().get("documents") or [])
+        if isinstance(doc, dict) and doc.get("file")
+    }
 
 
 def _clean_title(title: str) -> str:
@@ -318,18 +328,172 @@ async def run_preprocess_diagnostics(
     }
 
 
+def _expected_route_matches(result: dict[str, Any], expected: dict[str, Any]) -> bool:
+    if not expected:
+        return True
+    content_type = result.get("content_type")
+    expected_content = expected.get("content_type")
+    content_options = expected.get("content_type_options") or []
+    if expected_content and content_type != expected_content:
+        return False
+    if content_options and content_type not in content_options:
+        return False
+    route = result.get("route_decision") or {}
+    expected_path = expected.get("selected_path")
+    if expected_path and route.get("selected_path") != expected_path:
+        return False
+    return True
+
+
+async def collect_route_diagnostics(
+    file_path: str | Path,
+    *,
+    user_id: str | None = None,
+    model: str = "qwen3.6-flash",
+    preprocess: bool = True,
+) -> dict[str, Any]:
+    from app.services.pageindex_service import PageIndexService
+    from pageindex.toc_detector import find_toc_pages
+
+    path = Path(file_path)
+    analysis = analyze_pdf_structure(str(path))
+    analysis["document_path"] = str(path)
+    analysis["file_path"] = str(path)
+    service = PageIndexService(user_id=user_id)
+
+    if preprocess:
+        await preprocess_page_text_map(
+            path,
+            analysis,
+            ocr_pages_fn=lambda fp, pages, prompt, analysis: service._run_pdf_ocr_pages_by_images(
+                Path(fp),
+                list(pages),
+                analysis=analysis,
+                prompt=prompt,
+            ),
+            prompt=PAGE_TEXT_OCR_PROMPT,
+        )
+    else:
+        analysis["content_type"] = infer_content_type(analysis)
+        analysis["page_texts"] = [
+            str(page[0] if isinstance(page, (list, tuple)) and page else page or "")
+            for page in (analysis.get("page_list") or [])
+        ]
+
+    initial_route = PageIndexService._build_state_machine_route_decision("smart", analysis)
+    route_decision = initial_route
+    if route_decision.get("execution_mode") == "balanced":
+        await find_toc_pages(analysis, str(path), model=model)
+        route_decision = PageIndexService._build_state_machine_route_decision("smart", analysis)
+
+    toc_detection = analysis.get("toc_page_detection") if isinstance(analysis.get("toc_page_detection"), dict) else {}
+    page_map = analysis.get("page_text_map")
+    page_map_diagnostics = (
+        page_map.to_diagnostics()
+        if hasattr(page_map, "to_diagnostics")
+        else analysis.get("page_text_map_diagnostics") or {}
+    )
+    return {
+        "file": path.name,
+        "status": "ok",
+        "page_count": analysis.get("page_count"),
+        "content_type": analysis.get("content_type"),
+        "text_coverage": round(float(analysis.get("text_coverage") or 0.0), 4),
+        "route_decision": route_decision,
+        "initial_route_decision": initial_route,
+        "toc_page_detection": {
+            "status": toc_detection.get("status"),
+            "pages": list(toc_detection.get("pages") or []),
+            "has_page_numbers": bool(toc_detection.get("has_page_numbers")),
+            "reason": toc_detection.get("reason"),
+        },
+        "page_text_map": page_map_diagnostics,
+    }
+
+
+async def run_route_diagnostics(
+    input_dir: Path,
+    selected_file: str | None = None,
+    *,
+    user_id: str | None = None,
+    model: str = "qwen3.6-flash",
+    preprocess: bool = True,
+) -> dict[str, Any]:
+    expected_by_file = _fixture_doc_by_file()
+    documents = []
+    for pdf_path in _iter_target_files(input_dir, selected_file):
+        if not pdf_path.exists():
+            documents.append({"file": pdf_path.name, "status": "missing"})
+            continue
+        try:
+            result = await collect_route_diagnostics(
+                pdf_path,
+                user_id=user_id,
+                model=model,
+                preprocess=preprocess,
+            )
+            expected = (expected_by_file.get(pdf_path.name) or {}).get("expected_route") or {}
+            result["expected_route"] = expected
+            result["route_matches_expected"] = _expected_route_matches(result, expected)
+        except Exception as exc:
+            result = {
+                "file": pdf_path.name,
+                "status": "error",
+                "error_type": type(exc).__name__,
+                "error": str(exc),
+            }
+        documents.append(result)
+        if result.get("status") == "ok":
+            route = result.get("route_decision") or {}
+            toc_detection = result.get("toc_page_detection") or {}
+            print(
+                "[TOC-DIAG] phase=route "
+                f"file={result['file']} content_type={result.get('content_type')} "
+                f"selected_path={route.get('selected_path')} "
+                f"execution={route.get('execution_mode')} "
+                f"toc_pages={toc_detection.get('pages')} "
+                f"has_page_numbers={toc_detection.get('has_page_numbers')} "
+                f"match={result.get('route_matches_expected')}"
+            )
+        else:
+            print(
+                "[TOC-DIAG] phase=route "
+                f"file={result['file']} status={result.get('status')} "
+                f"error={result.get('error_type')}"
+            )
+
+    return {
+        "phase": "route",
+        "input_dir": str(input_dir),
+        "documents": documents,
+        "summary": {
+            "total": len(documents),
+            "ok": sum(1 for doc in documents if doc.get("status") == "ok"),
+            "missing": sum(1 for doc in documents if doc.get("status") == "missing"),
+            "error": sum(1 for doc in documents if doc.get("status") == "error"),
+            "route_mismatch": sum(
+                1
+                for doc in documents
+                if doc.get("status") == "ok" and doc.get("route_matches_expected") is False
+            ),
+        },
+    }
+
+
 def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     fixture = _load_fixture()
     default_input = fixture.get("input_dir") or r"D:\chrome_download\rag-skill-main\rag-skill-main\knowledge\AI Knowledge"
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--input", default=default_input, help="Directory containing AI Knowledge PDFs")
     parser.add_argument("--file", help="Run diagnostics for one PDF file name")
+    parser.add_argument("--all", action="store_true", help="Explicitly run diagnostics for all fixture PDFs")
     parser.add_argument("--output", help="Optional JSON output path")
     parser.add_argument("--user-id", help="Optional user id for OCR profile resolution")
+    parser.add_argument("--model", default="qwen3.6-flash", help="Model name passed through route probes")
     parser.add_argument(
         "--phase",
         default="baseline",
-        choices=["baseline", "preprocess"],
+        choices=["baseline", "preprocess", "route"],
         help="Diagnostic phase to run.",
     )
     return parser.parse_args(argv)
@@ -350,6 +514,16 @@ def main(argv: list[str] | None = None) -> int:
                 user_id=args.user_id,
             )
         )
+    elif args.phase == "route":
+        report = asyncio.run(
+            run_route_diagnostics(
+                input_dir,
+                selected_file=args.file,
+                user_id=args.user_id,
+                model=args.model,
+                preprocess=True,
+            )
+        )
     else:
         report = run_diagnostics(input_dir, selected_file=args.file)
 
@@ -362,7 +536,13 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps(report["summary"], ensure_ascii=False))
 
     summary = report["summary"]
-    return 0 if summary.get("missing", 0) == 0 and summary.get("error", 0) == 0 else 1
+    return (
+        0
+        if summary.get("missing", 0) == 0
+        and summary.get("error", 0) == 0
+        and summary.get("route_mismatch", 0) == 0
+        else 1
+    )
 
 
 if __name__ == "__main__":

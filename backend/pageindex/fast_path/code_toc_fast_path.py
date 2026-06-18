@@ -55,6 +55,12 @@ class CodeTOCFastPath:
             evidence["item_count"] >= 2
             and evidence["pages_valid"]
             and evidence["pages_monotonic"]
+            and _bookmark_density_ok(
+                source,
+                evidence["item_count"],
+                evidence.get("page_count"),
+                garbled_or_ocr=bool(evidence.get("garbled_or_ocr")),
+            )
             and evidence["title_noise_ratio"] <= 0.20
             and evidence["range_coverage"] >= 0.70
             and not reasons
@@ -95,6 +101,12 @@ class CodeTOCFastPath:
 
         return {
             "item_count": len(items),
+            "page_count": page_count,
+            "garbled_or_ocr": bool(
+                analysis.get("is_garbled_pdf")
+                or str(analysis.get("text_layer_quality") or "").lower() == "garbled"
+                or str(analysis.get("content_type") or "").lower() == "ocr"
+            ),
             "pages_valid": pages_valid,
             "pages_monotonic": pages_monotonic,
             "range_coverage": round(range_coverage, 4),
@@ -124,6 +136,22 @@ def _title_noise_ratio(items: List[Dict[str, Any]]) -> float:
         if len(title) < 2 or len(title) > 120 or title.isdigit():
             noisy += 1
     return noisy / len(items)
+
+
+def _bookmark_density_ok(
+    source: str,
+    item_count: int,
+    page_count: Optional[int],
+    *,
+    garbled_or_ocr: bool = False,
+) -> bool:
+    if source != "bookmarks":
+        return True
+    if garbled_or_ocr:
+        return True
+    if not page_count or page_count <= 0:
+        return True
+    return item_count / page_count >= 0.75 or item_count >= 50
 
 
 def _is_verified_regex(code_toc: Dict[str, Any]) -> bool:

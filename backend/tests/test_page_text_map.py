@@ -93,6 +93,25 @@ def test_preprocess_text_document_uses_pdf_text_without_ocr() -> None:
     assert page_map.ocr_page_numbers() == []
 
 
+def test_infer_content_type_keeps_reliable_text_with_sparse_edge_images_as_text() -> None:
+    from pageindex.preprocess_page_text import infer_content_type
+
+    analysis = {
+        "page_count": 85,
+        "text_coverage": 0.97,
+        "image_coverage": 1.0,
+        "image_only_pages": [0, 84],
+        "garbled_pages": [],
+        "is_image_only_pdf": False,
+        "is_garbled_pdf": False,
+        "text_layer_quality": "reliable",
+        "layout_type": "native_text_report",
+        "structure_policy": "text_allowed",
+    }
+
+    assert infer_content_type(analysis) == "text"
+
+
 def test_preprocess_scanned_document_ocr_all_pages() -> None:
     from pageindex.preprocess_page_text import PAGE_TEXT_OCR_PROMPT, preprocess_page_text_map
 

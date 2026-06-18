@@ -1,4 +1,5 @@
 import importlib.util
+import asyncio
 import json
 from pathlib import Path
 import sys
@@ -112,3 +113,54 @@ def test_diagnostic_script_collects_raw_pdf_signals(tmp_path: Path) -> None:
     assert result["current_analyzer"]["code_toc_source"] == "bookmarks"
     assert result["current_analyzer"]["code_toc_items"] >= 3
     assert result["weak_slide_export_outline"] is False
+
+
+def test_diagnostic_script_parses_explicit_route_all_flag() -> None:
+    module = _load_diagnostic_module()
+
+    args = module._parse_args(["--phase", "route", "--all"])
+
+    assert args.phase == "route"
+    assert args.all is True
+
+
+def test_route_diagnostic_reports_state_machine_path(tmp_path: Path, monkeypatch) -> None:
+    module = _load_diagnostic_module()
+
+    pdf_path = tmp_path / "route.pdf"
+    pdf_path.write_bytes(b"%PDF-1.4\n")
+
+    def fake_analyze(_path):
+        return {
+            "page_count": 3,
+            "page_list": [
+                ("Cover page for route diagnostics", 10),
+                (
+                    "Contents\nPreface\nChapter 1 Student AI literacy\nChapter 2 Teacher AI literacy\nChapter 3 AI talent development",
+                    20,
+                ),
+                ("Preface: research background and objectives", 10),
+            ],
+            "text_coverage": 1.0,
+            "image_coverage": 0.0,
+            "image_only_pages": [],
+            "garbled_pages": [],
+            "text_layer_quality": "reliable",
+        }
+
+    async def fake_preprocess(_path, analysis, **_kwargs):
+        analysis["content_type"] = "text"
+        analysis["page_texts"] = [page[0] for page in analysis["page_list"]]
+        analysis["page_text_map_diagnostics"] = {"page_count": 3, "ocr_page_count": 0}
+        return None
+
+    monkeypatch.setattr(module, "analyze_pdf_structure", fake_analyze)
+    monkeypatch.setattr(module, "preprocess_page_text_map", fake_preprocess)
+
+    result = asyncio.run(module.collect_route_diagnostics(pdf_path, preprocess=True))
+
+    assert result["status"] == "ok"
+    assert result["content_type"] == "text"
+    assert result["toc_page_detection"]["pages"] == [2]
+    assert result["toc_page_detection"]["has_page_numbers"] is False
+    assert result["route_decision"]["selected_path"] == "visible_toc_no_pages"

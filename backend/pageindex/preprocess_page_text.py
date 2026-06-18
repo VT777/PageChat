@@ -21,6 +21,13 @@ def infer_content_type(analysis: Mapping[str, Any]) -> str:
     image_only_ratio = len(image_only_pages) / page_count
     garbled_ratio = len(garbled_pages) / page_count
     text_quality = str(analysis.get("text_layer_quality") or "").lower()
+    sparse_edge_images = (
+        text_quality == "reliable"
+        and text_coverage >= 0.95
+        and not garbled_pages
+        and len(image_only_pages) / page_count <= 0.05
+        and all(page in {0, page_count - 1} for page in image_only_pages)
+    )
 
     if (
         analysis.get("is_image_only_pdf")
@@ -31,6 +38,8 @@ def infer_content_type(analysis: Mapping[str, Any]) -> str:
         or text_quality == "garbled"
     ):
         return "ocr"
+    if sparse_edge_images:
+        return "text"
     if image_only_pages or garbled_pages or text_quality in {"partial", "noisy"}:
         return "hybrid"
     return "text"

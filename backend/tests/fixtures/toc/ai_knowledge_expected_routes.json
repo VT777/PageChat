@@ -5,9 +5,9 @@
       "id": "T01",
       "file": "2025全球人工智能技术应用洞察报告.pdf",
       "page_count": 43,
-      "expected_path": "text -> embedded_toc",
+      "expected_path": "ocr -> embedded_toc",
       "expected_route": {
-        "content_type": "text",
+        "content_type": "ocr",
         "selected_path": "embedded_toc"
       },
       "known_pages": {

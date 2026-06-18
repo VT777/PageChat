@@ -13,105 +13,115 @@ from pageindex.router import (
 
 
 def test_route_smart_escalates_when_unparseable_pages_reach_threshold() -> None:
-    pre = {"unparseable_pages": 60, "unparseable_ratio": 0.05}
-    route = PageIndexService._decide_pdf_route("smart", pre)
-    assert route["execution_mode"] == "fast"
-    assert route["escalated_from_pre_analysis"] is False
+    route = PageIndexService._build_state_machine_route_decision(
+        "smart",
+        {
+            "page_count": 60,
+            "content_type": "ocr",
+            "toc_page_detection": {
+                "status": "detected",
+                "pages": [2],
+                "has_page_numbers": True,
+            },
+        },
+    )
+    assert route["execution_mode"] == "balanced"
+    assert route["selected_path"] == "visible_toc_with_pages"
 
 
 def test_route_smart_escalates_when_unparseable_ratio_exceeds_threshold() -> None:
-    pre = {"unparseable_pages": 12, "unparseable_ratio": 0.18}
-    route = PageIndexService._decide_pdf_route("smart", pre)
-    assert route["execution_mode"] == "fast"
-    assert route["escalated_from_pre_analysis"] is False
+    route = PageIndexService._build_state_machine_route_decision(
+        "smart",
+        {
+            "page_count": 80,
+            "content_type": "hybrid",
+            "toc_page_detection": {
+                "status": "detected",
+                "pages": [4],
+                "has_page_numbers": False,
+            },
+        },
+    )
+    assert route["preprocess_strategy"] == "ocr_selected_pages"
+    assert route["selected_path"] == "visible_toc_no_pages"
 
 
 def test_route_fast_does_not_auto_escalate_when_ratio_high() -> None:
-    pre = {"unparseable_pages": 80, "unparseable_ratio": 0.9}
-    route = PageIndexService._decide_pdf_route("fast", pre)
+    route = PageIndexService._build_state_machine_route_decision(
+        "fast",
+        {
+            "page_count": 20,
+            "content_type": "text",
+            "code_toc": {
+                "source": "bookmarks",
+                "items": [
+                    {"title": f"Chapter {idx}", "physical_index": idx}
+                    for idx in range(1, 17)
+                ],
+            },
+        },
+    )
     assert route["execution_mode"] == "fast"
-    assert route["escalated_from_pre_analysis"] is False
+    assert route["selected_path"] == "embedded_toc"
 
 
 def test_route_smart_keeps_fast_when_unparseable_ratio_equals_threshold() -> None:
-    pre = {"unparseable_pages": 12, "unparseable_ratio": 0.15}
-    route = PageIndexService._decide_pdf_route("smart", pre)
+    route = PageIndexService._build_state_machine_route_decision(
+        "smart",
+        {
+            "page_count": 28,
+            "content_type": "text",
+            "code_toc": {
+                "source": "bookmarks",
+                "items": [
+                    {"title": f"Section {idx}", "physical_index": idx}
+                    for idx in range(1, 23)
+                ],
+            },
+        },
+    )
     assert route["execution_mode"] == "fast"
-    assert route["escalated_from_pre_analysis"] is False
+    assert route["selected_path"] == "embedded_toc"
 
 
 def test_route_keeps_fast_for_good_pre_analysis() -> None:
-    pre = {"unparseable_pages": 8, "unparseable_ratio": 0.08}
-    route = PageIndexService._decide_pdf_route("fast", pre)
+    route = PageIndexService._build_state_machine_route_decision(
+        "fast",
+        {
+            "page_count": 30,
+            "content_type": "text",
+            "toc_page_detection": {"status": "not_found", "pages": []},
+        },
+    )
     assert route["execution_mode"] == "fast"
-    assert route["escalated_from_pre_analysis"] is False
+    assert route["selected_path"] == "content_outline"
 
 
 def test_route_keeps_balanced_when_requested_balanced() -> None:
-    pre = {"unparseable_pages": 0, "unparseable_ratio": 0.0}
-    route = PageIndexService._decide_pdf_route("balanced", pre)
+    route = PageIndexService._build_state_machine_route_decision(
+        "balanced",
+        {
+            "page_count": 70,
+            "content_type": "text",
+            "toc_page_detection": {"status": "not_found", "pages": []},
+        },
+    )
     assert route["execution_mode"] == "balanced"
-    assert route["escalated_from_pre_analysis"] is False
+    assert route["selected_path"] == "content_outline"
 
 
 def test_route_smart_defaults_to_fast_execution() -> None:
-    pre = {"unparseable_pages": 2, "unparseable_ratio": 0.02}
-    route = PageIndexService._decide_pdf_route("smart", pre)
+    route = PageIndexService._build_state_machine_route_decision(
+        "smart",
+        {
+            "page_count": 70,
+            "content_type": "text",
+            "toc_page_detection": {"status": "not_found", "pages": []},
+        },
+    )
     assert route["requested_mode"] == "smart"
-    assert route["execution_mode"] == "fast"
-    assert route["escalated_from_pre_analysis"] is False
-
-
-def test_fast_quality_gate_helper() -> None:
-    assert PageIndexService._should_escalate_fast_by_toc_quality(0.5) is True
-    assert PageIndexService._should_escalate_fast_by_toc_quality(0.78) is False
-
-
-def test_fast_toc_readiness_detects_missing_ranges() -> None:
-    result = {
-        "page_count": 20,
-        "structure": [
-            {"title": "A", "start_index": 1, "end_index": 10, "nodes": []},
-            {"title": "B", "start_index": 11, "end_index": None, "nodes": []},
-        ],
-    }
-    readiness = PageIndexService._evaluate_fast_toc_readiness(result)
-    assert readiness["ok"] is False
-    assert "missing_ranges" in readiness["reason"]
-
-
-def test_fast_toc_readiness_detects_page_coverage_gap() -> None:
-    result = {
-        "page_count": 20,
-        "structure": [
-            {"title": "A", "start_index": 1, "end_index": 8, "nodes": []},
-            {"title": "B", "start_index": 9, "end_index": 12, "nodes": []},
-        ],
-    }
-    readiness = PageIndexService._evaluate_fast_toc_readiness(result)
-    assert readiness["ok"] is False
-    assert "coverage_end_lt_page_count" in readiness["reason"]
-
-
-def test_vision_first_required_rules() -> None:
-    assert (
-        PageIndexService._vision_first_required(
-            {"unparseable_pages": 44, "unparseable_ratio": 1.0}
-        )
-        is True
-    )
-    assert (
-        PageIndexService._vision_first_required(
-            {"unparseable_pages": 60, "unparseable_ratio": 0.3}
-        )
-        is True
-    )
-    assert (
-        PageIndexService._vision_first_required(
-            {"unparseable_pages": 10, "unparseable_ratio": 0.2}
-        )
-        is False
-    )
+    assert route["execution_mode"] == "balanced"
+    assert route["selected_path"] == "content_outline"
 
 
 def test_router_normalizes_string_toc_confidence() -> None:

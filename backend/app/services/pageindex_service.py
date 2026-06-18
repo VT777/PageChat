@@ -2363,22 +2363,47 @@ Example:
             if 1 <= value <= page_count:
                 normalized.append(value)
         resolved = sorted(set(normalized))
-        analysis["toc_page_detection"] = {
-            "source": "text_detector",
-            "status": "detected" if resolved else "not_found",
-            "pages": resolved,
-            "candidates": [
-                {
-                    "page": page,
-                    "source": "text_detector",
-                    "is_toc": True,
-                    "score": 1.0,
-                }
-                for page in resolved
-            ],
-            "reason": "detected_by_text_toc_detector" if resolved else "no_text_toc_pages",
-            "classification_complete": True,
-        }
+        existing_report = analysis.get("toc_page_detection") if isinstance(analysis.get("toc_page_detection"), dict) else {}
+        existing_pages = [int(page) for page in (existing_report.get("pages") or []) if isinstance(page, int)]
+        if resolved and sorted(set(existing_pages)) == resolved:
+            report = dict(existing_report)
+            report["pages"] = resolved
+            report["status"] = "detected"
+            report.setdefault("source", "text_detector")
+            report.setdefault("classification_complete", True)
+            report.setdefault("reason", "detected_by_text_toc_detector")
+            report.setdefault(
+                "candidates",
+                [
+                    {
+                        "page": page,
+                        "source": "text_detector",
+                        "is_toc": True,
+                        "score": 1.0,
+                    }
+                    for page in resolved
+                ],
+            )
+        else:
+            report = {
+                "source": "text_detector",
+                "status": "detected" if resolved else "not_found",
+                "pages": resolved,
+                "has_page_numbers": False,
+                "candidates": [
+                    {
+                        "page": page,
+                        "source": "text_detector",
+                        "is_toc": True,
+                        "score": 1.0,
+                        "has_page_numbers": False,
+                    }
+                    for page in resolved
+                ],
+                "reason": "detected_by_text_toc_detector" if resolved else "no_text_toc_pages",
+                "classification_complete": True,
+            }
+        analysis["toc_page_detection"] = report
         self._sync_toc_context(analysis, resolved, confidence="detected")
         return resolved
 
@@ -2588,6 +2613,25 @@ Example:
         toc_meta = analysis.get("toc_page") if isinstance(analysis.get("toc_page"), dict) else {}
         toc_pages = analysis.get("toc_pages") or toc_meta.get("pages") or []
         return bool(toc_pages or toc_meta.get("has_toc_page"))
+
+    @staticmethod
+    def _should_skip_legacy_toc_detection(
+        analysis: Optional[Dict],
+        result: Optional[Dict],
+    ) -> bool:
+        return PageIndexService._should_skip_redundant_toc_detection(analysis, result)
+
+    @staticmethod
+    def _build_state_machine_route_decision(
+        requested_mode: str,
+        analysis: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        from pageindex.pipeline.toc_state_machine import TocStateMachine
+
+        plan = TocStateMachine().plan(analysis, requested_mode=requested_mode)
+        route = plan.to_dict()
+        analysis["toc_state_machine"] = route
+        return route
 
     @staticmethod
     def _toc_result_to_candidate(
@@ -2856,35 +2900,45 @@ Example:
             seen.add(fingerprint)
             candidates.append(candidate)
 
-        official = self._try_balanced_provider_shortcut(analysis, page_count)
-        official_candidate_result = OfficialBaselineRunner().run_result(
-            {
-                "structure": official.get("items", []),
-                "confidence": official.get("confidence", 0.78),
-                "page_count": page_count,
-            }
-        ) if official else None
-        if official_candidate_result:
-            official_candidate_result["items"] = official_candidate_result.get("items") or []
-            official_candidate_result["source"] = "official_baseline"
-            official_candidate_result.update(
-                {
-                    k: v
-                    for k, v in (official or {}).items()
-                    if k not in {"items", "source"}
-                }
-            )
-            add_candidate(
-                official_candidate_result,
-                "official_baseline_001",
-                "official_baseline",
-                float(official_candidate_result.get("raw_confidence") or official_candidate_result.get("confidence") or 0.78),
-                "medium",
-            )
+        selected_path = str(route_decision.get("selected_path") or "").strip()
+        state_machine_paths = {
+            "embedded_toc",
+            "visible_toc_with_pages",
+            "visible_toc_no_pages",
+            "content_outline",
+        }
+        legacy_candidate_competition = selected_path not in state_machine_paths
 
-        text_heading = self._try_text_heading_toc(analysis)
-        if text_heading:
-            add_candidate(text_heading, "text_heading_001", "text_heading", 0.82, "low")
+        if legacy_candidate_competition:
+            official = self._try_balanced_provider_shortcut(analysis, page_count)
+            official_candidate_result = OfficialBaselineRunner().run_result(
+                {
+                    "structure": official.get("items", []),
+                    "confidence": official.get("confidence", 0.78),
+                    "page_count": page_count,
+                }
+            ) if official else None
+            if official_candidate_result:
+                official_candidate_result["items"] = official_candidate_result.get("items") or []
+                official_candidate_result["source"] = "official_baseline"
+                official_candidate_result.update(
+                    {
+                        k: v
+                        for k, v in (official or {}).items()
+                        if k not in {"items", "source"}
+                    }
+                )
+                add_candidate(
+                    official_candidate_result,
+                    "official_baseline_001",
+                    "official_baseline",
+                    float(official_candidate_result.get("raw_confidence") or official_candidate_result.get("confidence") or 0.78),
+                    "medium",
+                )
+
+            text_heading = self._try_text_heading_toc(analysis)
+            if text_heading:
+                add_candidate(text_heading, "text_heading_001", "text_heading", 0.82, "low")
 
         toc_pages = list(
             anchors.get("toc_pages")
@@ -2959,7 +3013,13 @@ Example:
                 "low",
             )
 
-        if not llm_toc_candidate_added:
+        if (
+            legacy_candidate_competition
+            and not llm_toc_candidate_added
+        ) or (
+            selected_path in {"visible_toc_no_pages", "content_outline"}
+            and not candidates
+        ):
             text_candidate = await self._build_text_toc_candidate(
                 analysis,
                 toc_pages=toc_pages,
@@ -2978,7 +3038,7 @@ Example:
                     "medium",
                 )
 
-        if not candidates:
+        if legacy_candidate_competition and not candidates:
             add_candidate(
                 {
                     "toc_items": self._build_segment_fallback_toc(page_count),
@@ -4609,8 +4669,6 @@ Example:
 
         model = getattr(self.opt, "model", "qwen3.6-flash")
         requested_mode = mode_override or "smart"
-        from pageindex.router import decide_extraction_path, get_path_description
-
         self._log_index_stage(1, "analyze", "started")
         print(f"[TOC-PIPELINE] stage=analyze action=start doc={file_path.name}")
         analysis = analyze_pdf_structure(str(file_path))
@@ -4660,23 +4718,22 @@ Example:
             f"layout_dependency_score={analysis.get('layout_dependency_score', 0)}"
         )
 
-        # 閻犱警鍨抽弫閬嶅礃瀹曞洨鎽?
-        execution_mode = self._select_initial_execution_mode(requested_mode, analysis)
+        route_decision = self._build_state_machine_route_decision(requested_mode, analysis)
+        execution_mode = route_decision["execution_mode"]
         initial_execution_mode = execution_mode
-        initial_route_decision = decide_extraction_path(analysis, requested_mode)
-
-        pipeline_path = None
-        if execution_mode == "balanced":
-            pipeline_path = (
-                "ppocr_layout"
-                if initial_route_decision.get("path") == "ppocr_layout"
-                else "text"
-            )
-            analysis["pipeline_path"] = pipeline_path
+        pipeline_path = (
+            "ppocr_layout"
+            if self._requires_layout_outline_provider(analysis)
+            else "text"
+        )
+        analysis["pipeline_path"] = pipeline_path
 
         print(
             f"[TOC-PIPELINE] stage=route requested={requested_mode} execution={execution_mode} "
-            f"pipeline_path={pipeline_path} code_toc={analysis['code_toc']['source']} "
+            f"content_type={route_decision.get('content_type')} "
+            f"selected_path={route_decision.get('selected_path')} "
+            f"pipeline_path={pipeline_path} "
+            f"code_toc={(analysis.get('code_toc') or {}).get('source')} "
             f"pages={page_count} text_coverage={analysis['text_coverage']:.0%}"
         )
 
@@ -4687,6 +4744,8 @@ Example:
                 page_count=page_count,
                 model=model,
             )
+            route_decision = self._build_state_machine_route_decision(requested_mode, analysis)
+            execution_mode = route_decision["execution_mode"]
 
 
         # P2-fix: 闁圭鍋撻柡?balanced 闁哄倸娲﹂妴鍌炴焾閽樺甯ラ悹鐑樺灴閺佸鎮欑憴鍕垫⒕婵炴潙缁辨繈鎳㈠畡鏉跨悼 dividers 濞ｅ洠鍓濇导?
@@ -4720,12 +4779,12 @@ Example:
             # 闁搞儱澧芥晶鏍垂鐎ｇ€俊妤嬬秮椤ゅ倹寰勯弽褌绮?OCR
         # 濠碘€冲€归悘澶愬触椤栨粍鏆忓ù婊冩閺屽﹪寮搁懜鐢碘偓鏁嶇仦鐣屾閻犲洦娲戞繛鍥偨?-path閻犱警鍨抽弫?
         # Unified TOC candidate pipeline.
-        route_decision = initial_route_decision
         print(
-            f"[TOC-PIPELINE] stage=controller route={route_decision['path']} "
-            f"({get_path_description(route_decision['path'])})"
+            f"[TOC-PIPELINE] stage=controller "
+            f"selected_path={route_decision.get('selected_path')} "
+            f"states={','.join(route_decision.get('states') or [])}"
         )
-        print(f"[TOC-PIPELINE] stage=controller reasons={route_decision['reasons']}")
+        print(f"[TOC-PIPELINE] stage=controller fallbacks={route_decision.get('fallbacks') or []}")
 
         new_architecture_result = await self._run_unified_toc_controller(
             file_path=file_path,
@@ -5075,6 +5134,7 @@ Example:
             "page_count": page_count,
             "structure": toc_tree,
             "route_decision": {
+                **route_decision,
                 "requested_mode": requested_mode,
                 "execution_mode": execution_mode,
                 "initial_execution_mode": initial_execution_mode,

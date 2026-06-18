@@ -8,11 +8,22 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from app.services.ocr_service import OCRService
 from app.services.pageindex_service import PageIndexService
-from app.services.ocr_engines.task_prompts import PAGE_TEXT_PROMPT
+from app.services.ocr_engines.task_prompts import (
+    PAGE_TEXT_PROMPT,
+    TOC_PAGE_PROMPT,
+    default_task_prompt,
+)
 
 
 def test_page_text_prompt_is_short_reading_order_command() -> None:
     assert PAGE_TEXT_PROMPT == "Recognize all readable text in natural reading order."
+
+
+def test_toc_page_prompt_is_generic_vlm_ocr_command() -> None:
+    assert TOC_PAGE_PROMPT == PAGE_TEXT_PROMPT
+    prompt, prompt_name = default_task_prompt("toc_page")
+    assert prompt == PAGE_TEXT_PROMPT
+    assert prompt_name == "toc_page_text_reading_order_v1"
 
 
 def test_ocr_service_extract_text_prefers_markdown() -> None:
