@@ -8,6 +8,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from app.services.ocr_service import OCRService
 from app.services.pageindex_service import PageIndexService
+from app.services.ocr_engines.task_prompts import PAGE_TEXT_PROMPT
+
+
+def test_page_text_prompt_is_short_reading_order_command() -> None:
+    assert PAGE_TEXT_PROMPT == "Recognize all readable text in natural reading order."
 
 
 def test_ocr_service_extract_text_prefers_markdown() -> None:
@@ -36,6 +41,67 @@ def test_build_page_list_with_ocr_overlay_replaces_by_page_position() -> None:
     assert merged[0][0] == "原始第1页"
     assert merged[1][0] == "OCR第2页"
     assert merged[2][0] == "OCR第3页"
+
+
+def test_selected_page_ocr_renders_only_requested_pages(monkeypatch, tmp_path) -> None:
+    import app.services.pageindex_service as svc_module
+
+    service = PageIndexService()
+    rendered_calls = []
+    ocr_calls = []
+
+    def fake_render_pages_to_images(file_path, page_indices, *, dpi=150):
+        rendered_calls.append(list(page_indices))
+        return [
+            {
+                "page_index": page_index,
+                "image_base64": f"image-{page_index}",
+                "image_mime_type": "image/jpeg",
+            }
+            for page_index in page_indices
+        ]
+
+    async def fake_ocr_image(image_base64, page_num, analysis=None, prompt=None):
+        ocr_calls.append(
+            {
+                "image_base64": image_base64,
+                "page_num": page_num,
+                "prompt": prompt,
+                "analysis": analysis,
+            }
+        )
+        return SimpleNamespace(text=f"OCR page {page_num}", ok=True)
+
+    monkeypatch.setattr(
+        svc_module,
+        "OCR_MAX_CONCURRENCY",
+        20,
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "pageindex.layout.page_renderer",
+        SimpleNamespace(render_pages_to_images=fake_render_pages_to_images),
+    )
+    service._ocr_image_with_resolver = fake_ocr_image  # type: ignore[method-assign]
+
+    analysis = {"page_count": 5}
+    result = asyncio.run(
+        service._run_pdf_ocr_pages_by_images(
+            tmp_path / "demo.pdf",
+            [1, 3],
+            analysis=analysis,
+            prompt=PAGE_TEXT_PROMPT,
+        )
+    )
+
+    assert rendered_calls == [[1, 3]]
+    assert [call["page_num"] for call in ocr_calls] == [2, 4]
+    assert {call["prompt"] for call in ocr_calls} == {PAGE_TEXT_PROMPT}
+    assert result["ocr_pages"] == [
+        {"page_num": 2, "text": "OCR page 2", "ok": True, "ocr_image_targets": 1, "ocr_image_hits": 1, "error": ""},
+        {"page_num": 4, "text": "OCR page 4", "ok": True, "ocr_image_targets": 1, "ocr_image_hits": 1, "error": ""},
+    ]
+    assert result["overlay_all_pages"] is False
 
 
 @pytest.mark.skip(reason="v1 integration test, needs rewrite for v2 flow")

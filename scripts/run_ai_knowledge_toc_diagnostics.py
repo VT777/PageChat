@@ -7,6 +7,7 @@ collects cheap PDF signals used to validate the staged TOC refactor plan.
 from __future__ import annotations
 
 import argparse
+import asyncio
 import json
 from pathlib import Path
 import re
@@ -24,6 +25,10 @@ if str(BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(BACKEND_DIR))
 
 from pageindex.pdf_analyzer import analyze_pdf_structure  # noqa: E402
+from pageindex.preprocess_page_text import (  # noqa: E402
+    PAGE_TEXT_OCR_PROMPT,
+    preprocess_page_text_map,
+)
 
 
 SLIDE_EXPORT_PATTERNS = (
@@ -192,6 +197,127 @@ def run_diagnostics(input_dir: Path, selected_file: str | None = None) -> dict[s
     }
 
 
+async def collect_preprocess_diagnostics(
+    file_path: str | Path,
+    *,
+    user_id: str | None = None,
+) -> dict[str, Any]:
+    from app.services.pageindex_service import PageIndexService
+
+    path = Path(file_path)
+    analysis = analyze_pdf_structure(str(path))
+    analysis["document_path"] = str(path)
+    analysis["file_path"] = str(path)
+
+    service = PageIndexService(user_id=user_id)
+
+    async def ocr_pages(file_path, page_indices, *, prompt, analysis):
+        return await service._run_pdf_ocr_pages_by_images(
+            Path(file_path),
+            list(page_indices),
+            analysis=analysis,
+            prompt=prompt,
+        )
+
+    page_map = await preprocess_page_text_map(
+        path,
+        analysis,
+        ocr_pages_fn=ocr_pages,
+        prompt=PAGE_TEXT_OCR_PROMPT,
+    )
+    diagnostics = page_map.to_diagnostics()
+    text_lengths = [len(text) for text in page_map.page_texts()]
+    sample_pages = []
+    for entry in page_map.entries:
+        if entry.ocr_used or len(sample_pages) < 3:
+            sample_pages.append(
+                {
+                    "page": entry.physical_page,
+                    "source": entry.source,
+                    "quality": entry.quality,
+                    "ocr_used": entry.ocr_used,
+                    "text_head": entry.text[:180],
+                }
+            )
+        if len(sample_pages) >= 8:
+            break
+
+    return {
+        "file": path.name,
+        "status": "ok",
+        "page_count": analysis.get("page_count"),
+        "content_type": analysis.get("content_type"),
+        "layout_type": analysis.get("layout_type"),
+        "text_layer_quality": analysis.get("text_layer_quality"),
+        "text_coverage": round(float(analysis.get("text_coverage") or 0.0), 4),
+        "image_coverage": round(float(analysis.get("image_coverage") or 0.0), 4),
+        "image_only_pages": list(analysis.get("image_only_pages") or []),
+        "garbled_pages": list(analysis.get("garbled_pages") or []),
+        "page_text_map": diagnostics,
+        "empty_pages": [
+            entry.physical_page for entry in page_map.entries if not entry.text.strip()
+        ],
+        "text_length": {
+            "min": min(text_lengths) if text_lengths else 0,
+            "max": max(text_lengths) if text_lengths else 0,
+            "total": sum(text_lengths),
+        },
+        "ocr_calls_summary": analysis.get("ocr_calls_summary") or {},
+        "sample_pages": sample_pages,
+    }
+
+
+async def run_preprocess_diagnostics(
+    input_dir: Path,
+    selected_file: str | None = None,
+    *,
+    user_id: str | None = None,
+) -> dict[str, Any]:
+    documents = []
+    for pdf_path in _iter_target_files(input_dir, selected_file):
+        if not pdf_path.exists():
+            documents.append({"file": pdf_path.name, "status": "missing"})
+            continue
+        try:
+            result = await collect_preprocess_diagnostics(pdf_path, user_id=user_id)
+        except Exception as exc:
+            result = {
+                "file": pdf_path.name,
+                "status": "error",
+                "error_type": type(exc).__name__,
+                "error": str(exc),
+            }
+        documents.append(result)
+        if result.get("status") == "ok":
+            page_map = result.get("page_text_map") or {}
+            print(
+                "[TOC-DIAG] phase=preprocess "
+                f"file={result['file']} pages={result['page_count']} "
+                f"content_type={result['content_type']} "
+                f"ocr_pages={page_map.get('ocr_page_count')} "
+                f"sources={page_map.get('sources')} "
+                f"empty_pages={len(result.get('empty_pages') or [])}"
+            )
+        else:
+            print(
+                "[TOC-DIAG] phase=preprocess "
+                f"file={result['file']} status={result.get('status')} "
+                f"error={result.get('error_type')}"
+            )
+
+    return {
+        "phase": "preprocess",
+        "input_dir": str(input_dir),
+        "documents": documents,
+        "summary": {
+            "total": len(documents),
+            "ok": sum(1 for doc in documents if doc.get("status") == "ok"),
+            "missing": sum(1 for doc in documents if doc.get("status") == "missing"),
+            "error": sum(1 for doc in documents if doc.get("status") == "error"),
+        },
+    }
+
+
 def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     fixture = _load_fixture()
     default_input = fixture.get("input_dir") or r"D:\chrome_download\rag-skill-main\rag-skill-main\knowledge\AI Knowledge"
@@ -199,11 +325,12 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--input", default=default_input, help="Directory containing AI Knowledge PDFs")
     parser.add_argument("--file", help="Run diagnostics for one PDF file name")
     parser.add_argument("--output", help="Optional JSON output path")
+    parser.add_argument("--user-id", help="Optional user id for OCR profile resolution")
     parser.add_argument(
         "--phase",
         default="baseline",
-        choices=["baseline"],
-        help="Diagnostic phase to run. Phase 0 implements only baseline diagnostics.",
+        choices=["baseline", "preprocess"],
+        help="Diagnostic phase to run.",
     )
     return parser.parse_args(argv)
 
@@ -215,7 +342,16 @@ def main(argv: list[str] | None = None) -> int:
         print(f"[TOC-DIAG] input directory does not exist: {input_dir}", file=sys.stderr)
         return 2
 
-    report = run_diagnostics(input_dir, selected_file=args.file)
+    if args.phase == "preprocess":
+        report = asyncio.run(
+            run_preprocess_diagnostics(
+                input_dir,
+                selected_file=args.file,
+                user_id=args.user_id,
+            )
+        )
+    else:
+        report = run_diagnostics(input_dir, selected_file=args.file)
 
     if args.output:
         output_path = Path(args.output)
@@ -225,7 +361,8 @@ def main(argv: list[str] | None = None) -> int:
     else:
         print(json.dumps(report["summary"], ensure_ascii=False))
 
-    return 0 if report["summary"]["missing"] == 0 else 1
+    summary = report["summary"]
+    return 0 if summary.get("missing", 0) == 0 and summary.get("error", 0) == 0 else 1
 
 
 if __name__ == "__main__":

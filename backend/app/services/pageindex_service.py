@@ -566,16 +566,21 @@ class PageIndexService:
         image_base64: str,
         page_num: int,
         analysis: Optional[Dict[str, Any]] = None,
+        prompt: Optional[str] = None,
     ):
         from app.services.ocr_service import OCRPageResult
 
         resolved = await self._resolve_ocr_engine("page_text")
         try:
             image_url = f"data:image/png;base64,{image_base64}"
+            route_options = dict((resolved.route or {}).get("options") or {})
+            if prompt:
+                route_options["prompt"] = prompt
+                route_options.setdefault("prompt_name", "page_text_reading_order_v1")
             response = resolved.adapter.recognize(
                 image_url,
                 task="page_text",
-                options=resolved.route.get("options") or {},
+                options=route_options,
             )
             if hasattr(response, "__await__"):
                 response = await response
@@ -1494,23 +1499,31 @@ class PageIndexService:
             page_num: text for page_num, text in results if text
         }
 
-    async def _run_full_pdf_ocr_by_images(
-        self, file_path: Path, page_count: int, analysis: Optional[Dict[str, Any]] = None
+    async def _run_pdf_ocr_pages_by_images(
+        self,
+        file_path: Path,
+        page_indices: List[int],
+        analysis: Optional[Dict[str, Any]] = None,
+        prompt: Optional[str] = None,
     ) -> Dict[str, Any]:
-        if page_count <= 0:
+        page_indices = sorted({int(idx) for idx in page_indices if int(idx) >= 0})
+        if not page_indices:
             return {
                 "ocr_pages": [],
                 "ocr_coverage": 0.0,
                 "ocr_missing_pages": [],
+                "overlay_all_pages": False,
             }
 
         try:
             from pageindex.layout.page_renderer import render_pages_to_images
         except Exception:
+            requested = [idx + 1 for idx in page_indices]
             return {
                 "ocr_pages": [],
                 "ocr_coverage": 0.0,
-                "ocr_missing_pages": list(range(1, page_count + 1)),
+                "ocr_missing_pages": requested,
+                "overlay_all_pages": False,
             }
 
         sem = asyncio.Semaphore(max(1, int(OCR_MAX_CONCURRENCY)))
@@ -1535,6 +1548,7 @@ class PageIndexService:
                         image_b64,
                         page_num,
                         analysis=analysis,
+                        prompt=prompt,
                     )
                 except Exception as exc:
                     self._record_ocr_call(
@@ -1566,18 +1580,24 @@ class PageIndexService:
             }
 
         rows: List[Dict[str, Any]] = []
-        for offset in range(0, page_count, render_batch_size):
-            page_indices = list(range(offset, min(page_count, offset + render_batch_size)))
-            images = render_pages_to_images(str(file_path), page_indices, dpi=150)
+        for offset in range(0, len(page_indices), render_batch_size):
+            batch_indices = page_indices[offset : offset + render_batch_size]
+            images = render_pages_to_images(str(file_path), batch_indices, dpi=150)
             batch_rows = await asyncio.gather(*(parse_page(image) for image in images))
             rows.extend(batch_rows)
         rows = sorted(rows, key=lambda x: int(x.get("page_num") or 0))
 
+        requested_pages = [idx + 1 for idx in page_indices]
+        returned_pages = {int(row.get("page_num") or 0) for row in rows}
         success = sum(1 for x in rows if x.get("text"))
-        missing = [int(x["page_num"]) for x in rows if not x.get("text")]
+        missing = [
+            page_num
+            for page_num in requested_pages
+            if page_num not in returned_pages
+        ] + [int(x["page_num"]) for x in rows if not x.get("text")]
         summary = self._update_content_ocr_summary(
             analysis,
-            page_count=page_count,
+            page_count=len(requested_pages),
             success=success,
             missing=missing,
         )
@@ -1586,17 +1606,40 @@ class PageIndexService:
                 "[TOC-OCR] task=page_text status=done "
                 f"primary_engine={summary.get('primary_engine')} "
                 f"primary_model={summary.get('primary_model')} "
-                f"pages={summary.get('pages', page_count)} "
+                f"pages={summary.get('pages', len(requested_pages))} "
                 f"success={summary.get('success', success)} "
                 f"missing={summary.get('missing', len(missing))} "
                 f"fallback={summary.get('fallback', 0)}"
             )
         return {
             "ocr_pages": rows,
-            "overlay_all_pages": True,
-            "ocr_coverage": (success / page_count) if page_count > 0 else 0.0,
+            "overlay_all_pages": False,
+            "ocr_coverage": (success / len(requested_pages)) if requested_pages else 0.0,
             "ocr_missing_pages": missing,
         }
+
+    async def _run_full_pdf_ocr_by_images(
+        self,
+        file_path: Path,
+        page_count: int,
+        analysis: Optional[Dict[str, Any]] = None,
+        prompt: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        if page_count <= 0:
+            return {
+                "ocr_pages": [],
+                "ocr_coverage": 0.0,
+                "ocr_missing_pages": [],
+                "overlay_all_pages": True,
+            }
+        result = await self._run_pdf_ocr_pages_by_images(
+            file_path,
+            list(range(page_count)),
+            analysis=analysis,
+            prompt=prompt,
+        )
+        result["overlay_all_pages"] = True
+        return result
 
     @staticmethod
     def _build_page_list_with_ocr_overlay(
@@ -4472,7 +4515,17 @@ Example:
                 return value
             return str(value)
 
-        for key in ("ocr_route", "ocr_calls", "ocr_calls_summary", "toc_page_detection", "toc_judge", "toc_content_mapping", "toc_candidates_summary", "llm_toc_page"):
+        for key in (
+            "page_text_map_diagnostics",
+            "ocr_route",
+            "ocr_calls",
+            "ocr_calls_summary",
+            "toc_page_detection",
+            "toc_judge",
+            "toc_content_mapping",
+            "toc_candidates_summary",
+            "llm_toc_page",
+        ):
             value = analysis.get(key)
             if value:
                 diagnostics[key] = keep_jsonish(value)
@@ -4545,10 +4598,13 @@ Example:
         from pageindex.post_processing import post_process_toc
         from pageindex.node_filler import (
             fill_node_text,
-            ocr_image_pages,
             generate_summaries,
             generate_doc_description,
             write_node_ids,
+        )
+        from pageindex.preprocess_page_text import (
+            PAGE_TEXT_OCR_PROMPT,
+            preprocess_page_text_map,
         )
 
         model = getattr(self.opt, "model", "qwen3.6-flash")
@@ -4560,14 +4616,34 @@ Example:
         analysis = analyze_pdf_structure(str(file_path))
         analysis["document_path"] = str(file_path)
         analysis["doc_id"] = doc_id
+        analysis["file_path"] = str(file_path)
         if _disable_code_toc:
             analysis["disable_code_toc_fast_path"] = True
         if _fallback_from:
             analysis["quality_fallback_from"] = dict(_fallback_from)
         page_count = analysis["page_count"]
-        page_list = list(analysis["page_list"])
         analysis["slide_outline_candidate"] = is_slide_like_document(analysis)
         analysis["agenda_outline_candidate"] = is_agenda_outline_document(analysis)
+        page_text_map = await preprocess_page_text_map(
+            file_path,
+            analysis,
+            ocr_pages_fn=lambda fp, pages, prompt, analysis: self._run_pdf_ocr_pages_by_images(
+                Path(fp),
+                list(pages),
+                analysis=analysis,
+                prompt=prompt,
+            ),
+            prompt=PAGE_TEXT_OCR_PROMPT,
+        )
+        page_list = page_text_map.to_page_list()
+        page_text_diagnostics = page_text_map.to_diagnostics()
+        print(
+            "[TOC-PIPELINE] stage=preprocess "
+            f"content_type={analysis.get('content_type')} "
+            f"pages={page_text_diagnostics.get('page_count')} "
+            f"ocr_pages={page_text_diagnostics.get('ocr_page_count')} "
+            f"sources={page_text_diagnostics.get('sources')}"
+        )
         self._log_index_stage(
             1,
             "analyze",
@@ -4715,11 +4791,12 @@ Example:
             f"[TOC-JUDGE] decision=accept items={len(toc_items)} "
             f"source={toc_source} confidence={new_architecture_result.get('confidence')}"
         )
-        needs_ocr = (
+        document_needs_ocr = (
             len(analysis.get("image_only_pages", [])) > 0
             or len(analysis.get("garbled_pages", [])) > 0
         )
-        if needs_ocr:
+        content_ocr_ran = False
+        if document_needs_ocr and not analysis.get("page_text_map_ocr_completed"):
             analysis["ocr_role"] = "content_fill"
             content_ocr_stage = self._content_ocr_stage_name()
             self._log_index_stage(
@@ -4732,12 +4809,21 @@ Example:
             )
             if self._requires_layout_outline_provider(analysis):
                 print("[TOC-PIPELINE] stage=content_ocr structure_source=layout_first")
-            page_list = await ocr_image_pages(
-                analysis,
-                page_list,
-                ocr_service_fn=lambda fp, pc: self._run_full_pdf_ocr_by_images(fp, pc, analysis=analysis),
+            ocr_result = await self._run_pdf_ocr_pages_by_images(
+                Path(analysis["file_path"]),
+                sorted(set(analysis.get("image_only_pages", []) + analysis.get("garbled_pages", []))),
+                analysis=analysis,
+                prompt=PAGE_TEXT_OCR_PROMPT,
             )
+            page_text_map = await preprocess_page_text_map(
+                file_path,
+                analysis,
+                ocr_pages_fn=lambda *_args, **_kwargs: ocr_result,
+                prompt=PAGE_TEXT_OCR_PROMPT,
+            )
+            page_list = page_text_map.to_page_list()
             analysis["page_list"] = page_list
+            content_ocr_ran = True
             self._log_index_stage(
                 4,
                 content_ocr_stage,
@@ -4811,7 +4897,7 @@ Example:
             page_count=page_count,
             toc_pages=anchors.get("toc_pages", []),
             analysis=analysis,
-            needs_ocr=needs_ocr,
+            needs_ocr=document_needs_ocr,
         ):
             toc_items = self._map_toc_items_after_content_ocr(
                 toc_items,
@@ -4978,7 +5064,7 @@ Example:
         )
         print(f"[TOC-PIPELINE] stage=enrich action=fill_nodes_and_doc_summary mode={execution_mode}")
         self._log_index_stage(6, "enrich", "started", mode=execution_mode)
-        fill_node_text(toc_tree, page_list)
+        fill_node_text(toc_tree, page_text_map)
         write_node_ids(toc_tree)
         # 闁冲厜鍋撻柍鍏夊亾闁冲厜鍋?闁哄瀚紓鎾存綇閹惧啿姣?闁冲厜鍋撻柍鍏夊亾闁冲厜鍋?
         # 濞ｅ洦绻勯弳鈧☉鏂挎晶鐘绘儍閸曠獩婵″亾缂備焦鎸婚悘?
@@ -5002,7 +5088,7 @@ Example:
                 "code_toc_disabled": bool(analysis.get("disable_code_toc_fast_path")),
             },
             "completeness": completeness,
-            "ocr_used": needs_ocr,
+            "ocr_used": bool(analysis.get("page_text_map_ocr_completed")) or content_ocr_ran,
             "llm_quality_check": llm_quality_check_result,
             "enrichment_status": "pending",
         }

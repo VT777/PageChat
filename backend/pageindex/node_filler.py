@@ -18,7 +18,7 @@ from app.core.config import (
 
 def fill_node_text(
     toc_tree: List[Dict],
-    page_list: List[Tuple[str, int]],
+    page_list: Any,
 ) -> None:
     """递归填充节点文本。文本页用 pymupdf 直取的文本。
 
@@ -26,6 +26,14 @@ def fill_node_text(
         toc_tree: post_processing 输出的树结构
         page_list: [(text, token_count), ...] 0-indexed
     """
+    try:
+        from pageindex.page_text_map import PageTextMap
+
+        if isinstance(page_list, PageTextMap):
+            page_list = page_list.to_page_list()
+    except Exception:
+        pass
+
     for node in toc_tree:
         if node.get("exclude_from_text") or node.get("node_type") in {
             "auxiliary_catalog",

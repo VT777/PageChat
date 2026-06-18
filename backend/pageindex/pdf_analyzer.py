@@ -14,13 +14,67 @@ import pymupdf
 # 页面分类
 # ---------------------------------------------------------------------------
 
+_COMMON_CJK_CHARS = set(
+    "的一是在不了有和人这中大为上个国我以要他时来用们生到作地于出就分"
+    "对成会可主发年动同工也能下过子说产种面而方后多定行学法所民得"
+    "经十三之进着等部度家电力里如水化高自二理起小物现实加量都两体"
+    "制机当使点从业本去把性好应开它合还因由其些然前外天政四日那社"
+    "义事平形相全表间样与关各重新线内数正心反你明看原又么利比或但"
+    "质气第向道命此变条只没结解问意建月公无系军很情者最立代想已通"
+    "并提直题党程展五果料象员革位入常文总次品式活设及管特件长求老"
+    "头基资边流路级少图山统接知较将组见计别她手角期根论运农指几九"
+    "区强放决西被干做必战先回则任取据处队南给色光门即保治北造百规"
+    "热领七海口东导器压志世金增争济阶油思术极交受联认六共权收证改"
+    "清美再采转更单风切打白教速花带安场身车例真务具万每目至达走积"
+    "示议声报斗完类八离华名确才科张信马节话米整空元况今集温传土许"
+    "步群广石记需段研界拉林律叫且究观越织装影算低持音众书布复容儿"
+    "须际商非验连断深难近矿千周委素技备半办青省列习响约支般史感劳"
+    "便团往酸历市克何除消构府称太准精值号率族维划选标写存候毛亲快"
+    "效斯院查江型眼王按格养易置派层片始却专状育厂京识适属圆包火住"
+    "调满县局照参红细引听该铁价严龙飞"
+)
+_COMMON_TEXT_PUNCTUATION = set("，。！？；：、（）《》“”‘’—…,.!?;:()[]")
+
+
+def _is_cjk_char(char: str) -> bool:
+    return (
+        "\u3400" <= char <= "\u4dbf"
+        or "\u4e00" <= char <= "\u9fff"
+        or "\uf900" <= char <= "\ufaff"
+    )
+
+
+def _looks_like_rare_cjk_mojibake(text: str) -> bool:
+    """Detect mojibake that is encoded as rare CJK-looking characters."""
+    non_space = [char for char in text if not char.isspace()]
+    if len(non_space) < 30:
+        return False
+
+    cjk_chars = [char for char in non_space if _is_cjk_char(char)]
+    if len(cjk_chars) < 20:
+        return False
+
+    common_ratio = sum(1 for char in cjk_chars if char in _COMMON_CJK_CHARS) / len(cjk_chars)
+    ascii_word_ratio = sum(1 for char in non_space if char.isascii() and char.isalnum()) / len(non_space)
+    punctuation_ratio = sum(1 for char in non_space if char in _COMMON_TEXT_PUNCTUATION) / len(non_space)
+    cjk_ratio = len(cjk_chars) / len(non_space)
+
+    return (
+        cjk_ratio >= 0.55
+        and common_ratio < 0.08
+        and ascii_word_ratio < 0.25
+        and punctuation_ratio < 0.08
+    )
+
 
 def _is_garbled_text(text: str, threshold: float = 0.5) -> bool:
     """检测文本是否大量乱码。CJK+ASCII 占比低于阈值视为乱码。"""
     if len(text) < 30:
         return False
     cjk_or_ascii = sum(1 for c in text if "\u4e00" <= c <= "\u9fff" or c.isascii())
-    return (cjk_or_ascii / len(text)) < threshold
+    if (cjk_or_ascii / len(text)) < threshold:
+        return True
+    return _looks_like_rare_cjk_mojibake(text)
 
 
 def _compute_meaningful_text_ratio(text: str) -> float:
