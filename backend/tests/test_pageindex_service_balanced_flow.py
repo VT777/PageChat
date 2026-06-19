@@ -91,6 +91,65 @@ def test_collect_candidates_respects_selected_visible_toc_path(monkeypatch, tmp_
     assert [candidate["source"] for candidate in candidates] == ["llm_toc_page"]
 
 
+def test_collect_candidates_uses_page_text_map_for_layout_required_visible_toc(monkeypatch, tmp_path):
+    service = PageIndexService()
+    calls = {"llm": 0}
+
+    def fake_rule(*_args, **_kwargs):
+        return None
+
+    async def fake_extract_toc_text(*_args, **_kwargs):
+        calls["llm"] += 1
+        return {
+            "toc_items": [
+                {"title": "01 Case Alpha", "page": 1, "physical_index": 3, "level": 1},
+                {"title": "02 Case Beta", "page": 3, "physical_index": 5, "level": 1},
+            ],
+            "source": "llm_toc_page",
+        }
+
+    monkeypatch.setattr(
+        "pageindex.visible_toc_rule_extractor.extract_visible_toc_with_pages",
+        fake_rule,
+    )
+    monkeypatch.setattr(service, "_extract_toc_text", fake_extract_toc_text)
+
+    candidates = asyncio.run(
+        service._collect_text_toc_candidates(
+            analysis={
+                "layout_type": "scanned_image_pdf",
+                "structure_policy": "layout_required",
+                "content_type": "ocr",
+                "page_texts": [
+                    "Cover",
+                    "Catalog\n01 Case Alpha ........ 1\n02 Case Beta ........ 3",
+                    "01 Case Alpha\nBody",
+                    "More body",
+                    "02 Case Beta\nBody",
+                ],
+                "toc_page_detection": {
+                    "status": "detected",
+                    "pages": [2],
+                    "has_page_numbers": True,
+                },
+            },
+            route_decision={
+                "selected_path": "visible_toc_with_pages",
+                "path": "visible_toc_with_pages",
+            },
+            file_path=tmp_path / "scan.pdf",
+            page_count=5,
+            model="qwen3.6-flash",
+            anchors={"toc_pages": [2]},
+            ocr_text_map=None,
+            dividers=[],
+        )
+    )
+
+    assert calls["llm"] == 1
+    assert [candidate["source"] for candidate in candidates] == ["llm_toc_page"]
+
+
 def test_collect_candidates_prefers_rule_extraction_for_standard_paged_visible_toc(monkeypatch, tmp_path):
     service = PageIndexService()
 

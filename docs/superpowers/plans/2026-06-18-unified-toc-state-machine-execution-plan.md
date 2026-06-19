@@ -25,6 +25,8 @@
 - 每阶段真实样本未达到预期时，不进入下一阶段。
 - 每份文档一次只走一条主路径；fallback 必须显式记录原因。
 - `PageTextMap` 是 TOC 构建和节点内容填充的唯一正文来源。
+- `layout_required` 只影响 S1 预处理；S1 后不能再用它阻断 `visible_toc_with_pages` / `visible_toc_no_pages` 的规则抽取或 LLM fallback。
+- OCR/VLM-OCR/PP-OCR 只作为生成 `PageTextMap` 的内部机制；S4 不再保留独立视觉/layout TOC 构建主路径。
 - 最终 TOC 只输出物理页码。
 - 主目录、图目录、表目录必须按需拆成独立 `toc_sections` 和前端顶级节点。
 - 质量门判断 TOC 是否忠实可用，不强制要求树状结构。
@@ -504,6 +506,8 @@ Expected:
 - T11 `人工智能安全治理研究报告（2025年）.pdf`
 
 T05 的 `01-04` 必须先做页码语义校验。若确认是章节号而非页码，则该文件仍走 `visible_toc_no_pages` 的标题定位映射，但 S4 目录项抽取应来自高置信规则。
+
+T03 重庆扫描 PDF 的回归要求：S1 全文 OCR 后，S3 应在 `PageTextMap` 上识别目录页；S4 即使规则抽取或映射校验失败，也必须继续调用 LLM 目录页文本抽取，不能因为 `layout_required` 回到旧 layout/VLM 分支，不能产出 0 项或单节点。
 
 LLM 只处理确认过的目录页文本，输出：
 

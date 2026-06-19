@@ -160,6 +160,12 @@ Recognize all readable text in natural reading order.
 
 后续节点内容必须从 `PageTextMap` 填充。索引构建完成后不应再次 OCR。
 
+### 5.5 `layout_required` 的边界
+
+`layout_required` 只表示原生 PDF 文本层不可靠，S1 必须通过 OCR 或混合修补生成可靠 `PageTextMap`。它不能作为 S4 TOC 构建阶段的路由条件。
+
+一旦 S1 产出按页文本，后续 `embedded_toc`、`visible_toc_with_pages`、`visible_toc_no_pages`、`content_outline` 都只能消费 `PageTextMap` 和 code-extracted TOC 证据。旧的视觉/layout 目录候选不再作为 S4 并列路径存在；OCR/VLM-OCR/PP-OCR 只能是 S1 生成按页文本的内部实现。
+
 ## 6. S2 TryEmbeddedToc：内置目录快路径
 
 优先尝试不需要 LLM 的内置目录来源：
@@ -306,6 +312,8 @@ scan_limit = min(30, max(10, page_count * 0.3))
 
 TOC 构建路径只保留四类。无可见目录时统一进入 `content_outline`，由 LLM 根据页级压缩文本判断应输出章节树还是页级平铺，不再保留独立的 `page_outline` 路径。
 
+S4 的统一输入是 S1 生成的 `PageTextMap`。即使文档在 S0/S1 被判定为扫描型、乱码型或 `layout_required`，只要 `PageTextMap` 已生成，规则抽取和 LLM fallback 都必须在该文本上执行。不能因为原始文档需要 OCR，就跳过可见目录页文本抽取，或者回到旧的 layout/VLM 目录构建分支。
+
 | 路径 | 触发条件 | 主要方法 |
 |---|---|---|
 | A. `embedded_toc` | 多源内置目录采集、合并后通过硬校验 | 直接规范化 |
@@ -338,6 +346,8 @@ TOC 构建路径只保留四类。无可见目录时统一进入 `content_outlin
 - 必须能拆分主目录、图目录、表目录；如果规则把图表目录混入主目录，视为校验失败并降级 LLM。
 
 规则抽取失败、低置信或校验不过，立即降级到 LLM 抽取。不要继续叠加特殊规则。
+
+规则抽取失败或映射校验失败时，必须继续调用 LLM 抽取目录页文本，而不是直接返回空目录或切换到旧 layout 分支。规则只是低成本高精度的首选子路径，不是可见目录路径的唯一实现。
 
 当前真实样本中，这类高质量可见目录至少包括：
 

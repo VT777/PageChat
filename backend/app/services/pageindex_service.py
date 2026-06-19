@@ -3002,11 +3002,15 @@ Example:
             or (analysis.get("toc_page") or {}).get("pages")
             or []
         )
+        page_texts = self._analysis_page_texts(analysis)
+        has_page_text_map = any(text.strip() for text in page_texts)
+        if has_page_text_map and not isinstance(analysis.get("page_texts"), list):
+            analysis["page_texts"] = page_texts
         llm_toc_candidate_added = False
         if (
             selected_path in {"visible_toc_with_pages", "visible_toc_no_pages"}
             and toc_pages
-            and not self._requires_layout_outline_provider(analysis)
+            and has_page_text_map
         ):
             try:
                 from pageindex.visible_toc_rule_extractor import (
@@ -3016,13 +3020,13 @@ Example:
 
                 if selected_path == "visible_toc_with_pages":
                     rule_result = extract_visible_toc_with_pages(
-                        analysis.get("page_texts") or [],
+                        page_texts,
                         toc_pages=toc_pages,
                         page_count=page_count,
                     )
                 else:
                     rule_result = extract_visible_toc_no_pages(
-                        analysis.get("page_texts") or [],
+                        page_texts,
                         toc_pages=toc_pages,
                         page_count=page_count,
                     )
@@ -3060,7 +3064,7 @@ Example:
                 "reason": "not_high_confidence_standard_toc",
             }
 
-        if toc_pages and not self._requires_layout_outline_provider(analysis):
+        if toc_pages and has_page_text_map:
             llm_toc_result = await self._extract_toc_text(analysis, toc_pages, page_count, model)
             llm_toc_result = self._normalize_and_map_fallback_toc(
                 llm_toc_result,
@@ -3222,7 +3226,21 @@ Example:
 
         layout = None
         toc_layout = None
-        if route_decision.get("path") == "ppocr_layout" or self._requires_layout_outline_provider(analysis):
+        selected_path = str(route_decision.get("selected_path") or route_decision.get("path") or "").strip()
+        state_machine_paths = {
+            "embedded_toc",
+            "visible_toc_with_pages",
+            "visible_toc_no_pages",
+            "content_outline",
+        }
+        has_page_text_map = any(text.strip() for text in self._analysis_page_texts(analysis))
+        should_run_legacy_layout = bool(
+            route_decision.get("path") == "ppocr_layout"
+            or (self._requires_layout_outline_provider(analysis) and not has_page_text_map)
+        )
+        if selected_path in state_machine_paths and has_page_text_map:
+            should_run_legacy_layout = False
+        if should_run_legacy_layout:
             try:
                 layout = await self._build_layout_with_resolver(
                     file_path,
@@ -4018,6 +4036,44 @@ Example:
             or meaningful_ratio <= 0.35
             or bool(analysis.get("garbled_pages"))
         )
+
+    @staticmethod
+    def _analysis_page_texts(analysis: Dict[str, Any]) -> List[str]:
+        page_texts = analysis.get("page_texts") if isinstance(analysis, dict) else None
+        if isinstance(page_texts, list):
+            normalized: List[str] = []
+            for item in page_texts:
+                if isinstance(item, (list, tuple)) and item:
+                    normalized.append(str(item[0] or ""))
+                else:
+                    normalized.append(str(item or ""))
+            return normalized
+
+        page_text_map = analysis.get("page_text_map") if isinstance(analysis, dict) else None
+        if hasattr(page_text_map, "page_texts"):
+            try:
+                return [str(text or "") for text in page_text_map.page_texts()]
+            except Exception:
+                return []
+        if isinstance(page_text_map, dict):
+            entries = page_text_map.get("entries") or []
+            if isinstance(entries, list):
+                def page_number(entry: Any) -> int:
+                    if isinstance(entry, dict):
+                        try:
+                            return int(entry.get("physical_page") or 0)
+                        except (TypeError, ValueError):
+                            return 0
+                    return 0
+
+                return [
+                    str(entry.get("text") or "")
+                    for entry in sorted(
+                        [entry for entry in entries if isinstance(entry, dict)],
+                        key=page_number,
+                    )
+                ]
+        return []
 
     @staticmethod
     def _requires_layout_outline_provider(analysis: Dict) -> bool:
@@ -5200,6 +5256,9 @@ Example:
                 f"{', '.join(node.get('title', '') for node in auxiliary_catalogs)}"
             )
 
+        from pageindex.post_processing import normalize_tree_page_ranges
+
+        toc_tree = normalize_tree_page_ranges(toc_tree, page_count)
         toc_tree = self._normalize_auxiliary_catalog_nodes(toc_tree)
         toc_tree = self._normalize_final_tree_schema(
             toc_tree,

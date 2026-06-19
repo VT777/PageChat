@@ -9,6 +9,7 @@
 
 import json
 import re
+from copy import deepcopy
 from typing import Any, Dict, List, Optional, Tuple
 
 from pageindex.catalog_classifier import (
@@ -436,6 +437,119 @@ def add_preface(toc_items: List[Dict]) -> List[Dict]:
     return toc_items
 
 
+def normalize_sibling_page_ranges(
+    nodes: List[Dict],
+    *,
+    page_count: int,
+    parent_start: Optional[int] = None,
+    parent_end: Optional[int] = None,
+    copy_nodes: bool = True,
+) -> List[Dict]:
+    """Normalize one sibling list using physical page boundaries."""
+    normalized = deepcopy(nodes) if copy_nodes else nodes
+    if not normalized:
+        return normalized
+    max_page = max(1, int(page_count or 1))
+    lower = _clamp_page(parent_start or 1, max_page)
+    upper = _clamp_page(parent_end or max_page, max_page)
+    if upper < lower:
+        upper = lower
+
+    for node in normalized:
+        start = _node_start_page(node)
+        start = _clamp_page(start or lower, max_page)
+        start = max(lower, min(start, upper))
+        end = _node_end_page(node)
+        end = _clamp_page(end or upper, max_page)
+        end = max(start, min(end, upper))
+        node["start_index"] = start
+        node["end_index"] = end
+        if not _to_positive_int(node.get("physical_index")):
+            node["physical_index"] = start
+
+    for index, node in enumerate(normalized):
+        start = node["start_index"]
+        if index < len(normalized) - 1:
+            next_start = normalized[index + 1]["start_index"]
+            current_end = node.get("end_index") or upper
+            end = next_start if next_start == current_end else next_start - 1
+            node["end_index"] = max(start, min(end, upper))
+        else:
+            node["end_index"] = max(start, upper)
+
+        children = node.get("nodes") or []
+        if children:
+            child_parent_end = node["end_index"]
+            if _is_catalog_container(node):
+                child_parent_end = upper
+            node["nodes"] = normalize_sibling_page_ranges(
+                children,
+                page_count=max_page,
+                parent_start=node["start_index"],
+                parent_end=child_parent_end,
+                copy_nodes=False,
+            )
+            if _is_catalog_container(node):
+                child_ends = [
+                    child.get("end_index")
+                    for child in node["nodes"]
+                    if isinstance(child.get("end_index"), int)
+                ]
+                if child_ends:
+                    node["end_index"] = max(node["end_index"], max(child_ends))
+    return normalized
+
+
+def normalize_tree_page_ranges(tree: List[Dict], page_count: int) -> List[Dict]:
+    """Return a tree with valid recursive physical page ranges."""
+    return normalize_sibling_page_ranges(tree, page_count=page_count, copy_nodes=True)
+
+
+def _node_start_page(node: Dict[str, Any]) -> Optional[int]:
+    return (
+        _to_positive_int(node.get("start_index"))
+        or _to_positive_int(node.get("physical_index"))
+        or _to_positive_int(node.get("page"))
+    )
+
+
+def _node_end_page(node: Dict[str, Any]) -> Optional[int]:
+    return (
+        _to_positive_int(node.get("end_index"))
+        or _to_positive_int(node.get("start_index"))
+        or _to_positive_int(node.get("physical_index"))
+        or _to_positive_int(node.get("page"))
+    )
+
+
+def _clamp_page(value: Optional[int], page_count: int) -> int:
+    page = value if isinstance(value, int) and value > 0 else 1
+    return max(1, min(page, max(1, int(page_count or 1))))
+
+
+def _is_catalog_container(node: Dict[str, Any]) -> bool:
+    if node.get("node_type") in {"catalog_group", "auxiliary_catalog"}:
+        return True
+    if node.get("page_type") == "catalog_group":
+        return True
+    catalog_type = str(node.get("catalog_type") or "")
+    if catalog_type and catalog_type != CATALOG_MAIN:
+        return True
+    title = str(node.get("title") or "").strip().lower()
+    compact = re.sub(r"\s+", "", title)
+    return compact in {
+        "目录",
+        "contents",
+        "tableofcontents",
+        "图目录",
+        "插图目录",
+        "listoffigures",
+        "表目录",
+        "表格目录",
+        "listoftables",
+    }
+
+
 # ---------------------------------------------------------------------------
 # stage=range: 设置 start_index / end_index
 # ---------------------------------------------------------------------------
@@ -465,7 +579,7 @@ def assign_page_ranges(toc_items: List[Dict], page_count: int) -> List[Dict]:
         else:
             item["end_index"] = page_count
 
-    return toc_items
+    return normalize_sibling_page_ranges(toc_items, page_count=page_count, copy_nodes=False)
 
 
 # ---------------------------------------------------------------------------
@@ -1509,6 +1623,7 @@ def post_process_toc(
     if multi_catalog_tree:
         tree = multi_catalog_tree
         fix_parent_ranges(tree)
+        tree = normalize_tree_page_ranges(tree, page_count)
         completeness = check_completeness(tree, page_count)
         print(
             f"[TOC-POST] status=done {len(items)} items → tree with {len(tree)} top-level groups, "
@@ -1615,6 +1730,7 @@ def post_process_toc(
 
     # stage=repair: 修复父节点范围
     fix_parent_ranges(tree)
+    tree = normalize_tree_page_ranges(tree, page_count)
 
     # stage=group: LLM 目录分组（新架构）
     toc_frozen = top_level_frozen and not allow_child_expansion

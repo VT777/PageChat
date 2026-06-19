@@ -5,6 +5,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from pageindex.utils import post_processing
 from pageindex import post_processing as post_processing_module
+from pageindex.post_processing import normalize_tree_page_ranges
 
 
 def _flatten(nodes):

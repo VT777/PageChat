@@ -13,6 +13,7 @@ import json
 from pathlib import Path
 import re
 import sys
+import unicodedata
 from typing import Any
 
 import pymupdf
@@ -775,6 +776,7 @@ async def collect_build_diagnostics(
         "confidence": (result or {}).get("confidence"),
         "item_count": len(items),
         "root_titles": [str(item.get("title") or "") for item in items[:12] if isinstance(item, dict)],
+        "items": [_diagnostic_toc_item(item) for item in items if isinstance(item, dict)],
         "mapping_report": (
             analysis.get("toc_content_mapping")
             or ((result or {}).get("evidence") or {}).get("content_mapping")
@@ -783,6 +785,290 @@ async def collect_build_diagnostics(
         ),
         "visible_toc_rule": analysis.get("visible_toc_rule") or {},
         "toc_candidates_summary": analysis.get("toc_candidates_summary") or {},
+    }
+
+
+def _diagnostic_toc_item(item: dict[str, Any]) -> dict[str, Any]:
+    payload = {
+        "title": str(item.get("title") or ""),
+        "level": item.get("level"),
+        "page": item.get("page"),
+        "physical_index": item.get("physical_index"),
+        "start_index": item.get("start_index"),
+        "end_index": item.get("end_index"),
+        "node_type": item.get("node_type"),
+        "catalog_type": item.get("catalog_type"),
+    }
+    children = [
+        _diagnostic_toc_item(child)
+        for child in (item.get("nodes") or item.get("children") or [])
+        if isinstance(child, dict)
+    ]
+    if children:
+        payload["nodes"] = children
+    return payload
+
+
+async def collect_map_diagnostics(
+    file_path: str | Path,
+    *,
+    user_id: str | None = None,
+    model: str = "qwen3.6-flash",
+    preprocess: bool = True,
+) -> dict[str, Any]:
+    from app.services.pageindex_service import PageIndexService
+    from pageindex.post_processing import normalize_tree_page_ranges, post_process_toc
+    from pageindex.toc_detector import find_toc_pages
+
+    path = Path(file_path)
+    analysis = analyze_pdf_structure(str(path))
+    analysis["document_path"] = str(path)
+    analysis["file_path"] = str(path)
+    service = PageIndexService(user_id=user_id)
+
+    if preprocess:
+        await preprocess_page_text_map(
+            path,
+            analysis,
+            ocr_pages_fn=lambda fp, pages, prompt, analysis: service._run_pdf_ocr_pages_by_images(
+                Path(fp),
+                list(pages),
+                analysis=analysis,
+                prompt=prompt,
+            ),
+            prompt=PAGE_TEXT_OCR_PROMPT,
+        )
+    else:
+        analysis["content_type"] = infer_content_type(analysis)
+        analysis["page_texts"] = [
+            str(page[0] if isinstance(page, (list, tuple)) and page else page or "")
+            for page in (analysis.get("page_list") or [])
+        ]
+
+    route_decision = PageIndexService._build_state_machine_route_decision("smart", analysis)
+    if route_decision.get("execution_mode") == "balanced":
+        await find_toc_pages(analysis, str(path), model=model)
+        route_decision = PageIndexService._build_state_machine_route_decision("smart", analysis)
+
+    page_count = int(analysis.get("page_count") or len(analysis.get("page_texts") or []))
+    anchors = {"toc_pages": list(analysis.get("toc_pages") or [])}
+    result = await service._run_unified_toc_controller(
+        file_path=path,
+        requested_mode="smart",
+        analysis=analysis,
+        route_decision=route_decision,
+        page_count=page_count,
+        model=model,
+        anchors=anchors,
+        ocr_text_map=analysis.get("ocr_text_map"),
+        dividers=list(analysis.get("chapter_dividers") or []),
+    )
+    raw_items = list((result or {}).get("items") or [])
+    if not result or not raw_items:
+        return {
+            "file": path.name,
+            "status": "failed",
+            "page_count": page_count,
+            "content_type": analysis.get("content_type"),
+            "route_decision": route_decision,
+            "source": (result or {}).get("source"),
+            "item_count": 0,
+        }
+
+    has_prebuilt_tree = any(
+        isinstance(item.get("nodes"), list) and bool(item.get("nodes"))
+        for item in raw_items
+        if isinstance(item, dict)
+    )
+    if has_prebuilt_tree:
+        tree = raw_items
+        completeness = {
+            "quality": "good",
+            "coverage": 1.0,
+            "gaps": [],
+            "reaches_end": True,
+            "ok": True,
+            "needs_repair": False,
+        }
+    else:
+        tree, completeness = post_process_toc(
+            raw_items,
+            page_count,
+            dividers=list(analysis.get("chapter_dividers") or []),
+            analysis=analysis,
+            use_llm_grouping=False,
+            model=model,
+        )
+    auxiliary_catalogs = service._build_auxiliary_catalog_nodes(analysis)
+    if auxiliary_catalogs:
+        tree = service._merge_auxiliary_catalog_nodes(tree, auxiliary_catalogs)
+    tree = normalize_tree_page_ranges(tree, page_count)
+    tree = service._normalize_auxiliary_catalog_nodes(tree)
+    tree = service._normalize_final_tree_schema(tree, doc_id=path.stem, page_count=page_count)
+
+    key_checks = _phase6_key_checks(path.name, tree)
+    return {
+        "file": path.name,
+        "status": "ok",
+        "page_count": page_count,
+        "content_type": analysis.get("content_type"),
+        "route_decision": route_decision,
+        "toc_page_detection": analysis.get("toc_page_detection") or {},
+        "source": result.get("source"),
+        "candidate_source": result.get("candidate_source"),
+        "raw_item_count": len(raw_items),
+        "final_root_count": len(tree),
+        "final_node_count": _count_tree_nodes(tree),
+        "completeness": completeness,
+        "mapping_report": (
+            analysis.get("toc_content_mapping")
+            or ((result or {}).get("evidence") or {}).get("content_mapping")
+            or ((result or {}).get("evidence") or {}).get("mapping_report")
+            or {}
+        ),
+        "key_checks": key_checks,
+        "items": [_diagnostic_toc_item(item) for item in tree if isinstance(item, dict)],
+    }
+
+
+def _count_tree_nodes(nodes: list[dict[str, Any]]) -> int:
+    total = 0
+    for node in nodes or []:
+        if not isinstance(node, dict):
+            continue
+        total += 1
+        total += _count_tree_nodes(node.get("nodes") or [])
+    return total
+
+
+def _phase6_key_checks(file_name: str, tree: list[dict[str, Any]]) -> dict[str, Any]:
+    checks: dict[str, Any] = {
+        "all_ranges_valid": _all_ranges_valid(tree),
+        "top_titles": [str(node.get("title") or "") for node in tree[:6]],
+    }
+    if "OpenAI深度报告" in file_name:
+        checks["risk_prompt_page"] = _find_node_start(tree, "风险提示")
+    if "生成式人工智能服务合规备案指南" in file_name:
+        checks["first_chapter_page"] = _find_node_start(tree, "第一章 总则")
+        checks["has_figure_catalog"] = _has_catalog(tree, "figure")
+        checks["has_table_catalog"] = _has_catalog(tree, "table")
+    if "AI Agent智能体技术发展报告" in file_name:
+        checks["second_chapter_page"] = _find_node_start(tree, "第二章")
+    if "重庆市人工智能应用场景" in file_name:
+        checks["toc_page_leakage_count"] = _count_nodes_on_pages(tree, {2})
+    return checks
+
+
+def _all_ranges_valid(nodes: list[dict[str, Any]]) -> bool:
+    for node in nodes or []:
+        if not isinstance(node, dict):
+            continue
+        start = node.get("start_index")
+        end = node.get("end_index")
+        if isinstance(start, int) and isinstance(end, int) and start > end:
+            return False
+        if not _all_ranges_valid(node.get("nodes") or []):
+            return False
+    return True
+
+
+def _find_node_start(nodes: list[dict[str, Any]], title_part: str) -> int | None:
+    needle = _compat_title(title_part)
+    for node in nodes or []:
+        title = _compat_title(str(node.get("title") or ""))
+        if needle in title:
+            value = node.get("start_index") or node.get("physical_index")
+            return value if isinstance(value, int) else None
+        found = _find_node_start(node.get("nodes") or [], title_part)
+        if found is not None:
+            return found
+    return None
+
+
+def _compat_title(value: str) -> str:
+    text = unicodedata.normalize("NFKC", str(value or ""))
+    text = text.translate(
+        str.maketrans(
+            {
+                "\u2f00": "一",
+                "\u2f06": "二",
+                "\u2f94": "言",
+                "\u2f3c": "心",
+                "\u2f55": "火",
+            }
+        )
+    )
+    return re.sub(r"\s+", "", text)
+
+
+def _has_catalog(nodes: list[dict[str, Any]], catalog_type: str) -> bool:
+    for node in nodes or []:
+        if node.get("catalog_type") == catalog_type:
+            return True
+        if _has_catalog(node.get("nodes") or [], catalog_type):
+            return True
+    return False
+
+
+def _count_nodes_on_pages(nodes: list[dict[str, Any]], pages: set[int]) -> int:
+    count = 0
+    for node in nodes or []:
+        value = node.get("start_index") or node.get("physical_index")
+        if isinstance(value, int) and value in pages:
+            count += 1
+        count += _count_nodes_on_pages(node.get("nodes") or [], pages)
+    return count
+
+
+async def run_map_diagnostics(
+    input_dir: Path,
+    selected_file: str | None = None,
+    *,
+    user_id: str | None = None,
+    model: str = "qwen3.6-flash",
+    preprocess: bool = True,
+) -> dict[str, Any]:
+    documents = []
+    for pdf_path in _iter_target_files(input_dir, selected_file):
+        if not pdf_path.exists():
+            documents.append({"file": pdf_path.name, "status": "missing"})
+            continue
+        try:
+            result = await collect_map_diagnostics(
+                pdf_path,
+                user_id=user_id,
+                model=model,
+                preprocess=preprocess,
+            )
+        except Exception as exc:
+            result = {
+                "file": pdf_path.name,
+                "status": "error",
+                "error_type": type(exc).__name__,
+                "error": str(exc),
+            }
+        documents.append(result)
+        route = result.get("route_decision") or {}
+        checks_text = json.dumps(result.get("key_checks") or {}, ensure_ascii=True)
+        print(
+            "[TOC-DIAG] phase=map "
+            f"file={result['file']} status={result.get('status')} "
+            f"selected_path={route.get('selected_path')} "
+            f"source={result.get('source')} roots={result.get('final_root_count')} "
+            f"nodes={result.get('final_node_count')} checks={checks_text}"
+        )
+
+    return {
+        "phase": "map",
+        "input_dir": str(input_dir),
+        "documents": documents,
+        "summary": {
+            "total": len(documents),
+            "ok": sum(1 for doc in documents if doc.get("status") == "ok"),
+            "missing": sum(1 for doc in documents if doc.get("status") == "missing"),
+            "error": sum(1 for doc in documents if doc.get("status") == "error"),
+            "failed": sum(1 for doc in documents if doc.get("status") == "failed"),
+        },
     }
 
 
@@ -858,7 +1144,7 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--phase",
         default="baseline",
-        choices=["baseline", "preprocess", "embedded", "detect", "route", "build"],
+        choices=["baseline", "preprocess", "embedded", "detect", "route", "build", "map"],
         help="Diagnostic phase to run.",
     )
     return parser.parse_args(argv)
@@ -903,6 +1189,16 @@ def main(argv: list[str] | None = None) -> int:
     elif args.phase == "build":
         report = asyncio.run(
             run_build_diagnostics(
+                input_dir,
+                selected_file=args.file,
+                user_id=args.user_id,
+                model=args.model,
+                preprocess=True,
+            )
+        )
+    elif args.phase == "map":
+        report = asyncio.run(
+            run_map_diagnostics(
                 input_dir,
                 selected_file=args.file,
                 user_id=args.user_id,

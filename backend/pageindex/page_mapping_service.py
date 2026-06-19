@@ -19,12 +19,15 @@ def map_skeleton_pages(
 
     if skeleton.get("page_mapping_valid") and _has_monotonic_pages(items, page_count):
         _assign_ranges(items, page_count)
-        return make_mapped_outline(
+        report = _build_mapping_report(items, page_count, skeleton.get("toc_pages") or [], "existing", len(items))
+        mapped = make_mapped_outline(
             source=source,
             items=items,
             mapping_strategy="existing",
             mapping_quality=1.0,
         )
+        mapped["mapping_report"] = report
+        return mapped
 
     matched = _map_by_title_search(items, page_texts, page_count, skeleton.get("toc_pages") or [])
     if matched:
@@ -32,21 +35,27 @@ def map_skeleton_pages(
         if quality >= 0.5:
             _fill_missing_pages(items, page_count, skeleton.get("toc_pages") or [])
             _assign_ranges(items, page_count)
-            return make_mapped_outline(
+            report = _build_mapping_report(items, page_count, skeleton.get("toc_pages") or [], "title_search", matched)
+            mapped = make_mapped_outline(
                 source=source,
                 items=items,
                 mapping_strategy="title_search",
                 mapping_quality=quality,
             )
+            mapped["mapping_report"] = report
+            return mapped
 
     _map_uniform_after_toc(items, page_count, skeleton.get("toc_pages") or [])
     _assign_ranges(items, page_count)
-    return make_mapped_outline(
+    report = _build_mapping_report(items, page_count, skeleton.get("toc_pages") or [], "uniform_after_toc", 0)
+    mapped = make_mapped_outline(
         source=source,
         items=items,
         mapping_strategy="uniform_after_toc",
         mapping_quality=0.35 if items else 0.0,
     )
+    mapped["mapping_report"] = report
+    return mapped
 
 
 def _has_monotonic_pages(items: List[Dict[str, Any]], page_count: int) -> bool:
@@ -143,6 +152,49 @@ def _assign_ranges(items: List[Dict[str, Any]], page_count: int) -> None:
                 next_page = later_page
                 break
         item["end_index"] = max(start, (next_page - 1) if next_page else page_count)
+
+
+def _build_mapping_report(
+    items: List[Dict[str, Any]],
+    page_count: int,
+    toc_pages: List[int],
+    strategy: str,
+    matched: int,
+) -> Dict[str, Any]:
+    item_count = len(items)
+    pages = [_page_value(item) for item in items]
+    mapped_pages = [page for page in pages if page is not None]
+    toc_page_set = {
+        page for page in toc_pages
+        if isinstance(page, int) and not isinstance(page, bool) and page > 0
+    }
+    leakage = sum(1 for page in mapped_pages if page in toc_page_set)
+    in_range = all(1 <= page <= page_count for page in mapped_pages) if page_count else False
+    monotonic = all(
+        left <= right
+        for left, right in zip(mapped_pages, mapped_pages[1:])
+    )
+    reasons: List[str] = []
+    if item_count and not mapped_pages:
+        reasons.append("no_mapped_pages")
+    if not in_range:
+        reasons.append("mapping_out_of_range")
+    if leakage >= 2 and item_count and leakage / item_count >= 0.3:
+        reasons.append("toc_page_leakage")
+    if not monotonic:
+        reasons.append("mapping_non_monotonic")
+    status = "failed" if reasons else "ok"
+    return {
+        "status": status,
+        "strategy": strategy,
+        "anchor_match": f"{matched}/{item_count}",
+        "matched_count": matched,
+        "item_count": item_count,
+        "toc_page_leakage_count": leakage,
+        "excluded_pages": sorted(toc_page_set),
+        "mapping_monotonic": monotonic,
+        "reasons": reasons,
+    }
 
 
 def _page_value(item: Dict[str, Any]) -> Optional[int]:
