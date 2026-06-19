@@ -126,6 +126,14 @@ def _content_type(analysis: Dict[str, Any]) -> str:
     value = str(analysis.get("content_type") or "").strip().lower()
     if value in {"text", "ocr", "hybrid"}:
         return value
+    try:
+        from pageindex.preprocess_page_text import infer_content_type
+
+        inferred = infer_content_type(analysis)
+        if inferred in {"text", "ocr", "hybrid"}:
+            return inferred
+    except Exception:
+        pass
     if analysis.get("is_image_only_pdf") or analysis.get("is_garbled_pdf"):
         return "ocr"
     if analysis.get("image_only_pages") or analysis.get("garbled_pages"):
@@ -142,6 +150,8 @@ def _preprocess_strategy(content_type: str) -> str:
 
 
 def _embedded_toc_candidate(analysis: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    from pageindex.code_toc_quality import evaluate_code_toc
+
     try:
         from pageindex.fast_path.code_toc_fast_path import CodeTOCFastPath
 
@@ -150,11 +160,12 @@ def _embedded_toc_candidate(analysis: Dict[str, Any]) -> Optional[Dict[str, Any]
         candidate = None
     if candidate and candidate.get("early_return_allowed") and candidate.get("items"):
         return candidate
-    if _has_reliable_code_toc(analysis):
+    quality = evaluate_code_toc(analysis)
+    if quality.get("accepted"):
         code_toc = analysis.get("code_toc") or {}
         return {
             "code_toc_source": code_toc.get("source"),
-            "items": code_toc.get("items") or [],
+            "items": quality.get("items") or [],
         }
     return None
 
@@ -165,44 +176,9 @@ def _has_code_toc_signal(analysis: Dict[str, Any]) -> bool:
 
 
 def _has_reliable_code_toc(analysis: Dict[str, Any]) -> bool:
-    code_toc = analysis.get("code_toc") or {}
-    source = str(code_toc.get("source") or "").strip()
-    if source not in {"bookmarks", "pdf_outline", "outline", "links"}:
-        return False
-    items: List[Dict[str, Any]] = [item for item in code_toc.get("items") or [] if isinstance(item, dict)]
-    if len(items) < 2:
-        return False
-    if not _bookmark_density_ok(
-        source,
-        len(items),
-        analysis.get("page_count"),
-        garbled_or_ocr=bool(
-            analysis.get("is_garbled_pdf")
-            or str(analysis.get("text_layer_quality") or "").lower() == "garbled"
-            or str(analysis.get("content_type") or "").lower() == "ocr"
-        ),
-    ):
-        return False
-    pages = [_positive_int(item.get("physical_index") or item.get("page")) for item in items]
-    pages = [page for page in pages if page is not None]
-    return len(pages) >= 2 and all(left <= right for left, right in zip(pages, pages[1:]))
+    from pageindex.code_toc_quality import evaluate_code_toc
 
-
-def _bookmark_density_ok(
-    source: str,
-    item_count: int,
-    page_count_value: Any,
-    *,
-    garbled_or_ocr: bool = False,
-) -> bool:
-    if source not in {"bookmarks", "pdf_outline", "outline"}:
-        return True
-    if garbled_or_ocr:
-        return True
-    page_count = _positive_int(page_count_value)
-    if not page_count:
-        return True
-    return item_count / page_count >= 0.75 or item_count >= 50
+    return bool(evaluate_code_toc(analysis).get("accepted"))
 
 
 def _toc_page_signal(analysis: Dict[str, Any]) -> Dict[str, Any]:

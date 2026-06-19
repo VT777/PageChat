@@ -124,6 +124,58 @@ def test_diagnostic_script_parses_explicit_route_all_flag() -> None:
     assert args.all is True
 
 
+def test_diagnostic_script_parses_embedded_phase() -> None:
+    module = _load_diagnostic_module()
+
+    args = module._parse_args(["--phase", "embedded", "--all"])
+
+    assert args.phase == "embedded"
+    assert args.all is True
+
+
+def test_embedded_diagnostic_reports_code_toc_quality(tmp_path: Path, monkeypatch) -> None:
+    module = _load_diagnostic_module()
+    pdf_path = tmp_path / "embedded.pdf"
+    pdf_path.write_bytes(b"%PDF-1.4\n")
+    items = [
+        {"title": f"Section {idx:02d}", "physical_index": idx + 1, "structure": str(idx)}
+        for idx in range(1, 25)
+    ]
+
+    def fake_analyze(_path):
+        return {
+            "page_count": 30,
+            "content_type": "text",
+            "text_layer_quality": "reliable",
+            "code_toc": {
+                "source": "bookmarks",
+                "items": items,
+                "toc_sections": [{"kind": "main_toc", "items": items}],
+                "sources": {"bookmarks": {"count": len(items)}},
+            },
+        }
+
+    monkeypatch.setattr(module, "analyze_pdf_structure", fake_analyze)
+
+    result = module.collect_embedded_diagnostics(pdf_path)
+
+    assert result["status"] == "ok"
+    assert result["code_toc_quality"]["accepted"] is True
+    assert result["section_kinds"] == ["main_toc"]
+    assert result["route_decision"]["selected_path"] == "embedded_toc"
+
+
+def test_embedded_phase_match_accepts_rejected_code_toc_for_visible_expected_path() -> None:
+    module = _load_diagnostic_module()
+    result = {
+        "code_toc_quality": {"accepted": False, "reasons": ["sparse_bookmarks"]},
+        "route_decision": {"selected_path": "content_outline"},
+    }
+    expected = {"selected_path": "visible_toc_with_pages"}
+
+    assert module._embedded_expected_matches(result, expected) is True
+
+
 def test_route_diagnostic_reports_state_machine_path(tmp_path: Path, monkeypatch) -> None:
     module = _load_diagnostic_module()
 

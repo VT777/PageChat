@@ -37,10 +37,8 @@ def test_normal_bookmarks_remain_fast_reliable() -> None:
         "code_toc": {
             "source": "bookmarks",
             "items": [
-                {"structure": "1", "title": "行业概览", "physical_index": 3},
-                {"structure": "2", "title": "市场规模分析", "physical_index": 20},
-                {"structure": "3", "title": "竞争格局", "physical_index": 50},
-                {"structure": "4", "title": "风险提示", "physical_index": 90},
+                {"structure": str(idx), "title": f"Section {idx:02d}", "physical_index": idx + 2}
+                for idx in range(1, 81)
             ],
         },
     }

@@ -869,26 +869,10 @@ def analyze_pdf_structure(file_path: str) -> Dict[str, Any]:
     # 预分析不再做目录页检测，避免重复工作和不必要的计算
     has_toc_page, toc_page_indices, toc_confidence, toc_preview = False, [], 0.0, []
 
-    # 代码 TOC 提取（三级优先）
-    code_toc_items = None
-    code_toc_source = None
+    # 代码 TOC 提取（多源采集，不因先发现 bookmarks 就跳过 links）
+    from pageindex.code_toc_collector import collect_code_toc
 
-    # Level 1: 书签
-    code_toc_items = extract_toc_from_bookmarks(doc)
-    if code_toc_items:
-        code_toc_source = "bookmarks"
-
-    # Level 2: 链接注解
-    if not code_toc_items:
-        code_toc_items = extract_toc_from_link_annotations(doc)
-        if code_toc_items:
-            code_toc_source = "links"
-
-    # Level 3: 正则（只在有文本页时尝试）
-    if not code_toc_items and text_coverage > 0.3:
-        code_toc_items = extract_toc_by_regex(page_texts)
-        if code_toc_items:
-            code_toc_source = "regex"
+    code_toc = collect_code_toc(doc, page_texts=page_texts)
 
     doc.close()
 
@@ -912,10 +896,7 @@ def analyze_pdf_structure(file_path: str) -> Dict[str, Any]:
         "is_garbled_pdf": len(garbled_pages) / page_count > 0.5
         if page_count > 0
         else False,
-        "code_toc": {
-            "items": code_toc_items,
-            "source": code_toc_source,
-        },
+        "code_toc": code_toc,
         "page_list": page_list,
         "page_texts": page_texts,
         "text_quality": quality,

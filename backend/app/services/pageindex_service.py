@@ -3323,66 +3323,12 @@ Example:
 
     @staticmethod
     def _has_reliable_code_toc(analysis: Dict) -> bool:
-        code_toc = analysis.get("code_toc") or {}
-        items = code_toc.get("items") or []
-        source = code_toc.get("source")
-        if not items:
-            return False
-        if source in {"bookmarks", "links"}:
-            if source == "bookmarks" and PageIndexService._is_weak_slide_bookmark_toc(analysis, items):
-                print("[TOC-CODE] Ignoring weak slide-export bookmarks")
-                analysis["code_toc_reject_reason"] = "weak_slide_bookmarks"
-                return False
-            return True
-        if source != "regex":
-            return False
-        if analysis.get("agenda_outline_candidate"):
-            print("[TOC-CODE] Ignoring weak regex TOC: agenda_outline_candidate=True")
-            return False
+        from pageindex.code_toc_quality import evaluate_code_toc
 
-        page_count = int(analysis.get("page_count") or 0)
-        if page_count <= 0:
-            return False
-
-        physical_pages = [
-            item.get("physical_index")
-            for item in items
-            if isinstance(item.get("physical_index"), int)
-        ]
-        if len(physical_pages) < 3:
-            return False
-
-        out_of_range_ratio = sum(1 for page in physical_pages if page > page_count) / len(physical_pages)
-        year_like_ratio = sum(1 for page in physical_pages if 1900 <= page <= 2100) / len(physical_pages)
-        if out_of_range_ratio >= 0.3 or year_like_ratio >= 0.3:
-            print(
-                f"[TOC-CODE] Ignoring weak regex TOC: "
-                f"out_of_range={out_of_range_ratio:.0%}, years={year_like_ratio:.0%}"
-            )
-            return False
-
-        compressed_ratio = max(physical_pages) / page_count if physical_pages else 1.0
-        figure_title_ratio = sum(
-            1
-            for item in items
-            if str(item.get("title", "")).strip().startswith(("\u56fe\uff1a", "\u8868\uff1a", "Figure", "Table"))
-        ) / len(items)
-        if page_count > 15 and compressed_ratio <= 0.35:
-            print(
-                f"[TOC-CODE] Ignoring weak regex TOC: "
-                f"compressed_pages={compressed_ratio:.0%}"
-            )
-            return False
-        if figure_title_ratio >= 0.2:
-            print(
-                f"[TOC-CODE] Ignoring weak regex TOC: "
-                f"figure_titles={figure_title_ratio:.0%}"
-            )
-            return False
-
-        in_range_pages = [page for page in physical_pages if 1 <= page <= page_count]
-        unique_ratio = len(set(in_range_pages)) / len(in_range_pages) if in_range_pages else 0.0
-        return len(in_range_pages) >= 3 and unique_ratio >= 0.6
+        report = evaluate_code_toc(analysis)
+        if not report.get("accepted") and report.get("reasons"):
+            analysis["code_toc_reject_reason"] = ",".join(report.get("reasons") or [])
+        return bool(report.get("accepted"))
 
     @staticmethod
     def _select_initial_execution_mode(requested_mode: str, analysis: Dict) -> str:
@@ -3453,7 +3399,25 @@ Example:
             "\u8868\u76ee\u5f55",
             "\u8868\u683c\u76ee\u5f55",
         }
-        for item in code_toc.get("items") or []:
+        section_items: List[Dict[str, Any]] = []
+        for section in code_toc.get("toc_sections") or []:
+            if not isinstance(section, dict):
+                continue
+            kind = str(section.get("kind") or "").strip()
+            if kind == "figure_toc":
+                section_items.extend(
+                    dict(item, catalog_type=CATALOG_FIGURE)
+                    for item in section.get("items") or []
+                    if isinstance(item, dict)
+                )
+            elif kind == "table_toc":
+                section_items.extend(
+                    dict(item, catalog_type=CATALOG_TABLE)
+                    for item in section.get("items") or []
+                    if isinstance(item, dict)
+                )
+        source_items = section_items or list(code_toc.get("items") or [])
+        for item in source_items:
             if not isinstance(item, dict):
                 continue
             catalog_type = detect_catalog_type(item)
@@ -3517,6 +3481,14 @@ Example:
         if source in {"ocr_toc_page", "llm_toc_page", "toc_page_layout", "toc_page_text"}:
             return False
         code_toc = analysis.get("code_toc") if isinstance(analysis.get("code_toc"), dict) else {}
+        sections = code_toc.get("toc_sections") or []
+        if any(
+            isinstance(section, dict)
+            and section.get("kind") in {"figure_toc", "table_toc"}
+            and section.get("items")
+            for section in sections
+        ):
+            return True
         return code_toc.get("source") == "regex"
 
     @staticmethod

@@ -345,6 +345,120 @@ def _expected_route_matches(result: dict[str, Any], expected: dict[str, Any]) ->
     return True
 
 
+def _embedded_expected_matches(result: dict[str, Any], expected: dict[str, Any]) -> bool:
+    """Match only the S2 embedded-TOC gate, not later balanced routing."""
+    if not expected:
+        return True
+    expected_path = expected.get("selected_path")
+    quality = result.get("code_toc_quality") if isinstance(result.get("code_toc_quality"), dict) else {}
+    accepted = bool(quality.get("accepted"))
+    if expected_path == "embedded_toc":
+        return accepted and _expected_route_matches(result, expected)
+    return not accepted
+
+
+def collect_embedded_diagnostics(file_path: str | Path) -> dict[str, Any]:
+    from app.services.pageindex_service import PageIndexService
+    from pageindex.code_toc_quality import evaluate_code_toc
+
+    path = Path(file_path)
+    analysis = analyze_pdf_structure(str(path))
+    code_toc = analysis.get("code_toc") if isinstance(analysis.get("code_toc"), dict) else {}
+    quality = evaluate_code_toc(analysis)
+    route_decision = PageIndexService._build_state_machine_route_decision("smart", analysis)
+    sources = code_toc.get("sources") if isinstance(code_toc.get("sources"), dict) else {}
+    source_summary = {}
+    for name, source in sources.items():
+        if not isinstance(source, dict):
+            continue
+        source_summary[name] = {
+            "count": source.get("count"),
+            "raw_count": source.get("raw_count"),
+            "toc_pages": list(source.get("toc_pages") or []),
+            "sample_titles": list(source.get("sample_titles") or []),
+        }
+
+    return {
+        "file": path.name,
+        "status": "ok",
+        "page_count": analysis.get("page_count"),
+        "content_type": route_decision.get("content_type"),
+        "code_toc_source": code_toc.get("source"),
+        "code_toc_items": len(code_toc.get("items") or []),
+        "section_kinds": [
+            section.get("kind")
+            for section in code_toc.get("toc_sections") or []
+            if isinstance(section, dict)
+        ],
+        "sources": source_summary,
+        "quality_flags": list(code_toc.get("quality_flags") or []),
+        "code_toc_quality": {
+            key: value
+            for key, value in quality.items()
+            if key != "items"
+        },
+        "route_decision": route_decision,
+    }
+
+
+def run_embedded_diagnostics(input_dir: Path, selected_file: str | None = None) -> dict[str, Any]:
+    expected_by_file = _fixture_doc_by_file()
+    documents = []
+    for pdf_path in _iter_target_files(input_dir, selected_file):
+        if not pdf_path.exists():
+            documents.append({"file": pdf_path.name, "status": "missing"})
+            continue
+        try:
+            result = collect_embedded_diagnostics(pdf_path)
+            expected = (expected_by_file.get(pdf_path.name) or {}).get("expected_route") or {}
+            result["expected_route"] = expected
+            result["route_matches_expected"] = _embedded_expected_matches(result, expected)
+        except Exception as exc:
+            result = {
+                "file": pdf_path.name,
+                "status": "error",
+                "error_type": type(exc).__name__,
+                "error": str(exc),
+            }
+        documents.append(result)
+        if result.get("status") == "ok":
+            route = result.get("route_decision") or {}
+            quality = result.get("code_toc_quality") or {}
+            print(
+                "[TOC-DIAG] phase=embedded "
+                f"file={result['file']} source={result.get('code_toc_source')} "
+                f"items={result.get('code_toc_items')} "
+                f"sections={result.get('section_kinds')} "
+                f"accepted={quality.get('accepted')} "
+                f"reasons={quality.get('reasons')} "
+                f"selected_path={route.get('selected_path')} "
+                f"match={result.get('route_matches_expected')}"
+            )
+        else:
+            print(
+                "[TOC-DIAG] phase=embedded "
+                f"file={result['file']} status={result.get('status')} "
+                f"error={result.get('error_type')}"
+            )
+
+    return {
+        "phase": "embedded",
+        "input_dir": str(input_dir),
+        "documents": documents,
+        "summary": {
+            "total": len(documents),
+            "ok": sum(1 for doc in documents if doc.get("status") == "ok"),
+            "missing": sum(1 for doc in documents if doc.get("status") == "missing"),
+            "error": sum(1 for doc in documents if doc.get("status") == "error"),
+            "route_mismatch": sum(
+                1
+                for doc in documents
+                if doc.get("status") == "ok" and doc.get("route_matches_expected") is False
+            ),
+        },
+    }
+
+
 async def collect_route_diagnostics(
     file_path: str | Path,
     *,
@@ -493,7 +607,7 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--phase",
         default="baseline",
-        choices=["baseline", "preprocess", "route"],
+        choices=["baseline", "preprocess", "embedded", "route"],
         help="Diagnostic phase to run.",
     )
     return parser.parse_args(argv)
@@ -514,6 +628,8 @@ def main(argv: list[str] | None = None) -> int:
                 user_id=args.user_id,
             )
         )
+    elif args.phase == "embedded":
+        report = run_embedded_diagnostics(input_dir, selected_file=args.file)
     elif args.phase == "route":
         report = asyncio.run(
             run_route_diagnostics(
