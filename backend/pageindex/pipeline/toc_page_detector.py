@@ -5,6 +5,8 @@ from __future__ import annotations
 import re
 from typing import Any, Dict, List
 
+from pageindex.toc_detector import aggregate_toc_sections, classify_toc_page_text
+
 
 def detect_toc_pages_from_layout(
     layout: Any,
@@ -24,6 +26,11 @@ def detect_toc_pages_from_layout(
     pages = sorted(list(getattr(layout, "pages", []) or []), key=lambda item: int(getattr(item, "page", 0) or 0))
     for page in pages:
         text = strip_ocr_markdown_fences(str(getattr(page, "markdown", "") or getattr(page, "plain_text", "") or ""))
+        typed_candidate = classify_toc_page_text(
+            text,
+            page=int(getattr(page, "page", 0) or 0),
+            source="layout",
+        )
         catalog_line_count = count_catalog_like_lines(text)
         unpaged_catalog_line_count = count_unpaged_catalog_like_lines(text)
         toc_heading = has_toc_page_heading(text)
@@ -65,6 +72,8 @@ def detect_toc_pages_from_layout(
                 "page": int(getattr(page, "page", 0) or 0),
                 "score": score,
                 "is_toc": is_toc,
+                "primary_kind": typed_candidate.get("primary_kind", "none"),
+                "sections": typed_candidate.get("sections", []),
                 "toc_heading": toc_heading,
                 "catalog_line_count": catalog_line_count,
                 "unpaged_catalog_line_count": unpaged_catalog_line_count,
@@ -78,6 +87,7 @@ def detect_toc_pages_from_layout(
         "source": "layout",
         "status": "detected" if detected_pages else "not_found",
         "pages": detected_pages,
+        "sections": aggregate_toc_sections(candidates, pages=detected_pages),
         "candidates": candidates,
         "reason": "confirmed_by_layout_signals" if detected_pages else "no_confirmed_toc_pages",
     }

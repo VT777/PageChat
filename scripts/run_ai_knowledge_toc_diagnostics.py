@@ -328,6 +328,122 @@ async def run_preprocess_diagnostics(
     }
 
 
+async def collect_detect_diagnostics(
+    file_path: str | Path,
+    *,
+    user_id: str | None = None,
+    preprocess: bool = True,
+) -> dict[str, Any]:
+    from app.services.pageindex_service import PageIndexService
+    from pageindex.toc_detector import detect_toc_pages_text_report
+
+    path = Path(file_path)
+    analysis = analyze_pdf_structure(str(path))
+    analysis["document_path"] = str(path)
+    analysis["file_path"] = str(path)
+    service = PageIndexService(user_id=user_id)
+
+    if preprocess:
+        await preprocess_page_text_map(
+            path,
+            analysis,
+            ocr_pages_fn=lambda fp, pages, prompt, analysis: service._run_pdf_ocr_pages_by_images(
+                Path(fp),
+                list(pages),
+                analysis=analysis,
+                prompt=prompt,
+            ),
+            prompt=PAGE_TEXT_OCR_PROMPT,
+        )
+    else:
+        analysis["content_type"] = infer_content_type(analysis)
+        analysis["page_texts"] = [
+            str(page[0] if isinstance(page, (list, tuple)) and page else page or "")
+            for page in (analysis.get("page_list") or [])
+        ]
+
+    report = detect_toc_pages_text_report(analysis.get("page_texts") or [])
+    page_map = analysis.get("page_text_map")
+    page_map_diagnostics = (
+        page_map.to_diagnostics()
+        if hasattr(page_map, "to_diagnostics")
+        else analysis.get("page_text_map_diagnostics") or {}
+    )
+    return {
+        "file": path.name,
+        "status": "ok",
+        "page_count": analysis.get("page_count"),
+        "content_type": analysis.get("content_type"),
+        "text_coverage": round(float(analysis.get("text_coverage") or 0.0), 4),
+        "toc_page_detection": {
+            "source": report.get("source"),
+            "status": report.get("status"),
+            "pages": list(report.get("pages") or []),
+            "sections": list(report.get("sections") or []),
+            "has_page_numbers": bool(report.get("has_page_numbers")),
+            "reason": report.get("reason"),
+            "candidate_count": len(report.get("candidates") or []),
+        },
+        "page_text_map": page_map_diagnostics,
+    }
+
+
+async def run_detect_diagnostics(
+    input_dir: Path,
+    selected_file: str | None = None,
+    *,
+    user_id: str | None = None,
+    preprocess: bool = True,
+) -> dict[str, Any]:
+    documents = []
+    for pdf_path in _iter_target_files(input_dir, selected_file):
+        if not pdf_path.exists():
+            documents.append({"file": pdf_path.name, "status": "missing"})
+            continue
+        try:
+            result = await collect_detect_diagnostics(
+                pdf_path,
+                user_id=user_id,
+                preprocess=preprocess,
+            )
+        except Exception as exc:
+            result = {
+                "file": pdf_path.name,
+                "status": "error",
+                "error_type": type(exc).__name__,
+                "error": str(exc),
+            }
+        documents.append(result)
+        if result.get("status") == "ok":
+            detection = result.get("toc_page_detection") or {}
+            print(
+                "[TOC-DIAG] phase=detect "
+                f"file={result['file']} content_type={result.get('content_type')} "
+                f"toc_pages={detection.get('pages')} "
+                f"sections={detection.get('sections')} "
+                f"has_page_numbers={detection.get('has_page_numbers')} "
+                f"reason={detection.get('reason')}"
+            )
+        else:
+            print(
+                "[TOC-DIAG] phase=detect "
+                f"file={result['file']} status={result.get('status')} "
+                f"error={result.get('error_type')}"
+            )
+
+    return {
+        "phase": "detect",
+        "input_dir": str(input_dir),
+        "documents": documents,
+        "summary": {
+            "total": len(documents),
+            "ok": sum(1 for doc in documents if doc.get("status") == "ok"),
+            "missing": sum(1 for doc in documents if doc.get("status") == "missing"),
+            "error": sum(1 for doc in documents if doc.get("status") == "error"),
+        },
+    }
+
+
 def _expected_route_matches(result: dict[str, Any], expected: dict[str, Any]) -> bool:
     if not expected:
         return True
@@ -607,7 +723,7 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--phase",
         default="baseline",
-        choices=["baseline", "preprocess", "embedded", "route"],
+        choices=["baseline", "preprocess", "embedded", "detect", "route"],
         help="Diagnostic phase to run.",
     )
     return parser.parse_args(argv)
@@ -630,6 +746,15 @@ def main(argv: list[str] | None = None) -> int:
         )
     elif args.phase == "embedded":
         report = run_embedded_diagnostics(input_dir, selected_file=args.file)
+    elif args.phase == "detect":
+        report = asyncio.run(
+            run_detect_diagnostics(
+                input_dir,
+                selected_file=args.file,
+                user_id=args.user_id,
+                preprocess=True,
+            )
+        )
     elif args.phase == "route":
         report = asyncio.run(
             run_route_diagnostics(

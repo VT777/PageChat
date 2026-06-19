@@ -41,12 +41,24 @@ Reply JSON only:
 }}
 """
 
-TOC_DETECTOR_SINGLE_PROMPT = """Is this page a table-of-contents page? Abstracts, summaries, figure lists, and table lists are not TOC pages.
+TOC_DETECTOR_SINGLE_PROMPT = """Classify whether this page is a table-of-contents/catalog page.
+
+A TOC/catalog page lists document navigation entries. Figure lists and table lists are catalog pages.
+Do not extract catalog items.
 
 Page text:
 {content}
 
-Reply JSON only: {{"toc_detected":"yes|no"}}
+Reply JSON only:
+{{
+  "is_toc": true,
+  "primary_kind": "main_toc|figure_toc|table_toc|mixed_toc|other_toc|none",
+  "sections": [
+    {{"kind": "main_toc|figure_toc|table_toc|other_toc", "confidence": 0.0}}
+  ],
+  "confidence": 0.0,
+  "has_page_numbers": false
+}}
 """
 
 TOC_DETECTOR_BATCH_PROMPT = """Analyze the following pages and determine which ones are table-of-contents (TOC) pages.

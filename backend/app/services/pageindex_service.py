@@ -1176,19 +1176,15 @@ class PageIndexService:
                 )
                 content = self._extract_llm_text_content(response)
                 payload = self._parse_json_payload(content)
-                raw_decision = payload.get("toc_detected")
-                if raw_decision is None:
-                    raw_decision = payload.get("toc")
-                if raw_decision is None:
-                    raw_decision = payload.get("is_toc")
-                decision = str(raw_decision or "").strip().lower()
-                is_toc = decision in {"yes", "true", "1"}
+                from pageindex.toc_detector import normalize_llm_toc_page_payload
+
                 candidate.update(
-                    {
-                        "is_toc": is_toc,
-                        "score": 1.0 if is_toc else 0.0,
-                        "decision": "yes" if is_toc else "no",
-                    }
+                    normalize_llm_toc_page_payload(
+                        payload,
+                        page=page_num,
+                        batch_index=batch_index,
+                        batch_size=len(pages),
+                    )
                 )
             except Exception as exc:
                 candidate.update(
@@ -1308,10 +1304,18 @@ class PageIndexService:
 
         status = "detected" if detected_pages else "not_found"
         reason = "confirmed_by_llm_classifier" if detected_pages else stop_reason
+        from pageindex.toc_detector import aggregate_toc_sections
+
         report = {
             "source": "llm_classifier",
             "status": status,
             "pages": detected_pages,
+            "sections": aggregate_toc_sections(candidates, pages=detected_pages),
+            "has_page_numbers": any(
+                bool(candidate.get("has_page_numbers"))
+                for candidate in candidates
+                if int(candidate.get("page") or 0) in set(detected_pages)
+            ),
             "candidates": candidates,
             "reason": reason,
             "scan_limit": scan_limit,

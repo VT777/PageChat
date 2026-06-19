@@ -35,6 +35,7 @@ def test_text_toc_report_marks_unpaged_toc() -> None:
     assert report["status"] == "detected"
     assert report["pages"] == [2]
     assert report["has_page_numbers"] is False
+    assert report["sections"] == [{"kind": "main_toc", "pages": [2]}]
 
 
 def test_text_toc_report_allows_page_header_before_unpaged_toc_heading() -> None:
@@ -51,6 +52,7 @@ def test_text_toc_report_allows_page_header_before_unpaged_toc_heading() -> None
     assert report["status"] == "detected"
     assert report["pages"] == [2]
     assert report["has_page_numbers"] is False
+    assert report["sections"] == [{"kind": "main_toc", "pages": [2]}]
 
 
 def test_text_toc_report_treats_dense_numbered_catalog_as_paged() -> None:

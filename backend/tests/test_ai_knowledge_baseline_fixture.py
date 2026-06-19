@@ -133,6 +133,15 @@ def test_diagnostic_script_parses_embedded_phase() -> None:
     assert args.all is True
 
 
+def test_diagnostic_script_parses_detect_phase() -> None:
+    module = _load_diagnostic_module()
+
+    args = module._parse_args(["--phase", "detect", "--all"])
+
+    assert args.phase == "detect"
+    assert args.all is True
+
+
 def test_embedded_diagnostic_reports_code_toc_quality(tmp_path: Path, monkeypatch) -> None:
     module = _load_diagnostic_module()
     pdf_path = tmp_path / "embedded.pdf"
@@ -216,3 +225,52 @@ def test_route_diagnostic_reports_state_machine_path(tmp_path: Path, monkeypatch
     assert result["toc_page_detection"]["pages"] == [2]
     assert result["toc_page_detection"]["has_page_numbers"] is False
     assert result["route_decision"]["selected_path"] == "visible_toc_no_pages"
+
+
+def test_detect_diagnostic_reports_typed_toc_sections(tmp_path: Path, monkeypatch) -> None:
+    module = _load_diagnostic_module()
+
+    pdf_path = tmp_path / "detect.pdf"
+    pdf_path.write_bytes(b"%PDF-1.4\n")
+
+    def fake_analyze(_path):
+        catalog_text = (
+            "\u56fe\u76ee\u5f55\n"
+            "\u56fe 1 AI \u773c\u955c\u7cfb\u7edf\u67b6\u6784 ........ 12\n"
+            "\u56fe 2 \u5149\u5b66\u65b9\u6848\u5bf9\u6bd4 ........ 18\n"
+            "\u8868\u76ee\u5f55\n"
+            "\u8868 1 \u4f9b\u5e94\u94fe\u516c\u53f8\u6e05\u5355 ........ 28\n"
+            "\u8868 2 \u5173\u952e\u53c2\u6570\u5bf9\u6bd4 ........ 35"
+        )
+        return {
+            "page_count": 3,
+            "page_list": [
+                ("Cover page", 10),
+                (catalog_text, 10),
+                ("Body page", 10),
+            ],
+            "text_coverage": 1.0,
+            "image_coverage": 0.0,
+            "image_only_pages": [],
+            "garbled_pages": [],
+            "text_layer_quality": "reliable",
+        }
+
+    async def fake_preprocess(_path, analysis, **_kwargs):
+        analysis["content_type"] = "text"
+        analysis["page_texts"] = [page[0] for page in analysis["page_list"]]
+        analysis["page_text_map_diagnostics"] = {"page_count": 3, "ocr_page_count": 0}
+        return None
+
+    monkeypatch.setattr(module, "analyze_pdf_structure", fake_analyze)
+    monkeypatch.setattr(module, "preprocess_page_text_map", fake_preprocess)
+
+    result = asyncio.run(module.collect_detect_diagnostics(pdf_path, preprocess=True))
+
+    assert result["status"] == "ok"
+    assert result["toc_page_detection"]["pages"] == [2]
+    assert result["toc_page_detection"]["sections"] == [
+        {"kind": "figure_toc", "pages": [2]},
+        {"kind": "table_toc", "pages": [2]},
+    ]
+    assert result["toc_page_detection"]["has_page_numbers"] is True
