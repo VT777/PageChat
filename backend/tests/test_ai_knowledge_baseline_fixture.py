@@ -142,6 +142,63 @@ def test_diagnostic_script_parses_detect_phase() -> None:
     assert args.all is True
 
 
+def test_diagnostic_script_parses_quality_phase() -> None:
+    module = _load_diagnostic_module()
+
+    args = module._parse_args(["--phase", "quality", "--all"])
+
+    assert args.phase == "quality"
+    assert args.all is True
+
+
+def test_quality_diagnostic_reports_quality_gate(monkeypatch, tmp_path: Path) -> None:
+    module = _load_diagnostic_module()
+    input_dir = tmp_path / "input"
+    input_dir.mkdir()
+    pdf_path = input_dir / "quality.pdf"
+    pdf_path.write_bytes(b"%PDF-1.4\n")
+
+    async def fake_collect_map(path, **_kwargs):
+        assert Path(path).name == "quality.pdf"
+        return {
+            "file": "quality.pdf",
+            "status": "ok",
+            "page_count": 6,
+            "content_type": "text",
+            "route_decision": {"selected_path": "visible_toc_with_pages"},
+            "toc_page_detection": {"pages": [2]},
+            "mapping_report": {"status": "ok", "page_mapping_score": 1.0},
+            "items": [
+                {
+                    "title": "Preface",
+                    "start_index": 1,
+                    "end_index": 2,
+                    "summary": "summary",
+                    "text": "preface",
+                    "nodes": [],
+                },
+                {
+                    "title": "Chapter 1",
+                    "start_index": 3,
+                    "end_index": 6,
+                    "summary": "summary",
+                    "text": "body",
+                    "nodes": [],
+                },
+            ],
+            "key_checks": {"all_ranges_valid": True},
+        }
+
+    monkeypatch.setattr(module, "collect_map_diagnostics", fake_collect_map)
+
+    result = asyncio.run(module.run_quality_diagnostics(input_dir, selected_file="quality.pdf"))
+
+    assert result["summary"]["ok"] == 1
+    assert result["summary"]["failed"] == 0
+    assert result["documents"][0]["quality_report"]["status"] == "completed"
+    assert result["documents"][0]["quality_report"]["mapping_status"] == "ok"
+
+
 def test_embedded_diagnostic_reports_code_toc_quality(tmp_path: Path, monkeypatch) -> None:
     module = _load_diagnostic_module()
     pdf_path = tmp_path / "embedded.pdf"

@@ -815,8 +815,11 @@ async def collect_map_diagnostics(
     user_id: str | None = None,
     model: str = "qwen3.6-flash",
     preprocess: bool = True,
+    include_quality_report: bool = False,
 ) -> dict[str, Any]:
     from app.services.pageindex_service import PageIndexService
+    from pageindex.index_quality import build_index_quality_report
+    from pageindex.node_filler import fill_node_text
     from pageindex.post_processing import normalize_tree_page_ranges, post_process_toc
     from pageindex.toc_detector import find_toc_pages
 
@@ -906,8 +909,25 @@ async def collect_map_diagnostics(
     tree = service._normalize_auxiliary_catalog_nodes(tree)
     tree = service._normalize_final_tree_schema(tree, doc_id=path.stem, page_count=page_count)
 
+    quality_report = None
+    if include_quality_report:
+        page_text_map = analysis.get("page_text_map") or analysis.get("page_list") or []
+        fill_node_text(tree, page_text_map)
+        diagnostics = PageIndexService._index_diagnostics_from_analysis(analysis)
+        quality_report = build_index_quality_report(
+            {
+                "doc_name": path.name,
+                "format": "pdf",
+                "page_count": page_count,
+                "structure": tree,
+                "route_decision": route_decision,
+                "diagnostics": diagnostics,
+            },
+            page_count=page_count,
+        )
+
     key_checks = _phase6_key_checks(path.name, tree)
-    return {
+    payload = {
         "file": path.name,
         "status": "ok",
         "page_count": page_count,
@@ -929,6 +949,21 @@ async def collect_map_diagnostics(
         "key_checks": key_checks,
         "items": [_diagnostic_toc_item(item) for item in tree if isinstance(item, dict)],
     }
+    if quality_report is not None:
+        payload["quality_report"] = quality_report
+    return payload
+
+
+def _items_have_text_fields(items: list[dict[str, Any]]) -> bool:
+    for item in items or []:
+        if not isinstance(item, dict):
+            continue
+        if "text" in item:
+            return True
+        children = item.get("nodes") or item.get("children") or []
+        if isinstance(children, list) and _items_have_text_fields(children):
+            return True
+    return False
 
 
 def _count_tree_nodes(nodes: list[dict[str, Any]]) -> int:
@@ -1072,6 +1107,123 @@ async def run_map_diagnostics(
     }
 
 
+async def collect_quality_diagnostics(
+    file_path: str | Path,
+    *,
+    user_id: str | None = None,
+    model: str = "qwen3.6-flash",
+    preprocess: bool = True,
+) -> dict[str, Any]:
+    from pageindex.index_quality import build_index_quality_report
+
+    result = await collect_map_diagnostics(
+        file_path,
+        user_id=user_id,
+        model=model,
+        preprocess=preprocess,
+        include_quality_report=True,
+    )
+    if result.get("status") != "ok":
+        return result
+    if isinstance(result.get("quality_report"), dict):
+        quality_report = result["quality_report"]
+        status = "failed" if str(quality_report.get("status") or "").startswith("failed") else "ok"
+        return {
+            **result,
+            "status": status,
+            "quality_status": quality_report.get("status"),
+            "hard_fail_reasons": quality_report.get("hard_fail_reasons") or [],
+            "warnings": quality_report.get("warnings") or [],
+        }
+
+    diagnostics: dict[str, Any] = {}
+    if result.get("toc_page_detection"):
+        diagnostics["toc_page_detection"] = result.get("toc_page_detection")
+    if result.get("mapping_report"):
+        diagnostics["toc_content_mapping"] = result.get("mapping_report")
+    page_count = int(result.get("page_count") or 0)
+    items = result.get("items") or []
+    if page_count > 0 and isinstance(items, list) and _items_have_text_fields(items):
+        diagnostics["page_text_map_diagnostics"] = {
+            "page_count": page_count,
+            "qualities": {"reliable": page_count},
+        }
+
+    payload = {
+        "doc_name": result.get("file"),
+        "format": "pdf",
+        "page_count": page_count,
+        "structure": items,
+        "route_decision": result.get("route_decision") or {},
+        "diagnostics": diagnostics,
+    }
+    quality_report = build_index_quality_report(payload, page_count=page_count)
+    status = "ok"
+    if str(quality_report.get("status") or "").startswith("failed"):
+        status = "failed"
+
+    return {
+        **result,
+        "status": status,
+        "quality_report": quality_report,
+        "quality_status": quality_report.get("status"),
+        "hard_fail_reasons": quality_report.get("hard_fail_reasons") or [],
+        "warnings": quality_report.get("warnings") or [],
+    }
+
+
+async def run_quality_diagnostics(
+    input_dir: Path,
+    selected_file: str | None = None,
+    *,
+    user_id: str | None = None,
+    model: str = "qwen3.6-flash",
+    preprocess: bool = True,
+) -> dict[str, Any]:
+    documents = []
+    for pdf_path in _iter_target_files(input_dir, selected_file):
+        if not pdf_path.exists():
+            documents.append({"file": pdf_path.name, "status": "missing"})
+            continue
+        try:
+            result = await collect_quality_diagnostics(
+                pdf_path,
+                user_id=user_id,
+                model=model,
+                preprocess=preprocess,
+            )
+        except Exception as exc:
+            result = {
+                "file": pdf_path.name,
+                "status": "error",
+                "error_type": type(exc).__name__,
+                "error": str(exc),
+            }
+        documents.append(result)
+        route = result.get("route_decision") or {}
+        quality = result.get("quality_report") or {}
+        print(
+            "[TOC-DIAG] phase=quality "
+            f"file={result['file']} status={result.get('status')} "
+            f"selected_path={route.get('selected_path')} "
+            f"quality={quality.get('status')} "
+            f"hard_fail={','.join(result.get('hard_fail_reasons') or [])}"
+        )
+
+    return {
+        "phase": "quality",
+        "input_dir": str(input_dir),
+        "documents": documents,
+        "summary": {
+            "total": len(documents),
+            "ok": sum(1 for doc in documents if doc.get("status") == "ok"),
+            "missing": sum(1 for doc in documents if doc.get("status") == "missing"),
+            "error": sum(1 for doc in documents if doc.get("status") == "error"),
+            "failed": sum(1 for doc in documents if doc.get("status") == "failed"),
+        },
+    }
+
+
 async def run_build_diagnostics(
     input_dir: Path,
     selected_file: str | None = None,
@@ -1144,7 +1296,7 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--phase",
         default="baseline",
-        choices=["baseline", "preprocess", "embedded", "detect", "route", "build", "map"],
+        choices=["baseline", "preprocess", "embedded", "detect", "route", "build", "map", "quality"],
         help="Diagnostic phase to run.",
     )
     return parser.parse_args(argv)
@@ -1199,6 +1351,16 @@ def main(argv: list[str] | None = None) -> int:
     elif args.phase == "map":
         report = asyncio.run(
             run_map_diagnostics(
+                input_dir,
+                selected_file=args.file,
+                user_id=args.user_id,
+                model=args.model,
+                preprocess=True,
+            )
+        )
+    elif args.phase == "quality":
+        report = asyncio.run(
+            run_quality_diagnostics(
                 input_dir,
                 selected_file=args.file,
                 user_id=args.user_id,

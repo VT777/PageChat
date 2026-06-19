@@ -289,6 +289,187 @@ def _is_synthetic_placeholder_title(title: Any) -> bool:
     }
 
 
+def _is_auxiliary_node(node: Dict[str, Any]) -> bool:
+    return bool(
+        node.get("is_auxiliary")
+        or node.get("exclude_from_coverage")
+        or node.get("exclude_from_text")
+        or node.get("node_type") in {"auxiliary_catalog", "auxiliary_catalog_item"}
+        or str(node.get("catalog_type") or "").strip().lower() in {"figure", "table"}
+    )
+
+
+def _is_synthetic_container_node(node: Dict[str, Any]) -> bool:
+    children = node.get("nodes") or node.get("children") or []
+    return _is_synthetic_root_title(node.get("title")) and isinstance(children, list) and bool(children)
+
+
+def _content_quality_nodes(nodes: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    return [
+        node
+        for node in nodes
+        if not _is_auxiliary_node(node) and not _is_synthetic_container_node(node)
+    ]
+
+
+def _raw_node_page_range(node: Dict[str, Any]) -> tuple[Optional[int], Optional[int]]:
+    anchor = node.get("source_anchor")
+    if isinstance(anchor, dict) and anchor.get("unit_type") == "page":
+        start = _positive_page(anchor.get("start_page") or anchor.get("page"))
+        end = _positive_page(anchor.get("end_page") or anchor.get("page"))
+    else:
+        start = _positive_page(
+            node.get("start_index")
+            or node.get("start_page")
+            or node.get("page")
+            or node.get("physical_index")
+        )
+        end = _positive_page(
+            node.get("end_index")
+            or node.get("end_page")
+            or node.get("page")
+            or node.get("physical_index")
+        )
+    return start, end
+
+
+def _page_range_failure_stats(
+    nodes: List[Dict[str, Any]],
+    *,
+    page_total: int,
+) -> Dict[str, Any]:
+    invalid: List[Dict[str, Any]] = []
+    out_of_range: List[Dict[str, Any]] = []
+    for node in _content_quality_nodes(nodes):
+        start, end = _raw_node_page_range(node)
+        if start is None or end is None:
+            continue
+        title = str(node.get("title") or "").strip()
+        if end < start:
+            invalid.append({"title": title, "start": start, "end": end})
+            continue
+        if page_total > 0 and (start > page_total or end > page_total):
+            out_of_range.append({"title": title, "start": start, "end": end})
+
+    return {
+        "invalid_page_range_count": len(invalid),
+        "invalid_page_range_sample": invalid[:5],
+        "page_out_of_range_count": len(out_of_range),
+        "page_out_of_range_sample": out_of_range[:5],
+    }
+
+
+def _extract_toc_pages(index_payload: Dict[str, Any], mapping: Dict[str, Any]) -> List[int]:
+    diagnostics = index_payload.get("diagnostics")
+    if not isinstance(diagnostics, dict):
+        diagnostics = {}
+
+    sources: List[Any] = [
+        index_payload.get("toc_pages"),
+        diagnostics.get("toc_pages"),
+        mapping.get("excluded_pages") if isinstance(mapping, dict) else None,
+    ]
+
+    detection = diagnostics.get("toc_page_detection")
+    if isinstance(detection, dict):
+        sources.append(detection.get("pages"))
+        sections = detection.get("sections")
+        if isinstance(sections, list):
+            for section in sections:
+                if isinstance(section, dict):
+                    sources.append(section.get("pages"))
+
+    pages: List[int] = []
+    for source in sources:
+        if not isinstance(source, list):
+            continue
+        for value in source:
+            parsed = _positive_page(value)
+            if parsed is not None and parsed not in pages:
+                pages.append(parsed)
+    return sorted(pages)
+
+
+def _toc_page_leakage_stats(
+    nodes: List[Dict[str, Any]],
+    *,
+    toc_pages: List[int],
+) -> Dict[str, Any]:
+    content_nodes = _content_quality_nodes(nodes)
+    toc_page_set = set(toc_pages)
+    if not content_nodes or not toc_page_set:
+        return {
+            "toc_page_leakage_count": 0,
+            "toc_page_leakage_ratio": 0.0,
+            "toc_page_leakage_sample": [],
+        }
+
+    leaked: List[Dict[str, Any]] = []
+    for node in content_nodes:
+        page_range = _node_page_range(node)
+        if page_range is None:
+            continue
+        start, _ = page_range
+        if start in toc_page_set:
+            leaked.append({"title": str(node.get("title") or "").strip(), "page": start})
+
+    return {
+        "toc_page_leakage_count": len(leaked),
+        "toc_page_leakage_ratio": round(len(leaked) / len(content_nodes), 4),
+        "toc_page_leakage_sample": leaked[:5],
+    }
+
+
+def _page_text_map_available(index_payload: Dict[str, Any]) -> bool:
+    diagnostics = index_payload.get("diagnostics")
+    if not isinstance(diagnostics, dict):
+        return False
+    page_text = diagnostics.get("page_text_map_diagnostics")
+    if not isinstance(page_text, dict):
+        return False
+    page_count = _positive_page(page_text.get("page_count"))
+    qualities = page_text.get("qualities")
+    return bool(page_count or isinstance(qualities, dict))
+
+
+def _node_content_stats(index_payload: Dict[str, Any], nodes: List[Dict[str, Any]]) -> Dict[str, Any]:
+    if not _page_text_map_available(index_payload):
+        return {
+            "checked": False,
+            "empty_node_text_count": 0,
+            "empty_node_text_ratio": 0.0,
+            "empty_node_text_sample": [],
+        }
+
+    required_nodes = [
+        node
+        for node in _content_quality_nodes(nodes)
+        if _node_page_range(node) is not None
+    ]
+    if not required_nodes:
+        return {
+            "checked": True,
+            "empty_node_text_count": 0,
+            "empty_node_text_ratio": 0.0,
+            "empty_node_text_sample": [],
+        }
+
+    empty_nodes = [
+        node
+        for node in required_nodes
+        if not str(node.get("text") or "").strip()
+    ]
+    return {
+        "checked": True,
+        "empty_node_text_count": len(empty_nodes),
+        "empty_node_text_ratio": round(len(empty_nodes) / len(required_nodes), 4),
+        "empty_node_text_sample": [
+            str(node.get("title") or "").strip()
+            for node in empty_nodes[:5]
+        ],
+    }
+
+
 def _candidate_count(candidate: Dict[str, Any]) -> int:
     for key in ("items", "item_count", "title_count", "evidence_title_count"):
         value = candidate.get(key)
@@ -628,6 +809,10 @@ def build_toc_fidelity_digest(
     title_match_rate = _bounded_float(mapping.get("title_match_rate"))
     mapping_tail_collapse = bool(mapping.get("tail_collapse"))
     mapping_reasons = [str(reason) for reason in (mapping.get("reasons") or []) if str(reason).strip()]
+    page_range_failures = _page_range_failure_stats(nodes, page_total=page_total)
+    toc_pages = _extract_toc_pages(index_payload, mapping)
+    toc_page_leakage = _toc_page_leakage_stats(nodes, toc_pages=toc_pages)
+    node_content = _node_content_stats(index_payload, nodes)
 
     warnings: List[str] = []
     hard_fail_reasons: List[str] = []
@@ -642,6 +827,24 @@ def build_toc_fidelity_digest(
         warnings.append("anchor confidence below threshold")
     if detected_style == "collapsed":
         warnings.append("collapsed TOC structure")
+    if page_range_failures["invalid_page_range_count"]:
+        warnings.append("invalid page range detected")
+        hard_fail_reasons.append("invalid_page_range")
+    if page_range_failures["page_out_of_range_count"]:
+        warnings.append("page out of range detected")
+        hard_fail_reasons.append("page_out_of_range")
+
+    toc_leakage_count = int(toc_page_leakage.get("toc_page_leakage_count") or 0)
+    toc_leakage_ratio = _bounded_float(toc_page_leakage.get("toc_page_leakage_ratio"))
+    if toc_leakage_count >= 2 and toc_leakage_ratio >= 0.3:
+        warnings.append("body TOC nodes point to catalog pages")
+        hard_fail_reasons.append("toc_page_leakage")
+
+    empty_node_text_count = int(node_content.get("empty_node_text_count") or 0)
+    empty_node_text_ratio = _bounded_float(node_content.get("empty_node_text_ratio"))
+    if node_content.get("checked") and empty_node_text_count >= 2 and empty_node_text_ratio >= 0.5:
+        warnings.append("node content unavailable from PageTextMap")
+        hard_fail_reasons.append("node_content_unusable")
 
     evidence_title_count = int(evidence_stats.get("evidence_title_count") or 0)
     final_tree_title_count = int(evidence_stats.get("final_tree_title_count") or 0)
@@ -723,6 +926,18 @@ def build_toc_fidelity_digest(
         "title_match_rate": round(title_match_rate, 4),
         "mapping_status": mapping_status or "unknown",
         "mapping_tail_collapse": mapping_tail_collapse,
+        "toc_pages": toc_pages,
+        "toc_page_leakage_count": int(toc_page_leakage.get("toc_page_leakage_count") or 0),
+        "toc_page_leakage_ratio": round(_bounded_float(toc_page_leakage.get("toc_page_leakage_ratio")), 4),
+        "toc_page_leakage_sample": toc_page_leakage.get("toc_page_leakage_sample") or [],
+        "invalid_page_range_count": int(page_range_failures.get("invalid_page_range_count") or 0),
+        "invalid_page_range_sample": page_range_failures.get("invalid_page_range_sample") or [],
+        "page_out_of_range_count": int(page_range_failures.get("page_out_of_range_count") or 0),
+        "page_out_of_range_sample": page_range_failures.get("page_out_of_range_sample") or [],
+        "node_content_checked": bool(node_content.get("checked")),
+        "empty_node_text_count": int(node_content.get("empty_node_text_count") or 0),
+        "empty_node_text_ratio": round(_bounded_float(node_content.get("empty_node_text_ratio")), 4),
+        "empty_node_text_sample": node_content.get("empty_node_text_sample") or [],
         "warnings": warnings,
         "hard_fail_reasons": sorted(set(hard_fail_reasons)),
         "evidence_title_count": int(evidence_stats.get("evidence_title_count") or 0),
