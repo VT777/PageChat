@@ -18,6 +18,7 @@ def map_toc_items_to_physical_pages(
     page_texts: Any,
     page_count: int,
     toc_pages: Optional[List[int]] = None,
+    excluded_pages: Optional[List[int]] = None,
     min_title_match_rate: float = 0.55,
     prefer_printed_page_numbers: bool = False,
 ) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
@@ -35,6 +36,12 @@ def map_toc_items_to_physical_pages(
     }
     if not toc_page_set:
         toc_page_set = _source_page_set(items)
+    excluded_page_set = set(toc_page_set)
+    excluded_page_set.update(
+        int(page)
+        for page in (excluded_pages or [])
+        if isinstance(page, int) and not isinstance(page, bool) and page > 0
+    )
     page_text_map = page_texts_to_map(page_texts, page_count=page_count)
     shape = detect_logical_page_shape(items, page_count)
     _normalize_logical_fields(items, page_count, shape)
@@ -46,7 +53,7 @@ def map_toc_items_to_physical_pages(
             shape,
             status="failed",
             reasons=["empty_items" if not items else "invalid_page_count"],
-            excluded_pages=toc_page_set,
+            excluded_pages=excluded_page_set,
         )
 
     start_page = max(toc_page_set or {0}) + 1
@@ -60,6 +67,7 @@ def map_toc_items_to_physical_pages(
             page_text_map=page_text_map,
             page_count=page_count,
             toc_page_set=toc_page_set,
+            excluded_page_set=excluded_page_set,
             start_page=start_page,
         )
         if printed_result is not None:
@@ -80,16 +88,25 @@ def map_toc_items_to_physical_pages(
             page_text_map,
             start_page=cursor,
             end_page=page_count,
-            excluded_pages=toc_page_set,
+            excluded_pages=excluded_page_set,
         )
+        if not match and catalog_type == CATALOG_MAIN:
+            match = find_outline_marker_page(
+                title,
+                page_text_map,
+                start_page=cursor,
+                end_page=page_count,
+                excluded_pages=excluded_page_set,
+            )
         if not match:
             item["mapping_source"] = "unmapped"
             item["mapping_confidence"] = 0.0
             continue
 
         physical_page = int(match["page"])
+        source = str(match.get("source") or "title_search")
         item["physical_index"] = physical_page
-        item["mapping_source"] = "title_search"
+        item["mapping_source"] = source
         item["mapping_confidence"] = round(float(match["score"]), 4)
         item["mapping_evidence"] = {
             "matched_page": physical_page,
@@ -104,7 +121,7 @@ def map_toc_items_to_physical_pages(
         items,
         shape,
         min_title_match_rate=min_title_match_rate,
-        excluded_pages=toc_page_set,
+        excluded_pages=excluded_page_set,
     )
     return items, report
 
@@ -228,24 +245,128 @@ def score_title_on_page(title: str, page_text: str) -> Dict[str, Any]:
     if not full or not normalized_page:
         return {"score": 0.0, "matched_fragments": []}
 
+    heading_match = _score_title_on_heading_lines(title, page_text)
+    if float(heading_match.get("score") or 0.0) >= 0.95:
+        return heading_match
+
+    candidates: List[Dict[str, Any]] = []
+    if float(heading_match.get("score") or 0.0) > 0.0:
+        candidates.append(heading_match)
+
     if len(full) >= 4 and full in normalized_page:
-        return {"score": 1.0, "matched_fragments": [full[:30]]}
+        candidates.append({"score": 0.9, "matched_fragments": [full[:30]]})
+    if 2 <= len(full) < 4:
+        normalized_lines = [
+            normalize_title_text(line)
+            for line in str(page_text or "").splitlines()
+            if str(line or "").strip()
+        ]
+        if full in normalized_lines:
+            candidates.append({"score": 0.92, "matched_fragments": [full]})
 
     fragments = title_fragments(title)
     matched = [fragment for fragment in fragments if fragment in normalized_page]
     if not matched:
         fuzzy = _best_fuzzy_fragment_match(fragments, normalized_page)
-        if fuzzy is None:
-            return {"score": 0.0, "matched_fragments": []}
-        return {
-            "score": fuzzy["score"],
-            "matched_fragments": [f"~{fuzzy['fragment'][:30]}"],
-        }
+        if fuzzy is not None:
+            candidates.append(
+                {
+                    "score": fuzzy["score"],
+                    "matched_fragments": [f"~{fuzzy['fragment'][:30]}"],
+                }
+            )
+        return _best_scored_candidate(candidates)
 
     ratio = len(matched) / max(1, len(fragments))
     longest = max(len(fragment) for fragment in matched)
     score = 0.58 + min(0.32, ratio * 0.24) + min(0.1, longest / 200)
-    return {"score": min(0.95, score), "matched_fragments": matched}
+    candidates.append({"score": min(0.95, score), "matched_fragments": matched})
+    return _best_scored_candidate(candidates)
+
+
+def _score_title_on_heading_lines(title: str, page_text: str) -> Dict[str, Any]:
+    variants = _title_match_variants(title)
+    if not variants:
+        return {"score": 0.0, "matched_fragments": []}
+
+    marker_patterns = _outline_marker_patterns(title)
+    lines = [str(line or "").strip() for line in str(page_text or "").splitlines()]
+    lines = [line for line in lines if line]
+    best: Optional[Dict[str, Any]] = None
+    for line_index, line in enumerate(lines[:12]):
+        line_variants = _title_match_variants(line)
+        line_has_same_marker = any(pattern.search(line) for pattern in marker_patterns)
+        for title_variant in variants:
+            for line_variant in line_variants:
+                score = _score_heading_line_variant(title_variant, line_variant)
+                if score <= 0.0:
+                    continue
+                if marker_patterns and not line_has_same_marker:
+                    score = min(score, 0.57)
+                score = max(0.0, score - min(0.04, line_index * 0.003))
+                candidate = {
+                    "score": round(score, 4),
+                    "matched_fragments": [f"line:{normalize_title_text(line)[:30]}"],
+                }
+                if best is None or float(candidate["score"]) > float(best["score"]):
+                    best = candidate
+    return best or {"score": 0.0, "matched_fragments": []}
+
+
+def _title_match_variants(text: str) -> List[str]:
+    variants = [normalize_title_text(text), normalize_title_text(_strip_outline_prefix(text))]
+    result: List[str] = []
+    seen: set[str] = set()
+    for variant in variants:
+        if not variant or variant in seen:
+            continue
+        seen.add(variant)
+        result.append(variant)
+    return result
+
+
+def _score_heading_line_variant(title_variant: str, line_variant: str) -> float:
+    if not title_variant or not line_variant:
+        return 0.0
+    if title_variant == line_variant:
+        return 1.0
+    if len(title_variant) >= 4 and (
+        line_variant.startswith(title_variant) or title_variant in line_variant
+    ):
+        return 0.98
+    if 2 <= len(title_variant) < 4 and line_variant.startswith(title_variant) and len(line_variant) <= len(title_variant) + 12:
+        return 0.92
+    if len(title_variant) < 8 or len(line_variant) < 8:
+        return 0.0
+    ratio = SequenceMatcher(None, title_variant, line_variant).ratio()
+    if ratio >= 0.9:
+        if _contains_cjk(title_variant + line_variant) and min(len(title_variant), len(line_variant)) < 14:
+            required_prefix = max(2, min(4, min(len(title_variant), len(line_variant)) // 3))
+            if _shared_prefix_length(title_variant, line_variant) < required_prefix:
+                return 0.0
+        return min(0.98, 0.96 + (ratio - 0.9) * 0.2)
+    if ratio >= 0.84:
+        return 0.84 + (ratio - 0.84) * 1.5
+    return 0.0
+
+
+def _best_scored_candidate(candidates: List[Dict[str, Any]]) -> Dict[str, Any]:
+    if not candidates:
+        return {"score": 0.0, "matched_fragments": []}
+    return max(candidates, key=lambda candidate: float(candidate.get("score") or 0.0))
+
+
+def _contains_cjk(text: str) -> bool:
+    return any("\u3400" <= char <= "\u9fff" for char in str(text or ""))
+
+
+def _shared_prefix_length(left: str, right: str) -> int:
+    count = 0
+    for left_char, right_char in zip(left, right):
+        if left_char != right_char:
+            break
+        count += 1
+    return count
 
 
 def _best_fuzzy_fragment_match(fragments: List[str], normalized_page: str) -> Optional[Dict[str, Any]]:
@@ -308,6 +429,25 @@ def find_outline_marker_page(
     end_page: int,
     excluded_pages: Iterable[int],
 ) -> Optional[Dict[str, Any]]:
+    patterns = _outline_marker_patterns(title)
+    if patterns:
+        excluded = set(excluded_pages or [])
+        for page in range(max(1, start_page), max(start_page, end_page) + 1):
+            if page in excluded:
+                continue
+            text = str(page_text_map.get(page, "") or "")
+            heading_text = "\n".join(line for line in text.splitlines()[:16] if line.strip())
+            for pattern in patterns:
+                marker_match = pattern.search(heading_text)
+                if not marker_match:
+                    continue
+                return {
+                    "page": page,
+                    "score": 0.82,
+                    "matched_fragments": [marker_match.group(0).strip()[:30]],
+                    "source": "outline_marker",
+                }
+
     match = re.match(r"^\s*(\d{1,3})(?:[.)\u3001\uff0e]\s*|\s+)", str(title or ""))
     if not match:
         return None
@@ -331,6 +471,54 @@ def find_outline_marker_page(
             "source": "outline_marker",
         }
     return None
+
+
+def _outline_marker_patterns(title: str) -> List[re.Pattern[str]]:
+    text = str(title or "")
+    patterns: List[re.Pattern[str]] = []
+
+    numeric = re.match(r"^\s*(\d{1,3})(?:[.)\u3001\uff0e]\s*|\s+)", text)
+    if numeric:
+        marker = re.escape(numeric.group(1))
+        patterns.append(
+            re.compile(
+                rf"(?:^|[\r\n]|\s{{2,}}){marker}\s*[.\uff0e\u3001]\s*(?:\d{{1,2}}[)）]|[A-Za-z\u4e00-\u9fff])",
+                re.MULTILINE,
+            )
+        )
+
+    english = re.match(r"^\s*(chapter|part|section)\s*0*(\d{1,3})\b", text, re.IGNORECASE)
+    if english:
+        label = re.escape(english.group(1))
+        number = re.escape(english.group(2))
+        patterns.append(
+            re.compile(
+                rf"(?:^|[\r\n])\s*{label}\s*0*{number}\b",
+                re.IGNORECASE | re.MULTILINE,
+            )
+        )
+
+    chinese = re.match(r"^\s*第\s*([一二三四五六七八九十百千万零〇\d]{1,6})\s*([章节篇部])", text)
+    if chinese:
+        marker = re.escape(chinese.group(1))
+        unit = re.escape(chinese.group(2))
+        patterns.append(
+            re.compile(
+                rf"(?:^|[\r\n])\s*第\s*{marker}\s*{unit}",
+                re.MULTILINE,
+            )
+        )
+
+    chinese_list = re.match(r"^\s*([一二三四五六七八九十百千万零〇]{1,6})\s*[、.．]\s*", text)
+    if chinese_list:
+        marker = re.escape(chinese_list.group(1))
+        patterns.append(
+            re.compile(
+                rf"(?:^|[\r\n])\s*{marker}\s*[、.．]",
+                re.MULTILINE,
+            )
+        )
+    return patterns
 
 
 def _normalize_logical_fields(
@@ -412,7 +600,7 @@ def _build_report(
     strong_anchor_indices = [
         index
         for index, item in enumerate(report_items)
-        if item.get("mapping_source") == "title_search"
+        if item.get("mapping_source") in {"title_search", "outline_marker"}
         and _positive_int(item.get("physical_index")) is not None
     ]
     mapped_pages = [
@@ -439,6 +627,8 @@ def _build_report(
 
     if item_count and not strong_anchor_indices and shape.get("logical_overflow"):
         reasons.append("logical_overflow_without_content_anchors")
+    if item_count and not mapped_pages:
+        reasons.append("no_content_anchors")
     if tail_collapse:
         reasons.append("tail_collapse")
     if front_collapse:
@@ -453,6 +643,7 @@ def _build_report(
     if status is None:
         severe = (
             not item_count
+            or "no_content_anchors" in reasons
             or "logical_overflow_without_content_anchors" in reasons
             or "tail_collapse" in reasons
             or "front_collapse" in reasons
@@ -531,6 +722,7 @@ def _map_printed_page_numbers(
     page_text_map: Dict[int, str],
     page_count: int,
     toc_page_set: set[int],
+    excluded_page_set: set[int],
     start_page: int,
 ) -> Optional[Tuple[List[Dict[str, Any]], Dict[str, Any]]]:
     indexed_pages = [
@@ -557,7 +749,7 @@ def _map_printed_page_numbers(
             items,
             page_text_map=page_text_map,
             page_count=page_count,
-            toc_page_set=toc_page_set,
+            toc_page_set=excluded_page_set,
             status="failed",
             reasons=["printed_pages_non_monotonic"],
         )
@@ -569,6 +761,7 @@ def _map_printed_page_numbers(
         page_text_map=page_text_map,
         page_count=page_count,
         toc_page_set=toc_page_set,
+        excluded_page_set=excluded_page_set,
         start_page=start_page,
     )
     if offset is None:
@@ -597,6 +790,7 @@ def _map_printed_page_numbers(
         page_text_map=page_text_map,
         page_count=page_count,
         toc_page_set=toc_page_set,
+        excluded_page_set=excluded_page_set,
         start_page=start_page,
     )
     _infer_missing_between_anchors(
@@ -609,7 +803,7 @@ def _map_printed_page_numbers(
         items,
         page_text_map=page_text_map,
         page_count=page_count,
-        toc_page_set=toc_page_set,
+        toc_page_set=excluded_page_set,
         status=None,
         reasons=[],
     )
@@ -623,6 +817,7 @@ def _printed_page_offset_from_title_matches(
     page_text_map: Dict[int, str],
     page_count: int,
     toc_page_set: set[int],
+    excluded_page_set: set[int],
     start_page: int,
 ) -> Optional[int]:
     offsets: List[int] = []
@@ -642,7 +837,7 @@ def _printed_page_offset_from_title_matches(
             page_text_map,
             start_page=cursor,
             end_page=page_count,
-            excluded_pages=toc_page_set,
+            excluded_pages=excluded_page_set,
         )
         if not match:
             continue
@@ -692,6 +887,7 @@ def _apply_title_overrides_after_printed_mapping(
     page_text_map: Dict[int, str],
     page_count: int,
     toc_page_set: set[int],
+    excluded_page_set: set[int],
     start_page: int,
 ) -> None:
     cursor_by_catalog: Dict[str, int] = {}
@@ -710,7 +906,7 @@ def _apply_title_overrides_after_printed_mapping(
             page_text_map,
             start_page=cursor,
             end_page=page_count,
-            excluded_pages=toc_page_set,
+            excluded_pages=excluded_page_set,
         )
         if not match:
             match = (
@@ -719,7 +915,7 @@ def _apply_title_overrides_after_printed_mapping(
                     page_text_map,
                     start_page=cursor,
                     end_page=page_count,
-                    excluded_pages=toc_page_set,
+                    excluded_pages=excluded_page_set,
                 )
                 if catalog_type == CATALOG_MAIN
                 else None
@@ -730,11 +926,11 @@ def _apply_title_overrides_after_printed_mapping(
                 match = (
                     find_outline_marker_page(
                         title,
-                        page_text_map,
-                        start_page=cursor,
-                        end_page=page_count,
-                        excluded_pages=toc_page_set,
-                    )
+                    page_text_map,
+                    start_page=cursor,
+                    end_page=page_count,
+                    excluded_pages=excluded_page_set,
+                )
                     if catalog_type == CATALOG_MAIN
                     else None
                 )

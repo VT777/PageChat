@@ -710,6 +710,141 @@ async def run_route_diagnostics(
     }
 
 
+async def collect_build_diagnostics(
+    file_path: str | Path,
+    *,
+    user_id: str | None = None,
+    model: str = "qwen3.6-flash",
+    preprocess: bool = True,
+) -> dict[str, Any]:
+    from app.services.pageindex_service import PageIndexService
+    from pageindex.toc_detector import find_toc_pages
+
+    path = Path(file_path)
+    analysis = analyze_pdf_structure(str(path))
+    analysis["document_path"] = str(path)
+    analysis["file_path"] = str(path)
+    service = PageIndexService(user_id=user_id)
+
+    if preprocess:
+        await preprocess_page_text_map(
+            path,
+            analysis,
+            ocr_pages_fn=lambda fp, pages, prompt, analysis: service._run_pdf_ocr_pages_by_images(
+                Path(fp),
+                list(pages),
+                analysis=analysis,
+                prompt=prompt,
+            ),
+            prompt=PAGE_TEXT_OCR_PROMPT,
+        )
+    else:
+        analysis["content_type"] = infer_content_type(analysis)
+        analysis["page_texts"] = [
+            str(page[0] if isinstance(page, (list, tuple)) and page else page or "")
+            for page in (analysis.get("page_list") or [])
+        ]
+
+    initial_route = PageIndexService._build_state_machine_route_decision("smart", analysis)
+    route_decision = initial_route
+    if route_decision.get("execution_mode") == "balanced":
+        await find_toc_pages(analysis, str(path), model=model)
+        route_decision = PageIndexService._build_state_machine_route_decision("smart", analysis)
+
+    result = await service._run_unified_toc_controller(
+        file_path=path,
+        requested_mode="smart",
+        analysis=analysis,
+        route_decision=route_decision,
+        page_count=int(analysis.get("page_count") or len(analysis.get("page_texts") or [])),
+        model=model,
+        anchors={"toc_pages": list(analysis.get("toc_pages") or [])},
+        ocr_text_map=analysis.get("ocr_text_map"),
+        dividers=[],
+    )
+    items = list((result or {}).get("items") or [])
+    return {
+        "file": path.name,
+        "status": "ok" if result else "failed",
+        "page_count": analysis.get("page_count"),
+        "content_type": analysis.get("content_type"),
+        "route_decision": route_decision,
+        "toc_page_detection": analysis.get("toc_page_detection") or {},
+        "source": (result or {}).get("source"),
+        "candidate_source": (result or {}).get("candidate_source"),
+        "confidence": (result or {}).get("confidence"),
+        "item_count": len(items),
+        "root_titles": [str(item.get("title") or "") for item in items[:12] if isinstance(item, dict)],
+        "mapping_report": (
+            analysis.get("toc_content_mapping")
+            or ((result or {}).get("evidence") or {}).get("content_mapping")
+            or ((result or {}).get("evidence") or {}).get("mapping_report")
+            or {}
+        ),
+        "visible_toc_rule": analysis.get("visible_toc_rule") or {},
+        "toc_candidates_summary": analysis.get("toc_candidates_summary") or {},
+    }
+
+
+async def run_build_diagnostics(
+    input_dir: Path,
+    selected_file: str | None = None,
+    *,
+    user_id: str | None = None,
+    model: str = "qwen3.6-flash",
+    preprocess: bool = True,
+) -> dict[str, Any]:
+    documents = []
+    for pdf_path in _iter_target_files(input_dir, selected_file):
+        if not pdf_path.exists():
+            documents.append({"file": pdf_path.name, "status": "missing"})
+            continue
+        try:
+            result = await collect_build_diagnostics(
+                pdf_path,
+                user_id=user_id,
+                model=model,
+                preprocess=preprocess,
+            )
+        except Exception as exc:
+            result = {
+                "file": pdf_path.name,
+                "status": "error",
+                "error_type": type(exc).__name__,
+                "error": str(exc),
+            }
+        documents.append(result)
+        if result.get("status") == "ok":
+            route = result.get("route_decision") or {}
+            print(
+                "[TOC-DIAG] phase=build "
+                f"file={result['file']} content_type={result.get('content_type')} "
+                f"selected_path={route.get('selected_path')} "
+                f"source={result.get('source')} "
+                f"candidate={result.get('candidate_source')} "
+                f"items={result.get('item_count')}"
+            )
+        else:
+            print(
+                "[TOC-DIAG] phase=build "
+                f"file={result['file']} status={result.get('status')} "
+                f"error={result.get('error_type') or result.get('error')}"
+            )
+
+    return {
+        "phase": "build",
+        "input_dir": str(input_dir),
+        "documents": documents,
+        "summary": {
+            "total": len(documents),
+            "ok": sum(1 for doc in documents if doc.get("status") == "ok"),
+            "missing": sum(1 for doc in documents if doc.get("status") == "missing"),
+            "error": sum(1 for doc in documents if doc.get("status") == "error"),
+            "failed": sum(1 for doc in documents if doc.get("status") == "failed"),
+        },
+    }
+
+
 def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     fixture = _load_fixture()
     default_input = fixture.get("input_dir") or r"D:\chrome_download\rag-skill-main\rag-skill-main\knowledge\AI Knowledge"
@@ -723,7 +858,7 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--phase",
         default="baseline",
-        choices=["baseline", "preprocess", "embedded", "detect", "route"],
+        choices=["baseline", "preprocess", "embedded", "detect", "route", "build"],
         help="Diagnostic phase to run.",
     )
     return parser.parse_args(argv)
@@ -765,6 +900,16 @@ def main(argv: list[str] | None = None) -> int:
                 preprocess=True,
             )
         )
+    elif args.phase == "build":
+        report = asyncio.run(
+            run_build_diagnostics(
+                input_dir,
+                selected_file=args.file,
+                user_id=args.user_id,
+                model=args.model,
+                preprocess=True,
+            )
+        )
     else:
         report = run_diagnostics(input_dir, selected_file=args.file)
 
@@ -781,6 +926,7 @@ def main(argv: list[str] | None = None) -> int:
         0
         if summary.get("missing", 0) == 0
         and summary.get("error", 0) == 0
+        and summary.get("failed", 0) == 0
         and summary.get("route_mismatch", 0) == 0
         else 1
     )

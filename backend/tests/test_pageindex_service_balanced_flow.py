@@ -1,6 +1,8 @@
 from pathlib import Path
 import sys
 import asyncio
+import json
+from types import SimpleNamespace
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -87,3 +89,202 @@ def test_collect_candidates_respects_selected_visible_toc_path(monkeypatch, tmp_
     )
 
     assert [candidate["source"] for candidate in candidates] == ["llm_toc_page"]
+
+
+def test_collect_candidates_prefers_rule_extraction_for_standard_paged_visible_toc(monkeypatch, tmp_path):
+    service = PageIndexService()
+
+    async def forbidden_extract_toc_text(*_args, **_kwargs):
+        raise AssertionError("standard visible TOC should not call LLM extraction")
+
+    monkeypatch.setattr(service, "_extract_toc_text", forbidden_extract_toc_text)
+
+    page_texts = [
+        "Cover",
+        (
+            "目录\n"
+            "第一章 复盘：OpenAI 产品矩阵 ................ 4\n"
+            "第二章 展望：模型能力持续提升 ................ 10\n"
+            "第三章 愿景：AGI 平台入口 ................ 18\n"
+            "第四章 风险提示 ................ 25\n"
+            "图目录\n"
+            "图1 OpenAI 产品时间线 ................ 5"
+        ),
+        "表目录\n表1 OpenAI 融资情况梳理 ................ 8",
+        "第一章 复盘：OpenAI 产品矩阵\n正文",
+        "图1 OpenAI 产品时间线\n正文",
+        "正文",
+        "正文",
+        "表1 OpenAI 融资情况梳理\n正文",
+        "正文",
+        "第二章 展望：模型能力持续提升\n正文",
+        "正文",
+        "正文",
+        "正文",
+        "正文",
+        "正文",
+        "正文",
+        "正文",
+        "第三章 愿景：AGI 平台入口\n正文",
+        "正文",
+        "正文",
+        "正文",
+        "正文",
+        "正文",
+        "正文",
+        "第四章 风险提示\n正文",
+        "尾页",
+    ]
+
+    candidates = asyncio.run(
+        service._collect_text_toc_candidates(
+            analysis={
+                "page_texts": page_texts,
+                "toc_page_detection": {
+                    "status": "detected",
+                    "pages": [2, 3],
+                    "has_page_numbers": True,
+                },
+            },
+            route_decision={
+                "selected_path": "visible_toc_with_pages",
+                "path": "visible_toc_with_pages",
+            },
+            file_path=tmp_path / "sample.pdf",
+            page_count=len(page_texts),
+            model="qwen3.6-flash",
+            anchors={"toc_pages": [2, 3]},
+            ocr_text_map=None,
+            dividers=[],
+        )
+    )
+
+    assert [candidate["source"] for candidate in candidates] == ["toc_page_text_rule"]
+    roots = candidates[0]["items"]
+    assert [root["title"] for root in roots] == ["目录", "图目录", "表目录"]
+
+
+def test_collect_candidates_prefers_rule_extraction_for_unpaged_visible_toc(monkeypatch, tmp_path):
+    service = PageIndexService()
+
+    async def forbidden_extract_toc_text(*_args, **_kwargs):
+        raise AssertionError("standard unpaged visible TOC should not call LLM extraction")
+
+    monkeypatch.setattr(service, "_extract_toc_text", forbidden_extract_toc_text)
+    page_texts = [
+        "Cover",
+        (
+            "目录\n"
+            "国外大厂AI应用落地\n"
+            "01\n"
+            "国内大厂AI应用落地\n"
+            "02\n"
+            "产业链梳理\n"
+            "03\n"
+            "风险提示\n"
+            "04"
+        ),
+        "国外大厂AI应用落地\n正文",
+        "国内大厂AI应用落地\n正文",
+        "产业链梳理\n正文",
+        "风险提示\n正文",
+    ]
+
+    candidates = asyncio.run(
+        service._collect_text_toc_candidates(
+            analysis={
+                "page_texts": page_texts,
+                "toc_page_detection": {
+                    "status": "detected",
+                    "pages": [2],
+                    "has_page_numbers": False,
+                },
+            },
+            route_decision={
+                "selected_path": "visible_toc_no_pages",
+                "path": "visible_toc_no_pages",
+            },
+            file_path=tmp_path / "sample.pdf",
+            page_count=len(page_texts),
+            model="qwen3.6-flash",
+            anchors={"toc_pages": [2]},
+            ocr_text_map=None,
+            dividers=[],
+        )
+    )
+
+    assert [candidate["source"] for candidate in candidates] == ["toc_page_text_rule"]
+    assert candidates[0]["evidence"]["semi_frozen"] is True
+
+
+def test_content_outline_path_uses_internal_llm_outline_before_segment_fallback(monkeypatch):
+    service = PageIndexService()
+
+    async def fake_extract_hierarchical_toc(page_texts, model):
+        assert page_texts == ["Opening page", "Chapter-like page", "Closing page"]
+        assert model == "qwen3.6-flash"
+        return {
+            "toc_items": [
+                {"title": "Opening", "physical_index": 1, "level": 1},
+                {"title": "Chapter-like page", "physical_index": 2, "level": 1},
+            ],
+            "source": "hierarchical",
+        }
+
+    monkeypatch.setattr(service, "_try_text_heading_toc", lambda _analysis: None)
+    monkeypatch.setattr(
+        "pageindex.hierarchical_extractor.extract_hierarchical_toc",
+        fake_extract_hierarchical_toc,
+    )
+
+    result = asyncio.run(
+        service._build_text_toc_candidate(
+            {"page_texts": ["Opening page", "Chapter-like page", "Closing page"]},
+            toc_pages=[],
+            page_count=3,
+            model="qwen3.6-flash",
+        )
+    )
+
+    assert result["source"] == "content_outline"
+    assert result["internal_source"] == "hierarchical"
+    assert [item["title"] for item in result["toc_items"]] == ["Opening", "Chapter-like page"]
+
+
+def test_legacy_llm_toc_text_path_uses_shared_marker_normalization(monkeypatch):
+    service = PageIndexService()
+
+    async def fake_completion(*_args, **_kwargs):
+        payload = {
+            "toc_items": [
+                {"title": "汇报提纲", "level": 1, "page": None},
+                {"title": "AI驱动的第五科研范式", "level": 1, "page": None},
+                {"title": "一", "level": 1, "page": None},
+                {"title": "百花齐放的大模型时代", "level": 1, "page": None},
+                {"title": "二", "level": 1, "page": None},
+            ]
+        }
+        return SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    message=SimpleNamespace(content=json.dumps(payload, ensure_ascii=False))
+                )
+            ]
+        )
+
+    monkeypatch.setattr(service, "_indexing_completion", fake_completion)
+
+    result = asyncio.run(
+        service._extract_toc_text(
+            {"page_texts": ["Cover", "TOC page text"]},
+            toc_pages=[2],
+            page_count=10,
+            model="qwen3.6-flash",
+        )
+    )
+
+    assert result is not None
+    assert [item["title"] for item in result["toc_items"]] == [
+        "一 AI驱动的第五科研范式",
+        "二 百花齐放的大模型时代",
+    ]

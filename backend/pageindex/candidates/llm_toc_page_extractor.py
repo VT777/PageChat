@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import re
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 
 @dataclass(frozen=True)
@@ -61,7 +61,9 @@ def normalize_llm_toc_payload(payload: Dict[str, Any]) -> LLMTOCExtractionResult
         }
         items.append(item)
 
-    labels = [label for label in (_leading_numeric_label(item.get("title")) for item in items) if label is not None]
+    items = _merge_standalone_markers_with_adjacent_titles(items)
+
+    labels = [label for label in (_leading_label_order(item) for item in items) if label is not None]
     missing: List[int] = []
     if len(labels) >= 2:
         unique = sorted(set(labels))
@@ -78,6 +80,7 @@ def normalize_llm_toc_payload(payload: Dict[str, Any]) -> LLMTOCExtractionResult
         "raw_numeric_labels": labels,
         "missing_numeric_labels": missing,
         "numeric_label_gap_count": len(missing),
+        "marker_normalized_count": sum(1 for item in items if item.get("marker_normalized")),
         "max_level": max(level_distribution.keys(), default=1),
         "level_distribution": dict(sorted(level_distribution.items())),
     }
@@ -125,6 +128,21 @@ def _clean_title(value: Any) -> str:
 
 def _is_plain_catalog_heading(value: Any) -> bool:
     compact = re.sub(r"[\s\W_]+", "", str(value or "").lower(), flags=re.UNICODE)
+    if compact in {
+        "目录",
+        "目次",
+        "提纲",
+        "汇报提纲",
+        "报告提纲",
+        "大纲",
+        "contents",
+        "tableofcontents",
+        "outline",
+        "agenda",
+        "reportoutline",
+        "presentationoutline",
+    }:
+        return True
     return compact in {
         "目录",
         "目次",
@@ -133,6 +151,244 @@ def _is_plain_catalog_heading(value: Any) -> bool:
         "目录contents",
         "目次contents",
     }
+
+
+def _merge_standalone_markers_with_adjacent_titles(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    if len(items) < 2:
+        return items
+
+    marker_infos = [_standalone_marker_info(item.get("title")) for item in items]
+    title_to_marker: Dict[int, Tuple[int, Dict[str, Any]]] = {}
+    used_markers: set[int] = set()
+
+    for index, marker in enumerate(marker_infos):
+        if marker is None:
+            continue
+        previous_index = index - 1
+        next_index = index + 1
+        if (
+            previous_index >= 0
+            and marker_infos[previous_index] is None
+            and previous_index not in title_to_marker
+            and previous_index not in used_markers
+        ):
+            title_to_marker[previous_index] = (index, marker)
+            used_markers.add(index)
+            continue
+        if (
+            next_index < len(items)
+            and marker_infos[next_index] is None
+            and next_index not in title_to_marker
+            and next_index not in used_markers
+        ):
+            title_to_marker[next_index] = (index, marker)
+            used_markers.add(index)
+
+    merged: List[Tuple[Dict[str, Any], Optional[int]]] = []
+    for index, item in enumerate(items):
+        if index in used_markers:
+            continue
+        updated = dict(item)
+        marker_pair = title_to_marker.get(index)
+        marker_order: Optional[int] = None
+        if marker_pair is not None:
+            marker_index, marker = marker_pair
+            marker_item = items[marker_index]
+            marker_order = int(marker["order"])
+            display = str(marker["display"])
+            title = str(updated.get("title") or "").strip()
+            if not _title_starts_with_marker(title, display):
+                updated["title"] = f"{display} {title}".strip()
+            updated.setdefault("structure", display)
+            if updated.get("page") is None and marker_item.get("page") is not None:
+                updated["page"] = marker_item.get("page")
+            if updated.get("physical_index") is None and marker_item.get("physical_index") is not None:
+                updated["physical_index"] = marker_item.get("physical_index")
+            updated["marker_normalized"] = True
+        else:
+            marker_order = _leading_label_order(updated)
+        merged.append((updated, marker_order))
+
+    merged = _dedupe_marker_merged_items(merged)
+    merged = _drop_interstitial_unlabeled_fragments(merged)
+    if _should_sort_by_marker_sequence(merged):
+        merged = sorted(merged, key=lambda pair: int(pair[1] or 0))
+    return [item for item, _order in merged]
+
+
+def _drop_interstitial_unlabeled_fragments(
+    items: List[Tuple[Dict[str, Any], Optional[int]]]
+) -> List[Tuple[Dict[str, Any], Optional[int]]]:
+    ordered_count = sum(1 for _item, order in items if order is not None)
+    if ordered_count < 3:
+        return items
+
+    result: List[Tuple[Dict[str, Any], Optional[int]]] = []
+    for index, (item, order) in enumerate(items):
+        if order is not None:
+            result.append((item, order))
+            continue
+        previous_order = next(
+            (
+                candidate_order
+                for _candidate_item, candidate_order in reversed(items[:index])
+                if candidate_order is not None
+            ),
+            None,
+        )
+        next_order = next(
+            (
+                candidate_order
+                for _candidate_item, candidate_order in items[index + 1 :]
+                if candidate_order is not None
+            ),
+            None,
+        )
+        if (
+            previous_order is not None
+            and next_order is not None
+            and _is_short_unlabeled_fragment(item)
+        ):
+            continue
+        result.append((item, order))
+    return result
+
+
+def _is_short_unlabeled_fragment(item: Dict[str, Any]) -> bool:
+    if _positive_int(item.get("page")) is not None:
+        return False
+    title = str(item.get("title") or "").strip()
+    if not title or len(title) > 24:
+        return False
+    if _leading_label_order(item) is not None:
+        return False
+    return bool(re.search(r"[A-Za-z\u4e00-\u9fff]", title))
+
+
+def _dedupe_marker_merged_items(
+    items: List[Tuple[Dict[str, Any], Optional[int]]]
+) -> List[Tuple[Dict[str, Any], Optional[int]]]:
+    deduped: List[Tuple[Dict[str, Any], Optional[int]]] = []
+    seen: set[Tuple[str, str, int]] = set()
+    for item, order in items:
+        structure = str(item.get("structure") or "").strip()
+        title_key = _normalize_title_key(item.get("title"))
+        page = _positive_int(item.get("page")) or 0
+        key = (structure, title_key, page)
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append((item, order))
+    return deduped
+
+
+def _normalize_title_key(value: Any) -> str:
+    return re.sub(r"[\s\W_]+", "", str(value or "").lower(), flags=re.UNICODE)
+
+
+def _should_sort_by_marker_sequence(items: List[Tuple[Dict[str, Any], Optional[int]]]) -> bool:
+    if len(items) < 3:
+        return False
+    orders = [order for _item, order in items]
+    if any(order is None for order in orders):
+        return False
+    numeric_orders = [int(order) for order in orders if order is not None]
+    if len(set(numeric_orders)) != len(numeric_orders):
+        return False
+    sorted_orders = sorted(numeric_orders)
+    if numeric_orders == sorted_orders:
+        return False
+    return sorted_orders[-1] - sorted_orders[0] <= len(sorted_orders)
+
+
+def _standalone_marker_info(value: Any) -> Optional[Dict[str, Any]]:
+    text = str(value or "").strip()
+    text = re.sub(r"^[\[(（【]\s*|\s*[\])）】]$", "", text).strip()
+    text = text.strip(".、:：")
+    if not text:
+        return None
+
+    numeric = re.fullmatch(r"(?:0?)(\d{1,2})", text)
+    if numeric:
+        order = int(numeric.group(1))
+        if 1 <= order <= 99:
+            return {"display": text, "order": order}
+
+    part = re.fullmatch(r"(part|chapter|section)\s*0?(\d{1,2})", text, flags=re.I)
+    if part:
+        order = int(part.group(2))
+        if 1 <= order <= 99:
+            return {"display": text, "order": order}
+
+    chinese = re.fullmatch(r"第?([一二三四五六七八九十百零〇两]+)(?:章|节|篇|部分|部)?", text)
+    if chinese:
+        order = _parse_chinese_number(chinese.group(1))
+        if order is not None and 1 <= order <= 99:
+            return {"display": text, "order": order}
+    return None
+
+
+def _title_starts_with_marker(title: str, marker: str) -> bool:
+    compact_title = re.sub(r"[\s.、:：]+", "", title).lower()
+    compact_marker = re.sub(r"[\s.、:：]+", "", marker).lower()
+    return bool(compact_marker and compact_title.startswith(compact_marker))
+
+
+def _leading_label_order(item: Dict[str, Any]) -> Optional[int]:
+    structure = str(item.get("structure") or "").strip()
+    marker = _standalone_marker_info(structure)
+    if marker is not None:
+        return int(marker["order"])
+    numeric = _leading_numeric_label(item.get("title"))
+    if numeric is not None:
+        return numeric
+    title = str(item.get("title") or "").strip()
+    part = re.match(r"^(?:part|chapter|section)\s*0?(\d{1,2})(?:\b|[\s:：.、-])", title, re.I)
+    if part:
+        return _positive_int(part.group(1))
+    match = re.match(r"^([一二三四五六七八九十百零〇两]+)(?:[\s、.：:]|\b)", title)
+    if match:
+        return _parse_chinese_number(match.group(1))
+    return None
+
+
+def _parse_chinese_number(value: str) -> Optional[int]:
+    digits = {
+        "零": 0,
+        "〇": 0,
+        "一": 1,
+        "二": 2,
+        "两": 2,
+        "三": 3,
+        "四": 4,
+        "五": 5,
+        "六": 6,
+        "七": 7,
+        "八": 8,
+        "九": 9,
+    }
+    text = str(value or "").strip()
+    if not text:
+        return None
+    if text in digits and digits[text] > 0:
+        return digits[text]
+    if text == "十":
+        return 10
+    if "百" in text:
+        return None
+    if "十" in text:
+        left, right = text.split("十", 1)
+        tens = digits.get(left, 1) if left else 1
+        ones = digits.get(right, 0) if right else 0
+        return tens * 10 + ones
+    if all(char in digits for char in text):
+        number_text = "".join(str(digits[char]) for char in text)
+        try:
+            parsed = int(number_text)
+        except ValueError:
+            return None
+        return parsed if parsed > 0 else None
+    return None
 
 
 def _leading_numeric_label(value: Any) -> Optional[int]:

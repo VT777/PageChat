@@ -2181,8 +2181,18 @@ Example:
             json_match = re.search(r"\{.*\}", content, re.DOTALL)
             if json_match:
                 result = json.loads(json_match.group())
-                if "toc_items" in result:
-                    return result
+                if "toc_items" in result or "items" in result:
+                    from pageindex.candidates.llm_toc_page_extractor import normalize_llm_toc_payload
+
+                    extraction = normalize_llm_toc_payload(result)
+                    if not extraction.items:
+                        return None
+                    return {
+                        "toc_items": [dict(item) for item in extraction.items],
+                        "source": "llm_toc_page",
+                        "has_printed_page_numbers": extraction.has_printed_page_numbers,
+                        "llm_normalization": extraction.diagnostics,
+                    }
             return None
 
         except Exception as e:
@@ -2286,9 +2296,51 @@ Example:
                     "source": fallback_result.get("source", "llm_toc_page"),
                 }
 
+        content_outline = await self._extract_content_outline_candidate(
+            analysis,
+            page_count=page_count,
+            model=model,
+        )
+        if content_outline:
+            return content_outline
+
         return {
             "toc_items": self._build_segment_fallback_toc(page_count),
             "source": "segment_fallback",
+        }
+
+    async def _extract_content_outline_candidate(
+        self,
+        analysis: Dict,
+        *,
+        page_count: int,
+        model: str,
+    ) -> Optional[Dict[str, Any]]:
+        """Build the deterministic ``content_outline`` path using internal LLM outline logic."""
+        page_texts = analysis.get("page_texts") or []
+        if not page_texts or page_count <= 0:
+            return None
+        try:
+            from pageindex.hierarchical_extractor import extract_hierarchical_toc
+
+            result = await extract_hierarchical_toc(page_texts, model)
+        except Exception as exc:
+            print(
+                "[TOC-CANDIDATE] provider=content_outline "
+                f"stage=internal_outline status=error error_type={type(exc).__name__}"
+            )
+            return None
+        if not isinstance(result, dict):
+            return None
+        toc_items = result.get("toc_items") or result.get("items") or []
+        if not toc_items:
+            return None
+        return {
+            "toc_items": toc_items,
+            "items": toc_items,
+            "source": "content_outline",
+            "internal_source": str(result.get("source") or "hierarchical"),
+            "mapped": True,
         }
 
     @staticmethod
@@ -2951,6 +3003,63 @@ Example:
             or []
         )
         llm_toc_candidate_added = False
+        if (
+            selected_path in {"visible_toc_with_pages", "visible_toc_no_pages"}
+            and toc_pages
+            and not self._requires_layout_outline_provider(analysis)
+        ):
+            try:
+                from pageindex.visible_toc_rule_extractor import (
+                    extract_visible_toc_no_pages,
+                    extract_visible_toc_with_pages,
+                )
+
+                if selected_path == "visible_toc_with_pages":
+                    rule_result = extract_visible_toc_with_pages(
+                        analysis.get("page_texts") or [],
+                        toc_pages=toc_pages,
+                        page_count=page_count,
+                    )
+                else:
+                    rule_result = extract_visible_toc_no_pages(
+                        analysis.get("page_texts") or [],
+                        toc_pages=toc_pages,
+                        page_count=page_count,
+                    )
+            except Exception as exc:
+                print(
+                    "[TOC-CANDIDATE] provider=toc_page_text_rule "
+                    f"action=extract status=error error_type={type(exc).__name__}"
+                )
+                rule_result = None
+            if rule_result:
+                analysis["visible_toc_rule"] = {
+                    "status": "ok",
+                    "item_count": sum(
+                        len(section.get("items") or [])
+                        for section in rule_result.get("toc_sections") or []
+                        if isinstance(section, dict)
+                    ),
+                    "section_kinds": [
+                        section.get("kind")
+                        for section in rule_result.get("toc_sections") or []
+                        if isinstance(section, dict)
+                    ],
+                    "mapping_report": rule_result.get("mapping_report") or {},
+                }
+                add_candidate(
+                    rule_result,
+                    "toc_page_text_rule_001",
+                    "toc_page_text_rule",
+                    float(rule_result.get("confidence") or 0.82),
+                    "low",
+                )
+                return candidates
+            analysis["visible_toc_rule"] = {
+                "status": "rejected",
+                "reason": "not_high_confidence_standard_toc",
+            }
+
         if toc_pages and not self._requires_layout_outline_provider(analysis):
             llm_toc_result = await self._extract_toc_text(analysis, toc_pages, page_count, model)
             llm_toc_result = self._normalize_and_map_fallback_toc(
