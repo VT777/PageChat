@@ -1224,6 +1224,87 @@ async def run_quality_diagnostics(
     }
 
 
+async def collect_logs_diagnostics(
+    file_path: str | Path,
+    *,
+    user_id: str | None = None,
+) -> dict[str, Any]:
+    result = await collect_preprocess_diagnostics(file_path, user_id=user_id)
+    if result.get("status") != "ok":
+        return result
+
+    ocr_summary = result.get("ocr_calls_summary") or {}
+    page_text_summary = ocr_summary.get("page_text") or {}
+    compact_ocr_summary = bool(
+        page_text_summary.get("primary_model")
+        and page_text_summary.get("pages") is not None
+        and page_text_summary.get("concurrency") is not None
+    )
+    diagnostics_dir = str(page_text_summary.get("diagnostics_dir") or "")
+    return {
+        "file": result.get("file"),
+        "status": "ok",
+        "content_type": result.get("content_type"),
+        "page_count": result.get("page_count"),
+        "ocr_summary": ocr_summary,
+        "main_log_checks": {
+            "compact_ocr_summary": compact_ocr_summary,
+            "has_model": bool(page_text_summary.get("primary_model")),
+            "has_pages": page_text_summary.get("pages") is not None,
+            "has_concurrency": page_text_summary.get("concurrency") is not None,
+        },
+        "ocr_diagnostics": {
+            "diagnostics_dir": diagnostics_dir,
+            "has_diagnostics_dir": bool(diagnostics_dir),
+        },
+    }
+
+
+async def run_logs_diagnostics(
+    input_dir: Path,
+    selected_file: str | None = None,
+    *,
+    user_id: str | None = None,
+) -> dict[str, Any]:
+    documents = []
+    for pdf_path in _iter_target_files(input_dir, selected_file):
+        if not pdf_path.exists():
+            documents.append({"file": pdf_path.name, "status": "missing"})
+            continue
+        try:
+            result = await collect_logs_diagnostics(pdf_path, user_id=user_id)
+        except Exception as exc:
+            result = {
+                "file": pdf_path.name,
+                "status": "error",
+                "error_type": type(exc).__name__,
+                "error": str(exc),
+            }
+        documents.append(result)
+        page_text_summary = ((result.get("ocr_summary") or {}).get("page_text") or {})
+        print(
+            "[TOC-DIAG] phase=logs "
+            f"file={result['file']} status={result.get('status')} "
+            f"model={page_text_summary.get('primary_model')} "
+            f"pages={page_text_summary.get('pages')} "
+            f"concurrency={page_text_summary.get('concurrency')} "
+            f"diagnostics={page_text_summary.get('diagnostics_dir')}"
+        )
+
+    return {
+        "phase": "logs",
+        "input_dir": str(input_dir),
+        "documents": documents,
+        "summary": {
+            "total": len(documents),
+            "ok": sum(1 for doc in documents if doc.get("status") == "ok"),
+            "missing": sum(1 for doc in documents if doc.get("status") == "missing"),
+            "error": sum(1 for doc in documents if doc.get("status") == "error"),
+            "failed": sum(1 for doc in documents if doc.get("status") == "failed"),
+        },
+    }
+
+
 async def run_build_diagnostics(
     input_dir: Path,
     selected_file: str | None = None,
@@ -1296,7 +1377,7 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--phase",
         default="baseline",
-        choices=["baseline", "preprocess", "embedded", "detect", "route", "build", "map", "quality"],
+        choices=["baseline", "preprocess", "embedded", "detect", "route", "build", "map", "quality", "logs"],
         help="Diagnostic phase to run.",
     )
     return parser.parse_args(argv)
@@ -1366,6 +1447,14 @@ def main(argv: list[str] | None = None) -> int:
                 user_id=args.user_id,
                 model=args.model,
                 preprocess=True,
+            )
+        )
+    elif args.phase == "logs":
+        report = asyncio.run(
+            run_logs_diagnostics(
+                input_dir,
+                selected_file=args.file,
+                user_id=args.user_id,
             )
         )
     else:

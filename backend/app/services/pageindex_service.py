@@ -495,13 +495,13 @@ class PageIndexService:
     ) -> None:
         if analysis is None:
             return
-        record = dict(call_diagnostics or {})
+        record = PageIndexService._compact_ocr_call_diagnostics(call_diagnostics or {})
         if page_num is not None:
             record["page_num"] = page_num
         if status:
             record["status"] = status
         analysis.setdefault("ocr_calls", []).append(record)
-        analysis["ocr_route"] = dict(call_diagnostics or {})
+        analysis["ocr_route"] = dict(record)
 
         task = str(record.get("task") or "")
         if not task:
@@ -526,12 +526,52 @@ class PageIndexService:
                 summary["missing"] = int(summary.get("missing") or 0) + 1
             if record.get("fallback_reason") or str(record.get("engine_type") or "").startswith("legacy"):
                 summary["fallback"] = int(summary.get("fallback") or 0) + 1
+            if record.get("diagnostics_path"):
+                summary["diagnostics_dir"] = str(Path(str(record["diagnostics_path"])).parent).replace("\\", "/")
             return
 
         summary["engine"] = record.get("engine_type")
         summary["model"] = record.get("model")
         summary["pages"] = record.get("result_pages")
         summary["status"] = status or "done"
+
+    @staticmethod
+    def _compact_ocr_call_diagnostics(call_diagnostics: Dict[str, Any]) -> Dict[str, Any]:
+        blocked_keys = {
+            "api_key",
+            "token",
+            "api_key_ciphertext",
+            "authorization",
+            "prompt_text",
+            "raw",
+            "raw_preview",
+            "content",
+            "content_preview",
+            "content_head",
+            "markdown",
+            "markdown_preview",
+            "plain_text",
+            "page_results",
+            "rendered_page_inputs",
+        }
+        compact: Dict[str, Any] = {}
+        for key, value in dict(call_diagnostics or {}).items():
+            key_str = str(key)
+            if key_str in blocked_keys or key_str.lower() in blocked_keys:
+                continue
+            if isinstance(value, dict):
+                nested = PageIndexService._compact_ocr_call_diagnostics(value)
+                if nested:
+                    compact[key_str] = nested
+            elif isinstance(value, list):
+                compact[key_str] = [
+                    item for item in value if isinstance(item, (str, int, float, bool)) or item is None
+                ][:20]
+            elif isinstance(value, (str, int, float, bool)) or value is None:
+                compact[key_str] = value
+            else:
+                compact[key_str] = str(value)
+        return compact
 
     @staticmethod
     def _update_content_ocr_summary(
@@ -593,6 +633,22 @@ class PageIndexService:
             if not text and getattr(response, "pages", None):
                 first_page = response.pages[0]
                 text = getattr(first_page, "plain_text", "") or getattr(first_page, "markdown", "") or ""
+            doc_id = self._ocr_diagnostics_doc_id(analysis)
+            if doc_id:
+                diag_path = self._persist_ocr_page_diagnostics(
+                    doc_id,
+                    task="page_text",
+                    page_num=page_num,
+                    response=response,
+                    call_diagnostics=call_diagnostics,
+                    text=text.strip(),
+                    status="ok" if text.strip() else "missing",
+                )
+                if diag_path is not None:
+                    call_diagnostics = {
+                        **call_diagnostics,
+                        "diagnostics_path": str(diag_path),
+                    }
             self._record_ocr_call(
                 analysis,
                 call_diagnostics,
@@ -646,8 +702,9 @@ class PageIndexService:
                         "diagnostics_path": str(diag_path),
                     }
             if analysis is not None:
-                analysis["ocr_route"] = call_diagnostics
-                analysis.setdefault("ocr_calls", []).append(call_diagnostics)
+                compact_call = self._compact_ocr_call_diagnostics(call_diagnostics)
+                analysis["ocr_route"] = compact_call
+                analysis.setdefault("ocr_calls", []).append(compact_call)
                 analysis.setdefault("ocr_calls_summary", {})["toc_page"] = {
                     "engine": call_diagnostics.get("engine_type"),
                     "model": call_diagnostics.get("model"),
@@ -656,13 +713,9 @@ class PageIndexService:
                 }
                 if call_diagnostics.get("diagnostics_path"):
                     analysis["ocr_calls_summary"]["toc_page"]["diagnostics_path"] = call_diagnostics.get("diagnostics_path")
-            diag_suffix = ""
-            if call_diagnostics.get("diagnostics_path"):
-                diag_suffix = f" diagnostics={call_diagnostics.get('diagnostics_path')}"
             print(
                 f"[TOC-OCR] task=toc_page status=done engine={call_diagnostics.get('engine_type')} "
                 f"model={call_diagnostics.get('model')} pages={call_diagnostics.get('result_pages', 0)}"
-                f"{diag_suffix}"
             )
             return normalize_ocr_document(
                 response,
@@ -844,6 +897,67 @@ class PageIndexService:
         )
 
     @staticmethod
+    def _safe_ocr_diagnostics_id(value: str) -> str:
+        safe = re.sub(r"[^\w.-]+", "_", str(value or "").strip(), flags=re.UNICODE)
+        return safe.strip("._ ")
+
+    @staticmethod
+    def _ocr_diagnostics_doc_id(analysis: Optional[Dict[str, Any]]) -> str:
+        if not isinstance(analysis, dict):
+            return ""
+        for key in ("doc_id", "document_id"):
+            value = str(analysis.get(key) or "").strip()
+            if value:
+                return PageIndexService._safe_ocr_diagnostics_id(value)
+        for key in ("file_path", "document_path"):
+            value = str(analysis.get(key) or "").strip()
+            if value:
+                return PageIndexService._safe_ocr_diagnostics_id(Path(value).stem)
+        return ""
+
+    @staticmethod
+    def _persist_ocr_page_diagnostics(
+        doc_id: str,
+        *,
+        task: str,
+        page_num: int,
+        response: Any,
+        call_diagnostics: Dict[str, Any],
+        text: str,
+        status: str,
+    ) -> Optional[Path]:
+        try:
+            safe_doc_id = PageIndexService._safe_ocr_diagnostics_id(str(doc_id or ""))
+            if not safe_doc_id:
+                return None
+            diagnostics_dir = DATA_DIR / "ocr_diagnostics" / safe_doc_id
+            diagnostics_dir.mkdir(parents=True, exist_ok=True)
+            path = diagnostics_dir / f"{task}-{int(page_num):04d}.json"
+            text_value = str(text or "")
+            payload = {
+                "doc_id": safe_doc_id,
+                "task": task,
+                "page_num": int(page_num),
+                "status": status,
+                "diagnostics": PageIndexService._sanitize_ocr_artifact(call_diagnostics),
+                "output": {
+                    "text_chars": len(text_value),
+                    "text_preview": text_value[:2000],
+                    "content_type_guess": PageIndexService._guess_ocr_content_type(text_value),
+                },
+                "pages": [
+                    PageIndexService._ocr_page_diagnostic(page)
+                    for page in list(getattr(response, "pages", []) or [])
+                ],
+                "raw_preview": PageIndexService._raw_ocr_preview(getattr(response, "raw", {}) or {}),
+            }
+            path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+            return path
+        except Exception as exc:
+            print(f"[TOC-DIAG] failed to persist OCR page diagnostics doc={doc_id}: {type(exc).__name__}")
+            return None
+
+    @staticmethod
     def _persist_ocr_diagnostics(
         doc_id: str,
         *,
@@ -852,9 +966,12 @@ class PageIndexService:
         call_diagnostics: Dict[str, Any],
     ) -> Optional[Path]:
         try:
-            diagnostics_dir = DATA_DIR / "ocr_diagnostics"
+            safe_doc_id = PageIndexService._safe_ocr_diagnostics_id(str(doc_id or ""))
+            if not safe_doc_id:
+                return None
+            diagnostics_dir = DATA_DIR / "ocr_diagnostics" / safe_doc_id
             diagnostics_dir.mkdir(parents=True, exist_ok=True)
-            path = diagnostics_dir / f"{doc_id}.json"
+            path = diagnostics_dir / f"{task}.json"
             existing: Dict[str, Any] = {}
             if path.exists():
                 try:
@@ -876,7 +993,7 @@ class PageIndexService:
                 }
             )
             payload = {
-                "doc_id": doc_id,
+                "doc_id": safe_doc_id,
                 "calls": calls,
             }
             path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -1605,12 +1722,16 @@ class PageIndexService:
             success=success,
             missing=missing,
         )
+        if summary is not None:
+            summary["concurrency"] = int(OCR_MAX_CONCURRENCY)
         if analysis is not None:
+            model = summary.get("primary_model") or "unknown"
+            engine = summary.get("primary_engine") or "unknown"
             print(
-                "[TOC-OCR] task=page_text status=done "
-                f"primary_engine={summary.get('primary_engine')} "
-                f"primary_model={summary.get('primary_model')} "
+                f"[TOC-OCR] task=page_text model={model} "
                 f"pages={summary.get('pages', len(requested_pages))} "
+                f"concurrency={summary.get('concurrency', int(OCR_MAX_CONCURRENCY))} "
+                f"status=done engine={engine} "
                 f"success={summary.get('success', success)} "
                 f"missing={summary.get('missing', len(missing))} "
                 f"fallback={summary.get('fallback', 0)}"

@@ -1,5 +1,5 @@
-import importlib.util
 import asyncio
+import importlib.util
 import json
 from pathlib import Path
 import sys
@@ -149,6 +149,52 @@ def test_diagnostic_script_parses_quality_phase() -> None:
 
     assert args.phase == "quality"
     assert args.all is True
+
+
+def test_diagnostic_script_parses_logs_phase() -> None:
+    module = _load_diagnostic_module()
+
+    args = module._parse_args(["--phase", "logs", "--file", "logs.pdf"])
+
+    assert args.phase == "logs"
+    assert args.file == "logs.pdf"
+
+
+def test_logs_diagnostic_reports_ocr_log_boundaries(monkeypatch, tmp_path: Path) -> None:
+    module = _load_diagnostic_module()
+    input_dir = tmp_path / "input"
+    input_dir.mkdir()
+    pdf_path = input_dir / "logs.pdf"
+    pdf_path.write_bytes(b"%PDF-1.4\n")
+
+    async def fake_collect_preprocess(path, **_kwargs):
+        assert Path(path).name == "logs.pdf"
+        return {
+            "file": "logs.pdf",
+            "status": "ok",
+            "content_type": "ocr",
+            "page_count": 44,
+            "ocr_calls_summary": {
+                "page_text": {
+                    "primary_model": "qwen-vl-ocr",
+                    "pages": 44,
+                    "success": 44,
+                    "missing": 0,
+                    "concurrency": 20,
+                    "diagnostics_dir": "backend/data/ocr_diagnostics/logs",
+                }
+            },
+        }
+
+    monkeypatch.setattr(module, "collect_preprocess_diagnostics", fake_collect_preprocess)
+
+    result = asyncio.run(module.run_logs_diagnostics(input_dir, selected_file="logs.pdf"))
+
+    assert result["phase"] == "logs"
+    assert result["summary"]["ok"] == 1
+    document = result["documents"][0]
+    assert document["main_log_checks"]["compact_ocr_summary"] is True
+    assert document["ocr_diagnostics"]["diagnostics_dir"].endswith("ocr_diagnostics/logs")
 
 
 def test_quality_diagnostic_reports_quality_gate(monkeypatch, tmp_path: Path) -> None:
