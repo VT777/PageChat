@@ -83,10 +83,10 @@ MULTITURN_MAX_EVIDENCE = 20
 EVIDENCE_REUSE_SIMILARITY_MIN = 0.72
 ALLOW_CROSS_SESSION_EVIDENCE_REUSE = False
 
-# OCR 閰嶇疆锛堜娇鐢?DashScope qwen-vl-ocr-latest锛?
+# OCR 閰嶇疆锛堜娇鐢?DashScope qwen3.5-ocr锛?
 OCR_API_KEY = os.getenv("OCR_API_KEY", os.getenv("LLM_API_KEY"))  # 浼樺厛鐙珛閰嶇疆锛屽惁鍒欏鐢?LLM Key
 OCR_BASE_URL = os.getenv("OCR_BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1")
-OCR_MODEL = os.getenv("OCR_MODEL", "qwen-vl-ocr-latest")
+OCR_MODEL = os.getenv("OCR_MODEL", "qwen3.5-ocr")
 OCR_DEFAULT_ENGINE_TYPE = os.getenv("OCR_DEFAULT_ENGINE_TYPE", "openai_compatible_ocr")
 OCR_OPENAI_BASE_URL = os.getenv("OCR_OPENAI_BASE_URL", OCR_BASE_URL)
 OCR_OPENAI_MODEL = os.getenv("OCR_OPENAI_MODEL", OCR_MODEL)

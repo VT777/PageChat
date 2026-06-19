@@ -203,28 +203,60 @@ def test_env_fallback_when_no_user_profile(monkeypatch) -> None:
                 raising=False,
             )
             monkeypatch.setattr(
-                "app.services.ocr_settings_service.config.OCR_BASE_URL",
+                "app.services.ocr_settings_service.config.OCR_OPENAI_BASE_URL",
                 "https://env.example/v1",
                 raising=False,
             )
             monkeypatch.setattr(
-                "app.services.ocr_settings_service.config.OCR_MODEL",
+                "app.services.ocr_settings_service.config.OCR_OPENAI_MODEL",
                 "env-ocr-model",
                 raising=False,
             )
             monkeypatch.setattr(
-                "app.services.ocr_settings_service.config.OCR_API_KEY",
+                "app.services.ocr_settings_service.config.OCR_OPENAI_API_KEY",
                 "env-secret",
                 raising=False,
             )
 
             resolved = await service.resolve_task("user-a", "page_text")
 
-            assert resolved["source"] == "environment"
+            assert resolved["source"] == "task_default"
             assert resolved["engine_type"] == "openai_compatible_ocr"
             assert resolved["endpoint"] == "https://env.example/v1"
             assert resolved["model"] == "env-ocr-model"
             assert resolved["api_key"] == "env-secret"
+        finally:
+            await db.close()
+
+    asyncio.run(run())
+
+
+def test_default_env_fallback_uses_qwen35_ocr(monkeypatch) -> None:
+    async def run() -> None:
+        db, service = await _service()
+        try:
+            from app.core import config
+
+            monkeypatch.setattr(
+                "app.services.ocr_settings_service.config.OCR_DEFAULT_ENGINE_TYPE",
+                "openai_compatible_ocr",
+                raising=False,
+            )
+            monkeypatch.setattr(
+                "app.services.ocr_settings_service.config.OCR_BASE_URL",
+                "https://dashscope.aliyuncs.com/compatible-mode/v1",
+                raising=False,
+            )
+            monkeypatch.setattr(
+                "app.services.ocr_settings_service.config.OCR_MODEL",
+                config.OCR_MODEL,
+                raising=False,
+            )
+
+            resolved = await service.resolve_task("user-a", "page_text")
+
+            assert resolved["source"] == "task_default"
+            assert resolved["model"] == "qwen3.5-ocr"
         finally:
             await db.close()
 

@@ -339,7 +339,7 @@ def _resolved_profile(row: Dict[str, Any], *, source: str) -> Dict[str, Any]:
 def ocr_task_default_route(task: str) -> Dict[str, Any]:
     if task not in OCR_TASKS:
         raise ValueError(f"Unsupported OCR task: {task}")
-    model = getattr(config, "OCR_OPENAI_MODEL", "qwen-vl-ocr-latest")
+    model = getattr(config, "OCR_OPENAI_MODEL", "qwen3.5-ocr")
     endpoint = getattr(config, "OCR_OPENAI_BASE_URL", getattr(config, "OCR_BASE_URL", ""))
     api_key = getattr(config, "OCR_OPENAI_API_KEY", getattr(config, "OCR_API_KEY", ""))
     provider = "dashscope"

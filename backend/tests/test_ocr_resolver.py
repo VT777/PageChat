@@ -117,13 +117,13 @@ def test_environment_fallback_resolution(monkeypatch) -> None:
             "env-secret",
             raising=False,
         )
-        service = FakeSettingsService(_route(source="environment", profile_id=None))
+        service = FakeSettingsService(_route(source="task_default", profile_id=None))
         resolver = OCREngineResolver(settings_service=service)
 
         resolved = await resolver.resolve(None, "page_text")
 
         assert isinstance(resolved.adapter, OpenAICompatibleOCRAdapter)
-        assert resolved.route["source"] == "environment"
+        assert resolved.route["source"] == "task_default"
         assert resolved.route["endpoint"] == "https://env.example/v1"
         assert resolved.route["model"] == "env-vision-model"
 
