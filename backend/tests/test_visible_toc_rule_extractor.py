@@ -399,3 +399,33 @@ def test_mapper_does_not_match_numbered_title_to_unnumbered_document_header() ->
 
     assert report["status"] == "ok"
     assert mapped[0]["physical_index"] == 5
+
+
+def test_score_title_on_page_bounds_fuzzy_scanning(monkeypatch) -> None:
+    import pageindex.judge.content_page_mapper as mapper
+
+    calls = {"count": 0}
+
+    class CountingSequenceMatcher:
+        def __init__(self, *args, **kwargs):
+            calls["count"] += 1
+            if calls["count"] > 300:
+                raise AssertionError("fuzzy title matching must stay bounded")
+
+        def ratio(self) -> float:
+            return 0.0
+
+    monkeypatch.setattr(mapper, "SequenceMatcher", CountingSequenceMatcher)
+
+    page_text = "\n".join(
+        f"Body paragraph {index} with unrelated OCR text and repeated filler"
+        for index in range(120)
+    )
+
+    scored = mapper.score_title_on_page(
+        "AI driven city governance scenario with multimodal decision platform",
+        page_text,
+    )
+
+    assert scored["score"] == 0.0
+    assert calls["count"] <= 300

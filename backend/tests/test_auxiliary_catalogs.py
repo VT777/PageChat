@@ -82,6 +82,28 @@ def test_merge_auxiliary_catalogs_appends_without_duplicates() -> None:
 
     assert [node["title"] for node in merged_again] == ["正文", "图目录", "表目录"]
 
+def test_merge_auxiliary_catalogs_wraps_multiple_main_roots() -> None:
+    tree = [
+        {"title": "Preface", "start_index": 1, "end_index": 2},
+        {"title": "第一章 总则", "start_index": 10, "end_index": 13},
+        {"title": "第二章 备案现状", "start_index": 14, "end_index": 30},
+    ]
+    catalogs = [
+        {"title": "图目录", "node_type": "auxiliary_catalog", "catalog_type": "figure", "nodes": []},
+        {"title": "表目录", "node_type": "auxiliary_catalog", "catalog_type": "table", "nodes": []},
+    ]
+
+    merged = PageIndexService._merge_auxiliary_catalog_nodes(tree, catalogs)
+
+    assert [node["title"] for node in merged] == ["目录", "图目录", "表目录"]
+    assert merged[0]["node_type"] == "catalog_group"
+    assert merged[0]["metadata"]["toc_section_kind"] == "main_toc"
+    assert [child["title"] for child in merged[0]["nodes"]] == [
+        "Preface",
+        "第一章 总则",
+        "第二章 备案现状",
+    ]
+
 
 def test_fill_node_text_skips_auxiliary_catalog_nodes() -> None:
     tree = [

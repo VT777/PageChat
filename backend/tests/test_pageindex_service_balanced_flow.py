@@ -347,3 +347,208 @@ def test_legacy_llm_toc_text_path_uses_shared_marker_normalization(monkeypatch):
         "一 AI驱动的第五科研范式",
         "二 百花齐放的大模型时代",
     ]
+
+
+def test_final_mapping_preserves_verified_unpaged_toc_physical_pages():
+    toc_items = [
+        {"title": "Alpha Research", "physical_index": 3, "level": 1},
+        {"title": "Beta Models", "physical_index": 5, "level": 1},
+        {"title": "Gamma Hypotheses", "physical_index": 7, "level": 1},
+        {"title": "Delta Papers", "physical_index": 9, "level": 1},
+        {"title": "Epsilon Outlook", "physical_index": 11, "level": 1},
+    ]
+    page_list = [
+        ("Cover",),
+        ("Contents\nAlpha Research\nBeta Models\nGamma Hypotheses\nDelta Papers\nEpsilon Outlook",),
+        ("Alpha Research\nBody",),
+        ("Beta Models\nGamma Hypotheses\nDelta Papers\nEpsilon Outlook\nOverview",),
+        ("Beta Models\nBody",),
+        ("More beta",),
+        ("Gamma Hypotheses\nBody",),
+        ("More gamma",),
+        ("Delta Papers\nBody",),
+        ("More delta",),
+        ("Epsilon Outlook\nBody",),
+        ("Appendix",),
+    ]
+    analysis = {
+        "toc_source": "llm_toc_page",
+        "llm_toc_page": {
+            "status": "ok",
+            "source": "llm_toc_page",
+            "has_printed_page_numbers": False,
+        },
+    }
+
+    mapped = PageIndexService._map_toc_items_after_content_ocr(
+        toc_items,
+        page_list=page_list,
+        page_count=len(page_list),
+        toc_pages=[2],
+        analysis=analysis,
+    )
+
+    assert [item["physical_index"] for item in mapped] == [3, 5, 7, 9, 11]
+    assert analysis["toc_content_mapping"]["status"] == "ok"
+    assert analysis["toc_content_mapping"]["strategy"] == "existing_physical_mapping"
+    assert analysis["toc_content_mapping"]["title_match_rate"] == 1.0
+
+
+def test_final_mapping_treats_start_index_as_existing_physical_mapping():
+    toc_items = [
+        {"title": "Alpha Research", "start_index": 3, "level": 1},
+        {"title": "Beta Models", "start_index": 5, "level": 1},
+        {"title": "Gamma Hypotheses", "start_index": 7, "level": 1},
+        {"title": "Delta Papers", "start_index": 9, "level": 1},
+        {"title": "Epsilon Outlook", "start_index": 11, "level": 1},
+    ]
+    page_list = [
+        ("Cover",),
+        ("Contents\nAlpha Research\nBeta Models\nGamma Hypotheses\nDelta Papers\nEpsilon Outlook",),
+        ("Alpha Research\nBody",),
+        ("Beta Models\nGamma Hypotheses\nDelta Papers\nEpsilon Outlook\nOverview",),
+        ("Beta Models\nBody",),
+        ("More beta",),
+        ("Gamma Hypotheses\nBody",),
+        ("More gamma",),
+        ("Delta Papers\nBody",),
+        ("More delta",),
+        ("Epsilon Outlook\nBody",),
+        ("Appendix",),
+    ]
+    analysis = {
+        "toc_source": "llm_toc_page",
+        "llm_toc_page": {
+            "status": "ok",
+            "source": "llm_toc_page",
+            "has_printed_page_numbers": False,
+        },
+    }
+
+    mapped = PageIndexService._map_toc_items_after_content_ocr(
+        toc_items,
+        page_list=page_list,
+        page_count=len(page_list),
+        toc_pages=[2],
+        analysis=analysis,
+    )
+
+    assert [item["start_index"] for item in mapped] == [3, 5, 7, 9, 11]
+    assert analysis["toc_content_mapping"]["status"] == "ok"
+    assert analysis["toc_content_mapping"]["strategy"] == "existing_physical_mapping"
+
+
+def test_final_mapping_falls_back_to_existing_unpaged_mapping_when_title_search_collapses():
+    toc_items = [
+        {"title": "Alpha Research", "physical_index": 3, "level": 1},
+        {"title": "Beta Models", "physical_index": 5, "level": 1},
+        {"title": "Gamma Hypotheses", "physical_index": 7, "level": 1},
+        {"title": "Delta Papers", "physical_index": 9, "level": 1},
+        {"title": "Epsilon Outlook", "physical_index": 11, "level": 1},
+    ]
+    page_list = [
+        ("Cover",),
+        ("Contents\nAlpha Research\nBeta Models\nGamma Hypotheses\nDelta Papers\nEpsilon Outlook",),
+        ("Section body without visible heading",),
+        ("Beta Models\nGamma Hypotheses\nDelta Papers\nEpsilon Outlook\nOverview",),
+        ("More beta body without heading",),
+        ("More beta",),
+        ("More gamma body without heading",),
+        ("More gamma",),
+        ("More delta body without heading",),
+        ("More delta",),
+        ("Final outlook body without heading",),
+        ("Appendix",),
+    ]
+    analysis = {
+        "toc_source": "llm_toc_page",
+        "llm_toc_page": {
+            "status": "ok",
+            "source": "llm_toc_page",
+            "has_printed_page_numbers": False,
+        },
+    }
+
+    mapped = PageIndexService._map_toc_items_after_content_ocr(
+        toc_items,
+        page_list=page_list,
+        page_count=len(page_list),
+        toc_pages=[2],
+        analysis=analysis,
+    )
+
+    assert [item["physical_index"] for item in mapped] == [3, 5, 7, 9, 11]
+    assert analysis["toc_content_mapping"]["status"] == "ok"
+    assert analysis["toc_content_mapping"]["strategy"] == "existing_physical_mapping"
+    assert analysis["toc_content_mapping"]["fallback_from"] == "content_title_search"
+
+
+def test_final_mapping_falls_back_to_existing_mapping_when_printed_page_remap_fails():
+    toc_items = [
+        {"title": "Case 01", "page": 1, "physical_index": 3, "level": 1},
+        {"title": "Case 02", "page": 5, "physical_index": 4, "level": 1},
+        {"title": "Case 03", "page": 3, "physical_index": 5, "level": 1},
+        {"title": "Case 04", "page": 7, "physical_index": 6, "level": 1},
+        {"title": "Case 05", "page": 9, "physical_index": 7, "level": 1},
+    ]
+    page_list = [
+        ("Cover",),
+        ("Contents",),
+        ("Case 01\nBody",),
+        ("Case 02\nBody",),
+        ("Case 03\nBody",),
+        ("Case 04\nBody",),
+        ("Case 05\nBody",),
+    ]
+    analysis = {
+        "toc_source": "llm_toc_page",
+        "llm_toc_page": {
+            "status": "ok",
+            "source": "llm_toc_page",
+            "has_printed_page_numbers": True,
+        },
+    }
+
+    mapped = PageIndexService._map_toc_items_after_content_ocr(
+        toc_items,
+        page_list=page_list,
+        page_count=len(page_list),
+        toc_pages=[2],
+        analysis=analysis,
+    )
+
+    assert [item["physical_index"] for item in mapped] == [3, 4, 5, 6, 7]
+    assert analysis["toc_content_mapping"]["status"] == "ok"
+    assert analysis["toc_content_mapping"]["strategy"] == "existing_physical_mapping"
+    assert analysis["toc_content_mapping"]["fallback_from"] == "printed_page_offset"
+
+
+def test_llm_quality_advisory_score_does_not_trigger_hard_failure():
+    reasons = PageIndexService._collect_toc_quality_failure_reasons(
+        analysis={},
+        completeness={"needs_repair": False},
+        llm_quality_check={
+            "verdict": "fail",
+            "overall_score": 0.5,
+            "needs_repair": True,
+            "suggestions": ["Clean noisy appendix entries."],
+        },
+        quality_report={"status": "needs_review", "hard_fail_reasons": []},
+    )
+
+    assert reasons == []
+
+
+def test_llm_quality_explicit_hard_reasons_remain_advisory():
+    reasons = PageIndexService._collect_toc_quality_failure_reasons(
+        analysis={},
+        completeness={"needs_repair": False},
+        llm_quality_check={
+            "verdict": "fail",
+            "overall_score": 0.2,
+            "hard_fail_reasons": ["single_node_toc"],
+        },
+        quality_report={"status": "needs_review", "hard_fail_reasons": []},
+    )
+
+    assert reasons == []

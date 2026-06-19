@@ -370,12 +370,21 @@ def _shared_prefix_length(left: str, right: str) -> int:
 
 
 def _best_fuzzy_fragment_match(fragments: List[str], normalized_page: str) -> Optional[Dict[str, Any]]:
+    max_windows_per_fragment = 24
     best: Optional[Dict[str, Any]] = None
     for fragment in fragments:
         if len(fragment) < 10 or re.search(r"\d", fragment):
             continue
         window = len(fragment)
-        for start in range(0, max(1, len(normalized_page) - window + 1)):
+        max_start = max(0, len(normalized_page) - window)
+        if max_start <= 0:
+            starts = [0]
+        else:
+            step = max(1, max_start // max_windows_per_fragment)
+            starts = list(range(0, max_start + 1, step))[:max_windows_per_fragment]
+            if starts[-1] != max_start:
+                starts.append(max_start)
+        for start in starts:
             sample = normalized_page[start : start + window]
             if len(sample) < window:
                 continue

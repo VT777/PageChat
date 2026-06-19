@@ -3750,6 +3750,63 @@ Example:
     ) -> List[Dict]:
         if not catalogs:
             return tree
+        def _is_auxiliary(node: Dict) -> bool:
+            node_type = str(node.get("node_type") or "")
+            catalog_type = str(node.get("catalog_type") or "")
+            return bool(
+                node.get("is_auxiliary")
+                or node_type == "auxiliary_catalog"
+                or catalog_type in {"figure", "table"}
+            )
+
+        def _is_main_catalog_group(node: Dict) -> bool:
+            title = str(node.get("title") or "").strip().lower()
+            compact_title = re.sub(r"\s+", "", title)
+            metadata = node.get("metadata") if isinstance(node.get("metadata"), dict) else {}
+            return bool(
+                metadata.get("toc_section_kind") == "main_toc"
+                or (
+                    compact_title in {"目录", "目次", "contents", "tableofcontents"}
+                    and node.get("nodes")
+                )
+            )
+
+        regular_nodes = [node for node in tree if isinstance(node, dict) and not _is_auxiliary(node)]
+        existing_aux_nodes = [node for node in tree if isinstance(node, dict) and _is_auxiliary(node)]
+        if (
+            len(regular_nodes) > 1
+            and not any(_is_main_catalog_group(node) for node in regular_nodes)
+        ):
+            starts = [
+                value
+                for value in (
+                    node.get("start_index") or node.get("physical_index")
+                    for node in regular_nodes
+                )
+                if isinstance(value, int)
+            ]
+            ends = [
+                value
+                for value in (
+                    node.get("end_index") or node.get("start_index") or node.get("physical_index")
+                    for node in regular_nodes
+                )
+                if isinstance(value, int)
+            ]
+            tree = [
+                {
+                    "title": "目录",
+                    "node_type": "catalog_group",
+                    "page_type": "catalog_group",
+                    "metadata": {"toc_section_kind": "main_toc"},
+                    "physical_index": min(starts) if starts else None,
+                    "start_index": min(starts) if starts else None,
+                    "end_index": max(ends) if ends else None,
+                    "nodes": regular_nodes,
+                },
+                *existing_aux_nodes,
+            ]
+
         def _catalog_key(node: Dict) -> tuple[Any, Any]:
             return (
                 node.get("node_type"),
@@ -4343,6 +4400,13 @@ Example:
         return fixed_tree, updated
 
     @staticmethod
+    def _existing_mapping_page_value(item: Dict[str, Any]) -> Optional[int]:
+        return (
+            PageIndexService._coerce_positive_int(item.get("physical_index"))
+            or PageIndexService._coerce_positive_int(item.get("start_index"))
+        )
+
+    @staticmethod
     def _existing_physical_mapping_report(
         toc_items: List[Dict[str, Any]],
         *,
@@ -4350,7 +4414,7 @@ Example:
         toc_pages: Optional[List[int]],
     ) -> Dict[str, Any]:
         pages = [
-            PageIndexService._coerce_positive_int(item.get("physical_index"))
+            PageIndexService._existing_mapping_page_value(item)
             for item in toc_items or []
             if isinstance(item, dict)
         ]
@@ -4394,6 +4458,100 @@ Example:
             "page_mapping_score": 1.0 if status == "ok" else 0.0,
             "reasons": sorted(set(reasons)),
         }
+
+    @staticmethod
+    def _page_text_map_from_page_list(page_list: List[Any]) -> Dict[int, str]:
+        page_texts: Dict[int, str] = {}
+        for index, page in enumerate(page_list or [], start=1):
+            text = ""
+            if isinstance(page, (list, tuple)) and page:
+                text = str(page[0] or "")
+            elif isinstance(page, dict):
+                text = str(page.get("text") or page.get("plain_text") or page.get("markdown") or "")
+            elif isinstance(page, str):
+                text = page
+            page_texts[index] = text
+        return page_texts
+
+    @staticmethod
+    def _existing_physical_mapping_title_report(
+        toc_items: List[Dict[str, Any]],
+        *,
+        page_list: List[Any],
+        page_count: int,
+        toc_pages: Optional[List[int]],
+        min_title_match_rate: float = 0.5,
+    ) -> Dict[str, Any]:
+        report = PageIndexService._existing_physical_mapping_report(
+            toc_items,
+            page_count=page_count,
+            toc_pages=toc_pages,
+        )
+        if report.get("status") != "ok":
+            return report
+
+        from pageindex.catalog_classifier import CATALOG_MAIN, detect_catalog_type
+        from pageindex.judge.content_page_mapper import score_title_on_page
+
+        page_texts = PageIndexService._page_text_map_from_page_list(page_list)
+        main_items = [
+            item
+            for item in toc_items or []
+            if isinstance(item, dict) and detect_catalog_type(item) == CATALOG_MAIN
+        ]
+        items = main_items or [item for item in toc_items or [] if isinstance(item, dict)]
+        checked_count = 0
+        matched_count = 0
+        for item in items:
+            title = str(item.get("title") or "").strip()
+            page = PageIndexService._existing_mapping_page_value(item)
+            if not title or page is None:
+                continue
+            checked_count += 1
+            scored = score_title_on_page(title, page_texts.get(page, ""))
+            if float(scored.get("score") or 0.0) >= 0.58:
+                matched_count += 1
+
+        title_match_rate = matched_count / checked_count if checked_count else 0.0
+        reasons = list(report.get("reasons") or [])
+        if checked_count >= 3 and title_match_rate < min_title_match_rate:
+            reasons.append("existing_title_match_rate_below_threshold")
+
+        status = "ok" if not reasons else "failed"
+        report.update(
+            {
+                "status": status,
+                "strong_anchor_count": matched_count,
+                "title_match_rate": round(title_match_rate, 4),
+                "sample_match_rate": round(title_match_rate, 4),
+                "page_mapping_score": round(
+                    title_match_rate if status == "ok" else min(title_match_rate, 0.49),
+                    4,
+                ),
+                "reasons": sorted(set(reasons)),
+            }
+        )
+        return report
+
+    @staticmethod
+    def _can_preserve_unpaged_existing_mapping(
+        analysis: Dict[str, Any],
+        toc_items: List[Dict[str, Any]],
+    ) -> bool:
+        source = str(analysis.get("toc_source") or "").strip()
+        if source not in {"llm_toc_page", "ocr_toc_page", "toc_page_text", "toc_page_layout"}:
+            return False
+
+        llm_toc_page = analysis.get("llm_toc_page") if isinstance(analysis, dict) else None
+        if isinstance(llm_toc_page, dict) and llm_toc_page.get("has_printed_page_numbers"):
+            return False
+
+        for item in toc_items or []:
+            if not isinstance(item, dict):
+                continue
+            if PageIndexService._coerce_positive_int(item.get("page") or item.get("logical_page")) is not None:
+                return False
+        return True
 
     @staticmethod
     def _page_list_has_text_evidence(page_list: Optional[List[Any]]) -> bool:
@@ -4526,12 +4684,39 @@ Example:
             page_count=page_count,
             toc_pages=toc_pages or [],
         )
+        should_reverify_existing = PageIndexService._should_reverify_existing_toc_mapping(analysis)
         if (
             existing_report["status"] == "ok"
-            and not PageIndexService._should_reverify_existing_toc_mapping(analysis)
+            and not should_reverify_existing
         ):
             mapped_items = [dict(item) for item in toc_items]
             report = existing_report
+        elif (
+            existing_report["status"] == "ok"
+            and should_reverify_existing
+            and PageIndexService._can_preserve_unpaged_existing_mapping(analysis, toc_items)
+        ):
+            verified_report = PageIndexService._existing_physical_mapping_title_report(
+                toc_items,
+                page_list=page_list,
+                page_count=page_count,
+                toc_pages=toc_pages or [],
+            )
+            if verified_report.get("status") == "ok":
+                mapped_items = [dict(item) for item in toc_items]
+                report = verified_report
+            else:
+                prefer_printed_page_numbers = False
+                llm_toc_page = analysis.get("llm_toc_page") if isinstance(analysis, dict) else None
+                if isinstance(llm_toc_page, dict):
+                    prefer_printed_page_numbers = bool(llm_toc_page.get("has_printed_page_numbers"))
+                mapped_items, report = map_toc_items_to_physical_pages(
+                    toc_items,
+                    page_texts=page_texts,
+                    page_count=page_count,
+                    toc_pages=toc_pages or [],
+                    prefer_printed_page_numbers=prefer_printed_page_numbers,
+                )
         else:
             prefer_printed_page_numbers = False
             llm_toc_page = analysis.get("llm_toc_page") if isinstance(analysis, dict) else None
@@ -4544,6 +4729,18 @@ Example:
                 toc_pages=toc_pages or [],
                 prefer_printed_page_numbers=prefer_printed_page_numbers,
             )
+        if (
+            isinstance(report, dict)
+            and str(report.get("status") or "").lower() == "failed"
+            and existing_report.get("status") == "ok"
+            and should_reverify_existing
+        ):
+            failed_report = dict(report)
+            mapped_items = [dict(item) for item in toc_items]
+            report = dict(existing_report)
+            report["fallback_from"] = failed_report.get("strategy") or "content_title_search"
+            report["fallback_reasons"] = list(failed_report.get("reasons") or [])
+            report["warnings"] = ["preserved_existing_unpaged_mapping_after_failed_remap"]
         analysis["ocr_text_map"] = {
             index: str(page[0] or "")
             for index, page in enumerate(page_list or [], start=1)
@@ -4691,21 +4888,8 @@ Example:
     def _llm_quality_failure_reason(llm_quality_check: Optional[Dict[str, Any]]) -> Optional[str]:
         if not isinstance(llm_quality_check, dict):
             return None
-
-        verdict = str(llm_quality_check.get("verdict") or "").strip().lower()
-        score_value = llm_quality_check.get("overall_score")
-        normalized_score = PageIndexService._normalized_llm_quality_score(score_value)
-        hard_fail_reasons = llm_quality_check.get("hard_fail_reasons") or []
-        has_hard_fail_reasons = isinstance(hard_fail_reasons, list) and any(
-            str(reason).strip() for reason in hard_fail_reasons
-        )
-
-        if verdict == "fail":
-            return f"llm_quality_check:fail:{score_value}"
-        if has_hard_fail_reasons:
-            return f"llm_quality_check:hard_fail:{score_value}"
-        if llm_quality_check.get("needs_repair") and normalized_score is not None and normalized_score <= 0.5:
-            return f"llm_quality_check:low_score:{score_value}"
+        # LLM QC is intentionally advisory: deterministic gates own hard
+        # failure because model scores and labels can fluctuate between runs.
         return None
 
     @staticmethod
