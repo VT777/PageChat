@@ -248,6 +248,7 @@ def _map_printed_pages_if_needed(
         page_texts=page_texts or {},
         page_count=int(page_count),
         toc_pages=toc_pages,
+        prefer_printed_page_numbers=True,
     )
     candidate["items"] = mapped_items
     evidence["content_mapping"] = report

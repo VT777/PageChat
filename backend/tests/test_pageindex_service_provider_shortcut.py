@@ -312,6 +312,44 @@ def test_llm_outline_child_tree_filters_body_text_leakage():
     ]
 
 
+def test_llm_outline_child_tree_keeps_one_clean_child_per_physical_page():
+    parent = {
+        "title": "二 百花齐放的大模型时代",
+        "structure": "2",
+    }
+
+    children = PageIndexService._build_llm_outline_child_tree(
+        parent,
+        [
+            {"title": "2.1 大模型发展历程", "level": 2, "page": 15},
+            {"title": "2.1 DeepSeek系列大模型", "level": 2, "page": 15},
+            {"title": "2.2 智能体", "level": 2, "page": 22},
+            {"title": "2.2 多智能体协作", "level": 2, "page": 22},
+            {"title": "2.3 智能体实例", "level": 2, "page": 27},
+        ],
+        parent_start=13,
+        parent_end=34,
+    )
+
+    assert [(child["title"], child["start_index"]) for child in children] == [
+        ("2.1 大模型发展历程", 15),
+        ("2.2 智能体", 22),
+        ("2.3 智能体实例", 27),
+    ]
+
+
+def test_llm_outline_expandable_parents_include_short_multi_page_sections():
+    parents = PageIndexService._llm_outline_expandable_parents(
+        [
+            {"title": "Two-page category", "start_index": 10, "end_index": 11, "nodes": []},
+            {"title": "Single-page case", "start_index": 12, "end_index": 12, "nodes": []},
+        ],
+        page_count=20,
+    )
+
+    assert [parent["title"] for parent in parents] == ["Two-page category"]
+
+
 def test_shallow_toc_expansion_ignores_noisy_levels_without_children():
     analysis = {}
     toc_items = [

@@ -387,6 +387,75 @@ def test_printed_mapping_is_not_overridden_by_weak_outline_marker() -> None:
     assert mapped[1]["mapping_source"] == "printed_page_offset"
 
 
+def test_printed_mapping_uses_ordinal_pages_when_logical_step_exceeds_physical_range() -> None:
+    from pageindex.judge.content_page_mapper import map_toc_items_to_physical_pages
+
+    items = [
+        {"title": f"Case {index:02d}", "level": 2, "page": logical_page}
+        for index, logical_page in enumerate([1, 3, 5, 7, 9, 11], start=1)
+    ]
+    page_texts = [
+        "Cover",
+        "Contents\nCase 01 01\nCase 02 03\nCase 03 05\nCase 04 07\nCase 05 09\nCase 06 11",
+        "Case 01\nBody",
+        "Case 02\nBody",
+        "Body without a clean heading",
+        "Case 04\nBody",
+        "Body without a clean heading",
+        "Case 06\nBody",
+    ]
+
+    mapped, report = map_toc_items_to_physical_pages(
+        items,
+        page_texts=page_texts,
+        page_count=len(page_texts),
+        toc_pages=[2],
+        prefer_printed_page_numbers=True,
+    )
+
+    assert report["status"] == "ok"
+    assert report["strategy"] == "printed_page_offset"
+    assert [item["physical_index"] for item in mapped] == [3, 4, 5, 6, 7, 8]
+
+
+def test_visible_toc_with_pages_preserves_unpaged_group_headings_with_regular_overflow_pages() -> None:
+    from pageindex.visible_toc_rule_extractor import extract_visible_toc_with_pages
+
+    page_texts = [
+        "Cover",
+        "\n".join(
+            [
+                "目录",
+                "AI+产业发展",
+                "01 Case Alpha 01",
+                "02 Case Beta 03",
+                "目录",
+                "Sample report title",
+                "03 Case Gamma 05",
+                "AI+消费提质",
+                "04 Case Delta 07",
+                "05 Case Epsilon 09",
+                "06 Case Zeta 11",
+            ]
+        ),
+        "01 Case Alpha\nBody",
+        "02 Case Beta\nBody",
+        "Body without a clean heading",
+        "04 Case Delta\nBody",
+        "Body without a clean heading",
+        "06 Case Zeta\nBody",
+    ]
+
+    result = extract_visible_toc_with_pages(page_texts, toc_pages=[2], page_count=len(page_texts))
+
+    assert result is not None
+    main_root = result["items"][0]
+    assert main_root["title"] == "目录"
+    assert [node["title"] for node in main_root["nodes"]] == ["AI+产业发展", "AI+消费提质"]
+    assert [child["physical_index"] for child in main_root["nodes"][0]["nodes"]] == [3, 4, 5]
+    assert [child["physical_index"] for child in main_root["nodes"][1]["nodes"]] == [6, 7, 8]
+
+
 def test_outline_marker_is_not_counted_as_strong_title_anchor() -> None:
     from pageindex.judge.content_page_mapper import map_toc_items_to_physical_pages
 
@@ -406,6 +475,38 @@ def test_outline_marker_is_not_counted_as_strong_title_anchor() -> None:
     assert report["title_match_rate"] == 0.0
     assert report["status"] == "failed"
     assert "title_match_rate_below_threshold" in report["reasons"]
+
+
+def test_printed_page_mapping_reports_main_title_match_rate_separately() -> None:
+    from pageindex.catalog_classifier import CATALOG_FIGURE, CATALOG_MAIN, CATALOG_TABLE
+    from pageindex.judge.content_page_mapper import map_toc_items_to_physical_pages
+
+    page_texts = [
+        "目录\n1.1 Main Alpha 2\n图1 Figure Alpha 2\n表1 Table Alpha 3\n1.2 Main Beta 4",
+        "1.1 Main Alpha\nbody",
+        "body without auxiliary title",
+        "1.2 Main Beta\nbody",
+    ]
+    items = [
+        {"title": "1.1 Main Alpha", "page": 2, "catalog_type": CATALOG_MAIN},
+        {"title": "图1 Figure Alpha", "page": 2, "catalog_type": CATALOG_FIGURE},
+        {"title": "表1 Table Alpha", "page": 3, "catalog_type": CATALOG_TABLE},
+        {"title": "1.2 Main Beta", "page": 4, "catalog_type": CATALOG_MAIN},
+    ]
+
+    _, report = map_toc_items_to_physical_pages(
+        items,
+        page_texts=page_texts,
+        page_count=4,
+        toc_pages=[1],
+        min_title_match_rate=0.0,
+        prefer_printed_page_numbers=True,
+    )
+
+    assert report["title_match_rate"] < 0.6
+    assert report["main_title_match_rate"] == 1.0
+    assert report["main_strong_anchor_count"] == 2
+    assert report["main_sample_checked_count"] == 2
 
 
 def test_no_page_rule_extractor_prefers_early_fuzzy_heading_over_late_exact_reference() -> None:

@@ -32,16 +32,24 @@ def run_balanced_quality_gate(
         fixed_tree = body_nodes + auxiliary_nodes
 
     selected_path = str(state.get("selected_path") or state.get("path") or "").strip()
-    child_expansion_expected = (
+    toc_source = str(state.get("toc_source") or state.get("top_level_source") or "").strip()
+    child_expansion_expected = bool(state.get("allow_child_expansion", True)) and (
         selected_path == "visible_toc_no_pages"
-        and bool(state.get("allow_child_expansion", True))
+        or toc_source == "content_outline"
+        or (
+            selected_path == "visible_toc_with_pages"
+            and toc_source in {"content_outline", "hierarchical"}
+        )
     )
 
     detected_style = _detect_tree_style(body_nodes)
     if detected_style == "flat" and not child_expansion_expected:
         long_chapter_completeness = True
     else:
-        long_chapter_completeness = _long_chapters_have_children(body_nodes)
+        long_chapter_completeness = _long_chapters_have_children(
+            body_nodes,
+            min_span=2 if child_expansion_expected else 10,
+        )
         if not long_chapter_completeness:
             repair_actions.append("long_chapter_without_children")
 
@@ -137,9 +145,9 @@ def _detect_tree_style(nodes: List[Dict[str, Any]]) -> str:
     return "mixed"
 
 
-def _long_chapters_have_children(nodes: List[Dict[str, Any]]) -> bool:
+def _long_chapters_have_children(nodes: List[Dict[str, Any]], *, min_span: int = 10) -> bool:
     for node in nodes:
-        if _is_back_matter(node):
+        if _is_front_matter(node) or _is_back_matter(node):
             continue
         start = _positive_int(node.get("start_index"))
         end = _positive_int(node.get("end_index"))
@@ -147,9 +155,28 @@ def _long_chapters_have_children(nodes: List[Dict[str, Any]]) -> bool:
         if start is None or end is None:
             continue
         span = end - start + 1
-        if span >= 10 and not children:
+        if span >= min_span and not children:
             return False
     return True
+
+
+def _is_front_matter(node: Dict[str, Any]) -> bool:
+    raw_title = re.sub(r"\s+", " ", str(node.get("title") or "").strip().lower())
+    normalized = normalize_title(raw_title)
+    if not normalized:
+        return False
+    if re.match(r"^(preface|foreword|front matter|cover|contents|table of contents)\b", raw_title):
+        return True
+    return normalized in {
+        "\u76ee\u5f55",
+        "\u76ee\u6b21",
+        "\u524d\u8a00",
+        "\u524d\u8a9e",
+        "\u5e8f\u8a00",
+        "\u5e8f",
+        "\u5c01\u9762",
+        "\u5c01\u9762\u9875",
+    }
 
 
 def _is_auxiliary(node: Dict[str, Any]) -> bool:

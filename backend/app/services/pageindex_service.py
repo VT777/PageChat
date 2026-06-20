@@ -2462,6 +2462,8 @@ Example:
             "source": "content_outline",
             "internal_source": str(result.get("source") or "hierarchical"),
             "mapped": True,
+            "top_level_frozen": True,
+            "allow_child_expansion": True,
         }
 
     @staticmethod
@@ -3218,6 +3220,41 @@ Example:
                 add_candidate(llm_toc_result, "llm_toc_page_001", "llm_toc_page", 0.72, "high")
                 llm_toc_candidate_added = len(candidates) > before_count
 
+        if selected_path == "visible_toc_with_pages" and toc_pages and has_page_text_map:
+            if candidates:
+                if self._paged_toc_candidates_need_content_outline_backup(candidates, page_count):
+                    content_outline = await self._extract_content_outline_candidate(
+                        analysis,
+                        page_count=page_count,
+                        model=model,
+                    )
+                    if content_outline:
+                        add_candidate(
+                            content_outline,
+                            "content_outline_backup",
+                            str(content_outline.get("source") or "content_outline"),
+                            0.60,
+                            "medium",
+                        )
+            else:
+                text_candidate = await self._build_text_toc_candidate(
+                    analysis,
+                    toc_pages=toc_pages,
+                    page_count=page_count,
+                    model=model,
+                    ocr_text_map=ocr_text_map,
+                    dividers=dividers,
+                )
+                if text_candidate:
+                    source = str(text_candidate.get("source") or "text_tree")
+                    add_candidate(
+                        text_candidate,
+                        f"{source}_candidate",
+                        source,
+                        0.38 if source == "segment_fallback" else 0.60,
+                        "medium",
+                    )
+
         chosen_path = route_decision.get("path")
         if chosen_path == "hierarchical":
             try:
@@ -3288,6 +3325,44 @@ Example:
                 "low",
             )
         return candidates
+
+    @staticmethod
+    def _paged_toc_candidates_need_content_outline_backup(
+        candidates: List[Dict[str, Any]],
+        page_count: int,
+    ) -> bool:
+        if not candidates:
+            return True
+
+        best_items: List[Dict[str, Any]] = []
+        for candidate in candidates:
+            if not isinstance(candidate, dict):
+                continue
+            items = [
+                item
+                for item in (candidate.get("items") or [])
+                if isinstance(item, dict)
+            ]
+            if len(items) > len(best_items):
+                best_items = items
+
+        if len(best_items) <= 1:
+            return True
+
+        mapped_pages = [
+            PageIndexService._coerce_positive_int(
+                item.get("physical_index") or item.get("start_index")
+            )
+            for item in best_items
+        ]
+        mapped_pages = [page for page in mapped_pages if page is not None]
+        if len(mapped_pages) < max(2, len(best_items) // 2):
+            return True
+        if page_count > 0 and any(page < 1 or page > page_count for page in mapped_pages):
+            return True
+        if len(best_items) >= 8 and len(set(mapped_pages)) <= max(2, len(best_items) // 4):
+            return True
+        return False
 
     async def _run_unified_toc_controller(
         self,
@@ -3995,6 +4070,39 @@ Example:
         ]
 
     @staticmethod
+    def _prepare_prebuilt_toc_tree(toc_items: List[Dict], page_count: int) -> List[Dict]:
+        """Normalize a provider-returned tree before QC/enrichment uses it."""
+        from pageindex.post_processing import normalize_tree_page_ranges
+
+        normalized = normalize_tree_page_ranges(toc_items or [], page_count)
+        PageIndexService._sync_page_source_anchors_to_ranges(normalized)
+        return normalized
+
+    @staticmethod
+    def _sync_page_source_anchors_to_ranges(nodes: List[Dict]) -> None:
+        for node in nodes or []:
+            if not isinstance(node, dict):
+                continue
+            anchor = node.get("source_anchor")
+            start = node.get("start_index")
+            end = node.get("end_index")
+            if (
+                isinstance(anchor, dict)
+                and anchor.get("unit_type") == "page"
+                and isinstance(start, int)
+                and isinstance(end, int)
+            ):
+                synced = dict(anchor)
+                synced["start_page"] = start
+                synced["end_page"] = end
+                if "page" in synced:
+                    synced["page"] = start
+                node["source_anchor"] = synced
+            children = node.get("nodes") or node.get("children") or []
+            if isinstance(children, list):
+                PageIndexService._sync_page_source_anchors_to_ranges(children)
+
+    @staticmethod
     def _allows_child_outline_expansion(analysis: Dict) -> bool:
         build_state = analysis.get("build_state") or {}
         top_level_frozen = bool(
@@ -4327,7 +4435,7 @@ Example:
                 end = PageIndexService._coerce_positive_int(node.get("end_index")) or page_count
                 if start is None or end is None or end < start:
                     continue
-                if end - start + 1 < 4:
+                if end - start + 1 < 2:
                     continue
                 parents.append(node)
 
@@ -4392,6 +4500,7 @@ Example:
         stack: List[tuple[int, Dict[str, Any]]] = []
         counters: Dict[int, int] = {}
         seen: set[str] = set()
+        seen_pages: set[int] = set()
         parent_key = PageIndexService._normalize_outline_title_key(str(parent.get("title") or ""))
 
         for _, sub in indexed:
@@ -4409,6 +4518,8 @@ Example:
                 or PageIndexService._coerce_positive_int(sub.get("start_index"))
             )
             if page is None or page < parent_start or page > parent_end:
+                continue
+            if page in seen_pages:
                 continue
             level = PageIndexService._coerce_positive_int(sub.get("level")) or 2
             level = max(2, min(6, level))
@@ -4445,6 +4556,7 @@ Example:
                 roots.append(node)
             stack.append((level, node))
             seen.add(key)
+            seen_pages.add(page)
 
         return roots
 
@@ -4696,6 +4808,7 @@ Example:
         route_decision = analysis.get("route_decision") or {}
         if isinstance(route_decision, dict):
             state.setdefault("selected_path", route_decision.get("selected_path") or route_decision.get("path"))
+        state.setdefault("toc_source", analysis.get("toc_source"))
         skeleton = analysis.get("toc_skeleton") or (state.get("skeleton") if isinstance(state, dict) else None)
         fixed_tree, gate = run_balanced_quality_gate(toc_tree, state, skeleton, page_count)
         updated = dict(completeness or {})
@@ -5867,46 +5980,7 @@ Example:
 
         if has_prebuilt_tree:
             print(f"[TOC-POST] action=assign_page_ranges prebuilt_tree=true roots={len(toc_items)}")
-            toc_tree = []
-            for item in toc_items:
-                if "start_index" not in item:
-                    item["start_index"] = item.get("physical_index") or 1
-                if "end_index" not in item:
-                    item["end_index"] = page_count
-
-                # 濞戞挸鎼悺娆撴嚍閸屾粌浠悹浣稿⒔閻ゅ棝鎳犻崘銊︾函
-                children = item.get("nodes", [])
-                for i, child in enumerate(children):
-                    if "start_index" not in child:
-                        child["start_index"] = child.get("physical_index") or 1
-                    if "end_index" not in child:
-                        # 濞戞挸缁斿瓨绋夐鍕笧鐎靛枙婵℃倷閸︾暠濡炪倗鏁搁悥?- 1闁挎稑鏈崹銊╁棘閸ャ劊鈧倿寮甸銏㈠暡
-                        if i < len(children) - 1:
-                            next_page = children[i + 1].get("physical_index")
-                            if next_page:
-                                child["end_index"] = max(next_page - 1, child["start_index"])
-                            else:
-                                child["end_index"] = page_count
-                        else:
-                            child["end_index"] = page_count
-
-                    grandchildren = child.get("nodes", [])
-                    for j, gc in enumerate(grandchildren):
-                        if "start_index" not in gc:
-                            gc["start_index"] = gc.get("physical_index") or 1
-                        if "end_index" not in gc:
-                            if j < len(grandchildren) - 1:
-                                next_page = grandchildren[j + 1].get("physical_index")
-                                if next_page:
-                                    gc["end_index"] = max(next_page - 1, gc["start_index"])
-                                else:
-                                    gc["end_index"] = page_count
-                            else:
-                                # 濞达綀娉曢弫銈夋偉閹澘螡闁绘劕婀卞▓鎴犵磼閹惧瓨灏嗗銈囨暩閻?
-                                gc["end_index"] = child.get("end_index", page_count)
-
-                toc_tree.append(item)
-
+            toc_tree = self._prepare_prebuilt_toc_tree(toc_items, page_count)
             completeness = {
                 "quality": "good",
                 "coverage": 1.0,

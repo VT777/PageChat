@@ -764,6 +764,44 @@ def _map_printed_page_numbers(
         )
         return items, report
 
+    if _should_use_ordinal_printed_mapping(items, indexed_pages, page_count, start_page):
+        ordinal_start = _ordinal_printed_start_from_title_matches(
+            items,
+            indexed_pages,
+            page_text_map=page_text_map,
+            page_count=page_count,
+            excluded_page_set=excluded_page_set,
+            start_page=start_page,
+        )
+        if ordinal_start is None:
+            ordinal_start = start_page
+        for ordinal, (index, logical_page) in enumerate(indexed_pages):
+            physical_page = max(1, min(page_count, ordinal_start + ordinal))
+            _set_printed_page_mapping(items[index], logical_page, physical_page)
+        _apply_title_overrides_after_printed_mapping(
+            items,
+            page_text_map=page_text_map,
+            page_count=page_count,
+            toc_page_set=toc_page_set,
+            excluded_page_set=excluded_page_set,
+            start_page=start_page,
+        )
+        _infer_missing_between_anchors(
+            items,
+            page_count,
+            start_page,
+            include_auxiliary_catalogs=True,
+        )
+        report = _build_printed_page_report(
+            items,
+            page_text_map=page_text_map,
+            page_count=page_count,
+            toc_page_set=excluded_page_set,
+            status=None,
+            reasons=[],
+        )
+        return items, report
+
     offset = _printed_page_offset_from_title_matches(
         items,
         indexed_pages,
@@ -817,6 +855,70 @@ def _map_printed_page_numbers(
         reasons=[],
     )
     return items, report
+
+
+def _should_use_ordinal_printed_mapping(
+    items: List[Dict[str, Any]],
+    indexed_pages: List[Tuple[int, int]],
+    page_count: int,
+    start_page: int,
+) -> bool:
+    if len(indexed_pages) < 4 or page_count <= 0:
+        return False
+    catalogs = {
+        str(items[index].get("catalog_type") or CATALOG_MAIN)
+        for index, _ in indexed_pages
+        if isinstance(items[index], dict)
+    }
+    if len(catalogs) != 1:
+        return False
+    logical_pages = [page for _, page in indexed_pages]
+    diffs = [
+        logical_pages[index + 1] - logical_pages[index]
+        for index in range(len(logical_pages) - 1)
+    ]
+    if not diffs:
+        return False
+    step, count = Counter(diffs).most_common(1)[0]
+    if step <= 1 or count / len(diffs) < 0.8:
+        return False
+    logical_last_with_simple_offset = max(logical_pages) + start_page - logical_pages[0]
+    if logical_last_with_simple_offset <= page_count:
+        return False
+    physical_slots = max(1, page_count - start_page + 1)
+    return len(indexed_pages) <= physical_slots + 1
+
+
+def _ordinal_printed_start_from_title_matches(
+    items: List[Dict[str, Any]],
+    indexed_pages: List[Tuple[int, int]],
+    *,
+    page_text_map: Dict[int, str],
+    page_count: int,
+    excluded_page_set: set[int],
+    start_page: int,
+) -> Optional[int]:
+    offsets: List[int] = []
+    cursor = start_page
+    for ordinal, (index, _logical_page) in enumerate(indexed_pages[:12]):
+        title = str(items[index].get("title") or "").strip()
+        if not title:
+            continue
+        match = find_title_page(
+            title,
+            page_text_map,
+            start_page=cursor,
+            end_page=page_count,
+            excluded_pages=excluded_page_set,
+        )
+        if not match:
+            continue
+        physical_page = int(match["page"])
+        offsets.append(physical_page - ordinal)
+        cursor = physical_page
+    if not offsets:
+        return None
+    return max(1, min(page_count, Counter(offsets).most_common(1)[0][0]))
 
 
 def _printed_page_offset_from_title_matches(
@@ -984,7 +1086,25 @@ def _build_printed_page_report(
         and _positive_int(item.get("physical_index")) is not None
         and str(item.get("title") or "").strip()
     )
+    main_sample_checked_count = sum(
+        1
+        for item in items
+        if str(item.get("catalog_type") or CATALOG_MAIN) == CATALOG_MAIN
+        and item.get("mapping_source") in {"printed_page_offset", "title_search", "outline_marker"}
+        and _positive_int(item.get("physical_index")) is not None
+        and str(item.get("title") or "").strip()
+    )
+    main_strong_anchor_indices = [
+        index
+        for index in strong_anchor_indices
+        if str(items[index].get("catalog_type") or CATALOG_MAIN) == CATALOG_MAIN
+    ]
     title_match_rate = len(strong_anchor_indices) / sample_checked_count if sample_checked_count else 0.0
+    main_title_match_rate = (
+        len(main_strong_anchor_indices) / main_sample_checked_count
+        if main_sample_checked_count
+        else 0.0
+    )
     mapped_ratio = len(mapped_pages) / item_count if item_count else 0.0
     mapping_monotonic = _physical_pages_monotonic_by_catalog(items)
     pages_in_range = all(1 <= page <= page_count for page in mapped_pages) if page_count else True
@@ -1029,6 +1149,9 @@ def _build_printed_page_report(
         "title_match_rate": round(title_match_rate, 4),
         "sample_match_rate": round(title_match_rate, 4),
         "sample_checked_count": sample_checked_count,
+        "main_strong_anchor_count": len(main_strong_anchor_indices),
+        "main_title_match_rate": round(main_title_match_rate, 4),
+        "main_sample_checked_count": main_sample_checked_count,
         "anchor_coverage": _anchor_coverage(strong_anchor_indices, item_count),
         "mapping_monotonic": mapping_monotonic,
         "estimated_ratio": round(1.0 - mapped_ratio, 4) if item_count else 0.0,

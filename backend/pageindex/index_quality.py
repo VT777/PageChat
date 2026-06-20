@@ -828,6 +828,13 @@ def build_toc_fidelity_digest(
     mapping_status = str(mapping.get("status") or "").strip().lower()
     mapping_score = _bounded_float(mapping.get("page_mapping_score"))
     title_match_rate = _bounded_float(mapping.get("title_match_rate"))
+    main_title_match_rate = _bounded_float(mapping.get("main_title_match_rate"))
+    main_sample_checked_count = int(mapping.get("main_sample_checked_count") or 0)
+    route_title_match_rate = (
+        main_title_match_rate
+        if main_sample_checked_count > 0
+        else title_match_rate
+    )
     mapping_has_title_match = "title_match_rate" in mapping
     mapping_tail_collapse = bool(mapping.get("tail_collapse"))
     mapping_reasons = [str(reason) for reason in (mapping.get("reasons") or []) if str(reason).strip()]
@@ -888,7 +895,7 @@ def build_toc_fidelity_digest(
     if (
         selected_path == "visible_toc_with_pages"
         and mapping_has_title_match
-        and title_match_rate < 0.45
+        and route_title_match_rate < 0.45
     ):
         warnings.append("visible TOC title anchors below route threshold")
         hard_fail_reasons.append("title_match_rate_below_route_threshold")

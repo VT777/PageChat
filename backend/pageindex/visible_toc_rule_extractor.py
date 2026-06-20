@@ -87,6 +87,11 @@ def extract_visible_toc_with_pages(
     )
     if mapping_report.get("status") != "ok":
         return None
+    if (
+        mapping_report.get("logical_overflow")
+        and float(mapping_report.get("title_match_rate") or 0.0) < 0.45
+    ):
+        return None
 
     sections = _group_items_by_catalog(mapped_items)
     if not sections:
@@ -331,13 +336,24 @@ def _parse_toc_pages(page_texts: List[str], toc_pages: Iterable[int]) -> List[Di
         if index < 0 or index >= len(page_texts):
             continue
 
-        for raw_line in str(page_texts[index] or "").splitlines():
-            line = _clean_line(raw_line)
-            if not line:
-                continue
+        lines = [
+            _clean_line(raw_line)
+            for raw_line in str(page_texts[index] or "").splitlines()
+        ]
+        lines = [line for line in lines if line]
+        main_group_active = False
+        suppress_next_group_heading = False
+        for cursor, line in enumerate(lines):
             heading = _catalog_from_heading(line)
             if heading:
+                suppress_next_group_heading = (
+                    heading == CATALOG_MAIN
+                    and current_catalog == CATALOG_MAIN
+                    and main_group_active
+                )
                 current_catalog = heading
+                if not suppress_next_group_heading:
+                    main_group_active = False
                 continue
 
             parsed = _parse_catalog_line(line)
@@ -345,15 +361,40 @@ def _parse_toc_pages(page_texts: List[str], toc_pages: Iterable[int]) -> List[Di
             if parsed is None and current_catalog == CATALOG_MAIN:
                 parsed = _parse_catalog_line_without_page(line)
                 parsed_missing_page = parsed is not None
-            if parsed is None:
+            if (
+                parsed is None
+                and current_catalog == CATALOG_MAIN
+                and not suppress_next_group_heading
+                and _looks_like_main_group_heading(line, lines[cursor + 1 :])
+            ):
+                title = _clean_title(line)
+                items.append(
+                    {
+                        "title": title,
+                        "level": 1,
+                        "structure": _infer_structure(title, CATALOG_MAIN, len(items) + 1),
+                        "source_page": page,
+                        "catalog_type": CATALOG_MAIN,
+                        "source": "toc_page_text_rule",
+                        "is_group_heading": True,
+                    }
+                )
+                main_group_active = True
                 continue
+            if parsed is None:
+                suppress_next_group_heading = False
+                continue
+            suppress_next_group_heading = False
             title, printed_page = parsed
             catalog = _catalog_for_title(title, current_catalog)
             if not _line_matches_catalog(title, catalog):
                 continue
+            level = _infer_level(title, catalog)
+            if catalog == CATALOG_MAIN and main_group_active and level <= 1:
+                level = 2
             item = {
                 "title": title,
-                "level": _infer_level(title, catalog),
+                "level": level,
                 "structure": _infer_structure(title, catalog, len(items) + 1),
                 "source_page": page,
                 "catalog_type": catalog,
@@ -467,7 +508,12 @@ def _looks_like_real_printed_pages(
     if len(pages) < 3:
         return False
     if page_count > 0 and max(pages) > page_count:
-        return False
+        if not _has_regular_overflow_page_sequence(
+            pages,
+            page_count=page_count,
+            toc_pages=toc_pages,
+        ):
+            return False
     if max(pages) <= max(toc_pages or [0]) + 2 and page_count > max(toc_pages or [0]) + 8:
         return False
     if len(set(pages)) == len(pages) and pages == sorted(pages) and max(pages) <= max(4, len(pages)):
@@ -478,6 +524,25 @@ def _looks_like_real_printed_pages(
             continue
         by_catalog.setdefault(str(item.get("catalog_type") or CATALOG_MAIN), []).append(int(item["page"]))
     return all(all(left <= right for left, right in zip(values, values[1:])) for values in by_catalog.values())
+
+
+def _has_regular_overflow_page_sequence(
+    pages: List[int],
+    *,
+    page_count: int,
+    toc_pages: List[int],
+) -> bool:
+    if len(pages) < 4 or page_count <= 0:
+        return False
+    diffs = [pages[index + 1] - pages[index] for index in range(len(pages) - 1)]
+    if not diffs:
+        return False
+    step = max(set(diffs), key=diffs.count)
+    if step <= 1 or diffs.count(step) / len(diffs) < 0.8:
+        return False
+    first_content_page = max(toc_pages or [0]) + 1
+    physical_slots = max(1, page_count - first_content_page + 1)
+    return len(pages) <= physical_slots + 1
 
 
 def _group_items_by_catalog(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -617,6 +682,24 @@ def _looks_like_section_marker(line: str) -> bool:
         or re.fullmatch(r"[一二三四五六七八九十]", compact)
         or re.fullmatch(r"part\s*0?\d{1,3}", compact, re.I)
     )
+
+
+def _looks_like_main_group_heading(line: str, following_lines: List[str]) -> bool:
+    title = _clean_title(line)
+    if not title or _is_heading_like(title) or _MAIN_ITEM_RE.match(title):
+        return False
+    if _FIGURE_ITEM_RE.match(title) or _TABLE_ITEM_RE.match(title):
+        return False
+    if len(title) < 2 or len(title) > 80:
+        return False
+    if re.search(r"[。；;，,]", title) and len(title) > 24:
+        return False
+    next_line = next((candidate for candidate in following_lines if candidate), "")
+    parsed = _parse_catalog_line(next_line)
+    if parsed is None:
+        return False
+    next_title, _ = parsed
+    return bool(_MAIN_ITEM_RE.match(next_title))
 
 
 def _normalize_section_marker(line: str) -> str:

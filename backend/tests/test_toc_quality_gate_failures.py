@@ -150,6 +150,51 @@ def test_quality_gate_hard_fails_visible_toc_with_weak_title_anchors() -> None:
     assert "title_match_rate_below_route_threshold" in report["hard_fail_reasons"]
 
 
+def test_quality_gate_uses_main_title_match_rate_when_auxiliary_catalogs_lower_overall_rate() -> None:
+    report = build_index_quality_report(
+        {
+            "structure": [
+                _node(
+                    "目录",
+                    1,
+                    20,
+                    nodes=[
+                        _node("1. Main", 4, 8, text="main"),
+                        _node("2. Next", 9, 20, text="next"),
+                    ],
+                ),
+                _node(
+                    "图目录",
+                    4,
+                    20,
+                    node_type="auxiliary_catalog",
+                    is_auxiliary=True,
+                    exclude_from_coverage=True,
+                    nodes=[
+                        _node("图1", 4, 4, is_auxiliary=True),
+                        _node("图2", 5, 5, is_auxiliary=True),
+                    ],
+                ),
+            ],
+            "route_decision": {"selected_path": "visible_toc_with_pages"},
+            "diagnostics": {
+                "toc_content_mapping": {
+                    "status": "ok",
+                    "page_mapping_score": 0.75,
+                    "title_match_rate": 0.25,
+                    "main_title_match_rate": 1.0,
+                    "main_strong_anchor_count": 2,
+                    "main_sample_checked_count": 2,
+                },
+            },
+        },
+        page_count=20,
+    )
+
+    assert "title_match_rate_below_route_threshold" not in report["hard_fail_reasons"]
+    assert not report["status"].startswith("failed")
+
+
 def test_quality_gate_hard_fails_unexpanded_visible_no_page_chapters() -> None:
     report = build_index_quality_report(
         {

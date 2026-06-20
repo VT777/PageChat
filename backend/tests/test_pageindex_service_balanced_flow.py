@@ -42,6 +42,39 @@ def test_service_builds_route_decision_from_state_machine():
     assert route["post_route_states"] == ["S7", "S8"]
 
 
+def test_prepare_prebuilt_toc_tree_normalizes_invalid_child_ranges_before_qc():
+    tree = [
+        {
+            "title": "目录",
+            "start_index": 6,
+            "end_index": 34,
+            "nodes": [
+                {"title": "（四）全球生态", "physical_index": 33},
+                {
+                    "title": "（五）我国加速扩大全球影响力",
+                    "physical_index": 34,
+                    "start_index": 34,
+                    "end_index": 33,
+                    "source_anchor": {
+                        "format": "pdf",
+                        "unit_type": "page",
+                        "start_page": 34,
+                        "end_page": 33,
+                    },
+                },
+            ],
+        }
+    ]
+
+    normalized = PageIndexService._prepare_prebuilt_toc_tree(tree, page_count=49)
+    child = normalized[0]["nodes"][1]
+
+    assert child["start_index"] == 34
+    assert child["end_index"] == 49
+    assert child["source_anchor"]["start_page"] == 34
+    assert child["source_anchor"]["end_page"] == 49
+
+
 def test_collect_candidates_respects_selected_visible_toc_path(monkeypatch, tmp_path):
     service = PageIndexService()
 
@@ -148,6 +181,125 @@ def test_collect_candidates_uses_page_text_map_for_layout_required_visible_toc(m
 
     assert calls["llm"] == 1
     assert [candidate["source"] for candidate in candidates] == ["llm_toc_page"]
+
+
+def test_collect_candidates_falls_back_to_text_tree_for_paged_visible_toc(monkeypatch, tmp_path):
+    service = PageIndexService()
+    calls = {"text_tree": 0}
+
+    monkeypatch.setattr(
+        "pageindex.visible_toc_rule_extractor.extract_visible_toc_with_pages",
+        lambda *_args, **_kwargs: None,
+    )
+
+    async def empty_llm_toc(*_args, **_kwargs):
+        return None
+
+    async def fake_text_tree(*_args, **_kwargs):
+        calls["text_tree"] += 1
+        return {
+            "toc_items": [
+                {"title": "Case 01", "physical_index": 3, "level": 1},
+                {"title": "Case 02", "physical_index": 5, "level": 1},
+            ],
+            "source": "text_tree",
+        }
+
+    monkeypatch.setattr(service, "_extract_toc_text", empty_llm_toc)
+    monkeypatch.setattr(service, "_build_text_toc_candidate", fake_text_tree)
+
+    candidates = asyncio.run(
+        service._collect_text_toc_candidates(
+            analysis={
+                "page_texts": [
+                    "Cover",
+                    "Catalog\nCase 01 .... 1\nCase 02 .... 3",
+                    "Case 01\nBody",
+                    "More body",
+                    "Case 02\nBody",
+                ],
+                "toc_page_detection": {
+                    "status": "detected",
+                    "pages": [2],
+                    "has_page_numbers": True,
+                },
+            },
+            route_decision={
+                "selected_path": "visible_toc_with_pages",
+                "path": "visible_toc_with_pages",
+            },
+            file_path=tmp_path / "scan.pdf",
+            page_count=5,
+            model="qwen3.6-flash",
+            anchors={"toc_pages": [2]},
+            ocr_text_map=None,
+            dividers=[],
+        )
+    )
+
+    assert calls["text_tree"] == 1
+    assert [candidate["source"] for candidate in candidates] == ["text_tree"]
+
+
+def test_collect_candidates_adds_content_outline_backup_for_weak_paged_toc(monkeypatch, tmp_path):
+    service = PageIndexService()
+
+    monkeypatch.setattr(
+        "pageindex.visible_toc_rule_extractor.extract_visible_toc_with_pages",
+        lambda *_args, **_kwargs: None,
+    )
+
+    async def weak_llm_toc(*_args, **_kwargs):
+        return {
+            "toc_items": [{"title": "Catalog fragment", "page": 99, "level": 1}],
+            "source": "llm_toc_page",
+        }
+
+    async def fake_content_outline(*_args, **_kwargs):
+        return {
+            "toc_items": [
+                {"title": "Case 01", "physical_index": 3, "level": 1},
+                {"title": "Case 02", "physical_index": 5, "level": 1},
+            ],
+            "source": "content_outline",
+        }
+
+    monkeypatch.setattr(service, "_extract_toc_text", weak_llm_toc)
+    monkeypatch.setattr(service, "_extract_content_outline_candidate", fake_content_outline)
+
+    candidates = asyncio.run(
+        service._collect_text_toc_candidates(
+            analysis={
+                "page_texts": [
+                    "Cover",
+                    "Catalog\nCase 01 .... 1\nCase 02 .... 3",
+                    "Case 01\nBody",
+                    "More body",
+                    "Case 02\nBody",
+                ],
+                "toc_page_detection": {
+                    "status": "detected",
+                    "pages": [2],
+                    "has_page_numbers": True,
+                },
+            },
+            route_decision={
+                "selected_path": "visible_toc_with_pages",
+                "path": "visible_toc_with_pages",
+            },
+            file_path=tmp_path / "scan.pdf",
+            page_count=5,
+            model="qwen3.6-flash",
+            anchors={"toc_pages": [2]},
+            ocr_text_map=None,
+            dividers=[],
+        )
+    )
+
+    assert [candidate["source"] for candidate in candidates] == [
+        "llm_toc_page",
+        "content_outline",
+    ]
 
 
 def test_collect_candidates_prefers_rule_extraction_for_standard_paged_visible_toc(monkeypatch, tmp_path):
