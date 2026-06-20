@@ -12,16 +12,18 @@ TRUSTED_SOURCE_PARTS = {"bookmarks", "pdf_outline", "outline", "links"}
 def evaluate_code_toc(analysis: Dict[str, Any]) -> Dict[str, Any]:
     code_toc = analysis.get("code_toc") if isinstance(analysis.get("code_toc"), dict) else {}
     source = str(code_toc.get("source") or "").strip()
-    items = _effective_items(code_toc)
+    items, selected_source = _effective_items_and_source(code_toc)
     page_count = _positive_int(analysis.get("page_count")) or 0
     pages = [_positive_int(item.get("physical_index") or item.get("page")) for item in items]
     pages = [page for page in pages if page is not None]
     source_parts = [part for part in source.split("+") if part]
+    selected_source_parts = [part for part in selected_source.split("+") if part]
     section_kinds = [
         str(section.get("kind") or "")
         for section in code_toc.get("toc_sections") or []
         if isinstance(section, dict) and section.get("kind")
     ]
+    section_reports = _section_reports(code_toc, page_count=page_count)
 
     reasons: List[str] = []
     warnings: List[str] = []
@@ -55,12 +57,21 @@ def evaluate_code_toc(analysis: Dict[str, Any]) -> Dict[str, Any]:
         or str(analysis.get("text_layer_quality") or "").lower() == "garbled"
         or str(analysis.get("content_type") or "").lower() == "ocr"
     )
-    if "bookmarks" in source_parts and not _bookmark_density_ok(len(items), page_count, garbled_or_ocr=garbled_or_ocr):
+    if "bookmarks" in selected_source_parts and not _bookmark_density_ok(len(items), page_count, garbled_or_ocr=garbled_or_ocr):
         reasons.append("sparse_bookmarks")
 
     range_coverage = max(pages) / page_count if pages and page_count else 0.0
     if range_coverage < 0.70:
         reasons.append("low_range_coverage")
+
+    for section_report in section_reports:
+        kind = section_report["kind"]
+        if section_report["title_noise_ratio"] > 0.20:
+            reasons.append(f"section_noise_high:{kind}")
+        if not section_report["pages_valid"]:
+            reasons.append(f"section_invalid_pages:{kind}")
+        if not section_report["pages_monotonic"]:
+            reasons.append(f"section_non_monotonic_pages:{kind}")
 
     quality_flags = [str(flag) for flag in code_toc.get("quality_flags") or [] if str(flag).strip()]
     if "weak_slide_export_outline" in quality_flags:
@@ -77,6 +88,7 @@ def evaluate_code_toc(analysis: Dict[str, Any]) -> Dict[str, Any]:
     return {
         "accepted": accepted,
         "effective_source": source,
+        "selected_source": selected_source,
         "item_count": len(items),
         "page_count": page_count,
         "pages_valid": pages_valid,
@@ -85,6 +97,7 @@ def evaluate_code_toc(analysis: Dict[str, Any]) -> Dict[str, Any]:
         "title_noise_ratio": round(title_noise_ratio, 4),
         "slide_export_ratio": round(slide_export_ratio, 4),
         "section_kinds": section_kinds,
+        "section_reports": section_reports,
         "quality_flags": quality_flags,
         "warnings": warnings,
         "reasons": sorted(set(reasons)),
@@ -97,12 +110,42 @@ def reliable_code_toc_items(analysis: Dict[str, Any]) -> List[Dict[str, Any]]:
     return list(report.get("items") or []) if report.get("accepted") else []
 
 
-def _effective_items(code_toc: Dict[str, Any]) -> List[Dict[str, Any]]:
+def _effective_items_and_source(code_toc: Dict[str, Any]) -> tuple[List[Dict[str, Any]], str]:
     sections = code_toc.get("toc_sections") or []
     for section in sections:
         if isinstance(section, dict) and section.get("kind") == "main_toc":
-            return [item for item in section.get("items") or [] if isinstance(item, dict)]
-    return [item for item in code_toc.get("items") or [] if isinstance(item, dict)]
+            return (
+                [item for item in section.get("items") or [] if isinstance(item, dict)],
+                str(section.get("source") or code_toc.get("source") or "").strip(),
+            )
+    return (
+        [item for item in code_toc.get("items") or [] if isinstance(item, dict)],
+        str(code_toc.get("source") or "").strip(),
+    )
+
+
+def _section_reports(code_toc: Dict[str, Any], *, page_count: int) -> List[Dict[str, Any]]:
+    reports: List[Dict[str, Any]] = []
+    for section in code_toc.get("toc_sections") or []:
+        if not isinstance(section, dict):
+            continue
+        kind = str(section.get("kind") or "unknown")
+        items = [item for item in section.get("items") or [] if isinstance(item, dict)]
+        pages = [_positive_int(item.get("physical_index") or item.get("page")) for item in items]
+        pages = [page for page in pages if page is not None]
+        pages_valid = bool(pages) and all(1 <= page <= page_count for page in pages) if page_count else bool(pages)
+        pages_monotonic = all(left <= right for left, right in zip(pages, pages[1:]))
+        reports.append(
+            {
+                "kind": kind,
+                "source": str(section.get("source") or "").strip(),
+                "item_count": len(items),
+                "title_noise_ratio": round(_title_noise_ratio(items), 4),
+                "pages_valid": pages_valid,
+                "pages_monotonic": pages_monotonic,
+            }
+        )
+    return reports
 
 
 def _bookmark_density_ok(item_count: int, page_count: int, *, garbled_or_ocr: bool) -> bool:

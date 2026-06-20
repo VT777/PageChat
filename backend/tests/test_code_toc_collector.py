@@ -22,15 +22,22 @@ def test_collects_bookmarks_and_links_for_compliance_guide() -> None:
 
     assert report["source"] == "bookmarks+links"
     assert report["sources"]["bookmarks"]["count"] >= 150
-    assert report["sources"]["links"]["count"] >= 100
+    assert report["sources"]["links"]["count"] >= 60
     assert report["sources"]["links"]["toc_pages"] == [7, 8, 9]
     assert [section["kind"] for section in report["toc_sections"]] == [
         "main_toc",
         "table_toc",
         "figure_toc",
     ]
+    assert report["toc_sections"][0]["source"] == "links"
     assert report["toc_sections"][1]["items"], "table catalog must come from links"
     assert report["toc_sections"][2]["items"], "figure catalog must come from links"
+    for section in report["toc_sections"]:
+        assert not [
+            item["title"]
+            for item in section["items"]
+            if str(item.get("title") or "").strip().isdigit()
+        ], f"{section['kind']} must not include bare page-number links"
 
 
 def test_collects_link_only_toc_for_ai_agent_report() -> None:

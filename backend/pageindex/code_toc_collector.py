@@ -145,7 +145,7 @@ def _collect_links(
             title = page.get_text("text", clip=rect).strip().replace("\n", " ")
             clean = _clean_link_title(title)
             dest_page = int(link.get("page") or 0) + 1
-            if not clean or dest_page <= 0:
+            if not clean or _is_bare_page_number(clean) or dest_page <= 0:
                 continue
             catalog_type = detect_catalog_type({"title": clean, "catalog_type": page_catalog})
             entries.append(
@@ -191,7 +191,12 @@ def _merge_sections(bookmark_items: List[Dict[str, Any]], link_items: List[Dict[
         catalog_type = detect_catalog_type(item)
         link_groups.setdefault(catalog_type, []).append(dict(item, catalog_type=catalog_type))
 
-    if not grouped[CATALOG_MAIN] and link_groups[CATALOG_MAIN]:
+    if grouped[CATALOG_MAIN] and link_groups[CATALOG_MAIN]:
+        bookmark_noise = _section_noise_ratio(grouped[CATALOG_MAIN])
+        link_noise = _section_noise_ratio(link_groups[CATALOG_MAIN])
+        if bookmark_noise > 0.20 and link_noise <= 0.05 and len(link_groups[CATALOG_MAIN]) >= 3:
+            grouped[CATALOG_MAIN] = link_groups[CATALOG_MAIN]
+    elif not grouped[CATALOG_MAIN] and link_groups[CATALOG_MAIN]:
         grouped[CATALOG_MAIN] = link_groups[CATALOG_MAIN]
     grouped[CATALOG_TABLE] = link_groups[CATALOG_TABLE]
     grouped[CATALOG_FIGURE] = link_groups[CATALOG_FIGURE]
@@ -250,6 +255,27 @@ def _clean_link_title(title: Any) -> str:
     text = _clean_title(title)
     text = re.sub(r"[.…·\s\u00b7\u2026]+\d{1,4}\s*$", "", text)
     return _clean_title(text)
+
+
+def _is_bare_page_number(title: str) -> bool:
+    return bool(re.fullmatch(r"\d{1,4}", re.sub(r"\s+", "", str(title or ""))))
+
+
+def _section_noise_ratio(items: List[Dict[str, Any]]) -> float:
+    if not items:
+        return 1.0
+    noisy = 0
+    for item in items:
+        title = str(item.get("title") or "").strip()
+        compact = re.sub(r"\s+", "", title)
+        if (
+            not title
+            or _is_bare_page_number(title)
+            or re.fullmatch(r"\d{4}(?:[./年-]\d{1,2})?(?:月)?", compact)
+            or compact in {"序号", "发布时间", "发布主体", "政策名称", "标准名称", "文件名称"}
+        ):
+            noisy += 1
+    return noisy / len(items)
 
 
 def _is_slide_export_title(title: str) -> bool:

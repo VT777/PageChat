@@ -127,3 +127,38 @@ def test_quality_rejects_noisy_appendix_table_cells_in_bookmarks() -> None:
 
     assert report["accepted"] is False
     assert "title_noise_high" in report["reasons"]
+
+
+def test_quality_rejects_noisy_auxiliary_sections() -> None:
+    from pageindex.code_toc_quality import evaluate_code_toc
+
+    clean_main = [
+        {"title": f"第{idx}章 核心章节", "physical_index": idx * 5}
+        for idx in range(1, 9)
+    ]
+
+    report = evaluate_code_toc(
+        {
+            "page_count": 50,
+            "text_layer_quality": "reliable",
+            "code_toc": {
+                "source": "links",
+                "items": clean_main,
+                "toc_sections": [
+                    {"kind": "main_toc", "items": clean_main},
+                    {
+                        "kind": "table_toc",
+                        "items": [
+                            {"title": "表1 训练数据来源", "physical_index": 12},
+                            {"title": "12", "physical_index": 12},
+                            {"title": "表2 模型参数对比", "physical_index": 18},
+                            {"title": "18", "physical_index": 18},
+                        ],
+                    },
+                ],
+            },
+        }
+    )
+
+    assert report["accepted"] is False
+    assert "section_noise_high:table_toc" in report["reasons"]
