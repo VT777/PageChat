@@ -175,8 +175,9 @@ Requirements:
 1. Extract all second-level, third-level, and deeper section headings under this chapter.
 2. For each subsection, return title, hierarchy level (2, 3, 4, ...), and 1-based physical PDF page number.
 3. Keep original numbering when present, such as "1.1" or "(a)".
-4. Do not invent subsections that are not present in the excerpt.
-5. Ignore headers, footers, page numbers, table cells, and decorative text.
+4. Titles must be concise headings, not paragraphs, table cells, or body text.
+5. If unsure, return fewer items instead of guessing.
+6. Ignore headers, footers, page numbers, table cells, and decorative text.
 
 Return JSON only:
 {{

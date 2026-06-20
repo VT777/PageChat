@@ -67,6 +67,35 @@ def test_quality_gate_flags_long_chapter_without_children():
     assert "long_chapter_without_children" in result["repair_actions"]
 
 
+def test_quality_gate_requires_child_expansion_for_unpaged_visible_toc():
+    skeleton = {
+        "items": [
+            {"title": "第一章", "level": 1},
+            {"title": "第二章", "level": 1},
+        ]
+    }
+    tree = [
+        {"title": "第一章", "level": 1, "start_index": 3, "end_index": 18, "nodes": []},
+        {"title": "第二章", "level": 1, "start_index": 19, "end_index": 34, "nodes": []},
+    ]
+
+    _, result = run_balanced_quality_gate(
+        tree,
+        {
+            "top_level_frozen": True,
+            "allow_child_expansion": True,
+            "selected_path": "visible_toc_no_pages",
+        },
+        skeleton,
+        page_count=40,
+    )
+
+    assert result["detected_style"] == "flat"
+    assert result["long_chapter_completeness"] is False
+    assert result["needs_repair"] is True
+    assert "long_chapter_without_children" in result["repair_actions"]
+
+
 def test_quality_gate_ignores_auxiliary_catalogs_for_top_level_match():
     skeleton = {"items": [{"title": "正文目录", "level": 1}]}
     tree = [

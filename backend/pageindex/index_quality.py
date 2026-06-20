@@ -589,6 +589,26 @@ def _detect_toc_style(nodes: List[Dict[str, Any]]) -> str:
     return "mixed"
 
 
+def _unexpanded_long_top_level_nodes(nodes: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    unexpanded: List[Dict[str, Any]] = []
+    for node in nodes:
+        if _is_auxiliary_node(node) or _has_children(node):
+            continue
+        page_range = _node_page_range(node)
+        if page_range is None:
+            continue
+        start, end = page_range
+        if end - start + 1 >= 10:
+            unexpanded.append(
+                {
+                    "title": str(node.get("title") or "").strip(),
+                    "start": start,
+                    "end": end,
+                }
+            )
+    return unexpanded
+
+
 def _tail_collapse(mapped_pages: List[int], item_count: int) -> bool:
     if item_count < 5 or not mapped_pages:
         return False
@@ -732,6 +752,7 @@ def build_toc_fidelity_digest(
     route_decision = index_payload.get("route_decision")
     if not isinstance(route_decision, dict):
         route_decision = {}
+    selected_path = str(route_decision.get("selected_path") or route_decision.get("path") or "").strip()
 
     if node_count == 0:
         return {
@@ -807,6 +828,7 @@ def build_toc_fidelity_digest(
     mapping_status = str(mapping.get("status") or "").strip().lower()
     mapping_score = _bounded_float(mapping.get("page_mapping_score"))
     title_match_rate = _bounded_float(mapping.get("title_match_rate"))
+    mapping_has_title_match = "title_match_rate" in mapping
     mapping_tail_collapse = bool(mapping.get("tail_collapse"))
     mapping_reasons = [str(reason) for reason in (mapping.get("reasons") or []) if str(reason).strip()]
     page_range_failures = _page_range_failure_stats(nodes, page_total=page_total)
@@ -862,6 +884,19 @@ def build_toc_fidelity_digest(
     if mapping_tail_collapse:
         warnings.append("tail collapse detected")
         hard_fail_reasons.append("tail_collapse")
+
+    if (
+        selected_path == "visible_toc_with_pages"
+        and mapping_has_title_match
+        and title_match_rate < 0.45
+    ):
+        warnings.append("visible TOC title anchors below route threshold")
+        hard_fail_reasons.append("title_match_rate_below_route_threshold")
+
+    unexpanded_long_nodes = _unexpanded_long_top_level_nodes(root_nodes)
+    if selected_path == "visible_toc_no_pages" and unexpanded_long_nodes:
+        warnings.append("visible no-page TOC has long chapters without child expansion")
+        hard_fail_reasons.append("visible_no_page_long_chapter_without_children")
 
     if raw_label_loss.get("failed"):
         warnings.append("raw TOC numeric labels missing in final tree")
@@ -926,6 +961,8 @@ def build_toc_fidelity_digest(
         "title_match_rate": round(title_match_rate, 4),
         "mapping_status": mapping_status or "unknown",
         "mapping_tail_collapse": mapping_tail_collapse,
+        "selected_path": selected_path,
+        "unexpanded_long_chapter_sample": unexpanded_long_nodes[:5],
         "toc_pages": toc_pages,
         "toc_page_leakage_count": int(toc_page_leakage.get("toc_page_leakage_count") or 0),
         "toc_page_leakage_ratio": round(_bounded_float(toc_page_leakage.get("toc_page_leakage_ratio")), 4),

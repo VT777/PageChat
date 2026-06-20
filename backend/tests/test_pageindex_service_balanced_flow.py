@@ -572,9 +572,24 @@ def test_llm_quality_advisory_score_does_not_trigger_hard_failure():
     assert reasons == []
 
 
-def test_llm_quality_explicit_hard_reasons_remain_advisory():
+def test_llm_quality_explicit_hard_reasons_trigger_failure_in_tuning_mode():
     reasons = PageIndexService._collect_toc_quality_failure_reasons(
         analysis={},
+        completeness={"needs_repair": False},
+        llm_quality_check={
+            "verdict": "fail",
+            "overall_score": 0.2,
+            "hard_fail_reasons": ["single_node_toc"],
+        },
+        quality_report={"status": "needs_review", "hard_fail_reasons": []},
+    )
+
+    assert reasons == ["llm_quality_check:single_node_toc"]
+
+
+def test_llm_quality_hard_reasons_can_be_kept_advisory_by_config():
+    reasons = PageIndexService._collect_toc_quality_failure_reasons(
+        analysis={"llm_quality_advisory_only": True},
         completeness={"needs_repair": False},
         llm_quality_check={
             "verdict": "fail",

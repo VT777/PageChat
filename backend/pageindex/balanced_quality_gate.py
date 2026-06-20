@@ -31,8 +31,14 @@ def run_balanced_quality_gate(
         repair_actions.extend(actions)
         fixed_tree = body_nodes + auxiliary_nodes
 
+    selected_path = str(state.get("selected_path") or state.get("path") or "").strip()
+    child_expansion_expected = (
+        selected_path == "visible_toc_no_pages"
+        and bool(state.get("allow_child_expansion", True))
+    )
+
     detected_style = _detect_tree_style(body_nodes)
-    if detected_style == "flat":
+    if detected_style == "flat" and not child_expansion_expected:
         long_chapter_completeness = True
     else:
         long_chapter_completeness = _long_chapters_have_children(body_nodes)
@@ -63,6 +69,8 @@ def run_balanced_quality_gate(
         "auxiliary_catalog_isolation": auxiliary_catalog_isolation,
         "title_normalization_match": top_level_exact_match,
         "detected_style": detected_style,
+        "selected_path": selected_path,
+        "child_expansion_expected": child_expansion_expected,
         "style_fit": style_fit,
         "repair_actions": repair_actions,
         "needs_repair": needs_repair,

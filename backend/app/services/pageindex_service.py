@@ -4339,6 +4339,22 @@ Example:
         return re.sub(r"[\s\W_]+", "", str(title or "").lower(), flags=re.UNICODE)
 
     @staticmethod
+    def _looks_like_clean_outline_child_title(title: str) -> bool:
+        value = re.sub(r"\s+", " ", str(title or "")).strip()
+        if not value:
+            return False
+        if len(value) > 60:
+            return False
+        if re.match(r"^[\\/|•·→>]+", value):
+            return False
+        if len(value) > 40 and any(token in value for token in ("•", "→", "=>", "->")):
+            return False
+        sentence_punctuation = sum(value.count(token) for token in ("。", "；", ";"))
+        if len(value) > 50 and sentence_punctuation >= 2:
+            return False
+        return True
+
+    @staticmethod
     def _count_outline_nodes(nodes: List[Dict[str, Any]]) -> int:
         total = 0
         for node in nodes or []:
@@ -4381,6 +4397,8 @@ Example:
         for _, sub in indexed:
             title = str(sub.get("title") or "").strip()
             if not title:
+                continue
+            if not PageIndexService._looks_like_clean_outline_child_title(title):
                 continue
             key = PageIndexService._normalize_outline_title_key(title)
             if not key or key in seen or key == parent_key:
@@ -4674,6 +4692,10 @@ Example:
             "top_level_frozen": bool(analysis.get("top_level_frozen") or analysis.get("toc_frozen")),
             "allow_child_expansion": bool(analysis.get("allow_child_expansion", True)),
         }
+        state = dict(state)
+        route_decision = analysis.get("route_decision") or {}
+        if isinstance(route_decision, dict):
+            state.setdefault("selected_path", route_decision.get("selected_path") or route_decision.get("path"))
         skeleton = analysis.get("toc_skeleton") or (state.get("skeleton") if isinstance(state, dict) else None)
         fixed_tree, gate = run_balanced_quality_gate(toc_tree, state, skeleton, page_count)
         updated = dict(completeness or {})
@@ -5263,7 +5285,11 @@ Example:
             elif completeness.get("needs_repair"):
                 reasons.append("completeness:needs_repair")
 
-        llm_failure_reason = PageIndexService._llm_quality_failure_reason(llm_quality_check)
+        advisory_only = bool(analysis.get("llm_quality_advisory_only")) if isinstance(analysis, dict) else False
+        llm_failure_reason = PageIndexService._llm_quality_failure_reason(
+            llm_quality_check,
+            hard_fail_enabled=not advisory_only,
+        )
         if llm_failure_reason:
             reasons.append(llm_failure_reason)
 
@@ -5287,11 +5313,22 @@ Example:
         return max(0.0, min(1.0, score))
 
     @staticmethod
-    def _llm_quality_failure_reason(llm_quality_check: Optional[Dict[str, Any]]) -> Optional[str]:
+    def _llm_quality_failure_reason(
+        llm_quality_check: Optional[Dict[str, Any]],
+        *,
+        hard_fail_enabled: bool = True,
+    ) -> Optional[str]:
         if not isinstance(llm_quality_check, dict):
             return None
-        # LLM QC is intentionally advisory: deterministic gates own hard
-        # failure because model scores and labels can fluctuate between runs.
+        if not hard_fail_enabled:
+            return None
+        hard_reasons = [
+            str(reason).strip()
+            for reason in (llm_quality_check.get("hard_fail_reasons") or [])
+            if str(reason).strip()
+        ]
+        if hard_reasons:
+            return f"llm_quality_check:{hard_reasons[0]}"
         return None
 
     @staticmethod
@@ -5595,6 +5632,7 @@ Example:
             route_decision = self._build_state_machine_route_decision(requested_mode, analysis)
             execution_mode = route_decision["execution_mode"]
 
+        analysis["route_decision"] = dict(route_decision)
 
         # P2-fix: 闁圭鍋撻柡?balanced 闁哄倸娲﹂妴鍌炴焾閽樺甯ラ悹鐑樺灴閺佸鎮欑憴鍕垫⒕婵炴潙缁辨繈鎳㈠畡鏉跨悼 dividers 濞ｅ洠鍓濇导?
         anchors = {

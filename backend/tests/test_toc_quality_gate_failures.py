@@ -126,6 +126,46 @@ def test_quality_gate_accepts_flat_toc_when_ranges_are_usable() -> None:
     assert report["style_fit"] == "acceptable"
 
 
+def test_quality_gate_hard_fails_visible_toc_with_weak_title_anchors() -> None:
+    report = build_index_quality_report(
+        {
+            "structure": [
+                _node("Chapter 1", 3, 8),
+                _node("Chapter 2", 9, 15),
+                _node("Chapter 3", 16, 22),
+            ],
+            "route_decision": {"selected_path": "visible_toc_with_pages"},
+            "diagnostics": {
+                "toc_content_mapping": {
+                    "status": "ok",
+                    "page_mapping_score": 0.72,
+                    "title_match_rate": 0.2,
+                },
+            },
+        },
+        page_count=25,
+    )
+
+    assert report["status"] == "failed:toc_quality"
+    assert "title_match_rate_below_route_threshold" in report["hard_fail_reasons"]
+
+
+def test_quality_gate_hard_fails_unexpanded_visible_no_page_chapters() -> None:
+    report = build_index_quality_report(
+        {
+            "structure": [
+                _node("第一章", 3, 18),
+                _node("第二章", 19, 34),
+            ],
+            "route_decision": {"selected_path": "visible_toc_no_pages"},
+        },
+        page_count=40,
+    )
+
+    assert report["status"] == "failed:toc_quality"
+    assert "visible_no_page_long_chapter_without_children" in report["hard_fail_reasons"]
+
+
 def test_quality_gate_accepts_auxiliary_catalog_nodes_on_toc_pages() -> None:
     report = build_index_quality_report(
         {

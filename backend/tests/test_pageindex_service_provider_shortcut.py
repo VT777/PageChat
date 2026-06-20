@@ -282,6 +282,36 @@ def test_expand_page_outline_uses_llm_snippets_for_catalog_children(monkeypatch)
     assert tree[0]["nodes"][1]["nodes"][0]["title"] == "Operating model"
 
 
+def test_llm_outline_child_tree_filters_body_text_leakage():
+    parent = {
+        "title": "Part02：AI心智占位：预测式社交生态实战指南",
+        "structure": "2",
+    }
+    leaked_body = (
+        "营销打法革新：从“流量式”进化为“耦合式”体验价值关系耦合全域旅程"
+        "耦合内容标签耦合内容是“商品-用户”的交互界面构建可交互、可个性化组装的内容模块"
+    )
+
+    children = PageIndexService._build_llm_outline_child_tree(
+        parent,
+        [
+            {"title": "商业逻辑变革：从响应式到预测式营销", "level": 2, "page": 15},
+            {"title": leaked_body, "level": 2, "page": 17},
+            {
+                "title": "/新品前置种草前置种草 2个月把握测试黄金期 •AI拆解高互动笔记→抽取信任公式→规模化生产万级素材",
+                "level": 2,
+                "page": 18,
+            },
+        ],
+        parent_start=13,
+        parent_end=24,
+    )
+
+    assert [child["title"] for child in children] == [
+        "商业逻辑变革：从响应式到预测式营销"
+    ]
+
+
 def test_shallow_toc_expansion_ignores_noisy_levels_without_children():
     analysis = {}
     toc_items = [
