@@ -211,6 +211,100 @@ def test_child_expansion_is_not_tied_to_vlm_toc_source():
     assert tree[0]["nodes"][0]["title"] == "Industry AI adoption"
 
 
+def test_expand_page_outline_uses_llm_snippets_for_catalog_children(monkeypatch):
+    tree = [
+        {
+            "title": "Contents",
+            "structure": "main",
+            "toc_section_kind": "main_toc",
+            "catalog_type": "main",
+            "start_index": 3,
+            "end_index": 12,
+            "nodes": [
+                {
+                    "title": "Part 1 Market analysis",
+                    "structure": "1",
+                    "start_index": 3,
+                    "end_index": 8,
+                    "nodes": [],
+                },
+                {
+                    "title": "Part 2 Execution playbook",
+                    "structure": "2",
+                    "start_index": 9,
+                    "end_index": 12,
+                    "nodes": [],
+                },
+            ],
+        }
+    ]
+    long_page = "A" * 260 + "\nThis tail must not be sent to the LLM snippet expander"
+    page_list = [[f"Page {page} {long_page}"] for page in range(1, 13)]
+    calls = []
+
+    async def fake_expand_chapter(chapter_title, start_page, end_page, page_texts, model=None):
+        calls.append((chapter_title, start_page, end_page, page_texts, model))
+        assert all(len(text) <= 200 for text in page_texts)
+        if chapter_title.startswith("Part 1"):
+            return [
+                {"title": "Consumer pressure", "level": 2, "page": 4},
+                {"title": "Channel response", "level": 2, "page": 6},
+            ]
+        return [{"title": "Operating model", "level": 2, "page": 10}]
+
+    monkeypatch.setattr("pageindex.hierarchical_extractor.expand_chapter", fake_expand_chapter)
+    monkeypatch.setattr(
+        "pageindex.page_outline_extractor.expand_flat_toc_with_page_titles",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("rule page-title expansion must not run")
+        ),
+    )
+
+    added = asyncio.run(
+        PageIndexService._expand_page_outline(
+            toc_tree=tree,
+            analysis={
+                "top_level_frozen": True,
+                "allow_child_expansion": True,
+                "route_decision": {"selected_path": "visible_toc_no_pages"},
+            },
+            page_count=12,
+            toc_source="toc_page_text_rule",
+            page_list=page_list,
+            model="qwen3.6-flash",
+        )
+    )
+
+    assert added == 3
+    assert len(calls) == 2
+    assert tree[0]["nodes"][0]["nodes"][0]["title"] == "Consumer pressure"
+    assert tree[0]["nodes"][0]["nodes"][1]["start_index"] == 6
+    assert tree[0]["nodes"][1]["nodes"][0]["title"] == "Operating model"
+
+
+def test_shallow_toc_expansion_ignores_noisy_levels_without_children():
+    analysis = {}
+    toc_items = [
+        {"title": "One AI research paradigm", "level": 2, "physical_index": 4},
+        {"title": "Two model landscape", "level": 4, "physical_index": 17},
+        {"title": "Three hypothesis generation", "level": 4, "physical_index": 30},
+        {"title": "Four papers and projects", "level": 4, "physical_index": 43},
+        {"title": "Five outlook", "level": 4, "physical_index": 56},
+    ]
+
+    enabled = PageIndexService._enable_child_outline_expansion_for_shallow_toc(
+        analysis,
+        toc_items,
+        page_count=68,
+        toc_source="llm_toc_page",
+    )
+
+    assert enabled is True
+    assert analysis["top_level_frozen"] is True
+    assert analysis["allow_child_expansion"] is True
+    assert analysis["toc_semi_frozen"] is True
+
+
 def test_visual_vlm_child_expansion_runs_when_text_expansion_bad(monkeypatch):
     tree = [
         {

@@ -523,6 +523,39 @@ def test_final_mapping_falls_back_to_existing_mapping_when_printed_page_remap_fa
     assert analysis["toc_content_mapping"]["fallback_from"] == "printed_page_offset"
 
 
+def test_unpaged_toc_existing_mapping_prefers_matching_chapter_dividers():
+    toc_items = [
+        {"title": "One AI research paradigm", "level": 2, "physical_index": 4},
+        {"title": "Two model landscape", "level": 4, "physical_index": 17},
+        {"title": "Three hypothesis generation", "level": 4, "physical_index": 30},
+        {"title": "Four papers and projects", "level": 4, "physical_index": 43},
+        {"title": "Five outlook", "level": 4, "physical_index": 56},
+    ]
+    page_list = [("Body",)] * 68
+    analysis = {
+        "toc_source": "llm_toc_page",
+        "toc_pages": [2, 3],
+        "chapter_dividers": [2, 3, 13, 35, 49, 61],
+        "llm_toc_page": {
+            "status": "ok",
+            "source": "llm_toc_page",
+            "has_printed_page_numbers": False,
+        },
+    }
+
+    mapped = PageIndexService._map_toc_items_after_content_ocr(
+        toc_items,
+        page_list=page_list,
+        page_count=len(page_list),
+        toc_pages=[2, 3],
+        analysis=analysis,
+    )
+
+    assert [item["physical_index"] for item in mapped] == [3, 13, 35, 49, 61]
+    assert analysis["toc_content_mapping"]["strategy"] == "chapter_divider_sequence"
+    assert analysis["toc_content_mapping"]["status"] == "ok"
+
+
 def test_llm_quality_advisory_score_does_not_trigger_hard_failure():
     reasons = PageIndexService._collect_toc_quality_failure_reasons(
         analysis={},
