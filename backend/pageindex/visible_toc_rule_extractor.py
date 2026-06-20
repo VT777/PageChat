@@ -244,12 +244,12 @@ def _map_unpaged_items_by_divider_sequence(
         for page in repeated_catalog_pages
         if isinstance(page, int) and not isinstance(page, bool) and page > 0
     )
-    start_pages = [max(toc_page_set or {0}) + 1]
-    start_pages.extend(page + 1 for page in divider_pages[: len(raw_items) - 1])
-    excluded_pages = set(toc_page_set) | set(divider_pages)
+    first_start = min(toc_page_set) if toc_page_set else 1
+    start_pages = [first_start]
+    start_pages.extend(divider_pages[: len(raw_items) - 1])
     if len(start_pages) != len(raw_items):
         return None
-    if any(page < 1 or page > page_count or page in excluded_pages for page in start_pages):
+    if any(page < 1 or page > page_count for page in start_pages):
         return None
     if not all(left < right for left, right in zip(start_pages, start_pages[1:])):
         return None

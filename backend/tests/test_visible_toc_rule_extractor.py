@@ -339,13 +339,73 @@ def test_no_page_rule_extractor_uses_repeated_catalog_dividers_as_boundaries() -
     assert result is not None
     main = result["toc_sections"][0]["items"]
     assert [(item["structure"], item["title"], item["physical_index"]) for item in main] == [
-        ("01", "Overseas AI applications", 4),
-        ("02", "Domestic AI applications", 10),
-        ("03", "AI supply chain", 17),
-        ("04", "AI risk notice", 19),
+        ("01", "Overseas AI applications", 3),
+        ("02", "Domestic AI applications", 9),
+        ("03", "AI supply chain", 16),
+        ("04", "AI risk notice", 18),
     ]
     assert [item["mapping_source"] for item in main] == ["section_divider_sequence"] * 4
     assert result["mapping_report"]["strategy"] == "section_divider_sequence"
+
+
+def test_printed_mapping_is_not_overridden_by_weak_outline_marker() -> None:
+    from pageindex.judge.content_page_mapper import map_toc_items_to_physical_pages
+
+    items = [
+        {"title": "1. Business overview", "level": 1, "page": 4, "logical_page": 4},
+        {
+            "title": "1.3 Valuation remains high with a 750B latest estimate",
+            "level": 2,
+            "page": 7,
+            "logical_page": 7,
+        },
+    ]
+    page_texts = [
+        "Cover",
+        "Contents\n1. Business overview 4\n1.3 Valuation remains high with a 750B latest estimate 7",
+        "More contents",
+        "1. Business overview\n1.3 unrelated appendix teaser\nBody",
+        "Body",
+        "Body",
+        "Latest valuation estimate reaches 750B\nBody",
+        "Body",
+        "Body",
+        "Body",
+    ]
+
+    mapped, report = map_toc_items_to_physical_pages(
+        items,
+        page_texts=page_texts,
+        page_count=len(page_texts),
+        toc_pages=[2, 3],
+        min_title_match_rate=0.0,
+        prefer_printed_page_numbers=True,
+    )
+
+    assert report["status"] == "ok"
+    assert mapped[1]["physical_index"] == 7
+    assert mapped[1]["mapping_source"] == "printed_page_offset"
+
+
+def test_outline_marker_is_not_counted_as_strong_title_anchor() -> None:
+    from pageindex.judge.content_page_mapper import map_toc_items_to_physical_pages
+
+    mapped, report = map_toc_items_to_physical_pages(
+        [{"title": "Chapter 8: AI education outlook", "level": 1, "source_page": 2}],
+        page_texts=[
+            "Cover",
+            "Contents\nChapter 8: AI education outlook",
+            "Chapter 8 Rebuilding the education ecosystem\nBody",
+        ],
+        page_count=3,
+        toc_pages=[2],
+    )
+
+    assert mapped[0]["mapping_source"] == "outline_marker"
+    assert report["strong_anchor_count"] == 0
+    assert report["title_match_rate"] == 0.0
+    assert report["status"] == "failed"
+    assert "title_match_rate_below_threshold" in report["reasons"]
 
 
 def test_no_page_rule_extractor_prefers_early_fuzzy_heading_over_late_exact_reference() -> None:

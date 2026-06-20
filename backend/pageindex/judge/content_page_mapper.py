@@ -609,7 +609,7 @@ def _build_report(
     strong_anchor_indices = [
         index
         for index, item in enumerate(report_items)
-        if item.get("mapping_source") in {"title_search", "outline_marker"}
+        if item.get("mapping_source") == "title_search"
         and _positive_int(item.get("physical_index")) is not None
     ]
     mapped_pages = [
@@ -658,7 +658,7 @@ def _build_report(
             or "front_collapse" in reasons
             or "toc_page_leakage" in reasons
             or not mapping_monotonic
-            or (item_count >= 3 and title_match_rate < min_title_match_rate)
+            or "title_match_rate_below_threshold" in reasons
         )
         status = "failed" if severe else "ok"
 
@@ -910,6 +910,7 @@ def _apply_title_overrides_after_printed_mapping(
             cursor_by_catalog[catalog_type] = max(cursor_by_catalog.get(catalog_type, start_page), current_page)
             continue
         cursor = cursor_by_catalog.get(catalog_type, start_page)
+        is_printed_mapping = item.get("mapping_source") == "printed_page_offset"
         match = find_title_page(
             title,
             page_text_map,
@@ -917,7 +918,16 @@ def _apply_title_overrides_after_printed_mapping(
             end_page=page_count,
             excluded_pages=excluded_page_set,
         )
-        if not match:
+        score = float(match.get("score") or 0.0) if match else 0.0
+        if is_printed_mapping:
+            if score < 0.75:
+                if current_page is not None:
+                    cursor_by_catalog[catalog_type] = max(
+                        cursor_by_catalog.get(catalog_type, start_page),
+                        current_page,
+                    )
+                continue
+        elif not match:
             match = (
                 find_outline_marker_page(
                     title,
@@ -929,20 +939,6 @@ def _apply_title_overrides_after_printed_mapping(
                 if catalog_type == CATALOG_MAIN
                 else None
             )
-        else:
-            score = float(match.get("score") or 0.0)
-            if score < 0.75:
-                match = (
-                    find_outline_marker_page(
-                        title,
-                    page_text_map,
-                    start_page=cursor,
-                    end_page=page_count,
-                    excluded_pages=excluded_page_set,
-                )
-                    if catalog_type == CATALOG_MAIN
-                    else None
-                )
         if not match:
             continue
         score = float(match.get("score") or 0.0)
@@ -1052,9 +1048,6 @@ def _printed_page_title_anchors(items: List[Dict[str, Any]], page_text_map: Dict
         page = _positive_int(item.get("physical_index"))
         title = str(item.get("title") or "").strip()
         if page is None or not title:
-            continue
-        if item.get("mapping_source") == "outline_marker":
-            anchors.append(index)
             continue
         scored = score_title_on_page(title, page_text_map.get(page, ""))
         if float(scored.get("score") or 0.0) >= 0.58:
