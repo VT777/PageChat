@@ -106,6 +106,73 @@ def test_rule_extractor_rejects_ambiguous_chapter_numbers_as_page_numbers() -> N
     assert result is None
 
 
+def test_rule_extractor_rejects_logical_pages_that_overflow_without_content_anchors() -> None:
+    from pageindex.visible_toc_rule_extractor import extract_visible_toc_with_pages
+
+    toc_lines = ["目录"]
+    for index in range(1, 42):
+        logical_page = index * 2 - 1
+        toc_lines.append(f"{index:02d} 案例标题{index:02d} ................ {logical_page}")
+    page_texts = [
+        "封面",
+        "\n".join(toc_lines),
+    ] + [f"正文页 {page}" for page in range(3, 45)]
+
+    result = extract_visible_toc_with_pages(
+        page_texts,
+        toc_pages=[2],
+        page_count=44,
+    )
+
+    assert result is None
+
+
+def test_rule_extractor_rejects_or_preserves_parenthetical_children_from_visible_toc() -> None:
+    from pageindex.visible_toc_rule_extractor import extract_visible_toc_with_pages
+
+    page_texts = [
+        "封面",
+        (
+            "目 录\n"
+            "一、AI 眼镜总体发展情况 .......................................................................................... 1\n"
+            "（一）AI 眼镜开启信息增强新阶段 ................................................................. 2\n"
+            "（二）三类产品呈现功能升维趋势 .................................................................. 3\n"
+            "二、AI 眼镜关键技术 .................................................................................................. 6\n"
+            "（一）硬件迭代使眼镜向轻量化发展 .............................................................. 6\n"
+            "（二）软件算法与操作系统不断演进 ............................................................ 10"
+        ),
+        "正文",
+        "正文",
+        "正文",
+        "一、AI 眼镜总体发展情况\n正文",
+        "（一）AI 眼镜开启信息增强新阶段\n正文",
+        "（二）三类产品呈现功能升维趋势\n正文",
+        "正文",
+        "正文",
+        "二、AI 眼镜关键技术\n（一）硬件迭代使眼镜向轻量化发展\n正文",
+        "正文",
+        "正文",
+        "正文",
+        "正文",
+        "（二）软件算法与操作系统不断演进\n正文",
+    ]
+
+    result = extract_visible_toc_with_pages(
+        page_texts,
+        toc_pages=[2],
+        page_count=len(page_texts),
+    )
+
+    if result is None:
+        return
+
+    flat = _flatten(result["items"])
+    titles = {node["title"] for node in flat}
+    assert "（一）AI 眼镜开启信息增强新阶段" in titles
+    assert "（二）软件算法与操作系统不断演进" in titles
+    assert result["allow_child_expansion"] is True
+
+
 def test_rule_extractor_keeps_structured_main_entry_without_visible_page_number() -> None:
     from pageindex.visible_toc_rule_extractor import extract_visible_toc_with_pages
 

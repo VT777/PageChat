@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from typing import Any, Dict, List, Optional
 
 
@@ -118,9 +119,41 @@ def _title_noise_ratio(items: List[Dict[str, Any]]) -> float:
     noisy = 0
     for item in items:
         title = str(item.get("title") or "").strip()
-        if len(title) < 2 or len(title) > 140 or title.isdigit():
+        if _is_noisy_title(title):
             noisy += 1
     return noisy / len(items)
+
+
+def _is_noisy_title(title: str) -> bool:
+    if len(title) < 2 or len(title) > 140 or title.isdigit():
+        return True
+    compact = re.sub(r"\s+", "", title)
+    if re.fullmatch(r"\d{4}(?:[./年-]\d{1,2})?(?:月)?", compact):
+        return True
+    if compact in {"序号", "发布时间", "发布主体", "政策名称", "标准名称", "文件名称"}:
+        return True
+    if _looks_like_table_cell_organization(compact):
+        return True
+    return False
+
+
+def _looks_like_table_cell_organization(value: str) -> bool:
+    if len(value) < 6 or len(value) > 40:
+        return False
+    org_suffixes = (
+        "委员会",
+        "部",
+        "厅",
+        "局",
+        "院",
+        "中心",
+        "办公室",
+        "标准化技术委员会",
+    )
+    return value.endswith(org_suffixes) and not re.match(
+        r"^(第[一二三四五六七八九十百\d]+|[一二三四五六七八九十]+[、.])",
+        value,
+    )
 
 
 def _slide_export_title_ratio(items: List[Dict[str, Any]]) -> float:
