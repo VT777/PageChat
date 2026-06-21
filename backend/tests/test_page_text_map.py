@@ -156,12 +156,13 @@ def test_preprocess_scanned_document_ocr_all_pages() -> None:
     assert page_map.ocr_page_numbers() == [1, 2]
 
 
-def test_preprocess_hybrid_document_ocr_only_bad_pages() -> None:
+def test_preprocess_hybrid_document_ocrs_all_image_pages() -> None:
     from pageindex.preprocess_page_text import preprocess_page_text_map
 
     async def fake_ocr(_file_path, page_indices, *, prompt, analysis):
-        assert list(page_indices) == [1, 2]
+        assert list(page_indices) == [0, 1, 2]
         return {
+            1: "OCR text page",
             2: "OCR image page",
             3: "OCR garbled page",
         }
@@ -171,6 +172,11 @@ def test_preprocess_hybrid_document_ocr_only_bad_pages() -> None:
         "page_list": [("good text", 2), ("", 1), ("bad layer", 2)],
         "text_coverage": 0.67,
         "image_coverage": 0.67,
+        "pages": [
+            {"index": 0, "type": "text", "text_len": 9, "image_count": 2},
+            {"index": 1, "type": "image_only", "text_len": 0, "image_count": 1},
+            {"index": 2, "type": "garbled", "text_len": 9, "image_count": 1},
+        ],
         "image_only_pages": [1],
         "garbled_pages": [2],
         "is_image_only_pdf": False,
@@ -186,9 +192,9 @@ def test_preprocess_hybrid_document_ocr_only_bad_pages() -> None:
         )
     )
 
-    assert page_map.page_texts() == ["good text", "OCR image page", "OCR garbled page"]
-    assert [entry.source for entry in page_map.entries] == ["pdf_text", "ocr", "mixed"]
-    assert page_map.ocr_page_numbers() == [2, 3]
+    assert page_map.page_texts() == ["OCR text page", "OCR image page", "OCR garbled page"]
+    assert [entry.source for entry in page_map.entries] == ["ocr", "ocr", "ocr"]
+    assert page_map.ocr_page_numbers() == [1, 2, 3]
 
 
 def test_preprocess_ocr_document_does_not_fall_back_to_garbled_text() -> None:

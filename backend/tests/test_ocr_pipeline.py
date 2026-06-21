@@ -74,13 +74,14 @@ def test_selected_page_ocr_renders_only_requested_pages(monkeypatch, tmp_path) -
             for page_index in page_indices
         ]
 
-    async def fake_ocr_image(image_base64, page_num, analysis=None, prompt=None):
+    async def fake_ocr_image(image_base64, page_num, analysis=None, prompt=None, image_mime_type=None):
         ocr_calls.append(
             {
                 "image_base64": image_base64,
                 "page_num": page_num,
                 "prompt": prompt,
                 "analysis": analysis,
+                "image_mime_type": image_mime_type,
             }
         )
         return SimpleNamespace(text=f"OCR page {page_num}", ok=True)
@@ -110,6 +111,7 @@ def test_selected_page_ocr_renders_only_requested_pages(monkeypatch, tmp_path) -
     assert rendered_calls == [[1, 3]]
     assert [call["page_num"] for call in ocr_calls] == [2, 4]
     assert {call["prompt"] for call in ocr_calls} == {PAGE_TEXT_PROMPT}
+    assert {call["image_mime_type"] for call in ocr_calls} == {"image/jpeg"}
     assert result["ocr_pages"] == [
         {"page_num": 2, "text": "OCR page 2", "ok": True, "ocr_image_targets": 1, "ocr_image_hits": 1, "error": ""},
         {"page_num": 4, "text": "OCR page 4", "ok": True, "ocr_image_targets": 1, "ocr_image_hits": 1, "error": ""},
@@ -220,7 +222,7 @@ def test_page_text_ocr_main_log_is_compact(monkeypatch, tmp_path, capsys) -> Non
             for page_index in page_indices
         ]
 
-    async def fake_ocr_image(image_base64, page_num, analysis=None, prompt=None):
+    async def fake_ocr_image(image_base64, page_num, analysis=None, prompt=None, image_mime_type=None):
         PageIndexService._record_ocr_call(
             analysis,
             {

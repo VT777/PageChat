@@ -16,6 +16,7 @@ def collect_child_expansion_parents(
     nodes: List[Dict[str, Any]],
     *,
     page_count: int,
+    min_span: int = ATTEMPT_MIN_SPAN,
 ) -> List[Dict[str, Any]]:
     """Return leaf nodes that are worth sending to LLM child expansion."""
     parents: List[Dict[str, Any]] = []
@@ -31,7 +32,7 @@ def collect_child_expansion_parents(
             if children:
                 visit(children)
                 continue
-            if should_attempt_child_expansion(node, page_count=page_count):
+            if should_attempt_child_expansion(node, page_count=page_count, min_span=min_span):
                 parents.append(node)
 
     visit(nodes)
@@ -93,7 +94,12 @@ def analyze_child_expansion(
     }
 
 
-def should_attempt_child_expansion(node: Dict[str, Any], *, page_count: int) -> bool:
+def should_attempt_child_expansion(
+    node: Dict[str, Any],
+    *,
+    page_count: int,
+    min_span: int = ATTEMPT_MIN_SPAN,
+) -> bool:
     if _is_auxiliary(node) or _is_front_matter(node) or _is_back_matter(node):
         return False
     if _children(node):
@@ -102,7 +108,7 @@ def should_attempt_child_expansion(node: Dict[str, Any], *, page_count: int) -> 
     if page_range is None:
         return False
     start, end = page_range
-    return end - start + 1 >= ATTEMPT_MIN_SPAN
+    return end - start + 1 >= max(1, int(min_span or ATTEMPT_MIN_SPAN))
 
 
 def _children(node: Dict[str, Any]) -> List[Dict[str, Any]]:

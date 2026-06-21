@@ -115,6 +115,11 @@ def _pages_to_ocr(analysis: Mapping[str, Any], *, content_type: str, page_count:
     if content_type == "ocr":
         return list(range(page_count))
     bad_pages = set()
+    if content_type == "hybrid":
+        for index in range(page_count):
+            page_info = _page_info(analysis, index)
+            if int(page_info.get("image_count") or 0) > 0:
+                bad_pages.add(index)
     for key in ("image_only_pages", "garbled_pages"):
         for page in analysis.get(key) or []:
             try:
@@ -191,21 +196,45 @@ def _merge_entries(
         original = _page_list_text(page_list, index)
         ocr_text = str(ocr_by_page.get(index) or "")
         if index - 1 in ocr_indices:
-            text = ocr_text
-            if content_type == "hybrid" and original.strip() and ocr_text.strip():
-                source = "mixed"
-                quality = "partial"
-            else:
+            if ocr_text.strip():
+                text = ocr_text
                 source = "ocr"
-                quality = "reliable" if text.strip() else "low"
+                quality = "reliable"
+                ocr_used = True
+                diagnostics = {
+                    "ocr_requested": True,
+                    "original_text_chars": len(original),
+                    "ocr_text_chars": len(ocr_text),
+                }
+            elif content_type == "hybrid" and original.strip():
+                text = original
+                source = "pdf_text_fallback"
+                quality = "partial"
+                ocr_used = False
+                diagnostics = {
+                    "ocr_requested": True,
+                    "ocr_fallback": "pdf_text",
+                    "original_text_chars": len(original),
+                    "ocr_text_chars": 0,
+                }
+            else:
+                text = ""
+                source = "ocr"
+                quality = "low"
+                ocr_used = True
+                diagnostics = {
+                    "ocr_requested": True,
+                    "original_text_chars": len(original),
+                    "ocr_text_chars": 0,
+                }
             entries.append(
                 PageTextEntry(
                     physical_page=index,
                     text=text,
                     source=source,
                     quality=quality,
-                    ocr_used=True,
-                    diagnostics={"ocr_requested": True},
+                    ocr_used=ocr_used,
+                    diagnostics=diagnostics,
                 )
             )
             continue

@@ -607,12 +607,16 @@ class PageIndexService:
         page_num: int,
         analysis: Optional[Dict[str, Any]] = None,
         prompt: Optional[str] = None,
+        image_mime_type: str = "image/png",
     ):
         from app.services.ocr_service import OCRPageResult
 
         resolved = await self._resolve_ocr_engine("page_text")
         try:
-            image_url = f"data:image/png;base64,{image_base64}"
+            safe_mime_type = str(image_mime_type or "image/png").strip() or "image/png"
+            if not safe_mime_type.startswith("image/"):
+                safe_mime_type = "image/png"
+            image_url = f"data:{safe_mime_type};base64,{image_base64}"
             route_options = dict((resolved.route or {}).get("options") or {})
             if prompt:
                 route_options["prompt"] = prompt
@@ -1670,6 +1674,7 @@ class PageIndexService:
                         page_num,
                         analysis=analysis,
                         prompt=prompt,
+                        image_mime_type=str(image_input.get("image_mime_type") or "image/jpeg"),
                     )
                 except Exception as exc:
                     self._record_ocr_call(
@@ -2416,7 +2421,6 @@ Example:
                     if bool((fallback_result or {}).get("has_printed_page_numbers"))
                     else "visible_toc_no_pages"
                 ),
-                analysis=analysis,
             )
             if fallback_result and fallback_result.get("toc_items"):
                 toc_items = fallback_result["toc_items"]
@@ -3281,7 +3285,6 @@ Example:
                     page_count=page_count,
                     toc_pages=toc_pages,
                     selected_path=selected_path,
-                    analysis=analysis,
                 )
             except Exception as exc:
                 print(
@@ -3345,7 +3348,6 @@ Example:
                     if bool((llm_toc_result or {}).get("has_printed_page_numbers"))
                     else "visible_toc_no_pages"
                 ),
-                analysis=analysis,
             )
             if llm_toc_result:
                 llm_toc_result.setdefault("source", "llm_toc_page")
@@ -3690,6 +3692,15 @@ Example:
         ):
             if key in result_meta:
                 result[key] = result_meta[key]
+        selected_mapping_report = None
+        if isinstance(result_meta.get("mapping_report"), dict):
+            selected_mapping_report = dict(result_meta["mapping_report"])
+        elif isinstance(evidence.get("content_mapping"), dict):
+            selected_mapping_report = dict(evidence["content_mapping"])
+        if selected_mapping_report:
+            analysis["toc_content_mapping"] = selected_mapping_report
+            analysis.setdefault("toc_judge", {})
+            analysis["toc_judge"]["content_mapping"] = selected_mapping_report
         self._apply_balanced_result_state(analysis, result)
         return result
 
@@ -4547,10 +4558,37 @@ Example:
     def _llm_outline_expandable_parents(
         toc_tree: List[Dict[str, Any]],
         page_count: int,
+        analysis: Optional[Dict[str, Any]] = None,
     ) -> List[Dict[str, Any]]:
         from pageindex.child_expansion_policy import collect_child_expansion_parents
 
-        return collect_child_expansion_parents(toc_tree, page_count=page_count)
+        return collect_child_expansion_parents(
+            toc_tree,
+            page_count=page_count,
+            min_span=PageIndexService._llm_outline_expansion_min_span(analysis or {}),
+        )
+
+    @staticmethod
+    def _llm_outline_expansion_min_span(analysis: Dict[str, Any]) -> int:
+        route_decision = analysis.get("route_decision") or {}
+        selected_path = str(
+            route_decision.get("selected_path")
+            or analysis.get("selected_path")
+            or analysis.get("toc_selected_path")
+            or ""
+        )
+        if selected_path != "visible_toc_no_pages":
+            return 8
+        layout_type = str(analysis.get("layout_type") or "").lower()
+        content_type = str(analysis.get("content_type") or "").lower()
+        image_coverage = float(analysis.get("image_coverage") or 0.0)
+        if layout_type in {"mixed_layout_report", "slide_like_report"}:
+            return 1
+        if content_type == "hybrid" and image_coverage >= 0.5:
+            return 1
+        if analysis.get("slide_outline_candidate") or analysis.get("agenda_outline_candidate"):
+            return 1
+        return 8
 
     @staticmethod
     def _normalize_outline_title_key(title: str) -> str:
@@ -4685,7 +4723,7 @@ Example:
             page_list,
             page_count,
         )
-        parents = PageIndexService._llm_outline_expandable_parents(toc_tree, page_count)
+        parents = PageIndexService._llm_outline_expandable_parents(toc_tree, page_count, analysis=analysis)
         if not parents:
             analysis["outline_expansion"] = {
                 "source": "llm_chapter_snippets",

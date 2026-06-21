@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, Iterable, List, Literal, Sequence, Tuple
 
 
-PageTextSource = Literal["pdf_text", "ocr", "mixed"]
+PageTextSource = Literal["pdf_text", "ocr", "mixed", "pdf_text_fallback"]
 PageTextQuality = Literal["reliable", "partial", "low"]
 
 
@@ -23,7 +23,7 @@ class PageTextEntry:
         self.physical_page = int(self.physical_page)
         self.text = str(self.text or "")
         self.ocr_used = bool(self.ocr_used)
-        if self.source not in {"pdf_text", "ocr", "mixed"}:
+        if self.source not in {"pdf_text", "ocr", "mixed", "pdf_text_fallback"}:
             raise ValueError(f"Unsupported PageTextEntry source: {self.source}")
         if self.quality not in {"reliable", "partial", "low"}:
             raise ValueError(f"Unsupported PageTextEntry quality: {self.quality}")

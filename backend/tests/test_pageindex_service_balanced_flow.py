@@ -239,6 +239,39 @@ def test_llm_outline_expandable_parents_use_fact_based_span_policy() -> None:
     assert [node["title"] for node in parents] == ["Medium", "Long"]
 
 
+def test_llm_outline_expandable_parents_expand_short_slide_report_sections() -> None:
+    tree = [
+        {
+            "title": "目录",
+            "node_type": "catalog_group",
+            "nodes": [
+                {"title": "Part05: AI营销案例", "start_index": 41, "end_index": 44, "nodes": []},
+                {"title": "Appendix", "start_index": 45, "end_index": 46, "nodes": []},
+                {
+                    "title": "Figure catalog",
+                    "start_index": 2,
+                    "end_index": 3,
+                    "is_auxiliary": True,
+                    "nodes": [],
+                },
+            ],
+        }
+    ]
+
+    parents = PageIndexService._llm_outline_expandable_parents(
+        tree,
+        page_count=60,
+        analysis={
+            "route_decision": {"selected_path": "visible_toc_no_pages"},
+            "layout_type": "mixed_layout_report",
+            "content_type": "hybrid",
+            "image_coverage": 1.0,
+        },
+    )
+
+    assert [node["title"] for node in parents] == ["Part05: AI营销案例"]
+
+
 def test_collect_candidates_falls_back_to_text_tree_for_paged_visible_toc(monkeypatch, tmp_path):
     service = PageIndexService()
     calls = {"text_tree": 0}
@@ -672,6 +705,90 @@ def test_unified_controller_preserves_child_expansion_state_for_unpaged_rule(mon
     assert result["allow_child_expansion"] is True
     assert analysis["allow_child_expansion"] is True
     assert analysis["toc_semi_frozen"] is True
+
+
+def test_unified_controller_keeps_winner_mapping_report_when_loser_mapping_fails(monkeypatch, tmp_path):
+    service = PageIndexService()
+
+    def fake_rule_draft(*_args, **_kwargs):
+        return {
+            "type": "toc_draft",
+            "source": "toc_page_text_rule",
+            "has_page_numbers": True,
+            "items": [
+                {"title": "Chapter One", "level": 1, "raw_page_label": 3},
+                {"title": "Chapter Two", "level": 1, "raw_page_label": 5},
+            ],
+        }
+
+    async def fake_llm_toc(*_args, **_kwargs):
+        return {
+            "toc_items": [
+                {"title": "Wrong One", "level": 1, "page": 99},
+                {"title": "Wrong Two", "level": 1, "page": 199},
+            ],
+            "source": "llm_toc_page",
+        }
+
+    def fake_mapper(draft, **_kwargs):
+        if draft.get("source") == "toc_page_text_rule":
+            return [
+                {"title": "Chapter One", "level": 1, "physical_index": 3, "start_index": 3},
+                {"title": "Chapter Two", "level": 1, "physical_index": 5, "start_index": 5},
+            ], {
+                "status": "ok",
+                "strategy": "physical_identity",
+                "title_match_rate": 1.0,
+                "strong_anchor_count": 2,
+                "reasons": [],
+            }
+        return [], {
+            "status": "failed",
+            "strategy": "printed_page_offset",
+            "title_match_rate": 0.0,
+            "strong_anchor_count": 0,
+            "reasons": ["printed_pages_non_monotonic"],
+        }
+
+    monkeypatch.setattr(
+        "pageindex.visible_toc_rule_extractor.extract_visible_toc_with_pages_draft",
+        fake_rule_draft,
+    )
+    monkeypatch.setattr("pageindex.toc_mapping.map_toc_draft_to_physical", fake_mapper)
+    monkeypatch.setattr(service, "_extract_toc_text", fake_llm_toc)
+
+    analysis = {
+        "page_texts": [
+            "Cover",
+            "Contents\nChapter One .... 3\nChapter Two .... 5",
+            "Chapter One\nBody",
+            "Body",
+            "Chapter Two\nBody",
+        ],
+        "toc_page_detection": {"status": "detected", "pages": [2], "has_page_numbers": True},
+    }
+
+    result = asyncio.run(
+        service._run_unified_toc_controller(
+            file_path=tmp_path / "sample.pdf",
+            requested_mode="smart",
+            analysis=analysis,
+            route_decision={
+                "selected_path": "visible_toc_with_pages",
+                "path": "visible_toc_with_pages",
+            },
+            page_count=5,
+            model="qwen3.6-flash",
+            anchors={"toc_pages": [2]},
+            ocr_text_map=None,
+            dividers=[],
+        )
+    )
+
+    assert result is not None
+    assert result["source"] == "toc_page_text_rule"
+    assert analysis["toc_content_mapping"]["status"] == "ok"
+    assert analysis["toc_content_mapping"]["strategy"] == "physical_identity"
 
 
 def test_main_toc_member_nodes_are_expandable_not_catalog_containers() -> None:
