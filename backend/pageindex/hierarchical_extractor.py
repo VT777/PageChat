@@ -6,6 +6,7 @@
 """
 
 import asyncio
+import json
 import re
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -21,6 +22,10 @@ MAX_TOKENS_FRAMEWORK = 8000      # stage=framework 最大token数
 MAX_TOKENS_EXPAND = 6000      # stage=expand 每章最大token数
 CHAPTER_BATCH_SIZE = 3            # stage=expand 并发章节数
 MIN_CHAPTER_PAGES = 2             # 章节最小页数
+CHAPTER_EXCERPT_CHARS = 200
+LONG_CHAPTER_WINDOW_SIZE = 10
+LONG_CHAPTER_WINDOW_OVERLAP = 1
+LONG_CHAPTER_WINDOW_THRESHOLD = 25
 
 
 
@@ -164,7 +169,7 @@ async def extract_framework(
 # stage=expand status=ok chapter= 逐章展开子章节
 # ---------------------------------------------------------------------------
 
-_EXPAND_PROMPT = """You are a document structure analyst. Analyze the chapter excerpt below and extract all subsection titles inside that chapter.
+_EXPAND_PROMPT = """You are a document structure analyst. Extract subsection titles inside the chapter using only the provided page excerpts.
 
 Chapter metadata:
 - Title: {chapter_title}
@@ -173,11 +178,12 @@ Chapter metadata:
 
 Requirements:
 1. Extract all second-level, third-level, and deeper section headings under this chapter.
-2. For each subsection, return title, hierarchy level (2, 3, 4, ...), and 1-based physical PDF page number.
+2. For each subsection, return title, hierarchy level (2, 3, 4, ...), and 1-based physical start page.
 3. Keep original numbering when present, such as "1.1" or "(a)".
 4. Titles must be concise headings, not paragraphs, table cells, or body text.
 5. If unsure, return fewer items instead of guessing.
 6. Ignore headers, footers, page numbers, table cells, and decorative text.
+7. Do not return end pages.
 
 Return JSON only:
 {{
@@ -186,9 +192,122 @@ Return JSON only:
   ]
 }}
 
-Chapter excerpt:
+Page excerpts JSON:
 {content}
 """
+
+
+def _normalize_title_key(value: Any) -> str:
+    return re.sub(r"[\s\W_]+", "", str(value or "").casefold(), flags=re.UNICODE)
+
+
+def _page_excerpt(text: Any, max_chars: int = CHAPTER_EXCERPT_CHARS) -> str:
+    value = str(text or "").strip()
+    return value[:max_chars]
+
+
+def _chapter_excerpt_windows(
+    start_page: int,
+    end_page: int,
+    page_texts: List[str],
+) -> List[List[Dict[str, Any]]]:
+    """Build page/excerpt windows for chapter expansion."""
+    end_page = min(end_page, len(page_texts))
+    if start_page < 1 or start_page > end_page:
+        return []
+
+    pages = list(range(start_page, end_page + 1))
+    if len(pages) <= LONG_CHAPTER_WINDOW_THRESHOLD:
+        return [_page_excerpt_items(pages, page_texts)]
+
+    windows: List[List[Dict[str, Any]]] = []
+    step = max(1, LONG_CHAPTER_WINDOW_SIZE - LONG_CHAPTER_WINDOW_OVERLAP)
+    index = 0
+    while index < len(pages):
+        chunk = pages[index:index + LONG_CHAPTER_WINDOW_SIZE]
+        if not chunk:
+            break
+        windows.append(_page_excerpt_items(chunk, page_texts))
+        if chunk[-1] == pages[-1]:
+            break
+        index += step
+    return windows
+
+
+def _page_excerpt_items(pages: List[int], page_texts: List[str]) -> List[Dict[str, Any]]:
+    items: List[Dict[str, Any]] = []
+    for page in pages:
+        if 1 <= page <= len(page_texts):
+            items.append(
+                {
+                    "page": page,
+                    "excerpt": _page_excerpt(page_texts[page - 1]),
+                }
+            )
+    return items
+
+
+def _format_excerpt_window(window: List[Dict[str, Any]]) -> str:
+    return json.dumps(window, ensure_ascii=False, indent=2)
+
+
+def _valid_sub_chapters_from_response(
+    response: str,
+    *,
+    chapter_title: str,
+    start_page: int,
+    end_page: int,
+) -> List[Dict[str, Any]]:
+    from pageindex.utils import extract_json
+
+    data = extract_json(response)
+    if not data:
+        print(f"[TOC-CANDIDATE] provider=hierarchical Failed to parse JSON for '{chapter_title}'")
+        return []
+
+    valid: List[Dict[str, Any]] = []
+    for sub in data.get("sub_chapters", []):
+        if not isinstance(sub, dict):
+            continue
+        title = _coerce_text(sub.get("title"))
+        level = max(2, _coerce_int(sub.get("level"), 2))
+        page = _coerce_int(sub.get("page"), 0)
+
+        if title and start_page <= page <= end_page:
+            valid.append(
+                {
+                    "title": title,
+                    "level": level,
+                    "page": page,
+                }
+            )
+    return valid
+
+
+def _merge_window_sub_chapters(sub_chapters: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    merged: List[Dict[str, Any]] = []
+    seen: set[tuple[str, int]] = set()
+    for item in sorted(
+        sub_chapters,
+        key=lambda value: (
+            _coerce_int(value.get("page"), 0),
+            _normalize_title_key(value.get("title")),
+        ),
+    ):
+        title = _coerce_text(item.get("title"))
+        page = _coerce_int(item.get("page"), 0)
+        key = (_normalize_title_key(title), page)
+        if not title or page <= 0 or key in seen:
+            continue
+        seen.add(key)
+        merged.append(
+            {
+                "title": title,
+                "level": max(2, _coerce_int(item.get("level"), 2)),
+                "page": page,
+            }
+        )
+    return merged
 
 
 async def expand_chapter(
@@ -215,60 +334,34 @@ async def expand_chapter(
 
     end_page = min(end_page, len(page_texts))
 
-    # 提取章节文本
-    chapter_texts = page_texts[start_page-1:end_page]
-    content = '\n'.join(f"[Page {i+start_page}] {t[:500]}" 
-                        for i, t in enumerate(chapter_texts))
+    windows = _chapter_excerpt_windows(start_page, end_page, page_texts)
+    if not windows:
+        return []
 
-    # 截断过长内容
-    tokens = count_tokens(content)
-    if tokens > MAX_TOKENS_EXPAND:
-        # 保留每页前300字
-        content = '\n'.join(f"[Page {i+start_page}] {t[:300]}" 
-                            for i, t in enumerate(chapter_texts))
-        tokens = count_tokens(content)
-        if tokens > MAX_TOKENS_EXPAND:
-            # 进一步采样：只取奇数页
-            content = '\n'.join(f"[Page {i+start_page}] {t[:300]}" 
-                                for i, t in enumerate(chapter_texts) if i % 2 == 0)
-
-    prompt = _EXPAND_PROMPT.format(
-        chapter_title=chapter_title,
-        start_page=start_page,
-        end_page=end_page,
-        content=content,
-    )
-
+    valid: List[Dict[str, Any]] = []
     try:
-        response = await llm_acompletion(model, prompt)
-        if not response:
-            return []
+        for window in windows:
+            prompt = _EXPAND_PROMPT.format(
+                chapter_title=chapter_title,
+                start_page=start_page,
+                end_page=end_page,
+                content=_format_excerpt_window(window),
+            )
+            response = await llm_acompletion(model, prompt)
+            if not response:
+                continue
+            valid.extend(
+                _valid_sub_chapters_from_response(
+                    response,
+                    chapter_title=chapter_title,
+                    start_page=start_page,
+                    end_page=end_page,
+                )
+            )
 
-        # 使用更健壮的extract_json
-        from pageindex.utils import extract_json
-        data = extract_json(response)
-        if not data:
-            print(f"[TOC-CANDIDATE] provider=hierarchical Failed to parse JSON for '{chapter_title}'")
-            return []
-        
-        sub_chapters = data.get("sub_chapters", [])
-
-        # 验证和清理
-        valid = []
-        for sub in sub_chapters:
-            title = _coerce_text(sub.get("title"))
-            level = max(2, _coerce_int(sub.get("level"), 2))
-            page = _coerce_int(sub.get("page"), 0)
-
-            if title and page >= start_page and page <= end_page:
-                valid.append({
-                    "title": title,
-                    "level": level,
-                    "page": page,
-                })
-
-        print(f"[TOC-CANDIDATE] provider=hierarchical stage=expand status=ok chapter='{chapter_title}' sub_chapters={len(valid)}")
-        return valid
+        merged = _merge_window_sub_chapters(valid)
+        print(f"[TOC-CANDIDATE] provider=hierarchical stage=expand status=ok chapter='{chapter_title}' sub_chapters={len(merged)}")
+        return merged
 
     except Exception as e:
         print(f"[TOC-CANDIDATE] provider=hierarchical stage=expand status=error chapter='{chapter_title}' error={e}")
