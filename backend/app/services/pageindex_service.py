@@ -3574,20 +3574,7 @@ Example:
 
         layout = None
         toc_layout = None
-        selected_path = str(route_decision.get("selected_path") or route_decision.get("path") or "").strip()
-        state_machine_paths = {
-            "embedded_toc",
-            "visible_toc_with_pages",
-            "visible_toc_no_pages",
-            "content_outline",
-        }
-        has_page_text_map = any(text.strip() for text in self._analysis_page_texts(analysis))
-        should_run_legacy_layout = bool(
-            route_decision.get("path") == "ppocr_layout"
-            or (self._requires_layout_outline_provider(analysis) and not has_page_text_map)
-        )
-        if selected_path in state_machine_paths and has_page_text_map:
-            should_run_legacy_layout = False
+        should_run_legacy_layout = self._should_run_legacy_toc_layout(route_decision, analysis)
         if should_run_legacy_layout:
             try:
                 layout = await self._build_layout_with_resolver(
@@ -4828,6 +4815,53 @@ Example:
         }:
             return True
         return False
+
+    @staticmethod
+    def _should_run_legacy_toc_layout(
+        route_decision: Dict[str, Any],
+        analysis: Dict[str, Any],
+    ) -> bool:
+        """Return whether the legacy visual TOC layout path is explicitly enabled.
+
+        S1 owns OCR and PageTextMap construction. Once S1 has any usable page
+        text, later TOC stages must consume that text instead of running a
+        separate visual TOC OCR/layout branch.
+        """
+        page_texts = PageIndexService._analysis_page_texts(analysis)
+        if any(str(text or "").strip() for text in page_texts):
+            analysis["legacy_visual_toc"] = {
+                "status": "skipped",
+                "reason": "page_text_map_available",
+            }
+            return False
+
+        legacy_requested = bool(
+            route_decision.get("path") == "ppocr_layout"
+            or PageIndexService._requires_layout_outline_provider(analysis)
+        )
+        if not legacy_requested:
+            analysis["legacy_visual_toc"] = {
+                "status": "skipped",
+                "reason": "not_required",
+            }
+            return False
+
+        explicit_opt_in = bool(
+            route_decision.get("allow_legacy_visual_toc")
+            or analysis.get("allow_legacy_visual_toc")
+        )
+        if not explicit_opt_in:
+            analysis["legacy_visual_toc"] = {
+                "status": "skipped",
+                "reason": "disabled_by_default",
+            }
+            return False
+
+        analysis["legacy_visual_toc"] = {
+            "status": "enabled",
+            "reason": "explicit_opt_in",
+        }
+        return True
 
     @staticmethod
     def _flat_text_outline_skip_reason(analysis: Dict) -> str:

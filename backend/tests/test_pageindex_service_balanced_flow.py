@@ -183,6 +183,35 @@ def test_collect_candidates_uses_page_text_map_for_layout_required_visible_toc(m
     assert [candidate["source"] for candidate in candidates] == ["llm_toc_page"]
 
 
+def test_legacy_visual_toc_layout_is_disabled_by_default_after_s1() -> None:
+    analysis = {
+        "structure_policy": "layout_required",
+        "page_texts": [],
+    }
+    route_decision = {
+        "path": "ppocr_layout",
+        "selected_path": "content_outline",
+    }
+
+    assert not PageIndexService._should_run_legacy_toc_layout(route_decision, analysis)
+
+
+def test_legacy_visual_toc_layout_requires_explicit_opt_in_and_no_page_text_map() -> None:
+    route_decision = {
+        "path": "ppocr_layout",
+        "allow_legacy_visual_toc": True,
+    }
+
+    assert PageIndexService._should_run_legacy_toc_layout(
+        route_decision,
+        {"structure_policy": "layout_required", "page_texts": []},
+    )
+    assert not PageIndexService._should_run_legacy_toc_layout(
+        route_decision,
+        {"structure_policy": "layout_required", "page_texts": ["OCR text"]},
+    )
+
+
 def test_collect_candidates_falls_back_to_text_tree_for_paged_visible_toc(monkeypatch, tmp_path):
     service = PageIndexService()
     calls = {"text_tree": 0}
