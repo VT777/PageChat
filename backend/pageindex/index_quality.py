@@ -6,6 +6,8 @@ from collections import Counter
 import re
 from typing import Any, Dict, List, Optional
 
+from pageindex.child_expansion_policy import analyze_child_expansion
+
 
 def _flatten_index_nodes(nodes: Any, depth: int = 1) -> List[Dict[str, Any]]:
     if not isinstance(nodes, list):
@@ -274,7 +276,7 @@ def _normalize_title_key(value: Any) -> str:
 
 def _is_synthetic_root_title(title: Any) -> bool:
     normalized = _normalize_title_key(title)
-    return normalized in {"目录", "contents", "tableofcontents", "preface"}
+    return normalized in {"目录", "目次", "正文目录", "contents", "tableofcontents", "preface"}
 
 
 
@@ -900,10 +902,17 @@ def build_toc_fidelity_digest(
         warnings.append("visible TOC title anchors below route threshold")
         hard_fail_reasons.append("title_match_rate_below_route_threshold")
 
-    unexpanded_long_nodes = _unexpanded_long_top_level_nodes(root_nodes)
-    if selected_path == "visible_toc_no_pages" and unexpanded_long_nodes:
+    child_expansion = analyze_child_expansion(
+        structure if isinstance(structure, list) else root_nodes,
+        page_count=page_total,
+    )
+    unexpanded_long_nodes = child_expansion.get("required_sample") or []
+    unexpanded_long_count = int(child_expansion.get("unexpanded_count") or 0)
+    unexpanded_long_hard_count = int(child_expansion.get("hard_count") or 0)
+    if selected_path == "visible_toc_no_pages" and unexpanded_long_count:
         warnings.append("visible no-page TOC has long chapters without child expansion")
-        hard_fail_reasons.append("visible_no_page_long_chapter_without_children")
+        if unexpanded_long_hard_count:
+            hard_fail_reasons.append("visible_no_page_long_chapter_without_children")
 
     if raw_label_loss.get("failed"):
         warnings.append("raw TOC numeric labels missing in final tree")
@@ -970,6 +979,12 @@ def build_toc_fidelity_digest(
         "mapping_tail_collapse": mapping_tail_collapse,
         "selected_path": selected_path,
         "unexpanded_long_chapter_sample": unexpanded_long_nodes[:5],
+        "child_expansion_attempted": bool(unexpanded_long_count),
+        "child_expansion_required_count": int(child_expansion.get("required_count") or 0),
+        "unexpanded_long_leaf_count": unexpanded_long_count,
+        "unexpanded_long_leaf_warning_count": int(child_expansion.get("warning_count") or 0),
+        "unexpanded_long_leaf_hard_count": unexpanded_long_hard_count,
+        "unexpanded_long_leaf_sample": unexpanded_long_nodes[:5],
         "toc_pages": toc_pages,
         "toc_page_leakage_count": int(toc_page_leakage.get("toc_page_leakage_count") or 0),
         "toc_page_leakage_ratio": round(_bounded_float(toc_page_leakage.get("toc_page_leakage_ratio")), 4),

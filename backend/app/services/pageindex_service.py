@@ -4549,33 +4549,9 @@ Example:
         toc_tree: List[Dict[str, Any]],
         page_count: int,
     ) -> List[Dict[str, Any]]:
-        parents: List[Dict[str, Any]] = []
+        from pageindex.child_expansion_policy import collect_child_expansion_parents
 
-        def visit(nodes: List[Dict[str, Any]]) -> None:
-            for node in nodes or []:
-                if not isinstance(node, dict) or PageIndexService._is_auxiliary_outline_node(node):
-                    continue
-                children = node.get("nodes") if isinstance(node.get("nodes"), list) else []
-                if PageIndexService._is_main_catalog_container_node(node):
-                    visit(children)
-                    continue
-                if children:
-                    continue
-                if PageIndexService._is_preface_outline_node(node):
-                    continue
-                start = (
-                    PageIndexService._coerce_positive_int(node.get("start_index"))
-                    or PageIndexService._coerce_positive_int(node.get("physical_index"))
-                )
-                end = PageIndexService._coerce_positive_int(node.get("end_index")) or page_count
-                if start is None or end is None or end < start:
-                    continue
-                if end - start + 1 < 2:
-                    continue
-                parents.append(node)
-
-        visit(toc_tree)
-        return parents
+        return collect_child_expansion_parents(toc_tree, page_count=page_count)
 
     @staticmethod
     def _normalize_outline_title_key(title: str) -> str:
@@ -4784,6 +4760,12 @@ Example:
             child_count = PageIndexService._count_outline_nodes(children)
             added += child_count
             expanded += 1
+
+        if added:
+            from pageindex.post_processing import normalize_tree_page_ranges
+
+            toc_tree[:] = normalize_tree_page_ranges(toc_tree, page_count)
+            PageIndexService._sync_page_source_anchors_to_ranges(toc_tree)
 
         expected = len(parents)
         needs_repair = expected > 0 and expanded < max(1, expected // 2)

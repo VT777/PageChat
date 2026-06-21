@@ -6,6 +6,7 @@ from copy import deepcopy
 import re
 from typing import Any, Dict, List, Optional, Tuple
 
+from pageindex.child_expansion_policy import analyze_child_expansion
 from pageindex.tree_schema import normalize_title
 
 
@@ -34,7 +35,8 @@ def run_balanced_quality_gate(
     selected_path = str(state.get("selected_path") or state.get("path") or "").strip()
     toc_source = str(state.get("toc_source") or state.get("top_level_source") or "").strip()
     child_expansion_expected = bool(state.get("allow_child_expansion", True)) and (
-        selected_path == "visible_toc_no_pages"
+        top_level_frozen
+        or selected_path == "visible_toc_no_pages"
         or toc_source == "content_outline"
         or (
             selected_path == "visible_toc_with_pages"
@@ -43,19 +45,35 @@ def run_balanced_quality_gate(
     )
 
     detected_style = _detect_tree_style(body_nodes)
-    if detected_style == "flat" and not child_expansion_expected:
-        long_chapter_completeness = True
+    if child_expansion_expected:
+        child_expansion = analyze_child_expansion(body_nodes, page_count=page_count)
     else:
-        long_chapter_completeness = _long_chapters_have_children(
-            body_nodes,
-            min_span=2 if child_expansion_expected else 10,
-        )
-        if not long_chapter_completeness:
-            repair_actions.append("long_chapter_without_children")
+        child_expansion = {
+            "required_count": 0,
+            "unexpanded_count": 0,
+            "warning_count": 0,
+            "hard_count": 0,
+            "required_sample": [],
+            "warning_sample": [],
+            "hard_sample": [],
+        }
+
+    unexpanded_hard_count = int(child_expansion.get("hard_count") or 0)
+    unexpanded_warning_count = int(child_expansion.get("warning_count") or 0)
+    long_chapter_completeness = unexpanded_hard_count == 0
+    if unexpanded_hard_count:
+        repair_actions.append("long_chapter_without_children")
+    elif unexpanded_warning_count:
+        repair_actions.append("long_chapter_without_children_warning")
 
     auxiliary_catalog_isolation = all(_is_auxiliary(node) for node in auxiliary_nodes)
-    needs_repair = bool(repair_actions) and not (
-        set(repair_actions) <= {"remove_extra_top_level"} and top_level_exact_match
+    blocking_repair_actions = [
+        action
+        for action in repair_actions
+        if action != "long_chapter_without_children_warning"
+    ]
+    needs_repair = bool(blocking_repair_actions) and not (
+        set(blocking_repair_actions) <= {"remove_extra_top_level"} and top_level_exact_match
     )
     if not long_chapter_completeness:
         needs_repair = True
@@ -79,6 +97,12 @@ def run_balanced_quality_gate(
         "detected_style": detected_style,
         "selected_path": selected_path,
         "child_expansion_expected": child_expansion_expected,
+        "child_expansion_attempted": child_expansion_expected,
+        "child_expansion_required_count": int(child_expansion.get("required_count") or 0),
+        "unexpanded_long_leaf_count": int(child_expansion.get("unexpanded_count") or 0),
+        "unexpanded_long_leaf_warning_count": unexpanded_warning_count,
+        "unexpanded_long_leaf_hard_count": unexpanded_hard_count,
+        "unexpanded_long_leaf_sample": child_expansion.get("required_sample") or [],
         "style_fit": style_fit,
         "repair_actions": repair_actions,
         "needs_repair": needs_repair,

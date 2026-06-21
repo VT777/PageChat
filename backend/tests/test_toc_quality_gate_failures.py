@@ -211,6 +211,61 @@ def test_quality_gate_hard_fails_unexpanded_visible_no_page_chapters() -> None:
     assert "visible_no_page_long_chapter_without_children" in report["hard_fail_reasons"]
 
 
+def test_quality_gate_warns_medium_visible_no_page_leaf_without_hard_fail() -> None:
+    report = build_index_quality_report(
+        {
+            "structure": [
+                {
+                    "title": "目录",
+                    "start_index": 5,
+                    "end_index": 62,
+                    "nodes": [
+                        _node("Part01", 5, 12),
+                        _node("Part02", 13, 24),
+                        _node("Part03", 25, 34, nodes=[_node("Step1", 29, 29)]),
+                    ],
+                }
+            ],
+            "route_decision": {"selected_path": "visible_toc_no_pages"},
+        },
+        page_count=62,
+    )
+
+    assert report["status"] != "failed:toc_quality"
+    assert "visible_no_page_long_chapter_without_children" not in report["hard_fail_reasons"]
+    assert report["unexpanded_long_leaf_count"] == 2
+    assert report["unexpanded_long_leaf_hard_count"] == 0
+
+
+def test_quality_gate_warns_nested_visible_no_page_leaf_without_hard_fail() -> None:
+    report = build_index_quality_report(
+        {
+            "structure": [
+                {
+                    "title": "目录",
+                    "start_index": 3,
+                    "end_index": 80,
+                    "nodes": [
+                        _node(
+                            "Chapter",
+                            10,
+                            40,
+                            nodes=[_node("Deep section", 12, 32)],
+                        ),
+                    ],
+                }
+            ],
+            "route_decision": {"selected_path": "visible_toc_no_pages"},
+        },
+        page_count=80,
+    )
+
+    assert report["status"] != "failed:toc_quality"
+    assert "visible_no_page_long_chapter_without_children" not in report["hard_fail_reasons"]
+    assert report["unexpanded_long_leaf_count"] == 1
+    assert report["unexpanded_long_leaf_hard_count"] == 0
+
+
 def test_quality_gate_accepts_auxiliary_catalog_nodes_on_toc_pages() -> None:
     report = build_index_quality_report(
         {

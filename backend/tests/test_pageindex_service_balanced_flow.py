@@ -212,6 +212,33 @@ def test_legacy_visual_toc_layout_requires_explicit_opt_in_and_no_page_text_map(
     )
 
 
+def test_llm_outline_expandable_parents_use_fact_based_span_policy() -> None:
+    tree = [
+        {
+            "title": "目录",
+            "node_type": "catalog_group",
+            "nodes": [
+                {"title": "Short", "start_index": 3, "end_index": 6, "nodes": []},
+                {"title": "Medium", "start_index": 7, "end_index": 14, "nodes": []},
+                {"title": "Long", "start_index": 15, "end_index": 31, "nodes": []},
+                {"title": "Has children", "start_index": 32, "end_index": 45, "nodes": [{"title": "Child"}]},
+                {"title": "Appendix", "start_index": 46, "end_index": 60, "nodes": []},
+                {
+                    "title": "Figure catalog",
+                    "start_index": 10,
+                    "end_index": 30,
+                    "is_auxiliary": True,
+                    "nodes": [],
+                },
+            ],
+        }
+    ]
+
+    parents = PageIndexService._llm_outline_expandable_parents(tree, page_count=60)
+
+    assert [node["title"] for node in parents] == ["Medium", "Long"]
+
+
 def test_collect_candidates_falls_back_to_text_tree_for_paged_visible_toc(monkeypatch, tmp_path):
     service = PageIndexService()
     calls = {"text_tree": 0}

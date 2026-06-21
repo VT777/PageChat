@@ -72,7 +72,7 @@ def test_apply_balanced_quality_gate_updates_completeness_for_long_flat_chapter(
             "title": "Chapter 2",
             "level": 1,
             "start_index": 11,
-            "end_index": 24,
+            "end_index": 27,
             "nodes": [],
         }
     ]
@@ -219,27 +219,27 @@ def test_expand_page_outline_uses_llm_snippets_for_catalog_children(monkeypatch)
             "toc_section_kind": "main_toc",
             "catalog_type": "main",
             "start_index": 3,
-            "end_index": 12,
+            "end_index": 20,
             "nodes": [
                 {
                     "title": "Part 1 Market analysis",
                     "structure": "1",
                     "start_index": 3,
-                    "end_index": 8,
+                    "end_index": 10,
                     "nodes": [],
                 },
                 {
                     "title": "Part 2 Execution playbook",
                     "structure": "2",
-                    "start_index": 9,
-                    "end_index": 12,
+                    "start_index": 11,
+                    "end_index": 20,
                     "nodes": [],
                 },
             ],
         }
     ]
     long_page = "A" * 260 + "\nThis tail must not be sent to the LLM snippet expander"
-    page_list = [[f"Page {page} {long_page}"] for page in range(1, 13)]
+    page_list = [[f"Page {page} {long_page}"] for page in range(1, 21)]
     calls = []
 
     async def fake_expand_chapter(chapter_title, start_page, end_page, page_texts, model=None):
@@ -250,7 +250,7 @@ def test_expand_page_outline_uses_llm_snippets_for_catalog_children(monkeypatch)
                 {"title": "Consumer pressure", "level": 2, "page": 4},
                 {"title": "Channel response", "level": 2, "page": 6},
             ]
-        return [{"title": "Operating model", "level": 2, "page": 10}]
+        return [{"title": "Operating model", "level": 2, "page": 12}]
 
     monkeypatch.setattr("pageindex.hierarchical_extractor.expand_chapter", fake_expand_chapter)
     monkeypatch.setattr(
@@ -268,7 +268,7 @@ def test_expand_page_outline_uses_llm_snippets_for_catalog_children(monkeypatch)
                 "allow_child_expansion": True,
                 "route_decision": {"selected_path": "visible_toc_no_pages"},
             },
-            page_count=12,
+            page_count=20,
             toc_source="toc_page_text_rule",
             page_list=page_list,
             model="qwen3.6-flash",
@@ -279,7 +279,10 @@ def test_expand_page_outline_uses_llm_snippets_for_catalog_children(monkeypatch)
     assert len(calls) == 2
     assert tree[0]["nodes"][0]["nodes"][0]["title"] == "Consumer pressure"
     assert tree[0]["nodes"][0]["nodes"][1]["start_index"] == 6
+    assert tree[0]["nodes"][0]["nodes"][0]["end_index"] == 5
+    assert tree[0]["nodes"][0]["nodes"][1]["end_index"] == 10
     assert tree[0]["nodes"][1]["nodes"][0]["title"] == "Operating model"
+    assert tree[0]["nodes"][1]["nodes"][0]["end_index"] == 20
 
 
 def test_llm_outline_child_tree_filters_body_text_leakage():
@@ -338,16 +341,16 @@ def test_llm_outline_child_tree_keeps_one_clean_child_per_physical_page():
     ]
 
 
-def test_llm_outline_expandable_parents_include_short_multi_page_sections():
+def test_llm_outline_expandable_parents_require_fact_based_minimum_span():
     parents = PageIndexService._llm_outline_expandable_parents(
         [
             {"title": "Two-page category", "start_index": 10, "end_index": 11, "nodes": []},
-            {"title": "Single-page case", "start_index": 12, "end_index": 12, "nodes": []},
+            {"title": "Eight-page category", "start_index": 12, "end_index": 19, "nodes": []},
         ],
         page_count=20,
     )
 
-    assert [parent["title"] for parent in parents] == ["Two-page category"]
+    assert [parent["title"] for parent in parents] == ["Eight-page category"]
 
 
 def test_shallow_toc_expansion_ignores_noisy_levels_without_children():
