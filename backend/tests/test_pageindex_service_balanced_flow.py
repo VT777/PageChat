@@ -358,13 +358,22 @@ def test_collect_candidates_adds_content_outline_backup_for_weak_paged_toc(monke
     ]
 
 
-def test_collect_candidates_prefers_rule_extraction_for_standard_paged_visible_toc(monkeypatch, tmp_path):
+def test_collect_candidates_keeps_rule_and_llm_for_standard_paged_visible_toc(monkeypatch, tmp_path):
     service = PageIndexService()
 
-    async def forbidden_extract_toc_text(*_args, **_kwargs):
-        raise AssertionError("standard visible TOC should not call LLM extraction")
+    async def fake_extract_toc_text(*_args, **_kwargs):
+        return {
+            "toc_items": [
+                {"title": "OpenAI product matrix", "page": 4, "physical_index": 4, "level": 1},
+                {"title": "Model capability outlook", "page": 10, "physical_index": 10, "level": 1},
+                {"title": "AGI platform entrance", "page": 18, "physical_index": 18, "level": 1},
+                {"title": "Risk warning", "page": 25, "physical_index": 25, "level": 1},
+            ],
+            "source": "llm_toc_page",
+            "mapped": True,
+        }
 
-    monkeypatch.setattr(service, "_extract_toc_text", forbidden_extract_toc_text)
+    monkeypatch.setattr(service, "_extract_toc_text", fake_extract_toc_text)
 
     page_texts = [
         "Cover",
@@ -426,18 +435,27 @@ def test_collect_candidates_prefers_rule_extraction_for_standard_paged_visible_t
         )
     )
 
-    assert [candidate["source"] for candidate in candidates] == ["toc_page_text_rule"]
+    assert [candidate["source"] for candidate in candidates] == ["toc_page_text_rule", "llm_toc_page"]
     roots = candidates[0]["items"]
     assert [root["title"] for root in roots] == ["目录", "图目录", "表目录"]
 
 
-def test_collect_candidates_prefers_rule_extraction_for_unpaged_visible_toc(monkeypatch, tmp_path):
+def test_collect_candidates_keeps_rule_and_llm_for_unpaged_visible_toc(monkeypatch, tmp_path):
     service = PageIndexService()
 
-    async def forbidden_extract_toc_text(*_args, **_kwargs):
-        raise AssertionError("standard unpaged visible TOC should not call LLM extraction")
+    async def fake_extract_toc_text(*_args, **_kwargs):
+        return {
+            "toc_items": [
+                {"title": "Global AI applications", "physical_index": 3, "level": 1},
+                {"title": "China AI applications", "physical_index": 4, "level": 1},
+                {"title": "Industry chain", "physical_index": 5, "level": 1},
+                {"title": "Risk warning", "physical_index": 6, "level": 1},
+            ],
+            "source": "llm_toc_page",
+            "mapped": True,
+        }
 
-    monkeypatch.setattr(service, "_extract_toc_text", forbidden_extract_toc_text)
+    monkeypatch.setattr(service, "_extract_toc_text", fake_extract_toc_text)
     page_texts = [
         "Cover",
         (
@@ -480,7 +498,7 @@ def test_collect_candidates_prefers_rule_extraction_for_unpaged_visible_toc(monk
         )
     )
 
-    assert [candidate["source"] for candidate in candidates] == ["toc_page_text_rule"]
+    assert [candidate["source"] for candidate in candidates] == ["toc_page_text_rule", "llm_toc_page"]
     assert candidates[0]["evidence"]["semi_frozen"] is True
 
 
@@ -564,8 +582,16 @@ def test_collect_candidates_continues_when_rule_draft_mapping_fails(monkeypatch,
 def test_unified_controller_preserves_child_expansion_state_for_unpaged_rule(monkeypatch, tmp_path):
     service = PageIndexService()
 
-    async def forbidden_llm_toc(*_args, **_kwargs):
-        raise AssertionError("standard unpaged visible TOC should not need LLM extraction")
+    async def fake_llm_toc(*_args, **_kwargs):
+        return {
+            "toc_items": [
+                {"title": "Chapter One", "level": 1, "physical_index": 3},
+                {"title": "Chapter Two", "level": 1, "physical_index": 5},
+                {"title": "Chapter Three", "level": 1, "physical_index": 7},
+            ],
+            "source": "llm_toc_page",
+            "mapped": True,
+        }
 
     def fake_rule_draft(*_args, **_kwargs):
         return {
@@ -597,7 +623,7 @@ def test_unified_controller_preserves_child_expansion_state_for_unpaged_rule(mon
         fake_rule_draft,
     )
     monkeypatch.setattr("pageindex.toc_mapping.map_toc_draft_to_physical", fake_mapper)
-    monkeypatch.setattr(service, "_extract_toc_text", forbidden_llm_toc)
+    monkeypatch.setattr(service, "_extract_toc_text", fake_llm_toc)
     page_texts = [
         "Cover",
         (

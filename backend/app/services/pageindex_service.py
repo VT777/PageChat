@@ -3315,13 +3315,12 @@ Example:
                     float(rule_result.get("confidence") or 0.82),
                     "low",
                 )
-                if len(candidates) > before_count:
-                    return candidates
-                analysis["visible_toc_rule"] = {
-                    "status": "rejected",
-                    "reason": "candidate_not_selectable",
-                    "mapping_report": rule_result.get("mapping_report") or {},
-                }
+                if len(candidates) <= before_count:
+                    analysis["visible_toc_rule"] = {
+                        "status": "rejected",
+                        "reason": "candidate_not_selectable",
+                        "mapping_report": rule_result.get("mapping_report") or {},
+                    }
             elif rule_result:
                 analysis["visible_toc_rule"] = {
                     "status": "rejected",
