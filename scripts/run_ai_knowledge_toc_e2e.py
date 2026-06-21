@@ -23,14 +23,20 @@ if str(BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(BACKEND_DIR))
 
 
-def _load_fixture() -> dict[str, Any]:
-    if not FIXTURE_PATH.exists():
+def _load_fixture(fixture_path: str | Path = FIXTURE_PATH) -> dict[str, Any]:
+    path = Path(fixture_path)
+    if not path.exists():
         return {"input_dir": "", "documents": []}
-    return json.loads(FIXTURE_PATH.read_text(encoding="utf-8"))
+    return json.loads(path.read_text(encoding="utf-8"))
 
 
-def _iter_expected_docs(input_dir: Path, selected_file: str | None) -> list[dict[str, Any]]:
-    fixture = _load_fixture()
+def _iter_expected_docs(
+    input_dir: Path,
+    selected_file: str | None,
+    *,
+    fixture: dict[str, Any] | None = None,
+) -> list[dict[str, Any]]:
+    fixture = fixture if isinstance(fixture, dict) else _load_fixture()
     documents = [doc for doc in fixture.get("documents") or [] if isinstance(doc, dict)]
     if selected_file:
         matched = [doc for doc in documents if doc.get("file") == selected_file]
@@ -69,6 +75,23 @@ def _walk(nodes: list[dict[str, Any]]):
 
 def _count_nodes(nodes: list[dict[str, Any]]) -> int:
     return sum(1 for _ in _walk(nodes))
+
+
+def _max_depth(nodes: list[dict[str, Any]]) -> int:
+    if not nodes:
+        return 0
+    max_depth = 0
+
+    def visit(items: list[dict[str, Any]], depth: int) -> None:
+        nonlocal max_depth
+        for node in items or []:
+            if not isinstance(node, dict):
+                continue
+            max_depth = max(max_depth, depth)
+            visit(_children(node), depth + 1)
+
+    visit(nodes, 1)
+    return max_depth
 
 
 def _normal_title(value: str) -> str:
@@ -210,6 +233,16 @@ def _main_catalog_title_candidates(nodes: list[dict[str, Any]]) -> list[str]:
     return titles
 
 
+def _effective_root_nodes(nodes: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    if len(nodes or []) != 1:
+        return nodes or []
+    root = nodes[0]
+    title_key = _normal_title(str(root.get("title") or ""))
+    if title_key in {"目录", "目次", "contents", "tableofcontents"} and _children(root):
+        return _children(root)
+    return nodes or []
+
+
 def _known_page_checks(nodes: list[dict[str, Any]], known_pages: dict[str, Any]) -> dict[str, Any]:
     checks: dict[str, Any] = {}
     for title, expected_page in (known_pages or {}).items():
@@ -222,6 +255,53 @@ def _known_page_checks(nodes: list[dict[str, Any]], known_pages: dict[str, Any])
             "actual": actual,
             "ok": actual == expected_page,
         }
+    return checks
+
+
+def _minimum_shape_check(nodes: list[dict[str, Any]], acceptance_spec: dict[str, Any]) -> dict[str, Any]:
+    effective_roots = _effective_root_nodes(nodes)
+    root_count = len(effective_roots)
+    node_count = _count_nodes(nodes)
+    max_depth = _max_depth(nodes)
+    checks = {
+        "root_count": root_count,
+        "node_count": node_count,
+        "max_depth": max_depth,
+        "min_root_count": acceptance_spec.get("min_root_count"),
+        "min_node_count": acceptance_spec.get("min_node_count"),
+        "min_depth": acceptance_spec.get("min_depth"),
+        "ok": True,
+    }
+    if acceptance_spec.get("min_root_count") is not None:
+        checks["ok"] = checks["ok"] and root_count >= int(acceptance_spec.get("min_root_count") or 0)
+    if acceptance_spec.get("min_node_count") is not None:
+        checks["ok"] = checks["ok"] and node_count >= int(acceptance_spec.get("min_node_count") or 0)
+    if acceptance_spec.get("min_depth") is not None:
+        checks["ok"] = checks["ok"] and max_depth >= int(acceptance_spec.get("min_depth") or 0)
+    return checks
+
+
+def _required_pages_checks(nodes: list[dict[str, Any]], required_pages: dict[str, Any]) -> dict[str, Any]:
+    return _known_page_checks(nodes, required_pages or {})
+
+
+def _forbidden_pattern_checks(nodes: list[dict[str, Any]], forbidden: dict[str, Any]) -> dict[str, Any]:
+    checks: dict[str, Any] = {"ok": True, "evaluated": []}
+    if forbidden.get("no_generic_single_node"):
+        node_count = _count_nodes(nodes)
+        title = str(nodes[0].get("title") or "") if len(nodes or []) == 1 else ""
+        generic_titles = {
+            "documentcontent",
+            "full document",
+            "fulldocument",
+            "content",
+            "目录",
+            "正文",
+        }
+        generic_single = node_count <= 1 and (_normal_title(title) in generic_titles or not title.strip())
+        checks["no_generic_single_node"] = not generic_single
+        checks["evaluated"].append("no_generic_single_node")
+        checks["ok"] = checks["ok"] and not generic_single
     return checks
 
 
@@ -241,13 +321,29 @@ def build_report_from_index_payload(
     quality_report = dict(index_payload.get("quality_report") or {})
     diagnostics = dict(index_payload.get("diagnostics") or {})
     top_titles = [str(node.get("title") or "") for node in structure if isinstance(node, dict)]
+    effective_root_titles = [
+        str(node.get("title") or "")
+        for node in _effective_root_nodes(structure)
+        if isinstance(node, dict)
+    ]
     section_kinds = _section_kinds(structure)
     known_pages = _known_page_checks(structure, expected.get("known_pages") or {})
+    acceptance_spec = dict(expected.get("acceptance") or {})
+    required_pages = _required_pages_checks(structure, acceptance_spec.get("required_pages") or {})
     required_sections = list(expected.get("must_have_sections") or [])
     missing_sections = [kind for kind in required_sections if kind not in section_kinds]
     top_level_check = _top_level_matches(
         _main_catalog_title_candidates(structure),
         list(expected.get("expected_top_level") or []),
+    )
+    required_root_check = _top_level_matches(
+        effective_root_titles,
+        list(acceptance_spec.get("required_root_titles") or []),
+    )
+    minimum_shape = _minimum_shape_check(structure, acceptance_spec)
+    forbidden_patterns = _forbidden_pattern_checks(
+        structure,
+        dict(acceptance_spec.get("forbidden_patterns") or {}),
     )
     route_ok = _route_matches_expected(route, expected)
     quality_status = str(quality_report.get("status") or "")
@@ -264,6 +360,10 @@ def build_report_from_index_payload(
         "required_sections": not missing_sections,
         "top_level": bool(top_level_check.get("ok")),
         "known_pages": known_pages_ok,
+        "minimum_shape": bool(minimum_shape.get("ok")),
+        "required_root_titles": bool(required_root_check.get("ok")),
+        "required_pages": all(item.get("ok") for item in required_pages.values()),
+        "forbidden_patterns": bool(forbidden_patterns.get("ok")),
     }
     acceptance["ok"] = all(bool(value) for value in acceptance.values())
 
@@ -288,11 +388,15 @@ def build_report_from_index_payload(
         },
         "toc": {
             "root_count": len(structure),
+            "effective_root_count": len(_effective_root_nodes(structure)),
             "node_count": _count_nodes(structure),
+            "max_depth": _max_depth(structure),
             "top_level_titles": top_titles,
+            "effective_root_titles": effective_root_titles,
             "section_kinds": section_kinds,
             "missing_sections": missing_sections,
             "top_level_check": top_level_check,
+            "required_root_check": required_root_check,
         },
         "quality": {
             "status": quality_status,
@@ -301,6 +405,9 @@ def build_report_from_index_payload(
         },
         "key_checks": {
             "known_pages": known_pages,
+            "required_pages": required_pages,
+            "minimum_shape": minimum_shape,
+            "forbidden_patterns": forbidden_patterns,
             "toc_page_detection": diagnostics.get("toc_page_detection") or {},
             "mapping": diagnostics.get("toc_content_mapping") or {},
         },
@@ -392,9 +499,10 @@ async def run_e2e(
     user_id: str | None = None,
     mode: str = "smart",
     stop_on_fail: bool = False,
+    fixture: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     reports: list[dict[str, Any]] = []
-    for expected in _iter_expected_docs(input_dir, selected_file):
+    for expected in _iter_expected_docs(input_dir, selected_file, fixture=fixture):
         pdf_path = input_dir / str(expected.get("file") or "")
         if not pdf_path.exists():
             report = {
@@ -430,10 +538,9 @@ async def run_e2e(
 
 
 def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
-    fixture = _load_fixture()
-    default_input = fixture.get("input_dir") or r"D:\chrome_download\rag-skill-main\rag-skill-main\knowledge\AI Knowledge"
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--input", default=default_input, help="Directory containing AI Knowledge PDFs")
+    parser.add_argument("--fixture", default=str(FIXTURE_PATH), help="Expected route/reference fixture JSON")
+    parser.add_argument("--input", help="Directory containing PDFs. Defaults to fixture input_dir")
     parser.add_argument("--file", help="Run E2E for one PDF file name")
     parser.add_argument("--all", action="store_true", help="Explicitly run every fixture PDF")
     parser.add_argument("--output", default=str(ROOT / "artifacts" / "toc_e2e"), help="Directory for report JSON files")
@@ -445,7 +552,9 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 def main(argv: list[str] | None = None) -> int:
     args = _parse_args(argv)
-    input_dir = Path(args.input)
+    fixture = _load_fixture(args.fixture)
+    default_input = fixture.get("input_dir") or r"D:\chrome_download\rag-skill-main\rag-skill-main\knowledge\AI Knowledge"
+    input_dir = Path(args.input or default_input)
     if not input_dir.exists():
         print(f"[TOC-E2E] input directory does not exist: {input_dir}", file=sys.stderr)
         return 2
@@ -457,6 +566,7 @@ def main(argv: list[str] | None = None) -> int:
             user_id=args.user_id,
             mode=args.mode,
             stop_on_fail=args.stop_on_fail,
+            fixture=fixture,
         )
     )
     print(json.dumps(result["summary"], ensure_ascii=False))

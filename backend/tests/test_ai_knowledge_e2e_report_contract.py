@@ -25,6 +25,8 @@ def test_e2e_script_parses_single_file_and_stop_on_fail() -> None:
 
     args = module._parse_args(
         [
+            "--fixture",
+            r"D:\fixtures\official.json",
             "--input",
             r"D:\docs",
             "--file",
@@ -35,10 +37,74 @@ def test_e2e_script_parses_single_file_and_stop_on_fail() -> None:
         ]
     )
 
+    assert args.fixture == r"D:\fixtures\official.json"
     assert args.input == r"D:\docs"
     assert args.file == "sample.pdf"
     assert args.output == "artifacts/toc_e2e"
     assert args.stop_on_fail is True
+
+
+def test_iter_expected_docs_can_use_official_fixture() -> None:
+    module = _load_e2e_module()
+    fixture = {
+        "documents": [
+            {"id": "P01", "file": "annual.pdf", "expected_route": {"selected_path": "embedded_toc"}},
+            {"id": "P02", "file": "paper.pdf", "expected_route": {"selected_path": "content_outline"}},
+        ]
+    }
+
+    docs = module._iter_expected_docs(Path(r"D:\docs"), None, fixture=fixture)
+
+    assert [doc["id"] for doc in docs] == ["P01", "P02"]
+
+
+def test_build_report_applies_official_acceptance_constraints(tmp_path: Path) -> None:
+    module = _load_e2e_module()
+    expected = {
+        "id": "P04",
+        "file": "earthmover.pdf",
+        "page_count": 12,
+        "expected_route": {"content_type": "text", "selected_path": "content_outline"},
+        "acceptance": {
+            "must_succeed": True,
+            "min_root_count": 3,
+            "min_node_count": 4,
+            "min_depth": 2,
+            "required_root_titles": ["INTRODUCTION", "CONCLUSION"],
+            "required_pages": {"INTRODUCTION": 1, "CONCLUSION": 12},
+            "forbidden_patterns": {"no_generic_single_node": True},
+        },
+    }
+    index_payload = {
+        "doc_name": "earthmover.pdf",
+        "page_count": 12,
+        "route_decision": {"content_type": "text", "selected_path": "content_outline"},
+        "structure": [
+            {"title": "ABSTRACT", "start_index": 1, "end_index": 1, "nodes": []},
+            {
+                "title": "INTRODUCTION",
+                "start_index": 1,
+                "end_index": 2,
+                "nodes": [{"title": "Problem", "start_index": 2, "end_index": 2, "nodes": []}],
+            },
+            {"title": "CONCLUSION", "start_index": 12, "end_index": 12, "nodes": []},
+        ],
+        "quality_report": {"status": "completed", "hard_fail_reasons": []},
+    }
+
+    report = module.build_report_from_index_payload(
+        file_path=tmp_path / "earthmover.pdf",
+        doc_id="e2e-p04",
+        index_payload=index_payload,
+        expected=expected,
+        elapsed_ms=100,
+    )
+
+    assert report["acceptance"]["minimum_shape"] is True
+    assert report["acceptance"]["required_root_titles"] is True
+    assert report["acceptance"]["required_pages"] is True
+    assert report["acceptance"]["forbidden_patterns"] is True
+    assert report["acceptance"]["ok"] is True
 
 
 def test_build_report_from_index_payload_matches_expected_contract(tmp_path: Path) -> None:
