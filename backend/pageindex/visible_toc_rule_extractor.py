@@ -97,7 +97,8 @@ def extract_visible_toc_with_pages(
     if not sections:
         return None
 
-    roots = [_section_to_root(section) for section in sections]
+    page_count = _positive_int(mapping_report.get("page_count"))
+    roots = [_section_to_root(section, page_count=page_count) for section in sections]
     allow_child_expansion = any(
         str(item.get("catalog_type") or CATALOG_MAIN) == CATALOG_MAIN
         and int(item.get("level") or 1) > 1
@@ -695,15 +696,21 @@ def _group_items_by_catalog(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]
     return sections
 
 
-def _section_to_root(section: Dict[str, Any]) -> Dict[str, Any]:
+def _section_to_root(section: Dict[str, Any], *, page_count: Optional[int] = None) -> Dict[str, Any]:
     kind = str(section.get("kind") or "main_toc")
     title = str(section.get("title") or catalog_group_title(SECTION_TO_CATALOG.get(kind, CATALOG_MAIN)))
     catalog = SECTION_TO_CATALOG.get(kind, CATALOG_MAIN)
     children = deepcopy(section.get("items") or [])
-    start_pages = [_positive_int(child.get("physical_index")) for child in _flatten(children)]
+    if page_count:
+        from pageindex.toc_mapping import derive_toc_ranges
+
+        children = derive_toc_ranges(children, page_count=page_count)
+    start_pages = [_positive_int(child.get("start_index")) or _positive_int(child.get("physical_index")) for child in _flatten(children)]
     start_pages = [page for page in start_pages if page is not None]
+    end_pages = [_positive_int(child.get("end_index")) for child in _flatten(children)]
+    end_pages = [page for page in end_pages if page is not None]
     start = min(start_pages) if start_pages else None
-    end = max(start_pages) if start_pages else start
+    end = max(end_pages or start_pages) if (end_pages or start_pages) else start
     root: Dict[str, Any] = {
         "title": title,
         "structure": catalog,

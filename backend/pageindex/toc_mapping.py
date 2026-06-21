@@ -77,8 +77,75 @@ def map_toc_draft_to_physical(
             }
         )
 
-    report = _merge_section_reports(section_reports, mapped_all, selected_path=selected_path)
+    report = _merge_section_reports(
+        section_reports,
+        mapped_all,
+        selected_path=selected_path,
+        page_count=page_count,
+    )
     return mapped_all, report
+
+
+def derive_toc_ranges(
+    nodes: List[Dict[str, Any]],
+    *,
+    page_count: int,
+    parent_start: Optional[int] = None,
+    parent_end: Optional[int] = None,
+    copy_nodes: bool = True,
+) -> List[Dict[str, Any]]:
+    """Derive inclusive physical page ranges from mapped starts.
+
+    This is deterministic S5 logic: callers may provide mapped ``start_index``
+    or ``physical_index`` values, and this function owns final ``end_index``
+    derivation. Auxiliary figure/table entries remain point-like because they
+    do not represent body text spans.
+    """
+    derived = deepcopy(nodes) if copy_nodes else nodes
+    if not derived:
+        return derived
+
+    max_page = max(1, int(page_count or 1))
+    lower = _clamp_page(parent_start or 1, max_page)
+    upper = _clamp_page(parent_end or max_page, max_page)
+    if upper < lower:
+        upper = lower
+
+    if all(_is_catalog_container(node) for node in derived):
+        for node in derived:
+            _derive_catalog_container_range(node, page_count=max_page, lower=lower, upper=upper)
+        return derived
+
+    starts: List[int] = []
+    for node in derived:
+        start = _node_start_page(node) or lower
+        start = max(lower, min(_clamp_page(start, max_page), upper))
+        node["start_index"] = start
+        if not _positive_int(node.get("physical_index")):
+            node["physical_index"] = start
+        starts.append(start)
+
+    for index, node in enumerate(derived):
+        start = int(node["start_index"])
+        if _is_auxiliary_catalog_item(node):
+            end = start
+        elif index < len(derived) - 1:
+            next_start = starts[index + 1]
+            end = max(start, min(next_start - 1, upper))
+        else:
+            end = max(start, upper)
+        node["end_index"] = end
+
+        children = node.get("nodes") or []
+        if children:
+            node["nodes"] = derive_toc_ranges(
+                children,
+                page_count=max_page,
+                parent_start=start,
+                parent_end=end,
+                copy_nodes=False,
+            )
+    return derived
 
 
 def _draft_sections(draft: Dict[str, Any]) -> List[Dict[str, Any]]:
@@ -427,6 +494,7 @@ def _merge_section_reports(
     mapped_items: List[Dict[str, Any]],
     *,
     selected_path: str,
+    page_count: int,
 ) -> Dict[str, Any]:
     statuses = [str(report.get("status") or "") for report in section_reports]
     reasons: List[str] = []
@@ -438,6 +506,7 @@ def _merge_section_reports(
         "status": "ok" if statuses and all(status == "ok" for status in statuses) else "failed",
         "strategy": strategy,
         "selected_path": selected_path,
+        "page_count": page_count,
         "sections": section_reports,
         "section_kinds": [report["kind"] for report in section_reports],
         "item_count": len(mapped_items),
@@ -506,6 +575,93 @@ def _main_strong_anchor_count(section_reports: List[Dict[str, Any]]) -> int:
             or 0
         )
     return total
+
+
+def _derive_catalog_container_range(
+    node: Dict[str, Any],
+    *,
+    page_count: int,
+    lower: int,
+    upper: int,
+) -> None:
+    children = node.get("nodes") or []
+    if children:
+        node["nodes"] = derive_toc_ranges(
+            children,
+            page_count=page_count,
+            parent_start=lower,
+            parent_end=upper,
+            copy_nodes=False,
+        )
+        child_starts = [
+            _positive_int(child.get("start_index"))
+            for child in node["nodes"]
+            if isinstance(child, dict)
+        ]
+        child_ends = [
+            _positive_int(child.get("end_index"))
+            for child in node["nodes"]
+            if isinstance(child, dict)
+        ]
+        child_starts = [page for page in child_starts if page is not None]
+        child_ends = [page for page in child_ends if page is not None]
+        if child_starts:
+            node["start_index"] = min(child_starts)
+            node["physical_index"] = node.get("physical_index") or node["start_index"]
+        else:
+            start = max(lower, min(_clamp_page(_node_start_page(node) or lower, page_count), upper))
+            node["start_index"] = start
+            node["physical_index"] = node.get("physical_index") or start
+        node["end_index"] = max(child_ends) if child_ends else node["start_index"]
+        return
+
+    start = max(lower, min(_clamp_page(_node_start_page(node) or lower, page_count), upper))
+    node["start_index"] = start
+    node["physical_index"] = node.get("physical_index") or start
+    node["end_index"] = max(start, upper)
+
+
+def _node_start_page(node: Dict[str, Any]) -> Optional[int]:
+    return (
+        _positive_int(node.get("start_index"))
+        or _positive_int(node.get("physical_index"))
+        or _positive_int(node.get("page"))
+    )
+
+
+def _is_catalog_container(node: Dict[str, Any]) -> bool:
+    if node.get("page_type") == "catalog_group" or node.get("node_type") == "catalog_group":
+        return True
+    title = re.sub(r"\s+", "", str(node.get("title") or "")).casefold()
+    return title in {
+        "目录",
+        "目次",
+        "contents",
+        "tableofcontents",
+        "图目录",
+        "插图目录",
+        "listoffigures",
+        "figurecatalog",
+        "表目录",
+        "表格目录",
+        "listoftables",
+        "tablecatalog",
+    }
+
+
+def _is_auxiliary_catalog_item(node: Dict[str, Any]) -> bool:
+    if bool(node.get("is_auxiliary")):
+        return True
+    if node.get("node_type") == "auxiliary_catalog_item":
+        return True
+    catalog = str(node.get("catalog_type") or "").strip().lower()
+    return catalog in {CATALOG_FIGURE, CATALOG_TABLE}
+
+
+def _clamp_page(value: Any, page_count: int) -> int:
+    parsed = _positive_int(value) or 1
+    upper = max(1, int(page_count or 1))
+    return max(1, min(int(parsed), upper))
 
 
 def _pages_monotonic(pages: List[int]) -> bool:

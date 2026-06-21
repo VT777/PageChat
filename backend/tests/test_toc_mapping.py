@@ -3,7 +3,7 @@ import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from pageindex.toc_mapping import map_toc_draft_to_physical
+from pageindex.toc_mapping import derive_toc_ranges, map_toc_draft_to_physical
 
 
 def test_map_toc_draft_keeps_physical_page_labels_when_titles_match() -> None:
@@ -334,3 +334,77 @@ def test_mapping_report_preserves_main_title_match_when_auxiliary_catalogs_are_w
     assert report["title_match_rate"] < 0.45
     assert report["main_title_match_rate"] == 1.0
     assert report["main_sample_checked_count"] == 2
+
+
+def test_derive_toc_ranges_recursively_uses_sibling_boundaries() -> None:
+    tree = [
+        {
+            "title": "Chapter 1",
+            "start_index": 3,
+            "nodes": [
+                {"title": "1.1", "start_index": 4},
+                {"title": "1.2", "start_index": 7},
+            ],
+        },
+        {"title": "Chapter 2", "start_index": 10},
+    ]
+
+    derived = derive_toc_ranges(tree, page_count=20)
+
+    assert derived[0]["end_index"] == 9
+    assert derived[1]["end_index"] == 20
+    assert [child["end_index"] for child in derived[0]["nodes"]] == [6, 9]
+
+
+def test_derive_toc_ranges_clamps_invalid_child_ranges_to_parent() -> None:
+    tree = [
+        {
+            "title": "Chapter 1",
+            "start_index": 3,
+            "end_index": 8,
+            "nodes": [
+                {"title": "Before parent", "start_index": 1, "end_index": 99},
+                {"title": "After parent", "start_index": 20},
+            ],
+        }
+    ]
+
+    derived = derive_toc_ranges(tree, page_count=10)
+
+    assert derived[0]["start_index"] == 3
+    assert derived[0]["end_index"] == 10
+    assert derived[0]["nodes"][0]["start_index"] == 3
+    assert derived[0]["nodes"][0]["end_index"] == 9
+    assert derived[0]["nodes"][1]["start_index"] == 10
+    assert derived[0]["nodes"][1]["end_index"] == 10
+
+
+def test_derive_toc_ranges_keeps_catalog_roots_independent() -> None:
+    tree = [
+        {
+            "title": "目录",
+            "node_type": "catalog_group",
+            "nodes": [
+                {"title": "Chapter 1", "start_index": 4},
+                {"title": "Chapter 2", "start_index": 10},
+            ],
+        },
+        {
+            "title": "图目录",
+            "node_type": "catalog_group",
+            "is_auxiliary": True,
+            "nodes": [
+                {"title": "Figure 1", "start_index": 4, "node_type": "auxiliary_catalog_item"},
+                {"title": "Figure 2", "start_index": 6, "node_type": "auxiliary_catalog_item"},
+            ],
+        },
+    ]
+
+    derived = derive_toc_ranges(tree, page_count=20)
+
+    assert derived[0]["start_index"] == 4
+    assert derived[0]["end_index"] == 20
+    assert [child["end_index"] for child in derived[0]["nodes"]] == [9, 20]
+    assert derived[1]["start_index"] == 4
+    assert derived[1]["end_index"] == 6
+    assert [child["end_index"] for child in derived[1]["nodes"]] == [4, 6]
