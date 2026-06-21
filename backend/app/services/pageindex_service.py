@@ -2308,8 +2308,26 @@ Example:
                     extraction = normalize_llm_toc_payload(result)
                     if not extraction.items:
                         return None
+                    draft_items: List[Dict[str, Any]] = []
+                    for item in extraction.items:
+                        draft_item = {
+                            "title": item.get("title"),
+                            "level": item.get("level") or 1,
+                            "section_kind": "main_toc",
+                            "raw_page_label": item.get("page"),
+                        }
+                        if item.get("structure"):
+                            draft_item["structure"] = item.get("structure")
+                        draft_items.append(draft_item)
                     return {
-                        "toc_items": [dict(item) for item in extraction.items],
+                        "toc_draft": {
+                            "type": "toc_draft",
+                            "source": "llm_toc_page",
+                            "section_kind": "main_toc",
+                            "toc_pages": list(toc_pages or []),
+                            "has_page_numbers": extraction.has_printed_page_numbers,
+                            "items": draft_items,
+                        },
                         "source": "llm_toc_page",
                         "has_printed_page_numbers": extraction.has_printed_page_numbers,
                         "llm_normalization": extraction.diagnostics,
@@ -2388,12 +2406,17 @@ Example:
             fallback_result = await self._extract_toc_text(
                 analysis, toc_pages, page_count, model
             )
-            fallback_result = self._normalize_and_map_fallback_toc(
+            fallback_result = self._map_toc_draft_result_through_s5(
                 fallback_result,
+                page_texts=self._analysis_page_texts(analysis),
                 page_count=page_count,
                 toc_pages=toc_pages,
-                ocr_text_map=ocr_text_map,
-                dividers=dividers,
+                selected_path=(
+                    "visible_toc_with_pages"
+                    if bool((fallback_result or {}).get("has_printed_page_numbers"))
+                    else "visible_toc_no_pages"
+                ),
+                analysis=analysis,
             )
             if fallback_result and fallback_result.get("toc_items"):
                 toc_items = fallback_result["toc_items"]
@@ -2500,6 +2523,99 @@ Example:
         fallback_result["mapped"] = True
         fallback_result["mapping_source"] = "page_mapping_verifier"
         return fallback_result
+
+    @staticmethod
+    def _map_toc_draft_result_through_s5(
+        result: Optional[Dict[str, Any]],
+        *,
+        page_texts: List[str],
+        page_count: int,
+        toc_pages: List[int],
+        selected_path: str,
+        analysis: Optional[Dict[str, Any]] = None,
+    ) -> Optional[Dict[str, Any]]:
+        if not result:
+            return None
+
+        draft = result.get("toc_draft")
+        if not isinstance(draft, dict) and result.get("type") == "toc_draft":
+            draft = result
+        if not isinstance(draft, dict):
+            items = result.get("toc_items") or result.get("items") or []
+            if not isinstance(items, list) or not items:
+                return result
+            section_kind = str(result.get("section_kind") or "main_toc")
+            draft = {
+                "type": "toc_draft",
+                "source": result.get("source") or "toc_candidate",
+                "section_kind": section_kind,
+                "toc_pages": list(toc_pages or []),
+                "items": [
+                    {
+                        "title": item.get("title"),
+                        "level": item.get("level") or 1,
+                        "section_kind": item.get("section_kind") or section_kind,
+                        "raw_page_label": (
+                            item.get("raw_page_label")
+                            if "raw_page_label" in item
+                            else item.get("page") or item.get("logical_page") or item.get("physical_index")
+                        ),
+                        "structure": item.get("structure"),
+                        "source_page": item.get("source_page"),
+                    }
+                    for item in items
+                    if isinstance(item, dict) and str(item.get("title") or "").strip()
+                ],
+            }
+
+        from pageindex.toc_mapping import map_toc_draft_to_physical
+
+        mapped_items, mapping_report = map_toc_draft_to_physical(
+            draft,
+            page_texts=page_texts,
+            page_count=page_count,
+            toc_pages=toc_pages,
+            selected_path=selected_path,
+        )
+        mapping_report = dict(mapping_report or {})
+        mapping_report["source"] = "unified_s5"
+        if analysis is not None:
+            analysis["toc_content_mapping"] = mapping_report
+            analysis.setdefault("toc_judge", {})
+            analysis["toc_judge"]["content_mapping"] = mapping_report
+
+        if mapping_report.get("status") != "ok" or not mapped_items:
+            mapped_result = dict(result)
+            mapped_result["mapping_report"] = mapping_report
+            mapped_result["mapped"] = False
+            return mapped_result
+
+        source = str(result.get("source") or draft.get("source") or "toc_candidate")
+        if source == "toc_page_text_rule":
+            from pageindex.visible_toc_rule_extractor import build_visible_toc_result_from_mapped_items
+
+            mapped_result = build_visible_toc_result_from_mapped_items(
+                mapped_items,
+                mapping_report=mapping_report,
+                raw_items=list(draft.get("items") or []),
+                source=source,
+            )
+            if not mapped_result:
+                return None
+        else:
+            mapped_result = {
+                **result,
+                "items": mapped_items,
+                "toc_items": mapped_items,
+                "source": source,
+                "mapped": True,
+                "prevalidated": True,
+                "top_level_frozen": True,
+                "allow_child_expansion": bool(result.get("allow_child_expansion", True)),
+            }
+        mapped_result["mapping_report"] = mapping_report
+        mapped_result["mapping_source"] = "unified_s5"
+        return mapped_result
 
     @staticmethod
     def _sync_toc_context(
@@ -3137,29 +3253,46 @@ Example:
         ):
             try:
                 from pageindex.visible_toc_rule_extractor import (
-                    extract_visible_toc_no_pages,
-                    extract_visible_toc_with_pages,
+                    extract_visible_toc_no_pages_draft,
+                    extract_visible_toc_with_pages_draft,
                 )
 
                 if selected_path == "visible_toc_with_pages":
-                    rule_result = extract_visible_toc_with_pages(
+                    rule_draft = extract_visible_toc_with_pages_draft(
                         page_texts,
                         toc_pages=toc_pages,
                         page_count=page_count,
                     )
                 else:
-                    rule_result = extract_visible_toc_no_pages(
+                    rule_draft = extract_visible_toc_no_pages_draft(
                         page_texts,
                         toc_pages=toc_pages,
                         page_count=page_count,
                     )
+                rule_result = self._map_toc_draft_result_through_s5(
+                    {
+                        "toc_draft": rule_draft,
+                        "source": "toc_page_text_rule",
+                        "confidence": 0.82,
+                    }
+                    if rule_draft
+                    else None,
+                    page_texts=page_texts,
+                    page_count=page_count,
+                    toc_pages=toc_pages,
+                    selected_path=selected_path,
+                    analysis=analysis,
+                )
             except Exception as exc:
                 print(
                     "[TOC-CANDIDATE] provider=toc_page_text_rule "
                     f"action=extract status=error error_type={type(exc).__name__}"
                 )
                 rule_result = None
-            if rule_result:
+            if rule_result and (rule_result.get("toc_items") or rule_result.get("items")):
+                if selected_path == "visible_toc_no_pages":
+                    rule_result["semi_frozen"] = True
+                    rule_result["allow_child_expansion"] = True
                 analysis["visible_toc_rule"] = {
                     "status": "ok",
                     "item_count": sum(
@@ -3174,6 +3307,7 @@ Example:
                     ],
                     "mapping_report": rule_result.get("mapping_report") or {},
                 }
+                before_count = len(candidates)
                 add_candidate(
                     rule_result,
                     "toc_page_text_rule_001",
@@ -3181,20 +3315,38 @@ Example:
                     float(rule_result.get("confidence") or 0.82),
                     "low",
                 )
-                return candidates
-            analysis["visible_toc_rule"] = {
-                "status": "rejected",
-                "reason": "not_high_confidence_standard_toc",
-            }
+                if len(candidates) > before_count:
+                    return candidates
+                analysis["visible_toc_rule"] = {
+                    "status": "rejected",
+                    "reason": "candidate_not_selectable",
+                    "mapping_report": rule_result.get("mapping_report") or {},
+                }
+            elif rule_result:
+                analysis["visible_toc_rule"] = {
+                    "status": "rejected",
+                    "reason": "s5_mapping_failed",
+                    "mapping_report": rule_result.get("mapping_report") or {},
+                }
+            else:
+                analysis["visible_toc_rule"] = {
+                    "status": "rejected",
+                    "reason": "not_high_confidence_standard_toc",
+                }
 
         if toc_pages and has_page_text_map:
             llm_toc_result = await self._extract_toc_text(analysis, toc_pages, page_count, model)
-            llm_toc_result = self._normalize_and_map_fallback_toc(
+            llm_toc_result = self._map_toc_draft_result_through_s5(
                 llm_toc_result,
+                page_texts=page_texts,
                 page_count=page_count,
                 toc_pages=toc_pages,
-                ocr_text_map=ocr_text_map,
-                dividers=dividers,
+                selected_path=(
+                    "visible_toc_with_pages"
+                    if bool((llm_toc_result or {}).get("has_printed_page_numbers"))
+                    else "visible_toc_no_pages"
+                ),
+                analysis=analysis,
             )
             if llm_toc_result:
                 llm_toc_result.setdefault("source", "llm_toc_page")
@@ -4375,16 +4527,12 @@ Example:
     def _is_main_catalog_container_node(node: Dict[str, Any]) -> bool:
         if not isinstance(node, dict):
             return False
+        if str(node.get("node_type") or "") == "catalog_group":
+            return True
+        if str(node.get("page_type") or "") == "catalog_group":
+            return True
         if node.get("is_auxiliary"):
             return False
-        kind = str(
-            node.get("toc_section_kind")
-            or node.get("section_kind")
-            or node.get("kind")
-            or ""
-        ).strip()
-        if kind == "main_toc":
-            return True
         catalog_type = str(node.get("catalog_type") or "").strip().lower()
         if catalog_type in {"figure", "table", "figure_toc", "table_toc"}:
             return False
@@ -5126,6 +5274,22 @@ Example:
         if not toc_items or page_count <= 0:
             return False
         if not PageIndexService._page_list_has_text_evidence(page_list):
+            return False
+
+        mapping_report = analysis.get("toc_content_mapping") if isinstance(analysis, dict) else {}
+        if (
+            isinstance(mapping_report, dict)
+            and mapping_report.get("source") == "unified_s5"
+            and str(mapping_report.get("status") or "").lower() == "ok"
+            and all(
+                isinstance(item, dict)
+                and (
+                    PageIndexService._coerce_positive_int(item.get("physical_index")) is not None
+                    or PageIndexService._coerce_positive_int(item.get("start_index")) is not None
+                )
+                for item in toc_items
+            )
+        ):
             return False
 
         source = str(toc_source or "").strip()

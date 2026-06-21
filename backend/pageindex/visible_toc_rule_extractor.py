@@ -118,6 +118,77 @@ def extract_visible_toc_with_pages(
     }
 
 
+def extract_visible_toc_with_pages_draft(
+    page_texts: List[str],
+    *,
+    toc_pages: List[int],
+    page_count: int,
+    min_items: int = 3,
+) -> Optional[Dict[str, Any]]:
+    """Extract standard paged visible TOC lines as S4 draft evidence."""
+    raw_items = _parse_toc_pages(page_texts, toc_pages)
+    if len(raw_items) < min_items:
+        return None
+    if not _looks_like_real_printed_pages(raw_items, page_count=page_count, toc_pages=toc_pages):
+        return None
+    return _raw_items_to_toc_draft(
+        raw_items,
+        toc_pages=toc_pages,
+        has_page_numbers=True,
+    )
+
+
+def extract_visible_toc_no_pages_draft(
+    page_texts: List[str],
+    *,
+    toc_pages: List[int],
+    page_count: int,
+    min_items: int = 3,
+) -> Optional[Dict[str, Any]]:
+    """Extract standard unpaged visible TOC lines as S4 draft evidence."""
+    raw_items = _parse_unpaged_toc_pages(page_texts, toc_pages)
+    if len(raw_items) < min_items:
+        return None
+    return _raw_items_to_toc_draft(
+        raw_items,
+        toc_pages=toc_pages,
+        has_page_numbers=False,
+    )
+
+
+def build_visible_toc_result_from_mapped_items(
+    mapped_items: List[Dict[str, Any]],
+    *,
+    mapping_report: Dict[str, Any],
+    raw_items: Optional[List[Dict[str, Any]]] = None,
+    source: str = "toc_page_text_rule",
+) -> Optional[Dict[str, Any]]:
+    """Build the legacy candidate shape after S5 has mapped draft items."""
+    sections = _group_items_by_catalog(mapped_items)
+    if not sections:
+        return None
+
+    roots = [_section_to_root(section) for section in sections]
+    allow_child_expansion = any(
+        str(item.get("catalog_type") or CATALOG_MAIN) == CATALOG_MAIN
+        and int(item.get("level") or 1) > 1
+        for item in mapped_items
+    )
+    return {
+        "items": roots,
+        "toc_items": roots,
+        "toc_sections": sections,
+        "source": source,
+        "confidence": _confidence(raw_items or mapped_items, mapping_report),
+        "extraction_method": "rule",
+        "mapped": True,
+        "prevalidated": True,
+        "top_level_frozen": True,
+        "allow_child_expansion": allow_child_expansion,
+        "mapping_report": mapping_report,
+    }
+
+
 def extract_visible_toc_no_pages(
     page_texts: List[str],
     *,
@@ -175,6 +246,61 @@ def extract_visible_toc_no_pages(
         "allow_child_expansion": True,
         "semi_frozen": True,
         "mapping_report": mapping_report,
+    }
+
+
+def _raw_items_to_toc_draft(
+    raw_items: List[Dict[str, Any]],
+    *,
+    toc_pages: List[int],
+    has_page_numbers: bool,
+) -> Dict[str, Any]:
+    grouped: Dict[str, List[Dict[str, Any]]] = {
+        CATALOG_MAIN: [],
+        CATALOG_FIGURE: [],
+        CATALOG_TABLE: [],
+    }
+    for item in raw_items:
+        catalog = str(item.get("catalog_type") or CATALOG_MAIN)
+        if catalog not in grouped:
+            catalog = CATALOG_MAIN
+        draft_item: Dict[str, Any] = {
+            "title": str(item.get("title") or "").strip(),
+            "level": int(item.get("level") or 1),
+            "section_kind": CATALOG_TO_SECTION.get(catalog, "main_toc"),
+        }
+        if item.get("source_page") is not None:
+            draft_item["source_page"] = item.get("source_page")
+        if item.get("structure"):
+            draft_item["structure"] = str(item.get("structure") or "").strip()
+        if has_page_numbers:
+            draft_item["raw_page_label"] = item.get("page")
+        grouped[catalog].append(draft_item)
+
+    sections: List[Dict[str, Any]] = []
+    for catalog in (CATALOG_MAIN, CATALOG_FIGURE, CATALOG_TABLE):
+        items = [item for item in grouped.get(catalog, []) if item.get("title")]
+        if not items:
+            continue
+        sections.append(
+            {
+                "kind": CATALOG_TO_SECTION.get(catalog, "main_toc"),
+                "title": catalog_group_title(catalog),
+                "items": items,
+            }
+        )
+
+    return {
+        "type": "toc_draft",
+        "source": "toc_page_text_rule",
+        "toc_pages": list(toc_pages or []),
+        "has_page_numbers": bool(has_page_numbers),
+        "toc_sections": sections,
+        "items": [
+            item
+            for section in sections
+            for item in (section.get("items") or [])
+        ],
     }
 
 
@@ -687,6 +813,8 @@ def _looks_like_section_marker(line: str) -> bool:
 def _looks_like_main_group_heading(line: str, following_lines: List[str]) -> bool:
     title = _clean_title(line)
     if not title or _is_heading_like(title) or _MAIN_ITEM_RE.match(title):
+        return False
+    if any(separator in title for separator in ("|", "│", "丨")):
         return False
     if _FIGURE_ITEM_RE.match(title) or _TABLE_ITEM_RE.match(title):
         return False

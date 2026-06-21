@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections import Counter
 from copy import deepcopy
+import re
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from pageindex.catalog_classifier import CATALOG_FIGURE, CATALOG_MAIN, CATALOG_TABLE
@@ -67,6 +68,10 @@ def map_toc_draft_to_physical(
                 "status": report.get("status"),
                 "strategy": report.get("strategy"),
                 "title_match_rate": report.get("title_match_rate"),
+                "sample_checked_count": report.get("sample_checked_count") or report.get("item_count"),
+                "main_title_match_rate": report.get("main_title_match_rate"),
+                "main_sample_checked_count": report.get("main_sample_checked_count"),
+                "main_strong_anchor_count": report.get("main_strong_anchor_count"),
                 "strong_anchor_count": report.get("strong_anchor_count"),
                 "reasons": list(report.get("reasons") or []),
             }
@@ -143,6 +148,16 @@ def _map_section_items(
         return identity
 
     has_raw_page_numbers = any(_positive_int(item.get("raw_page_label")) is not None for item in items)
+    if selected_path == "visible_toc_no_pages" and not has_raw_page_numbers:
+        divider_sequence = _map_unpaged_items_by_repeated_catalog_sequence(
+            items,
+            page_texts=page_texts,
+            page_count=page_count,
+            toc_pages=toc_pages,
+        )
+        if divider_sequence is not None:
+            return divider_sequence
+
     mapped, report = map_toc_items_to_physical_pages(
         items,
         page_texts=page_texts,
@@ -153,6 +168,192 @@ def _map_section_items(
         ),
     )
     return mapped, report
+
+
+def _map_unpaged_items_by_repeated_catalog_sequence(
+    items: List[Dict[str, Any]],
+    *,
+    page_texts: List[str],
+    page_count: int,
+    toc_pages: List[int],
+) -> Optional[Tuple[List[Dict[str, Any]], Dict[str, Any]]]:
+    if len(items) < 2:
+        return None
+    ordered_items = _order_items_by_explicit_structure(items)
+    repeated_pages = _detect_repeated_catalog_pages(
+        page_texts,
+        ordered_items,
+        toc_pages=toc_pages,
+    )
+    if len(repeated_pages) < len(ordered_items) - 1:
+        return None
+
+    first_start = max(toc_pages) if toc_pages else 1
+    start_pages = [first_start] + repeated_pages[: len(ordered_items) - 1]
+    if len(start_pages) != len(ordered_items):
+        return None
+    if any(page < 1 or page > page_count for page in start_pages):
+        return None
+    if not all(left < right for left, right in zip(start_pages, start_pages[1:])):
+        return None
+
+    mapped_items: List[Dict[str, Any]] = []
+    for item, page in zip(deepcopy(ordered_items), start_pages):
+        item["physical_index"] = page
+        item["start_index"] = page
+        item["mapping_source"] = "section_divider_sequence"
+        item["mapping_confidence"] = 0.76
+        item["mapping_evidence"] = {
+            "matched_page": page,
+            "divider_pages": repeated_pages[: len(items) - 1],
+        }
+        mapped_items.append(item)
+
+    return mapped_items, _build_divider_sequence_report(
+        mapped_items,
+        toc_pages=toc_pages,
+        repeated_pages=repeated_pages,
+        page_count=page_count,
+    )
+
+
+def _detect_repeated_catalog_pages(
+    page_texts: List[str],
+    items: List[Dict[str, Any]],
+    *,
+    toc_pages: Iterable[int],
+) -> List[int]:
+    toc_page_set = {
+        page
+        for page in (_positive_int(value) for value in (toc_pages or []))
+        if page is not None
+    }
+    title_keys = [
+        _normalize_key(item.get("title"))
+        for item in items
+        if _normalize_key(item.get("title"))
+    ]
+    if len(title_keys) < 3:
+        return []
+
+    marker_keys = {
+        str(item.get("structure") or "").strip().lower()
+        for item in items
+        if str(item.get("structure") or "").strip()
+    }
+    marker_keys = {
+        marker
+        for marker in marker_keys
+        if re.fullmatch(r"\d{1,3}|[a-z]{1,4}", marker)
+    }
+    title_threshold = min(len(title_keys), max(3, len(title_keys) // 2 + 1))
+    max_lines = max(24, len(title_keys) * 6)
+    first_scan_page = max(toc_page_set or {0}) + 1
+    detected: List[int] = []
+
+    for page in range(first_scan_page, len(page_texts) + 1):
+        if page in toc_page_set:
+            continue
+        lines = [_clean_line(line) for line in str(page_texts[page - 1] or "").splitlines()]
+        lines = [line for line in lines if line]
+        if not lines or len(lines) > max_lines:
+            continue
+        normalized_text = _normalize_key("\n".join(lines))
+        title_hits = sum(1 for title in title_keys if title and title in normalized_text)
+        if title_hits < title_threshold:
+            continue
+        normalized_lines = {re.sub(r"\s+", "", line).lower() for line in lines}
+        marker_hits = sum(1 for marker in marker_keys if marker in normalized_lines)
+        has_catalog_heading = any(_is_catalog_heading(line) for line in lines)
+        if has_catalog_heading or marker_hits >= 2:
+            detected.append(page)
+    return detected
+
+
+def _order_items_by_explicit_structure(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    keyed: List[Tuple[int, int, Dict[str, Any]]] = []
+    for index, item in enumerate(items):
+        marker = _structure_order_value(item.get("structure"))
+        if marker is None:
+            return items
+        keyed.append((marker, index, item))
+    values = [marker for marker, _index, _item in keyed]
+    if len(set(values)) != len(values):
+        return items
+    sorted_values = sorted(values)
+    if sorted_values != list(range(min(sorted_values), max(sorted_values) + 1)):
+        return items
+    keyed.sort(key=lambda part: (part[0], part[1]))
+    return [item for _marker, _index, item in keyed]
+
+
+def _structure_order_value(value: Any) -> Optional[int]:
+    text = re.sub(r"\s+", "", str(value or "").strip())
+    if not text:
+        return None
+    numeric = _positive_int(text)
+    if numeric is not None:
+        return numeric
+    chinese = {
+        "一": 1,
+        "二": 2,
+        "三": 3,
+        "四": 4,
+        "五": 5,
+        "六": 6,
+        "七": 7,
+        "八": 8,
+        "九": 9,
+        "十": 10,
+    }
+    return chinese.get(text)
+
+
+def _build_divider_sequence_report(
+    items: List[Dict[str, Any]],
+    *,
+    toc_pages: List[int],
+    repeated_pages: List[int],
+    page_count: int,
+) -> Dict[str, Any]:
+    mapped_pages = [
+        page
+        for page in (_positive_int(item.get("physical_index")) for item in items)
+        if page is not None
+    ]
+    mapping_monotonic = all(left <= right for left, right in zip(mapped_pages, mapped_pages[1:]))
+    pages_in_range = all(1 <= page <= page_count for page in mapped_pages)
+    status = "ok" if items and mapping_monotonic and pages_in_range else "failed"
+    reasons: List[str] = []
+    if not mapping_monotonic:
+        reasons.append("mapping_non_monotonic")
+    if not pages_in_range:
+        reasons.append("mapped_pages_out_of_range")
+    item_count = len(items)
+    return {
+        "status": status,
+        "strategy": "section_divider_sequence",
+        "excluded_pages": sorted(set(toc_pages or []) | set(repeated_pages or [])),
+        "logical_overflow": False,
+        "regular_step": None,
+        "regular_step_ratio": 0.0,
+        "multi_logical_per_physical_suspected": False,
+        "strong_anchor_count": 0,
+        "boundary_anchor_count": item_count if status == "ok" else 0,
+        "item_count": item_count,
+        "total_item_count": item_count,
+        "auxiliary_item_count": 0,
+        "title_match_rate": 0.0,
+        "sample_match_rate": 0.0,
+        "anchor_coverage": {"front": True, "middle": item_count >= 3, "back": item_count >= 2},
+        "mapping_monotonic": mapping_monotonic,
+        "estimated_ratio": 0.0 if item_count else 1.0,
+        "tail_collapse": False,
+        "front_collapse": False,
+        "toc_page_leakage_count": 0,
+        "page_mapping_score": 0.76 if status == "ok" else 0.0,
+        "reasons": reasons,
+    }
 
 
 def _map_by_physical_identity(
@@ -242,6 +443,9 @@ def _merge_section_reports(
         "item_count": len(mapped_items),
         "strong_anchor_count": sum(int(report.get("strong_anchor_count") or 0) for report in section_reports),
         "title_match_rate": _weighted_title_match_rate(section_reports),
+        "main_title_match_rate": _main_title_match_rate(section_reports),
+        "main_sample_checked_count": _main_sample_checked_count(section_reports),
+        "main_strong_anchor_count": _main_strong_anchor_count(section_reports),
         "reasons": sorted(set(reasons)),
     }
 
@@ -257,6 +461,53 @@ def _weighted_title_match_rate(section_reports: List[Dict[str, Any]]) -> float:
     return round(weighted / total, 4)
 
 
+def _main_title_match_rate(section_reports: List[Dict[str, Any]]) -> float:
+    main_reports = [report for report in section_reports if report.get("kind") == "main_toc"]
+    total = _main_sample_checked_count(main_reports)
+    if total <= 0:
+        return 0.0
+    weighted = 0.0
+    for report in main_reports:
+        sample_count = int(
+            report.get("main_sample_checked_count")
+            or report.get("sample_checked_count")
+            or report.get("item_count")
+            or 0
+        )
+        rate = report.get("main_title_match_rate")
+        if rate is None:
+            rate = report.get("title_match_rate")
+        weighted += sample_count * float(rate or 0.0)
+    return round(weighted / total, 4)
+
+
+def _main_sample_checked_count(section_reports: List[Dict[str, Any]]) -> int:
+    total = 0
+    for report in section_reports:
+        if report.get("kind") != "main_toc":
+            continue
+        total += int(
+            report.get("main_sample_checked_count")
+            or report.get("sample_checked_count")
+            or report.get("item_count")
+            or 0
+        )
+    return total
+
+
+def _main_strong_anchor_count(section_reports: List[Dict[str, Any]]) -> int:
+    total = 0
+    for report in section_reports:
+        if report.get("kind") != "main_toc":
+            continue
+        total += int(
+            report.get("main_strong_anchor_count")
+            or report.get("strong_anchor_count")
+            or 0
+        )
+    return total
+
+
 def _pages_monotonic(pages: List[int]) -> bool:
     return all(left <= right for left, right in zip(pages, pages[1:]))
 
@@ -270,3 +521,31 @@ def _positive_int(value: Any) -> Optional[int]:
         parsed = int(value.strip())
         return parsed if parsed > 0 else None
     return None
+
+
+def _clean_line(line: Any) -> str:
+    return re.sub(r"\s+", " ", str(line or "").strip())
+
+
+def _is_catalog_heading(line: Any) -> bool:
+    compact = re.sub(r"\s+", "", str(line or "").strip().lower())
+    return compact in {
+        "目录",
+        "目次",
+        "contents",
+        "tableofcontents",
+        "汇报提纲",
+        "提纲",
+        "agenda",
+        "outline",
+        "图目录",
+        "插图目录",
+        "listoffigures",
+        "表目录",
+        "表格目录",
+        "listoftables",
+    }
+
+
+def _normalize_key(value: Any) -> str:
+    return re.sub(r"[\s\W_]+", "", str(value or "").lower(), flags=re.UNICODE)

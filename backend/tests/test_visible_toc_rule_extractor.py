@@ -657,3 +657,69 @@ def test_score_title_on_page_bounds_fuzzy_scanning(monkeypatch) -> None:
 
     assert scored["score"] == 0.0
     assert calls["count"] <= 300
+
+
+def test_visible_toc_rule_can_return_draft_without_physical_mapping() -> None:
+    from pageindex.visible_toc_rule_extractor import extract_visible_toc_with_pages_draft
+
+    page_texts = [
+        "Cover",
+        "Contents\nChapter 1 Alpha ........ 4\nChapter 2 Beta ........ 6\nChapter 3 Gamma ........ 8",
+        "Preface",
+        "Chapter 1 Alpha\nBody",
+        "More A",
+        "Chapter 2 Beta\nBody",
+        "More A",
+        "More B",
+        "Chapter 3 Gamma\nBody",
+    ]
+
+    draft = extract_visible_toc_with_pages_draft(
+        page_texts,
+        toc_pages=[2],
+        page_count=len(page_texts),
+    )
+
+    assert draft is not None
+    assert draft["type"] == "toc_draft"
+    assert draft["source"] == "toc_page_text_rule"
+    assert draft["toc_sections"][0]["kind"] == "main_toc"
+    items = draft["toc_sections"][0]["items"]
+    assert [item["raw_page_label"] for item in items] == [4, 6, 8]
+    assert all("physical_index" not in item for item in items)
+    assert all("end_index" not in item for item in items)
+
+
+def test_visible_toc_with_pages_draft_rejects_running_header_as_group_heading() -> None:
+    from pageindex.visible_toc_rule_extractor import extract_visible_toc_with_pages_draft
+
+    page_texts = [
+        "Cover",
+        (
+            "行业深度报告|\n"
+            "1. 复盘：AI 新物种，大模型时代的全球领航者 ........ 4\n"
+            "1.1、概况：十年磨剑，引领全球大模型产业 ........ 4\n"
+            "2. 展望：模型为基，多模态、AI 应用全面发力 ........ 9\n"
+            "4. 风险提示 ........ 25\n"
+            "图1、OpenAI 与微软公司的合作机制 ........ 4\n"
+            "图2、OpenAI 发起人及创始人 ........ 4"
+        ),
+        "Figure catalog tail",
+        "1. 复盘：AI 新物种，大模型时代的全球领航者\nBody",
+        "Body",
+        "Body",
+        "Body",
+        "Body",
+        "2. 展望：模型为基，多模态、AI 应用全面发力\nBody",
+    ] + ["Body"] * 16 + ["4. 风险提示\nBody"]
+
+    draft = extract_visible_toc_with_pages_draft(
+        page_texts,
+        toc_pages=[2, 3],
+        page_count=len(page_texts),
+    )
+
+    assert draft is not None
+    titles = [item["title"] for item in draft["toc_sections"][0]["items"]]
+    assert "行业深度报告|" not in titles
+    assert titles[0].startswith("1. 复盘")

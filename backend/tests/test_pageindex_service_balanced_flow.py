@@ -428,6 +428,193 @@ def test_collect_candidates_prefers_rule_extraction_for_unpaged_visible_toc(monk
     assert candidates[0]["evidence"]["semi_frozen"] is True
 
 
+def test_collect_candidates_continues_when_rule_draft_mapping_fails(monkeypatch, tmp_path):
+    service = PageIndexService()
+    calls = {"content_outline": 0}
+
+    def fake_rule_draft(*_args, **_kwargs):
+        return {
+            "type": "toc_draft",
+            "source": "toc_page_text_rule",
+            "has_page_numbers": True,
+            "items": [
+                {"title": "第一章 错误页码", "level": 1, "raw_page_label": 99},
+                {"title": "第二章 错误页码", "level": 1, "raw_page_label": 199},
+            ],
+        }
+
+    def fake_mapper(*_args, **_kwargs):
+        return [], {
+            "status": "failed",
+            "strategy": "printed_offset",
+            "reasons": ["title_match_rate_below_threshold"],
+        }
+
+    async def empty_llm_toc(*_args, **_kwargs):
+        return None
+
+    async def fake_content_outline(*_args, **_kwargs):
+        calls["content_outline"] += 1
+        return {
+            "toc_items": [
+                {"title": "正文第一章", "physical_index": 3, "level": 1},
+                {"title": "正文第二章", "physical_index": 6, "level": 1},
+            ],
+            "source": "content_outline",
+        }
+
+    monkeypatch.setattr(
+        "pageindex.visible_toc_rule_extractor.extract_visible_toc_with_pages_draft",
+        fake_rule_draft,
+    )
+    monkeypatch.setattr("pageindex.toc_mapping.map_toc_draft_to_physical", fake_mapper)
+    monkeypatch.setattr(service, "_extract_toc_text", empty_llm_toc)
+    monkeypatch.setattr(service, "_extract_content_outline_candidate", fake_content_outline)
+
+    candidates = asyncio.run(
+        service._collect_text_toc_candidates(
+            analysis={
+                "page_texts": [
+                    "Cover",
+                    "目录\n第一章 错误页码 ........ 99\n第二章 错误页码 ........ 199",
+                    "正文第一章\nBody",
+                    "Body",
+                    "Body",
+                    "正文第二章\nBody",
+                ],
+                "toc_page_detection": {
+                    "status": "detected",
+                    "pages": [2],
+                    "has_page_numbers": True,
+                },
+            },
+            route_decision={
+                "selected_path": "visible_toc_with_pages",
+                "path": "visible_toc_with_pages",
+            },
+            file_path=tmp_path / "sample.pdf",
+            page_count=6,
+            model="qwen3.6-flash",
+            anchors={"toc_pages": [2]},
+            ocr_text_map=None,
+            dividers=[],
+        )
+    )
+
+    assert calls["content_outline"] == 1
+    assert [candidate["source"] for candidate in candidates] == ["content_outline"]
+
+
+def test_unified_controller_preserves_child_expansion_state_for_unpaged_rule(monkeypatch, tmp_path):
+    service = PageIndexService()
+
+    async def forbidden_llm_toc(*_args, **_kwargs):
+        raise AssertionError("standard unpaged visible TOC should not need LLM extraction")
+
+    def fake_rule_draft(*_args, **_kwargs):
+        return {
+            "type": "toc_draft",
+            "source": "toc_page_text_rule",
+            "has_page_numbers": False,
+            "items": [
+                {"title": "Chapter One", "level": 1},
+                {"title": "Chapter Two", "level": 1},
+                {"title": "Chapter Three", "level": 1},
+            ],
+        }
+
+    def fake_mapper(*_args, **_kwargs):
+        return [
+            {"title": "Chapter One", "level": 1, "physical_index": 3, "start_index": 3},
+            {"title": "Chapter Two", "level": 1, "physical_index": 5, "start_index": 5},
+            {"title": "Chapter Three", "level": 1, "physical_index": 7, "start_index": 7},
+        ], {
+            "status": "ok",
+            "strategy": "title_search",
+            "title_match_rate": 1.0,
+            "strong_anchor_count": 3,
+            "reasons": [],
+        }
+
+    monkeypatch.setattr(
+        "pageindex.visible_toc_rule_extractor.extract_visible_toc_no_pages_draft",
+        fake_rule_draft,
+    )
+    monkeypatch.setattr("pageindex.toc_mapping.map_toc_draft_to_physical", fake_mapper)
+    monkeypatch.setattr(service, "_extract_toc_text", forbidden_llm_toc)
+    page_texts = [
+        "Cover",
+        (
+            "Contents\n"
+            "Chapter One\n"
+            "01\n"
+            "Chapter Two\n"
+            "02\n"
+            "Chapter Three\n"
+            "03"
+        ),
+        "Chapter One\nBody",
+        "More one",
+        "Chapter Two\nBody",
+        "More two",
+        "Chapter Three\nBody",
+    ]
+    analysis = {
+        "page_texts": page_texts,
+        "toc_page_detection": {
+            "status": "detected",
+            "pages": [2],
+            "has_page_numbers": False,
+        },
+    }
+
+    result = asyncio.run(
+        service._run_unified_toc_controller(
+            file_path=tmp_path / "sample.pdf",
+            requested_mode="smart",
+            analysis=analysis,
+            route_decision={
+                "selected_path": "visible_toc_no_pages",
+                "path": "visible_toc_no_pages",
+            },
+            page_count=len(page_texts),
+            model="qwen3.6-flash",
+            anchors={"toc_pages": [2]},
+            ocr_text_map=None,
+            dividers=[],
+        )
+    )
+
+    assert result is not None
+    assert result["source"] == "toc_page_text_rule"
+    assert result["allow_child_expansion"] is True
+    assert analysis["allow_child_expansion"] is True
+    assert analysis["toc_semi_frozen"] is True
+
+
+def test_main_toc_member_nodes_are_expandable_not_catalog_containers() -> None:
+    tree = [
+        {
+            "title": "目录",
+            "toc_section_kind": "main_toc",
+            "nodes": [
+                {
+                    "title": "第一章：发展学生智能素养",
+                    "section_kind": "main_toc",
+                    "catalog_type": "main",
+                    "start_index": 5,
+                    "end_index": 33,
+                    "nodes": [],
+                }
+            ],
+        }
+    ]
+
+    parents = PageIndexService._llm_outline_expandable_parents(tree, page_count=201)
+
+    assert [parent["title"] for parent in parents] == ["第一章：发展学生智能素养"]
+
+
 def test_content_outline_path_uses_internal_llm_outline_before_segment_fallback(monkeypatch):
     service = PageIndexService()
 
@@ -495,10 +682,38 @@ def test_legacy_llm_toc_text_path_uses_shared_marker_normalization(monkeypatch):
     )
 
     assert result is not None
-    assert [item["title"] for item in result["toc_items"]] == [
+    assert [item["title"] for item in result["toc_draft"]["items"]] == [
         "一 AI驱动的第五科研范式",
         "二 百花齐放的大模型时代",
     ]
+    assert result["toc_draft"]["items"][0]["raw_page_label"] is None
+    assert all("physical_index" not in item for item in result["toc_draft"]["items"])
+
+
+def test_final_mapping_skips_items_already_mapped_by_unified_s5() -> None:
+    analysis = {
+        "toc_content_mapping": {
+            "source": "unified_s5",
+            "status": "ok",
+            "strategy": "physical_identity",
+        }
+    }
+    toc_items = [
+        {"title": "Alpha", "physical_index": 4, "start_index": 4},
+        {"title": "Beta", "physical_index": 8, "start_index": 8},
+    ]
+
+    should_map = PageIndexService._should_run_final_content_mapping(
+        toc_source="llm_toc_page",
+        toc_items=toc_items,
+        page_list=[("Cover",), ("Contents",), ("Intro",), ("Alpha",), ("Body",), ("Body",), ("Body",), ("Beta",)],
+        page_count=8,
+        toc_pages=[2],
+        analysis=analysis,
+        needs_ocr=False,
+    )
+
+    assert should_map is False
 
 
 def test_final_mapping_preserves_verified_unpaged_toc_physical_pages():
