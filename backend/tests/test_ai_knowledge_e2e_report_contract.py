@@ -117,6 +117,38 @@ def test_build_report_from_index_payload_matches_expected_contract(tmp_path: Pat
     assert report["acceptance"]["ok"] is True
 
 
+def test_build_report_accepts_route_options_for_quality_fallback(tmp_path: Path) -> None:
+    module = _load_e2e_module()
+    report = module.build_report_from_index_payload(
+        file_path=tmp_path / "fallback.pdf",
+        doc_id="fallback",
+        elapsed_ms=10,
+        expected={
+            "file": "fallback.pdf",
+            "expected_route": {"content_type": "text", "selected_path": "embedded_toc"},
+            "expected_route_options": [
+                {"content_type": "text", "selected_path": "embedded_toc"},
+                {"content_type": "text", "selected_path": "visible_toc_with_pages"},
+            ],
+        },
+        index_payload={
+            "doc_name": "fallback.pdf",
+            "page_count": 10,
+            "route_decision": {
+                "content_type": "text",
+                "selected_path": "visible_toc_with_pages",
+                "fallbacks": [{"reason": "embedded_toc_disabled"}],
+            },
+            "structure": [{"title": "目录", "start_index": 2, "end_index": 10, "nodes": []}],
+            "quality_report": {"status": "needs_review", "hard_fail_reasons": []},
+        },
+    )
+
+    assert report["route"]["matches_expected"] is True
+    assert report["acceptance"]["route"] is True
+    assert report["acceptance"]["ok"] is True
+
+
 def test_write_reports_creates_per_file_and_summary(tmp_path: Path) -> None:
     module = _load_e2e_module()
     reports = [

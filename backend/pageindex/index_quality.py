@@ -172,6 +172,26 @@ def _resolve_effective_mapping_report(index_payload: Dict[str, Any]) -> Dict[str
     return {}
 
 
+def _resolve_balanced_quality_gate(index_payload: Dict[str, Any]) -> Dict[str, Any]:
+    diagnostics = index_payload.get("diagnostics")
+    if not isinstance(diagnostics, dict):
+        diagnostics = {}
+    gate = diagnostics.get("balanced_quality_gate") or index_payload.get("balanced_quality_gate")
+    return dict(gate) if isinstance(gate, dict) else {}
+
+
+def _report_int(report: Dict[str, Any], key: str, fallback: int = 0) -> int:
+    if key not in report or report.get(key) is None:
+        return fallback
+    value = report.get(key)
+    if isinstance(value, bool):
+        return fallback
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return fallback
+
+
 def _mapping_report_from_evidence(evidence: Dict[str, Any]) -> Dict[str, Any]:
     report = dict(evidence)
     status = str(report.get("status") or "").strip().lower()
@@ -299,6 +319,55 @@ def _is_auxiliary_node(node: Dict[str, Any]) -> bool:
         or node.get("node_type") in {"auxiliary_catalog", "auxiliary_catalog_item"}
         or str(node.get("catalog_type") or "").strip().lower() in {"figure", "table"}
     )
+
+
+def _node_children(node: Dict[str, Any]) -> List[Dict[str, Any]]:
+    children = node.get("nodes") or node.get("children") or []
+    return [child for child in children if isinstance(child, dict)] if isinstance(children, list) else []
+
+
+def _auxiliary_catalog_isolation_stats(structure: Any) -> Dict[str, Any]:
+    roots = structure if isinstance(structure, list) else []
+    mixed: List[Dict[str, Any]] = []
+
+    def starts_auxiliary_scope(node: Dict[str, Any]) -> bool:
+        node_type = str(node.get("node_type") or "").strip().lower()
+        catalog_type = str(node.get("catalog_type") or "").strip().lower()
+        return bool(
+            node_type == "auxiliary_catalog"
+            or (
+                catalog_type in {"figure", "table", "figure_toc", "table_toc"}
+                and _node_children(node)
+            )
+        )
+
+    def visit(node: Dict[str, Any], *, inside_auxiliary_scope: bool, depth: int) -> None:
+        explicit_auxiliary = _is_auxiliary_node(node)
+        auxiliary_scope = inside_auxiliary_scope or starts_auxiliary_scope(node)
+        node_type = str(node.get("node_type") or "").strip().lower()
+
+        if explicit_auxiliary and not auxiliary_scope and node_type != "auxiliary_catalog":
+            mixed.append(
+                {
+                    "title": str(node.get("title") or "").strip(),
+                    "catalog_type": str(node.get("catalog_type") or "").strip(),
+                    "node_type": node_type,
+                    "depth": depth,
+                }
+            )
+
+        for child in _node_children(node):
+            visit(child, inside_auxiliary_scope=auxiliary_scope, depth=depth + 1)
+
+    for root in roots:
+        if isinstance(root, dict):
+            visit(root, inside_auxiliary_scope=False, depth=1)
+
+    return {
+        "auxiliary_catalog_isolation": len(mixed) == 0,
+        "auxiliary_catalog_mixed_count": len(mixed),
+        "auxiliary_catalog_mixed_sample": mixed[:5],
+    }
 
 
 def _is_synthetic_container_node(node: Dict[str, Any]) -> bool:
@@ -844,6 +913,8 @@ def build_toc_fidelity_digest(
     toc_pages = _extract_toc_pages(index_payload, mapping)
     toc_page_leakage = _toc_page_leakage_stats(nodes, toc_pages=toc_pages)
     node_content = _node_content_stats(index_payload, nodes)
+    balanced_gate = _resolve_balanced_quality_gate(index_payload)
+    auxiliary_isolation = _auxiliary_catalog_isolation_stats(structure)
 
     warnings: List[str] = []
     hard_fail_reasons: List[str] = []
@@ -894,6 +965,10 @@ def build_toc_fidelity_digest(
         warnings.append("tail collapse detected")
         hard_fail_reasons.append("tail_collapse")
 
+    if not auxiliary_isolation.get("auxiliary_catalog_isolation", True):
+        warnings.append("auxiliary figure/table catalog mixed into main TOC tree")
+        hard_fail_reasons.append("auxiliary_catalog_mixed_into_main")
+
     if (
         selected_path == "visible_toc_with_pages"
         and mapping_has_title_match
@@ -906,9 +981,46 @@ def build_toc_fidelity_digest(
         structure if isinstance(structure, list) else root_nodes,
         page_count=page_total,
     )
-    unexpanded_long_nodes = child_expansion.get("required_sample") or []
-    unexpanded_long_count = int(child_expansion.get("unexpanded_count") or 0)
-    unexpanded_long_hard_count = int(child_expansion.get("hard_count") or 0)
+    unexpanded_long_nodes = (
+        balanced_gate.get("unexpanded_long_leaf_sample")
+        or child_expansion.get("required_sample")
+        or []
+    )
+    child_expansion_attempted = bool(
+        balanced_gate.get("child_expansion_attempted")
+        if balanced_gate
+        else child_expansion.get("unexpanded_count")
+    )
+    child_expansion_required_count = _report_int(
+        balanced_gate,
+        "child_expansion_required_count",
+        int(child_expansion.get("required_count") or 0),
+    )
+    unexpanded_long_count = _report_int(
+        balanced_gate,
+        "unexpanded_long_leaf_count",
+        int(child_expansion.get("unexpanded_count") or 0),
+    )
+    unexpanded_long_warning_count = _report_int(
+        balanced_gate,
+        "unexpanded_long_leaf_warning_count",
+        int(child_expansion.get("warning_count") or 0),
+    )
+    unexpanded_long_hard_count = _report_int(
+        balanced_gate,
+        "unexpanded_long_leaf_hard_count",
+        int(child_expansion.get("hard_count") or 0),
+    )
+    balanced_hard_reasons = [
+        str(reason).strip()
+        for reason in (balanced_gate.get("hard_fail_reasons") or [])
+        if str(reason).strip()
+    ]
+    if child_expansion_attempted and unexpanded_long_hard_count:
+        warnings.append("long TOC leaf remains unexpanded after child expansion")
+        hard_fail_reasons.append("unexpanded_long_leaf_after_expansion")
+    for reason in balanced_hard_reasons:
+        hard_fail_reasons.append(reason)
     if selected_path == "visible_toc_no_pages" and unexpanded_long_count:
         warnings.append("visible no-page TOC has long chapters without child expansion")
         if unexpanded_long_hard_count:
@@ -979,12 +1091,15 @@ def build_toc_fidelity_digest(
         "mapping_tail_collapse": mapping_tail_collapse,
         "selected_path": selected_path,
         "unexpanded_long_chapter_sample": unexpanded_long_nodes[:5],
-        "child_expansion_attempted": bool(unexpanded_long_count),
-        "child_expansion_required_count": int(child_expansion.get("required_count") or 0),
+        "child_expansion_attempted": child_expansion_attempted,
+        "child_expansion_required_count": child_expansion_required_count,
         "unexpanded_long_leaf_count": unexpanded_long_count,
-        "unexpanded_long_leaf_warning_count": int(child_expansion.get("warning_count") or 0),
+        "unexpanded_long_leaf_warning_count": unexpanded_long_warning_count,
         "unexpanded_long_leaf_hard_count": unexpanded_long_hard_count,
         "unexpanded_long_leaf_sample": unexpanded_long_nodes[:5],
+        "auxiliary_catalog_isolation": bool(auxiliary_isolation.get("auxiliary_catalog_isolation", True)),
+        "auxiliary_catalog_mixed_count": int(auxiliary_isolation.get("auxiliary_catalog_mixed_count") or 0),
+        "auxiliary_catalog_mixed_sample": auxiliary_isolation.get("auxiliary_catalog_mixed_sample") or [],
         "toc_pages": toc_pages,
         "toc_page_leakage_count": int(toc_page_leakage.get("toc_page_leakage_count") or 0),
         "toc_page_leakage_ratio": round(_bounded_float(toc_page_leakage.get("toc_page_leakage_ratio")), 4),

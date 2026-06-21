@@ -203,6 +203,10 @@
       "expected_path": "text -> embedded_toc",
       "reference_status": "reject_current",
       "expected_route": {"content_type": "text", "selected_path": "embedded_toc"},
+      "expected_route_options": [
+        {"content_type": "text", "selected_path": "embedded_toc"},
+        {"content_type": "text", "selected_path": "visible_toc_with_pages"}
+      ],
       "must_have_sections": ["main_toc", "table_toc", "figure_toc"],
       "required_checks": {"remove_noisy_appendix_table_cells": true, "visible_toc_pages": [7, 8, 9]},
       "must_have_nodes": [

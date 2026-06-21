@@ -167,7 +167,7 @@
 
 基础信号：85 页，文本层可靠，无内置 outline，但物理页 3-8 存在 PDF link annotations，可提取约 117 条 link-based `code_toc`。这些链接已经指向物理页，因此优先作为 `embedded_toc` 候选。
 
-预期路径：`text` -> `embedded_toc`。
+预期路径：优先 `text` -> `embedded_toc`；如果 embedded TOC 质检失败，允许回退为 `text` -> `visible_toc_with_pages`。
 
 预期结果：
 
@@ -286,7 +286,7 @@
 
 - S2 必须独立采集 bookmarks 和 PDF links，不能因为 bookmarks 存在就跳过 links。
 - S2 应把 bookmarks 与 links 合并成 `toc_sections`，区分主目录、表目录、图目录。
-- 如果 embedded TOC 不能生成表目录/图目录顶级节点，就不能直接作为最终结果，必须降级到可见目录路径。
+- 如果 embedded TOC 不能生成表目录/图目录顶级节点，或生成的主目录结构/长叶子质检失败，就不能直接作为最终结果，必须降级到可见目录路径。
 - 最终前端顶级节点应为：`目录`、`表目录`、`图目录`。
 - 主目录应保留多级结构：章、节、括号编号条目。
 - links 目标页可直接作为物理页，但仍需抽样标题锚点校验；已知 `第一章总则` 应对应物理页 10。

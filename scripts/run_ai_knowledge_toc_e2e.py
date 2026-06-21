@@ -176,6 +176,16 @@ def _route_matches(route: dict[str, Any], expected_route: dict[str, Any]) -> boo
     return True
 
 
+def _route_matches_expected(route: dict[str, Any], expected: dict[str, Any]) -> bool:
+    route_options = expected.get("expected_route_options") or []
+    if isinstance(route_options, list) and route_options:
+        return any(
+            isinstance(option, dict) and _route_matches(route, option)
+            for option in route_options
+        )
+    return _route_matches(route, dict(expected.get("expected_route") or {}))
+
+
 def _top_level_matches(top_titles: list[str], expected_titles: list[str]) -> dict[str, Any]:
     if not expected_titles:
         return {"ok": True, "missing": []}
@@ -239,7 +249,7 @@ def build_report_from_index_payload(
         _main_catalog_title_candidates(structure),
         list(expected.get("expected_top_level") or []),
     )
-    route_ok = _route_matches(route, dict(expected.get("expected_route") or {}))
+    route_ok = _route_matches_expected(route, expected)
     quality_status = str(quality_report.get("status") or "")
     hard_fail_reasons = list(quality_report.get("hard_fail_reasons") or [])
     quality_ok = not quality_status.startswith("failed") and not hard_fail_reasons

@@ -60,9 +60,11 @@ def run_balanced_quality_gate(
 
     unexpanded_hard_count = int(child_expansion.get("hard_count") or 0)
     unexpanded_warning_count = int(child_expansion.get("warning_count") or 0)
+    hard_fail_reasons: List[str] = []
     long_chapter_completeness = unexpanded_hard_count == 0
     if unexpanded_hard_count:
         repair_actions.append("long_chapter_without_children")
+        hard_fail_reasons.append("unexpanded_long_leaf_after_expansion")
     elif unexpanded_warning_count:
         repair_actions.append("long_chapter_without_children_warning")
 
@@ -105,6 +107,7 @@ def run_balanced_quality_gate(
         "unexpanded_long_leaf_sample": child_expansion.get("required_sample") or [],
         "style_fit": style_fit,
         "repair_actions": repair_actions,
+        "hard_fail_reasons": sorted(set(hard_fail_reasons)),
         "needs_repair": needs_repair,
         "tree_complete": top_level_exact_match and long_chapter_completeness,
         "page_count": page_count,

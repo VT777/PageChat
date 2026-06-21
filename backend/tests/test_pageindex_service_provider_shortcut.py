@@ -90,6 +90,26 @@ def test_apply_balanced_quality_gate_updates_completeness_for_long_flat_chapter(
     assert updated["balanced_quality_gate"]["long_chapter_completeness"] is False
 
 
+def test_index_diagnostics_preserves_balanced_quality_gate_facts():
+    diagnostics = PageIndexService._index_diagnostics_from_analysis(
+        {
+            "balanced_quality_gate": {
+                "child_expansion_attempted": True,
+                "child_expansion_required_count": 1,
+                "unexpanded_long_leaf_hard_count": 1,
+                "unexpanded_long_leaf_sample": [
+                    {"title": "Chapter 2", "start": 11, "end": 27, "span": 17}
+                ],
+            }
+        }
+    )
+
+    gate = diagnostics["balanced_quality_gate"]
+    assert gate["child_expansion_attempted"] is True
+    assert gate["unexpanded_long_leaf_hard_count"] == 1
+    assert gate["unexpanded_long_leaf_sample"][0]["title"] == "Chapter 2"
+
+
 def test_expand_visual_page_outline_prefers_page_evidence_over_flat_text():
     tree = [
         {

@@ -215,6 +215,16 @@
         "content_type": "text",
         "selected_path": "embedded_toc"
       },
+      "expected_route_options": [
+        {
+          "content_type": "text",
+          "selected_path": "embedded_toc"
+        },
+        {
+          "content_type": "text",
+          "selected_path": "visible_toc_with_pages"
+        }
+      ],
       "must_have_sections": ["main_toc", "table_toc", "figure_toc"],
       "expected_top_level": ["目录", "表目录", "图目录"],
       "known_pages": {

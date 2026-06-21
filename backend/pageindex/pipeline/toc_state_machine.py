@@ -59,7 +59,8 @@ class TocStateMachine:
         preprocess_strategy = _preprocess_strategy(content_type)
         fallbacks: List[Dict[str, Any]] = []
 
-        embedded_candidate = _embedded_toc_candidate(analysis)
+        code_toc_disabled = bool(analysis.get("disable_code_toc_fast_path"))
+        embedded_candidate = None if code_toc_disabled else _embedded_toc_candidate(analysis)
         if embedded_candidate:
             return TocFlowPlan(
                 path=TocFlowPath.EMBEDDED_TOC,
@@ -82,7 +83,7 @@ class TocStateMachine:
                 {
                     "from": "S2",
                     "to": "S3",
-                    "reason": "embedded_toc_rejected",
+                    "reason": "embedded_toc_disabled" if code_toc_disabled else "embedded_toc_rejected",
                     "code_toc_source": (analysis.get("code_toc") or {}).get("source"),
                 }
             )

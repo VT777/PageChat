@@ -316,3 +316,64 @@ def test_quality_gate_accepts_adjacent_boundary_overlap() -> None:
     assert "page_out_of_range" not in report["hard_fail_reasons"]
     assert "invalid_page_range" not in report["hard_fail_reasons"]
     assert not report["status"].startswith("failed")
+
+
+def test_quality_gate_hard_fails_auxiliary_catalog_mixed_into_main_tree() -> None:
+    report = build_index_quality_report(
+        {
+            "structure": [
+                {
+                    "title": "Contents",
+                    "start_index": 3,
+                    "end_index": 20,
+                    "nodes": [
+                        _node("Chapter 1", 4, 12),
+                        _node(
+                            "Figure 1 Model architecture",
+                            5,
+                            5,
+                            catalog_type="figure",
+                            node_type="auxiliary_catalog_item",
+                            is_auxiliary=True,
+                        ),
+                    ],
+                }
+            ],
+            "route_decision": {"selected_path": "visible_toc_with_pages"},
+        },
+        page_count=20,
+    )
+
+    assert report["status"] == "failed:toc_quality"
+    assert report["auxiliary_catalog_isolation"] is False
+    assert report["auxiliary_catalog_mixed_count"] == 1
+    assert "auxiliary_catalog_mixed_into_main" in report["hard_fail_reasons"]
+
+
+def test_quality_gate_hard_fails_unexpanded_long_leaf_after_expansion_attempt() -> None:
+    report = build_index_quality_report(
+        {
+            "structure": [
+                _node("Chapter 1", 3, 22),
+                _node("Chapter 2", 23, 30, nodes=[_node("Section 2.1", 24, 25)]),
+            ],
+            "route_decision": {"selected_path": "visible_toc_with_pages"},
+            "diagnostics": {
+                "balanced_quality_gate": {
+                    "child_expansion_attempted": True,
+                    "child_expansion_required_count": 1,
+                    "unexpanded_long_leaf_count": 1,
+                    "unexpanded_long_leaf_hard_count": 1,
+                    "unexpanded_long_leaf_sample": [
+                        {"title": "Chapter 1", "start": 3, "end": 22, "span": 20}
+                    ],
+                },
+            },
+        },
+        page_count=30,
+    )
+
+    assert report["status"] == "failed:toc_quality"
+    assert report["child_expansion_attempted"] is True
+    assert report["unexpanded_long_leaf_hard_count"] == 1
+    assert "unexpanded_long_leaf_after_expansion" in report["hard_fail_reasons"]

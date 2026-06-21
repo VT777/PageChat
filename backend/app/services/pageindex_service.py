@@ -5574,7 +5574,15 @@ Example:
         if isinstance(completeness, dict):
             gate = completeness.get("balanced_quality_gate") or {}
             if isinstance(gate, dict) and gate.get("needs_repair"):
-                reasons.append("balanced_quality_gate:needs_repair")
+                gate_reasons = [
+                    str(reason).strip()
+                    for reason in (gate.get("hard_fail_reasons") or [])
+                    if str(reason).strip()
+                ]
+                if gate_reasons:
+                    reasons.extend(f"balanced_quality_gate:{reason}" for reason in gate_reasons[:5])
+                else:
+                    reasons.append("balanced_quality_gate:needs_repair")
             elif completeness.get("needs_repair"):
                 reasons.append("completeness:needs_repair")
 
@@ -5589,7 +5597,15 @@ Example:
         if isinstance(quality_report, dict):
             status = str(quality_report.get("status") or "")
             if status.startswith("failed:"):
-                reasons.append(f"quality_report:{status}")
+                report_reasons = [
+                    str(reason).strip()
+                    for reason in (quality_report.get("hard_fail_reasons") or [])
+                    if str(reason).strip()
+                ]
+                if report_reasons:
+                    reasons.extend(f"quality_report:{reason}" for reason in report_reasons[:5])
+                else:
+                    reasons.append(f"quality_report:{status}")
 
         return sorted(set(str(reason) for reason in reasons if reason))
 
@@ -5762,6 +5778,7 @@ Example:
             "toc_judge",
             "toc_content_mapping",
             "toc_candidates_summary",
+            "balanced_quality_gate",
             "llm_toc_page",
         ):
             value = analysis.get(key)

@@ -101,6 +101,33 @@ def test_state_machine_routes_no_page_number_toc_separately() -> None:
     assert plan["selected_path"] == "visible_toc_no_pages"
 
 
+def test_state_machine_ignores_embedded_toc_when_code_toc_is_disabled() -> None:
+    plan = _plan(
+        {
+            "page_count": 20,
+            "content_type": "text",
+            "disable_code_toc_fast_path": True,
+            "code_toc": {
+                "source": "bookmarks+links",
+                "items": [
+                    {"title": f"Chapter {idx}", "physical_index": idx}
+                    for idx in range(1, 17)
+                ],
+            },
+            "toc_page_detection": {
+                "status": "detected",
+                "pages": [2, 3],
+                "has_page_numbers": True,
+            },
+        },
+        requested_mode="balanced",
+    )
+
+    assert plan["selected_path"] == "visible_toc_with_pages"
+    assert plan["execution_mode"] == "balanced"
+    assert plan["fallbacks"][0]["reason"] == "embedded_toc_disabled"
+
+
 def test_state_machine_uses_preprocess_content_type_for_sparse_edge_images() -> None:
     plan = _plan(
         {
