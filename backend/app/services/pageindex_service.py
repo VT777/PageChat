@@ -5657,6 +5657,117 @@ Example:
         return True
 
     @staticmethod
+    def _can_retain_best_candidate_after_retry_failure(
+        result: Dict[str, Any],
+        reasons: List[str],
+    ) -> bool:
+        """Return whether the current fast candidate is safer than a failed fallback.
+
+        This is deliberately narrow. It only protects a high-confidence embedded
+        code TOC from being lost when the only problem is that long leaves still
+        need later refinement. Mapping failures and collapsed structures must
+        continue to fail.
+        """
+        if not reasons or not isinstance(result, dict):
+            return False
+        route = result.get("route_decision")
+        if not isinstance(route, dict):
+            return False
+        selected_path = str(route.get("selected_path") or route.get("path") or "")
+        toc_source = str(route.get("toc_source") or "")
+        initial = str(route.get("initial_execution_mode") or "")
+        final = str(route.get("final_execution_mode") or route.get("execution_mode") or "")
+        if selected_path != "embedded_toc" or toc_source != "code_toc":
+            return False
+        if initial != "fast" or final != "fast":
+            return False
+
+        allowed_tokens = {
+            "unexpanded_long_leaf_after_expansion",
+            "visible_no_page_long_chapter_without_children",
+        }
+        disallowed_prefixes = (
+            "content_mapping:",
+            "balanced_quality_gate:invalid_page_range",
+            "balanced_quality_gate:page_out_of_range",
+            "quality_report:toc_content_mapping_failed",
+            "quality_report:invalid_page_range",
+            "quality_report:page_out_of_range",
+            "quality_report:toc_page_leakage",
+            "quality_report:collapsed_single_entry",
+            "quality_report:segment_fallback_flat_full_document",
+        )
+        normalized = [str(reason).strip() for reason in reasons if str(reason).strip()]
+        if not normalized:
+            return False
+        if any(reason.startswith(disallowed_prefixes) for reason in normalized):
+            return False
+        return all(any(token in reason for token in allowed_tokens) for reason in normalized)
+
+    @staticmethod
+    def _retain_best_candidate_after_quality_retry_failure(
+        result: Dict[str, Any],
+        reasons: List[str],
+        *,
+        retry_error: Exception,
+    ) -> None:
+        """Annotate a retained fast candidate after a lower-quality fallback fails."""
+        if not isinstance(result, dict):
+            return
+        route = result.setdefault("route_decision", {})
+        if not isinstance(route, dict):
+            route = {}
+            result["route_decision"] = route
+        unique_reasons = sorted({str(reason).strip() for reason in reasons if str(reason).strip()})
+        original_attempt = {
+            "path": route.get("selected_path") or route.get("path"),
+            "source": route.get("toc_source"),
+            "execution_mode": route.get("execution_mode"),
+            "status": "retained_best_candidate",
+            "quality_failure_reasons": unique_reasons,
+        }
+        retry_attempt = {
+            "path": "balanced",
+            "source": "fallback_retry",
+            "execution_mode": "balanced",
+            "status": "failed",
+            "error_type": type(retry_error).__name__,
+            "error": str(retry_error),
+        }
+        attempt_chain = list(route.get("attempt_chain") or [])
+        attempt_chain.extend([original_attempt, retry_attempt])
+        route["attempt_chain"] = attempt_chain
+        route["best_candidate"] = {
+            "path": original_attempt["path"],
+            "source": original_attempt["source"],
+            "execution_mode": original_attempt["execution_mode"],
+            "retained_after_retry_failure": True,
+            "quality_failure_reasons": unique_reasons,
+        }
+        route["quality_fallback_policy"] = "retained_best_candidate"
+
+        diagnostics = result.setdefault("diagnostics", {})
+        if isinstance(diagnostics, dict):
+            diagnostics["toc_attempt_chain"] = attempt_chain
+
+        quality_report = result.setdefault("quality_report", {})
+        if isinstance(quality_report, dict):
+            existing = [
+                str(reason).strip()
+                for reason in (quality_report.get("hard_fail_reasons") or [])
+                if str(reason).strip()
+            ]
+            quality_report["status"] = "needs_review"
+            quality_report["hard_fail_reasons"] = []
+            quality_report["suppressed_hard_fail_reasons"] = unique_reasons
+            quality_report["retained_best_candidate"] = True
+            warnings = list(quality_report.get("warnings") or [])
+            warnings.append("retained best embedded TOC after balanced fallback failed")
+            if existing:
+                warnings.append("suppressed recoverable hard reasons: " + ", ".join(sorted(set(existing))))
+            quality_report["warnings"] = sorted(set(str(item) for item in warnings if str(item)))
+
+    @staticmethod
     def _raise_for_toc_quality_failure(
         *,
         analysis: Dict[str, Any],
@@ -6332,19 +6443,38 @@ Example:
                 "[TOC-PIPELINE] stage=quality action=retry_balanced "
                 f"reason={';'.join(quality_failure_reasons)}"
             )
-            return await self._generate_pdf_index(
-                file_path,
-                doc_id,
-                "balanced",
-                _quality_retry=False,
-                _disable_code_toc=True,
-                _fallback_from={
-                    "requested_mode": requested_mode,
-                    "execution_mode": execution_mode,
-                    "toc_source": toc_source,
-                    "reasons": quality_failure_reasons,
-                },
-            )
+            try:
+                return await self._generate_pdf_index(
+                    file_path,
+                    doc_id,
+                    "balanced",
+                    _quality_retry=False,
+                    _disable_code_toc=True,
+                    _fallback_from={
+                        "requested_mode": requested_mode,
+                        "execution_mode": execution_mode,
+                        "toc_source": toc_source,
+                        "reasons": quality_failure_reasons,
+                    },
+                )
+            except Exception as retry_error:
+                if self._can_retain_best_candidate_after_retry_failure(
+                    result,
+                    quality_failure_reasons,
+                ):
+                    print(
+                        "[TOC-PIPELINE] stage=quality action=retain_best_candidate "
+                        f"reason={';'.join(quality_failure_reasons)} "
+                        f"retry_error={type(retry_error).__name__}"
+                    )
+                    self._retain_best_candidate_after_quality_retry_failure(
+                        result,
+                        quality_failure_reasons,
+                        retry_error=retry_error,
+                    )
+                    quality_failure_reasons = []
+                else:
+                    raise
         if quality_failure_reasons:
             raise RuntimeError(
                 "TOC quality gate failed: " + ", ".join(quality_failure_reasons)

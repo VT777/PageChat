@@ -1023,3 +1023,58 @@ def test_llm_quality_hard_reasons_can_be_kept_advisory_by_config():
     )
 
     assert reasons == []
+
+
+def test_embedded_code_toc_long_leaf_failure_can_be_retained_as_best_candidate():
+    result = {
+        "route_decision": {
+            "selected_path": "embedded_toc",
+            "execution_mode": "fast",
+            "initial_execution_mode": "fast",
+            "final_execution_mode": "fast",
+            "toc_source": "code_toc",
+        },
+        "quality_report": {
+            "status": "failed:toc_quality",
+            "hard_fail_reasons": ["unexpanded_long_leaf_after_expansion"],
+        },
+    }
+    reasons = ["llm_quality_check:unexpanded_long_leaf_after_expansion"]
+
+    assert PageIndexService._can_retain_best_candidate_after_retry_failure(result, reasons)
+
+    PageIndexService._retain_best_candidate_after_quality_retry_failure(
+        result,
+        reasons,
+        retry_error=RuntimeError("balanced failed"),
+    )
+
+    assert result["quality_report"]["status"] == "needs_review"
+    assert result["quality_report"]["hard_fail_reasons"] == []
+    assert result["quality_report"]["suppressed_hard_fail_reasons"] == [
+        "llm_quality_check:unexpanded_long_leaf_after_expansion"
+    ]
+    assert result["route_decision"]["best_candidate"]["source"] == "code_toc"
+    assert result["route_decision"]["attempt_chain"][-1]["status"] == "failed"
+
+
+def test_mapping_failure_cannot_be_retained_as_best_candidate_after_retry_failure():
+    result = {
+        "route_decision": {
+            "selected_path": "embedded_toc",
+            "execution_mode": "fast",
+            "initial_execution_mode": "fast",
+            "final_execution_mode": "fast",
+            "toc_source": "code_toc",
+        },
+        "quality_report": {
+            "status": "failed:toc_quality",
+            "hard_fail_reasons": ["toc_content_mapping_failed"],
+        },
+    }
+    reasons = [
+        "content_mapping:mapping_non_monotonic",
+        "quality_report:toc_content_mapping_failed",
+    ]
+
+    assert not PageIndexService._can_retain_best_candidate_after_retry_failure(result, reasons)
