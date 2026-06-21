@@ -226,3 +226,44 @@ def test_preprocess_ocr_document_does_not_fall_back_to_garbled_text() -> None:
 
     assert page_map.page_texts() == ["Clean OCR page 1", ""]
     assert page_map.entries[1].quality == "low"
+
+
+def test_preprocess_ocr_document_prepends_recoverable_text_layer_heading() -> None:
+    from pageindex.preprocess_page_text import preprocess_page_text_map
+
+    async def fake_ocr(_file_path, page_indices, *, prompt, analysis):
+        assert list(page_indices) == [0]
+        return {
+            1: "sig\n\ntype table\n\nThe purpose of this lecture is to explain the static semantics."
+        }
+
+    analysis = {
+        "page_count": 1,
+        "page_list": [
+            (
+                "\x03\nThe\nStatic\nSeman\ntics\nof\nMo\ndules\n"
+                "The\npurp\nose\nof\nthis\nlecture\nis\nto\nexplain",
+                2,
+            )
+        ],
+        "text_coverage": 1.0,
+        "image_coverage": 0.2,
+        "image_only_pages": [],
+        "garbled_pages": [0],
+        "is_image_only_pdf": False,
+        "is_garbled_pdf": True,
+        "text_layer_quality": "garbled",
+    }
+
+    page_map = asyncio.run(
+        preprocess_page_text_map(
+            "garbled.pdf",
+            analysis,
+            ocr_pages_fn=fake_ocr,
+        )
+    )
+
+    text = page_map.page_texts()[0]
+    assert text.startswith("3 The Static Semantics of Modules\n")
+    assert "sig\n\ntype table" in text
+    assert page_map.entries[0].diagnostics["text_layer_heading_supplemented"] is True

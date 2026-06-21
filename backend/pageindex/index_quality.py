@@ -586,10 +586,18 @@ def _evidence_title_stats(index_payload: Dict[str, Any], nodes: List[Dict[str, A
     if not isinstance(summaries, list):
         summaries = []
 
+    selected_summaries = [
+        candidate
+        for candidate in summaries
+        if isinstance(candidate, dict)
+        and str(candidate.get("status") or "").strip().lower() == "selected"
+    ]
+    candidates_to_score = selected_summaries or summaries
+
     best_count = 0
     best_source = ""
     best_titles: List[str] = []
-    for candidate in summaries:
+    for candidate in candidates_to_score:
         if not isinstance(candidate, dict):
             continue
         source = str(candidate.get("source") or "").strip()

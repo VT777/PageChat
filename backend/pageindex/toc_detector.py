@@ -230,6 +230,7 @@ def _classify_text_toc_page(text: str, *, page: int) -> Dict[str, Any]:
     figure_count = sum(1 for line in lines if _FIGURE_LINE_PATTERN.match(line))
     table_count = sum(1 for line in lines if _TABLE_LINE_PATTERN.match(line))
     body_signal_value = body_page_signal(text)
+    chart_axis_signal_value = _chart_axis_signal(lines)
 
     signal_count = 0
     if heading_kinds:
@@ -259,9 +260,13 @@ def _classify_text_toc_page(text: str, *, page: int) -> Dict[str, Any]:
     if figure_count >= 2 or table_count >= 2:
         score += 0.24
     score -= min(0.34, body_signal_value)
+    if not heading_kinds:
+        score -= min(0.50, chart_axis_signal_value)
     score = round(max(0.0, min(1.0, score)), 4)
 
     is_toc = bool(score >= 0.55 and signal_count >= 2)
+    if is_toc and not heading_kinds and chart_axis_signal_value >= 0.45:
+        is_toc = False
     sections = _sections_for_text(
         lines,
         heading_kinds=heading_kinds,
@@ -290,6 +295,7 @@ def _classify_text_toc_page(text: str, *, page: int) -> Dict[str, Any]:
             "figure_line_count": figure_count,
             "table_line_count": table_count,
             "body_signal": round(body_signal_value, 4),
+            "chart_axis_signal": round(chart_axis_signal_value, 4),
         },
     }
 
@@ -595,6 +601,36 @@ def _page_has_trailing_page_numbers(lines: List[str]) -> bool:
         or standalone_number_count >= 6
         or dense_numbered_catalog_count >= 10
     )
+
+
+def _chart_axis_signal(lines: List[str]) -> float:
+    normalized = [_normalize_line(line) for line in lines if _normalize_line(line)]
+    if len(normalized) < 12:
+        return 0.0
+    chart_like = sum(1 for line in normalized if _is_chart_axis_or_legend_line(line))
+    ratio = chart_like / max(1, len(normalized))
+    if ratio < 0.45:
+        return 0.0
+    return min(0.60, ratio)
+
+
+def _is_chart_axis_or_legend_line(line: str) -> bool:
+    lowered = _normalize_line(line).lower()
+    if not lowered:
+        return False
+    if re.fullmatch(r"\d{1,4}(?:\.\d+)?", lowered):
+        return True
+    if re.fullmatch(r"\d{1,4}(?:\.\d+)?\s+\d{1,4}(?:\.\d+)?", lowered):
+        return True
+    if re.fullmatch(r"[a-z]", lowered):
+        return True
+    if re.match(r"^\([a-z]\)\s+\S.{1,40}$", lowered):
+        return True
+    if re.search(r"\b(query time|recall|precision|latency|throughput)\b", lowered):
+        return True
+    if re.fullmatch(r"[A-Z][A-Z0-9-]{1,8}(?:\s+[A-Z][A-Z0-9-]{1,8}){0,2}", line):
+        return True
+    return False
 
 
 def body_page_signal(text: str) -> float:

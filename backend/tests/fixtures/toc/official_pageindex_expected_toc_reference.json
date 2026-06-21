@@ -274,7 +274,7 @@
       "id": "P08",
       "file": "Regulation Best Interest_Interpretive release.pdf",
       "page_count": 28,
-      "expected_route": {"content_type": "text", "selected_path": "visible_toc_no_pages"},
+      "expected_route": {"content_type": "text", "selected_path": "embedded_toc"},
       "official_baseline": {
         "available": true,
         "result_file": "Regulation Best Interest_Interpretive release_structure.json",

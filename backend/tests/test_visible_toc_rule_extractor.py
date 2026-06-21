@@ -690,6 +690,43 @@ def test_visible_toc_rule_can_return_draft_without_physical_mapping() -> None:
     assert all("end_index" not in item for item in items)
 
 
+def test_visible_toc_with_pages_draft_accepts_truncated_pdf_overflow_labels() -> None:
+    from pageindex.visible_toc_rule_extractor import extract_visible_toc_with_pages_draft
+
+    page_texts = [
+        "Cover",
+        "Blank",
+        (
+            "Contents\n"
+            "About the Federal Reserve ........................................................................................... iii\n"
+            "1 Overview ....................................................................................................................... 1\n"
+            "2 Monetary Policy and Economic Developments ..................................................... 3\n"
+            "3 Financial Stability ..................................................................................................... 15\n"
+            "4 Supervision and Regulation .................................................................................... 25\n"
+            "5 Payment System and Reserve Bank Oversight ................................................... 53\n"
+            "6 Consumer and Community Affairs ......................................................................... 83"
+        ),
+    ] + ["Body"] * 47
+
+    draft = extract_visible_toc_with_pages_draft(
+        page_texts,
+        toc_pages=[3],
+        page_count=50,
+    )
+
+    assert draft is not None
+    items = draft["toc_sections"][0]["items"]
+    assert items[0]["title"] == "About the Federal Reserve"
+    assert items[0]["raw_page_label"] == "iii"
+    assert [item["title"] for item in items[1:5]] == [
+        "1 Overview",
+        "2 Monetary Policy and Economic Developments",
+        "3 Financial Stability",
+        "4 Supervision and Regulation",
+    ]
+    assert [item["raw_page_label"] for item in items[1:]] == [1, 3, 15, 25, 53, 83]
+
+
 def test_visible_toc_with_pages_draft_rejects_running_header_as_group_heading() -> None:
     from pageindex.visible_toc_rule_extractor import extract_visible_toc_with_pages_draft
 

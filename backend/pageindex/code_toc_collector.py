@@ -326,13 +326,35 @@ def _levels_to_structure(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
 def _infer_structure_from_titles(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     counters: Dict[str, int] = {}
     result = []
+    current_main_structure: Optional[str] = None
+    current_main_allows_chinese_children = False
+    child_counters: Dict[str, int] = {}
     for item in items:
         title = str(item.get("title") or "").strip()
-        number = _leading_structure(title)
         catalog_type = detect_catalog_type(item)
+        number = _leading_structure(title)
+        chapter_number = _leading_chapter_number(title) if catalog_type == CATALOG_MAIN else None
+        section_marker = _leading_chinese_section_marker(title) if catalog_type == CATALOG_MAIN else None
         if number:
             structure = number
             clean_title = re.sub(rf"^\s*{re.escape(number)}(?:[.．、\s]+)?", "", title).strip() or title
+            if "." not in structure:
+                current_main_structure = structure
+                current_main_allows_chinese_children = True
+                child_counters.setdefault(current_main_structure, 0)
+            else:
+                current_main_structure = structure.split(".", 1)[0]
+                current_main_allows_chinese_children = True
+        elif chapter_number is not None:
+            structure = str(chapter_number)
+            current_main_structure = structure
+            current_main_allows_chinese_children = True
+            child_counters[current_main_structure] = 0
+            clean_title = title
+        elif section_marker and current_main_structure and current_main_allows_chinese_children:
+            child_counters[current_main_structure] = child_counters.get(current_main_structure, 0) + 1
+            structure = f"{current_main_structure}.{child_counters[current_main_structure]}"
+            clean_title = title
         elif catalog_type in {CATALOG_FIGURE, CATALOG_TABLE}:
             key = catalog_type
             counters[key] = counters.get(key, 0) + 1
@@ -341,6 +363,10 @@ def _infer_structure_from_titles(items: List[Dict[str, Any]]) -> List[Dict[str, 
         else:
             counters[CATALOG_MAIN] = counters.get(CATALOG_MAIN, 0) + 1
             structure = str(counters[CATALOG_MAIN])
+            current_main_structure = structure if catalog_type == CATALOG_MAIN else current_main_structure
+            if catalog_type == CATALOG_MAIN:
+                current_main_allows_chinese_children = False
+                child_counters.setdefault(current_main_structure, 0)
             clean_title = title
         result.append({**item, "structure": structure, "title": clean_title, "catalog_type": catalog_type})
     return result
@@ -350,6 +376,58 @@ def _leading_structure(title: str) -> Optional[str]:
     match = re.match(r"^\s*(\d+(?:\.\d+){0,4})(?:\s+|[.．、])", title)
     if match:
         return match.group(1)
+    return None
+
+
+def _leading_chapter_number(title: str) -> Optional[int]:
+    match = re.match(r"^\s*第\s*([一二三四五六七八九十百零〇两\d]+)\s*[章节篇部分部]", title)
+    if not match:
+        return None
+    return _parse_chinese_or_int(match.group(1))
+
+
+def _leading_chinese_section_marker(title: str) -> Optional[int]:
+    match = re.match(r"^\s*([一二三四五六七八九十百零〇两\d]{1,4})\s*[、.．]\s*\S+", title)
+    if not match:
+        return None
+    return _parse_chinese_or_int(match.group(1))
+
+
+def _parse_chinese_or_int(value: str) -> Optional[int]:
+    text = re.sub(r"\s+", "", str(value or ""))
+    if not text:
+        return None
+    if text.isdigit():
+        parsed = int(text)
+        return parsed if parsed > 0 else None
+    digit_map = {
+        "零": 0,
+        "〇": 0,
+        "一": 1,
+        "二": 2,
+        "两": 2,
+        "三": 3,
+        "四": 4,
+        "五": 5,
+        "六": 6,
+        "七": 7,
+        "八": 8,
+        "九": 9,
+    }
+    if text == "十":
+        return 10
+    if "百" in text:
+        left, _, right = text.partition("百")
+        hundreds = digit_map.get(left, 1 if not left else 0)
+        tail = _parse_chinese_or_int(right) if right else 0
+        return hundreds * 100 + (tail or 0)
+    if "十" in text:
+        left, _, right = text.partition("十")
+        tens = digit_map.get(left, 1 if not left else 0)
+        ones = digit_map.get(right, 0) if right else 0
+        return tens * 10 + ones
+    if len(text) == 1:
+        return digit_map.get(text)
     return None
 
 

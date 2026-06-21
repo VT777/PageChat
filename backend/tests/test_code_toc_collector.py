@@ -40,6 +40,30 @@ def test_collects_bookmarks_and_links_for_compliance_guide() -> None:
         ], f"{section['kind']} must not include bare page-number links"
 
 
+def test_infers_hierarchy_for_chinese_chapter_and_section_link_titles() -> None:
+    from pageindex.code_toc_collector import _infer_structure_from_titles
+
+    items = [
+        {"title": "第一章总则", "physical_index": 10, "catalog_type": "main"},
+        {"title": "一、指南目的及基本原则", "physical_index": 10, "catalog_type": "main"},
+        {"title": "二、相关术语界定", "physical_index": 12, "catalog_type": "main"},
+        {"title": "第二章生成式人工智能服务备案的发展现状", "physical_index": 14, "catalog_type": "main"},
+        {"title": "一、中央层面生成式人工智能服务备案的相关政策文件", "physical_index": 14, "catalog_type": "main"},
+        {"title": "二、地方层面生成式人工智能服务备案的相关政策文件", "physical_index": 16, "catalog_type": "main"},
+    ]
+
+    structured = _infer_structure_from_titles(items)
+
+    assert [item["structure"] for item in structured] == [
+        "1",
+        "1.1",
+        "1.2",
+        "2",
+        "2.1",
+        "2.2",
+    ]
+
+
 def test_collects_link_only_toc_for_ai_agent_report() -> None:
     from pageindex.code_toc_collector import collect_code_toc
 

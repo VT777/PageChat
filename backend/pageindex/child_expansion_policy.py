@@ -76,7 +76,7 @@ def analyze_child_expansion(
                 "depth": current_depth,
             }
             required.append(sample)
-            if current_depth <= 1 and span >= HARD_FAIL_MIN_SPAN:
+            if current_depth <= 1 and span >= HARD_FAIL_MIN_SPAN and not _is_appendix(node):
                 hard.append(sample)
             else:
                 warnings.append(sample)
@@ -100,7 +100,7 @@ def should_attempt_child_expansion(
     page_count: int,
     min_span: int = ATTEMPT_MIN_SPAN,
 ) -> bool:
-    if _is_auxiliary(node) or _is_front_matter(node) or _is_back_matter(node):
+    if _is_auxiliary(node) or _is_front_matter(node) or _is_non_expandable_back_matter(node):
         return False
     if _children(node):
         return False
@@ -108,7 +108,10 @@ def should_attempt_child_expansion(
     if page_range is None:
         return False
     start, end = page_range
-    return end - start + 1 >= max(1, int(min_span or ATTEMPT_MIN_SPAN))
+    required_span = max(1, int(min_span or ATTEMPT_MIN_SPAN))
+    if _is_appendix(node):
+        required_span = max(required_span, ATTEMPT_MIN_SPAN)
+    return end - start + 1 >= required_span
 
 
 def _children(node: Dict[str, Any]) -> List[Dict[str, Any]]:
@@ -154,19 +157,25 @@ def _is_front_matter(node: Dict[str, Any]) -> bool:
     return normalized in {"目录", "目次", "前言", "序言", "序", "封面", "封面页"}
 
 
-def _is_back_matter(node: Dict[str, Any]) -> bool:
+def _is_appendix(node: Dict[str, Any]) -> bool:
     raw_title = re.sub(r"\s+", " ", str(node.get("title") or "").strip().lower())
     normalized = normalize_title(raw_title)
     if not normalized:
         return False
-    if re.match(
-        r"^(appendix|appendices|annex|annexes|supplement|references?|bibliography|index|acknowledg(?:ement|ments)|afterword|postscript)\b",
-        raw_title,
-    ):
+    if re.match(r"^(appendix|appendices|annex|annexes|supplement)\b", raw_title):
+        return True
+    return normalized.startswith(("附录", "附表", "附录材料", "附件"))
+
+
+def _is_non_expandable_back_matter(node: Dict[str, Any]) -> bool:
+    raw_title = re.sub(r"\s+", " ", str(node.get("title") or "").strip().lower())
+    normalized = normalize_title(raw_title)
+    if not normalized:
+        return False
+    if re.match(r"^(references?|bibliography|index|acknowledg(?:ement|ments)|afterword|postscript)\b", raw_title):
         return True
     return normalized.startswith(
         (
-            "附录",
             "參考文獻",
             "参考文献",
             "参考资料",

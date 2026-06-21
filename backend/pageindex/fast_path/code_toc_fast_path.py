@@ -19,6 +19,9 @@ class CodeTOCFastPath:
         early_return = bool(evidence.get("accepted"))
         if not items or not source:
             return None
+        source_parts = {part for part in source.split("+") if part}
+        if not early_return and "regex" in source_parts:
+            return None
 
         return {
             "candidate_id": f"code_toc_{source}",

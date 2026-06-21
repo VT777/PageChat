@@ -29,7 +29,8 @@ SECTION_TO_CATALOG = {
 CATALOG_TO_SECTION = {value: key for key, value in SECTION_TO_CATALOG.items()}
 
 _LINE_WITH_PAGE_RE = re.compile(
-    r"^(?P<title>.+?)(?:\.{2,}|…{1,}|·{2,}|\s{2,}|\s+)(?P<page>\d{1,4})$"
+    r"^(?P<title>.+?)(?:\.{2,}|…{1,}|·{2,}|\s{2,}|\s+)(?P<page>\d{1,4}|[ivxlcdm]{1,8})$",
+    re.I,
 )
 _LINE_WITH_LEADER_NO_PAGE_RE = re.compile(
     r"^(?P<title>.+?)(?:\.{3,}|…{2,}|·{3,})\s*$"
@@ -70,7 +71,7 @@ def extract_visible_toc_with_pages(
     Returns ``None`` when the text is not a high-confidence paged TOC. Callers
     should then fall back to LLM extraction.
     """
-    raw_items = _parse_toc_pages(page_texts, toc_pages)
+    raw_items = _parse_toc_pages(page_texts, toc_pages, page_count=page_count)
     if len(raw_items) < min_items:
         return None
 
@@ -127,10 +128,10 @@ def extract_visible_toc_with_pages_draft(
     min_items: int = 3,
 ) -> Optional[Dict[str, Any]]:
     """Extract standard paged visible TOC lines as S4 draft evidence."""
-    raw_items = _parse_toc_pages(page_texts, toc_pages)
+    raw_items = _parse_toc_pages(page_texts, toc_pages, page_count=page_count)
     if len(raw_items) < min_items:
         return None
-    if not _looks_like_real_printed_pages(raw_items, page_count=page_count, toc_pages=toc_pages):
+    if not _looks_like_paged_toc_draft_sequence(raw_items, page_count=page_count, toc_pages=toc_pages):
         return None
     return _raw_items_to_toc_draft(
         raw_items,
@@ -452,7 +453,12 @@ def _build_divider_mapping_report(
     }
 
 
-def _parse_toc_pages(page_texts: List[str], toc_pages: Iterable[int]) -> List[Dict[str, Any]]:
+def _parse_toc_pages(
+    page_texts: List[str],
+    toc_pages: Iterable[int],
+    *,
+    page_count: int = 0,
+) -> List[Dict[str, Any]]:
     items: List[Dict[str, Any]] = []
     current_catalog = CATALOG_MAIN
 
@@ -469,6 +475,9 @@ def _parse_toc_pages(page_texts: List[str], toc_pages: Iterable[int]) -> List[Di
         ]
         lines = [line for line in lines if line]
         main_group_active = False
+        current_main_structure = ""
+        current_main_accepts_children = True
+        main_child_counts: Dict[str, int] = {}
         suppress_next_group_heading = False
         for cursor, line in enumerate(lines):
             heading = _catalog_from_heading(line)
@@ -514,15 +523,40 @@ def _parse_toc_pages(page_texts: List[str], toc_pages: Iterable[int]) -> List[Di
             suppress_next_group_heading = False
             title, printed_page = parsed
             catalog = _catalog_for_title(title, current_catalog)
-            if not _line_matches_catalog(title, catalog):
-                continue
-            level = _infer_level(title, catalog)
-            if catalog == CATALOG_MAIN and main_group_active and level <= 1:
-                level = 2
+            matches_catalog = _line_matches_catalog(title, catalog)
+            if not matches_catalog:
+                if (
+                    catalog == CATALOG_MAIN
+                    and current_main_structure
+                    and current_main_accepts_children
+                    and _looks_like_main_subitem_title(title)
+                    and _printed_page_within_document(printed_page, page_count)
+                ):
+                    main_child_counts[current_main_structure] = main_child_counts.get(current_main_structure, 0) + 1
+                    level = 2
+                    structure = f"{current_main_structure}.{main_child_counts[current_main_structure]}"
+                elif (
+                    catalog == CATALOG_MAIN
+                    and not current_main_structure
+                    and _looks_like_front_matter_toc_item(title)
+                ):
+                    level = 1
+                    structure = f"front-{len(items) + 1}"
+                else:
+                    continue
+            else:
+                level = _infer_level(title, catalog)
+                structure = _infer_structure(title, catalog, len(items) + 1)
+                if catalog == CATALOG_MAIN and main_group_active and level <= 1:
+                    level = 2
+                if catalog == CATALOG_MAIN and level <= 1:
+                    current_main_structure = structure
+                    current_main_accepts_children = _printed_page_within_document(printed_page, page_count)
+                    main_child_counts.setdefault(current_main_structure, 0)
             item = {
                 "title": title,
                 "level": level,
-                "structure": _infer_structure(title, catalog, len(items) + 1),
+                "structure": structure,
                 "source_page": page,
                 "catalog_type": catalog,
                 "source": "toc_page_text_rule",
@@ -595,18 +629,19 @@ def _parse_unpaged_toc_pages(page_texts: List[str], toc_pages: Iterable[int]) ->
     return _dedupe_items(items)
 
 
-def _parse_catalog_line(line: str) -> Optional[Tuple[str, int]]:
+def _parse_catalog_line(line: str) -> Optional[Tuple[str, Any]]:
     match = _LINE_WITH_PAGE_RE.match(line)
     if not match:
         return None
     title = _clean_title(match.group("title"))
     if not title or _is_heading_like(title):
         return None
+    raw_page = str(match.group("page") or "").strip()
     try:
-        page = int(match.group("page"))
+        page: Any = int(raw_page)
     except (TypeError, ValueError):
-        return None
-    if page <= 0:
+        page = raw_page
+    if isinstance(page, int) and page <= 0:
         return None
     return title, page
 
@@ -644,6 +679,35 @@ def _looks_like_real_printed_pages(
     if max(pages) <= max(toc_pages or [0]) + 2 and page_count > max(toc_pages or [0]) + 8:
         return False
     if len(set(pages)) == len(pages) and pages == sorted(pages) and max(pages) <= max(4, len(pages)):
+        return False
+    by_catalog: Dict[str, List[int]] = {}
+    for item in items:
+        if not isinstance(item.get("page"), int) or isinstance(item.get("page"), bool):
+            continue
+        by_catalog.setdefault(str(item.get("catalog_type") or CATALOG_MAIN), []).append(int(item["page"]))
+    return all(all(left <= right for left, right in zip(values, values[1:])) for values in by_catalog.values())
+
+
+def _looks_like_paged_toc_draft_sequence(
+    items: List[Dict[str, Any]],
+    *,
+    page_count: int,
+    toc_pages: List[int],
+) -> bool:
+    """Validate standard paged TOC lines before physical mapping.
+
+    Draft extraction should not reject a TOC merely because a truncated PDF has
+    printed page labels beyond the available physical page count. S5 mapping is
+    responsible for resolving or marking those overflow labels.
+    """
+    pages = [
+        int(item["page"])
+        for item in items
+        if isinstance(item.get("page"), int) and not isinstance(item.get("page"), bool)
+    ]
+    if len(pages) < 3:
+        return False
+    if max(pages) <= max(toc_pages or [0]) + 2 and page_count > max(toc_pages or [0]) + 8:
         return False
     by_catalog: Dict[str, List[int]] = {}
     for item in items:
@@ -701,6 +765,8 @@ def _section_to_root(section: Dict[str, Any], *, page_count: Optional[int] = Non
     title = str(section.get("title") or catalog_group_title(SECTION_TO_CATALOG.get(kind, CATALOG_MAIN)))
     catalog = SECTION_TO_CATALOG.get(kind, CATALOG_MAIN)
     children = deepcopy(section.get("items") or [])
+    if catalog == CATALOG_MAIN:
+        children = _prepend_preface_child_if_needed(children)
     if page_count:
         from pageindex.toc_mapping import derive_toc_ranges
 
@@ -734,6 +800,45 @@ def _section_to_root(section: Dict[str, Any], *, page_count: Optional[int] = Non
         root["start_index"] = start
         root["end_index"] = end
     return root
+
+
+def _prepend_preface_child_if_needed(children: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    if not children:
+        return children
+    first_start = min(
+        (
+            page
+            for page in (
+                _positive_int(child.get("start_index")) or _positive_int(child.get("physical_index"))
+                for child in children
+            )
+            if page is not None
+        ),
+        default=None,
+    )
+    if first_start is None or first_start <= 1:
+        return children
+    has_front_matter_item = any(
+        str(child.get("structure") or "").startswith("front-")
+        for child in children
+        if isinstance(child, dict)
+    )
+    if not has_front_matter_item:
+        return children
+    if any(_normalize_key(child.get("title")) in {"preface", "foreword", "frontmatter"} for child in children):
+        return children
+    return [
+        {
+            "title": "Preface",
+            "structure": "0",
+            "level": 1,
+            "physical_index": 1,
+            "start_index": 1,
+            "source": "front_matter_inferred",
+            "nodes": [],
+        },
+        *children,
+    ]
 
 
 def _build_catalog_tree(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -837,6 +942,33 @@ def _looks_like_main_group_heading(line: str, following_lines: List[str]) -> boo
     return bool(_MAIN_ITEM_RE.match(next_title))
 
 
+def _looks_like_front_matter_toc_item(title: str) -> bool:
+    value = _clean_title(title)
+    if not value or _MAIN_ITEM_RE.match(value):
+        return False
+    if len(value) > 100:
+        return False
+    return bool(re.search(r"[A-Za-z\u4e00-\u9fff]", value))
+
+
+def _looks_like_main_subitem_title(title: str) -> bool:
+    value = _clean_title(title)
+    if not value or _MAIN_ITEM_RE.match(value) or _catalog_from_heading(value):
+        return False
+    if len(value) > 140:
+        return False
+    if re.match(r"^[A-Z]\s+\S", value):
+        return False
+    if re.fullmatch(r"[\d\s.,%$()/+-]+", value):
+        return False
+    return bool(re.search(r"[A-Za-z\u4e00-\u9fff]", value))
+
+
+def _printed_page_within_document(value: Any, page_count: int) -> bool:
+    page = _positive_int(value)
+    return page is None or page_count <= 0 or page <= page_count
+
+
 def _normalize_section_marker(line: str) -> str:
     compact = re.sub(r"\s+", "", line)
     if re.fullmatch(r"\d{1,2}", compact):
@@ -891,7 +1023,7 @@ def _dedupe_items(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         key = (
             str(item.get("catalog_type") or ""),
             _normalize_key(item.get("title")),
-            int(item.get("page") or 0),
+            _positive_int(item.get("page")) or 0,
         )
         if key in seen:
             continue

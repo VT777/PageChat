@@ -811,11 +811,12 @@ def _map_printed_page_numbers(
         excluded_page_set=excluded_page_set,
         start_page=start_page,
     )
+    offset_from_title_anchors = offset is not None
     if offset is None:
         offset = start_page - _base_logical_page_for_offset(items, indexed_pages)
 
     estimated_last = max(logical_pages) + offset
-    if estimated_last <= page_count:
+    if estimated_last <= page_count or offset_from_title_anchors:
         for index, logical_page in indexed_pages:
             physical_page = max(1, min(page_count, logical_page + offset))
             _set_printed_page_mapping(items[index], logical_page, physical_page)
@@ -1045,6 +1046,14 @@ def _apply_title_overrides_after_printed_mapping(
             continue
         score = float(match.get("score") or 0.0)
         physical_page = int(match["page"])
+        if is_printed_mapping and current_page is not None and physical_page < current_page:
+            current_score = score_title_on_page(title, page_text_map.get(current_page, ""))
+            if float(current_score.get("score") or 0.0) >= 0.58:
+                cursor_by_catalog[catalog_type] = max(
+                    cursor_by_catalog.get(catalog_type, start_page),
+                    current_page,
+                )
+                continue
         source = str(match.get("source") or "title_search")
         item["physical_index"] = physical_page
         item["mapping_source"] = source

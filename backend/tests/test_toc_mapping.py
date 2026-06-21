@@ -91,6 +91,42 @@ def test_map_toc_draft_uses_printed_page_offset_only_with_content_anchors() -> N
     assert report["strong_anchor_count"] >= 2
 
 
+def test_map_toc_draft_keeps_stable_offset_for_truncated_overflow_labels() -> None:
+    page_texts = ["Cover", "Blank", "Contents"] + ["Body"] * 47
+    page_texts[6] = "1 Overview\nBody"
+    page_texts[8] = "2 Monetary Policy and Economic Developments\nBody"
+    page_texts[20] = (
+        "3 Financial Stability\n"
+        "This chapter mentions Supervision and Regulation before that chapter starts."
+    )
+    page_texts[30] = "4 Supervision and Regulation\nBody"
+    draft = {
+        "type": "toc_draft",
+        "source": "visible_toc_rule",
+        "section_kind": "main_toc",
+        "items": [
+            {"title": "1 Overview", "level": 1, "raw_page_label": 1},
+            {"title": "2 Monetary Policy and Economic Developments", "level": 1, "raw_page_label": 3},
+            {"title": "3 Financial Stability", "level": 1, "raw_page_label": 15},
+            {"title": "4 Supervision and Regulation", "level": 1, "raw_page_label": 25},
+            {"title": "5 Payment System and Reserve Bank Oversight", "level": 1, "raw_page_label": 53},
+        ],
+    }
+
+    mapped, report = map_toc_draft_to_physical(
+        draft,
+        page_texts=page_texts,
+        page_count=len(page_texts),
+        toc_pages=[3],
+        selected_path="visible_toc_with_pages",
+    )
+
+    assert [item["physical_index"] for item in mapped[:4]] == [7, 9, 21, 31]
+    assert mapped[4]["physical_index"] == 50
+    assert report["status"] == "ok"
+    assert report["strategy"] == "printed_page_offset"
+
+
 def test_map_toc_draft_locates_unpaged_toc_by_title_search() -> None:
     page_texts = [
         "Cover",

@@ -234,13 +234,30 @@ def _content_mapping_score(candidate: Dict[str, Any], evidence: Dict[str, Any]) 
         score = _bounded_float(mapping.get("page_mapping_score"))
         title_match = _bounded_float(mapping.get("title_match_rate"))
         if status == "ok":
+            if _has_explicit_zero_mapping(mapping, score, title_match):
+                reasons.append("content_mapping_zero_score")
+                return 0.0, "failed", reasons
             return max(score, title_match, 0.5), "ok", reasons
         if status:
             score = max(score, title_match)
             if score:
                 return score, status, reasons
 
-    score = _bounded_float(evidence.get("page_mapping_score") or candidate.get("page_mapping_score"))
+    score_value = (
+        evidence.get("page_mapping_score")
+        if "page_mapping_score" in evidence
+        else candidate.get("page_mapping_score")
+    )
+    title_value = (
+        evidence.get("title_match_rate")
+        if "title_match_rate" in evidence
+        else candidate.get("title_match_rate")
+    )
+    score = _bounded_float(score_value)
+    title_match = _bounded_float(title_value)
+    if (score_value is not None or title_value is not None) and score <= 0.0 and title_match <= 0.0:
+        reasons.append("content_mapping_zero_score")
+        return 0.0, "failed", reasons
     if evidence.get("mapping_pending"):
         pending_cap = (
             CONTENT_MAPPING_PENDING_CAP
@@ -251,9 +268,15 @@ def _content_mapping_score(candidate: Dict[str, Any], evidence: Dict[str, Any]) 
         if not evidence.get("logical_overflow"):
             pending_score = max(pending_score, MIN_ACCEPT_SCORE)
         return min(pending_score, pending_cap), "pending", reasons
-    if score:
-        return score, "unknown", reasons
+    if score or title_match:
+        return max(score, title_match), "unknown", reasons
     return None, "unknown", reasons
+
+
+def _has_explicit_zero_mapping(mapping: Dict[str, Any], score: float, title_match: float) -> bool:
+    has_score = "page_mapping_score" in mapping
+    has_title = "title_match_rate" in mapping
+    return (has_score or has_title) and score <= 0.0 and title_match <= 0.0
 
 
 def _evidence_score(candidate: Dict[str, Any], evidence: Dict[str, Any]) -> float:

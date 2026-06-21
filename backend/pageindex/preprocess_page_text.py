@@ -4,12 +4,13 @@ from __future__ import annotations
 
 import inspect
 from pathlib import Path
+import re
 from typing import Any, Dict, Iterable, List, Mapping, Optional
 
 from pageindex.page_text_map import PageTextEntry, PageTextMap
 
 
-PAGE_TEXT_OCR_PROMPT = "Recognize all readable text in natural reading order."
+PAGE_TEXT_OCR_PROMPT = "Extract every visible text line in reading order, including section numbers and headings."
 
 
 def infer_content_type(analysis: Mapping[str, Any]) -> str:
@@ -197,7 +198,10 @@ def _merge_entries(
         ocr_text = str(ocr_by_page.get(index) or "")
         if index - 1 in ocr_indices:
             if ocr_text.strip():
-                text = ocr_text
+                text, heading_supplemented = _supplement_ocr_text_with_text_layer_heading(
+                    original,
+                    ocr_text,
+                )
                 source = "ocr"
                 quality = "reliable"
                 ocr_used = True
@@ -206,6 +210,8 @@ def _merge_entries(
                     "original_text_chars": len(original),
                     "ocr_text_chars": len(ocr_text),
                 }
+                if heading_supplemented:
+                    diagnostics["text_layer_heading_supplemented"] = True
             elif content_type == "hybrid" and original.strip():
                 text = original
                 source = "pdf_text_fallback"
@@ -270,6 +276,111 @@ def _page_list_text(page_list: List[Any], physical_page: int) -> str:
     if isinstance(page, (list, tuple)) and page:
         return str(page[0] or "")
     return str(page or "")
+
+
+def _supplement_ocr_text_with_text_layer_heading(original: str, ocr_text: str) -> tuple[str, bool]:
+    heading = _recover_text_layer_leading_numbered_heading(original)
+    if not heading:
+        return ocr_text, False
+    if _compact_text_key(heading) in _compact_text_key(ocr_text):
+        return ocr_text, False
+    return f"{heading}\n{ocr_text}", True
+
+
+def _recover_text_layer_leading_numbered_heading(text: str) -> Optional[str]:
+    lines = [_normalize_text_layer_line(line) for line in str(text or "").splitlines()[:40]]
+    lines = [line for line in lines if line]
+    for index, line in enumerate(lines[:16]):
+        if not re.fullmatch(r"[1-9]\d{0,2}(?:\.\d{1,2})*", line):
+            continue
+        title_words = _collect_heading_words_after_number(lines, index + 1)
+        if len(title_words) < 2:
+            continue
+        title = " ".join(title_words[:12]).strip()
+        if _looks_like_recovered_heading_title(title):
+            return f"{line} {title}"
+    return None
+
+
+def _collect_heading_words_after_number(lines: List[str], start: int) -> List[str]:
+    tokens = _merge_fragmented_text_layer_tokens(lines[start : start + 18])
+    words: List[str] = []
+    for index, token in enumerate(tokens):
+        if words and _looks_like_body_sentence_start(tokens, index, len(words)):
+            break
+        if _token_is_heading_word(token):
+            words.append(token)
+            continue
+        if words:
+            break
+    return words
+
+
+def _merge_fragmented_text_layer_tokens(lines: List[str]) -> List[str]:
+    tokens: List[str] = []
+    index = 0
+    while index < len(lines):
+        token = lines[index].strip()
+        next_token = lines[index + 1].strip() if index + 1 < len(lines) else ""
+        if (
+            re.fullmatch(r"[A-Z][a-z]{1,7}", token)
+            and re.fullmatch(r"[a-z]{2,8}", next_token)
+            and token.lower() not in {"the", "this", "these"}
+        ):
+            tokens.append(token + next_token)
+            index += 2
+            continue
+        tokens.append(token)
+        index += 1
+    return tokens
+
+
+def _looks_like_body_sentence_start(tokens: List[str], index: int, collected_count: int) -> bool:
+    if collected_count < 3 or index + 1 >= len(tokens):
+        return False
+    token = tokens[index]
+    next_token = tokens[index + 1]
+    if token.lower() in {"the", "this", "these", "suppose", "consider", "notice"}:
+        return next_token[:1].islower()
+    return bool(token[:1].isupper() and next_token[:1].islower() and next_token.lower() not in {"of", "and"})
+
+
+def _token_is_heading_word(token: str) -> bool:
+    if not token or len(token) > 32:
+        return False
+    if re.fullmatch(r"[A-Za-z][A-Za-z'-]*", token):
+        return True
+    return token in {"&", "/", "-"}
+
+
+def _looks_like_recovered_heading_title(title: str) -> bool:
+    words = [word for word in title.split() if word]
+    if not 2 <= len(words) <= 12:
+        return False
+    alpha_words = [word for word in words if re.search(r"[A-Za-z]", word)]
+    if len(alpha_words) < 2:
+        return False
+    titleish = sum(
+        1
+        for word in alpha_words
+        if word[:1].isupper() or word.lower() in {"a", "an", "and", "at", "for", "in", "of", "on", "the", "to"}
+    )
+    return titleish / len(alpha_words) >= 0.75
+
+
+def _normalize_text_layer_line(line: str) -> str:
+    mapped = []
+    for char in str(line or ""):
+        code = ord(char)
+        if 1 <= code <= 9:
+            mapped.append(str(code))
+        elif char.isprintable():
+            mapped.append(char)
+    return re.sub(r"\s+", " ", "".join(mapped)).strip()
+
+
+def _compact_text_key(text: str) -> str:
+    return re.sub(r"[^0-9a-z]+", "", str(text or "").casefold())
 
 
 def _page_info(analysis: Mapping[str, Any], index: int) -> Dict[str, Any]:

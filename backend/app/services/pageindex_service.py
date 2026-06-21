@@ -4,6 +4,7 @@ import asyncio
 import inspect
 import re
 import time
+from copy import deepcopy
 from pathlib import Path
 from typing import Optional, Dict, Any, List
 
@@ -2477,12 +2478,21 @@ Example:
                 "[TOC-CANDIDATE] provider=content_outline "
                 f"stage=internal_outline status=error error_type={type(exc).__name__}"
             )
-            return None
+            return self._content_outline_from_text_headings(page_texts, page_count)
         if not isinstance(result, dict):
-            return None
+            return self._content_outline_from_text_headings(page_texts, page_count)
         toc_items = result.get("toc_items") or result.get("items") or []
+        if self._content_outline_result_is_weak(toc_items):
+            heading_result = self._content_outline_from_text_headings(page_texts, page_count)
+            if heading_result:
+                return heading_result
         if not toc_items:
             return None
+        toc_items = self._prepend_front_matter_node_if_needed(
+            toc_items,
+            page_count,
+            page_texts=page_texts,
+        )
         return {
             "toc_items": toc_items,
             "items": toc_items,
@@ -2492,6 +2502,167 @@ Example:
             "top_level_frozen": True,
             "allow_child_expansion": True,
         }
+
+    @staticmethod
+    def _content_outline_result_is_weak(toc_items: Any) -> bool:
+        if not isinstance(toc_items, list) or not toc_items:
+            return True
+        if len(toc_items) > 1:
+            return False
+        first = toc_items[0] if isinstance(toc_items[0], dict) else {}
+        title = re.sub(r"\s+", " ", str(first.get("title") or "").strip().lower())
+        return title in {
+            "",
+            "document content",
+            "full document",
+            "document",
+            "content",
+        }
+
+    @staticmethod
+    def _content_outline_from_text_headings(
+        page_texts: List[str],
+        page_count: int,
+    ) -> Optional[Dict[str, Any]]:
+        try:
+            from pageindex.text_heading_extractor import extract_text_headings
+        except Exception:
+            return None
+
+        headings = extract_text_headings(page_texts, start_page=1)
+        headings = [
+            item
+            for item in headings
+            if isinstance(item, dict)
+            and item.get("title")
+            and isinstance(item.get("physical_index"), int)
+            and 1 <= int(item.get("physical_index")) <= page_count
+        ]
+        if len(headings) < 3:
+            return None
+        unique_titles = {
+            re.sub(r"[\s\W_]+", "", str(item.get("title") or "").casefold())
+            for item in headings
+            if item.get("title")
+        }
+        if len(unique_titles) < 3:
+            return None
+        headings = PageIndexService._prepend_front_matter_node_if_needed(
+            headings,
+            page_count,
+            page_texts=page_texts,
+        )
+        return {
+            "toc_items": headings,
+            "items": headings,
+            "source": "content_outline",
+            "internal_source": "text_heading",
+            "mapped": True,
+            "top_level_frozen": True,
+            "allow_child_expansion": True,
+        }
+
+    @staticmethod
+    def _prepend_front_matter_node_if_needed(
+        items: List[Dict[str, Any]],
+        page_count: int,
+        page_texts: Optional[List[str]] = None,
+    ) -> List[Dict[str, Any]]:
+        normalized = [dict(item) for item in items if isinstance(item, dict)]
+        if not normalized or page_count <= 1:
+            return normalized
+        first_page = PageIndexService._coerce_positive_int(
+            normalized[0].get("physical_index") or normalized[0].get("start_index")
+        )
+        if first_page is None:
+            return normalized
+        first_title = str(normalized[0].get("title") or "").strip().casefold()
+        if first_title in {"preface", "foreword", "front matter"}:
+            return normalized
+        if (
+            first_page == 1
+            and len(normalized) >= 2
+            and PageIndexService._looks_like_document_title_front_matter(normalized[0].get("title"))
+            and PageIndexService._coerce_positive_int(
+                normalized[1].get("physical_index") or normalized[1].get("start_index")
+            )
+            and (
+                PageIndexService._content_outline_next_root_starts_numbered_body(
+                    normalized,
+                    page_texts or [],
+                )
+                or PageIndexService._content_outline_first_page_is_short_cover(page_texts or [])
+            )
+        ):
+            renamed = [dict(item) for item in normalized]
+            original_title = str(renamed[0].get("title") or "").strip()
+            metadata = dict(renamed[0].get("metadata") or {})
+            if original_title:
+                metadata.setdefault("original_title", original_title)
+            renamed[0]["metadata"] = metadata
+            renamed[0]["title"] = "Preface"
+            renamed[0]["structure"] = renamed[0].get("structure") or "0"
+            return renamed
+        if first_page <= 1:
+            return normalized
+        return [
+            {
+                "title": "Preface",
+                "structure": "0",
+                "level": 1,
+                "physical_index": 1,
+                "nodes": [],
+            },
+            *normalized,
+        ]
+
+    @staticmethod
+    def _looks_like_document_title_front_matter(title: Any) -> bool:
+        value = re.sub(r"\s+", " ", str(title or "").strip())
+        if not value:
+            return False
+        if re.match(r"^\s*(?:\d{1,2}(?:\.\d{1,2})*|[IVXLCDM]{1,8})[.)]?\s+\S", value, flags=re.IGNORECASE):
+            return False
+        words = [word for word in re.split(r"\s+", value) if re.search(r"[A-Za-z\u4e00-\u9fff]", word)]
+        return len(words) >= 3
+
+    @staticmethod
+    def _content_outline_next_root_starts_numbered_body(
+        items: List[Dict[str, Any]],
+        page_texts: List[str],
+    ) -> bool:
+        if len(items) < 2 or not page_texts:
+            return False
+        second_page = PageIndexService._coerce_positive_int(
+            items[1].get("physical_index") or items[1].get("start_index")
+        )
+        if second_page is None or second_page <= 1 or second_page > len(page_texts):
+            return False
+        second_text = PageIndexService._normalize_ocr_heading_probe_text(page_texts[second_page - 1])
+        return bool(
+            re.match(r"^\s*(?:\d{1,2}(?:\.\d{1,2})*|[IVXLCDM]{1,8})[.)]?\s+\S", second_text, flags=re.IGNORECASE)
+        )
+
+    @staticmethod
+    def _normalize_ocr_heading_probe_text(text: Any) -> str:
+        value = str(text or "")
+        value = re.sub(r"\\text\s*\{([^}]*)\}", r"\1", value)
+        value = re.sub(r"[$\\{}]", " ", value)
+        value = re.sub(r"\s+", " ", value).strip()
+        return value
+
+    @staticmethod
+    def _content_outline_first_page_is_short_cover(page_texts: List[str]) -> bool:
+        if not page_texts:
+            return False
+        text = str(page_texts[0] or "").strip()
+        if not text:
+            return False
+        lines = [line.strip() for line in text.splitlines() if line.strip()]
+        if len(text) > 800 or len(lines) > 12:
+            return False
+        paragraph_like = sum(1 for line in lines if len(line.split()) >= 12)
+        return paragraph_like == 0
 
     @staticmethod
     def _normalize_and_map_fallback_toc(
@@ -2638,6 +2809,38 @@ Example:
             "pages": pages,
             "confidence": confidence,
         }
+
+    async def _resolve_pre_route_toc_page_signal(
+        self,
+        *,
+        analysis: Dict[str, Any],
+        file_path: Path,
+        page_count: int,
+        model: str,
+    ) -> List[int]:
+        """Resolve cheap visible-TOC facts before choosing fast/balanced route."""
+        if self._has_completed_toc_page_detection(analysis):
+            report = analysis.get("toc_page_detection") or {}
+            return [
+                int(page)
+                for page in (report.get("pages") or [])
+                if isinstance(page, int) and 1 <= page <= page_count
+            ]
+        return await self._resolve_balanced_toc_pages(
+            analysis=analysis,
+            file_path=file_path,
+            page_count=page_count,
+            model=model,
+        )
+
+    @staticmethod
+    def _has_completed_toc_page_detection(analysis: Dict[str, Any]) -> bool:
+        detection = analysis.get("toc_page_detection")
+        return bool(
+            isinstance(detection, dict)
+            and detection.get("classification_complete") is True
+            and str(detection.get("status") or "").strip()
+        )
 
     async def _resolve_balanced_toc_pages(
         self,
@@ -4709,6 +4912,67 @@ Example:
         return roots
 
     @staticmethod
+    async def _build_content_outline_child_tree_for_parent(
+        parent: Dict[str, Any],
+        page_texts: List[str],
+        *,
+        parent_start: int,
+        parent_end: int,
+        model: Optional[str],
+    ) -> List[Dict[str, Any]]:
+        from pageindex.hierarchical_extractor import extract_page_labeled_content_outline
+
+        page_slice = page_texts[parent_start - 1 : parent_end]
+        if not page_slice:
+            return []
+        result = await extract_page_labeled_content_outline(
+            page_slice,
+            model,
+            physical_start_page=parent_start,
+        )
+        if not isinstance(result, dict):
+            return []
+        nodes = result.get("toc_items") or result.get("items") or []
+        if not isinstance(nodes, list):
+            return []
+
+        parent_key = PageIndexService._normalize_outline_title_key(str(parent.get("title") or ""))
+        candidates: List[Dict[str, Any]]
+        if (
+            nodes
+            and isinstance(nodes[0], dict)
+            and PageIndexService._normalize_outline_title_key(str(nodes[0].get("title") or "")) == parent_key
+        ):
+            candidates = list(nodes[0].get("nodes") or [])
+            candidates.extend(node for node in nodes[1:] if isinstance(node, dict))
+        else:
+            candidates = [node for node in nodes if isinstance(node, dict)]
+
+        children: List[Dict[str, Any]] = []
+        seen: set[str] = set()
+        for node in candidates:
+            title = str(node.get("title") or "").strip()
+            key = PageIndexService._normalize_outline_title_key(title)
+            if not title or not key or key == parent_key or key in seen:
+                continue
+            start = (
+                PageIndexService._coerce_positive_int(node.get("start_index"))
+                or PageIndexService._coerce_positive_int(node.get("physical_index"))
+            )
+            if start is None or start < parent_start or start > parent_end:
+                continue
+            child = deepcopy(node)
+            child["level"] = max(2, PageIndexService._coerce_positive_int(child.get("level")) or 2)
+            child["physical_index"] = start
+            child["start_index"] = start
+            child["end_index"] = PageIndexService._coerce_positive_int(child.get("end_index")) or parent_end
+            child["source"] = child.get("source") or "llm_content_outline_child"
+            child.setdefault("nodes", [])
+            children.append(child)
+            seen.add(key)
+        return children
+
+    @staticmethod
     async def _expand_page_outline_with_llm_snippets(
         toc_tree: List[Dict],
         analysis: Dict,
@@ -4718,6 +4982,17 @@ Example:
     ) -> int:
         if not PageIndexService._allows_child_outline_expansion(analysis):
             return 0
+        full_page_texts = PageIndexService._analysis_page_texts(analysis)
+        if not full_page_texts and isinstance(page_list, list):
+            full_page_texts = []
+            for item in page_list:
+                if isinstance(item, (list, tuple)) and item:
+                    full_page_texts.append(str(item[0] or ""))
+                else:
+                    full_page_texts.append(str(item or ""))
+        if page_count > 0:
+            full_page_texts = full_page_texts[:page_count] + [""] * max(0, page_count - len(full_page_texts))
+
         page_texts = PageIndexService._page_texts_for_llm_outline_expansion(
             analysis,
             page_list,
@@ -4791,6 +5066,20 @@ Example:
                 parent_start=start,
                 parent_end=end,
             )
+            if not children:
+                try:
+                    children = await PageIndexService._build_content_outline_child_tree_for_parent(
+                        parent,
+                        full_page_texts,
+                        parent_start=start,
+                        parent_end=end,
+                        model=model,
+                    )
+                except Exception as exc:
+                    print(
+                        "[TOC-OUTLINE] provider=content_outline_child "
+                        f"status=error error_type={type(exc).__name__}"
+                    )
             if not children:
                 continue
             parent["nodes"] = children
@@ -5628,7 +5917,10 @@ Example:
             llm_quality_check,
             hard_fail_enabled=not advisory_only,
         )
-        if llm_failure_reason:
+        if llm_failure_reason and PageIndexService._llm_quality_failure_supported_by_facts(
+            llm_failure_reason,
+            completeness,
+        ):
             reasons.append(llm_failure_reason)
 
         if isinstance(quality_report, dict):
@@ -5676,6 +5968,22 @@ Example:
         if hard_reasons:
             return f"llm_quality_check:{hard_reasons[0]}"
         return None
+
+    @staticmethod
+    def _llm_quality_failure_supported_by_facts(
+        reason: str,
+        completeness: Dict[str, Any],
+    ) -> bool:
+        """Keep LLM QC advisory when it contradicts deterministic gate facts."""
+        reason_text = str(reason or "")
+        if "unexpanded_long_leaf_after_expansion" not in reason_text:
+            return True
+        gate = completeness.get("balanced_quality_gate") if isinstance(completeness, dict) else None
+        if not isinstance(gate, dict):
+            return True
+        if not gate.get("child_expansion_expected"):
+            return False
+        return int(gate.get("unexpanded_long_leaf_hard_count") or 0) > 0
 
     @staticmethod
     def _should_retry_toc_with_balanced(result: Dict[str, Any], reasons: List[str]) -> bool:
@@ -6045,6 +6353,12 @@ Example:
             f"ocr_pages={page_text_diagnostics.get('ocr_page_count')} "
             f"sources={page_text_diagnostics.get('sources')}"
         )
+        await self._resolve_pre_route_toc_page_signal(
+            analysis=analysis,
+            file_path=file_path,
+            page_count=page_count,
+            model=model,
+        )
         self._log_index_stage(
             1,
             "analyze",
@@ -6081,12 +6395,13 @@ Example:
         )
 
         if execution_mode == "balanced":
-            await self._resolve_balanced_toc_pages(
-                analysis=analysis,
-                file_path=file_path,
-                page_count=page_count,
-                model=model,
-            )
+            if not self._has_completed_toc_page_detection(analysis):
+                await self._resolve_balanced_toc_pages(
+                    analysis=analysis,
+                    file_path=file_path,
+                    page_count=page_count,
+                    model=model,
+                )
             route_decision = self._build_state_machine_route_decision(requested_mode, analysis)
             execution_mode = route_decision["execution_mode"]
 

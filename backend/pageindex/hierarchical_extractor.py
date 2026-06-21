@@ -26,6 +26,9 @@ CHAPTER_EXCERPT_CHARS = 200
 LONG_CHAPTER_WINDOW_SIZE = 10
 LONG_CHAPTER_WINDOW_OVERLAP = 1
 LONG_CHAPTER_WINDOW_THRESHOLD = 25
+CONTENT_OUTLINE_GROUP_TOKEN_LIMIT = 10000
+CONTENT_OUTLINE_PAGE_CHAR_LIMIT = 4500
+MIN_CONTENT_OUTLINE_ITEMS = 2
 
 
 
@@ -55,6 +58,17 @@ def _coerce_int(value: Any, default: int = 0) -> int:
 _EXPLICIT_NUMBERING_RE = re.compile(
     r"^\s*(?P<number>\d{1,3}(?:[.]\d{1,3})+)\b"
 )
+_NUMBERED_STRUCTURE_RE = re.compile(r"^\d{1,3}(?:\.\d{1,3})*$")
+_AUTHORITATIVE_UNNUMBERED_STRUCTURES = {
+    "abstract",
+    "references",
+    "acknowledgment",
+    "acknowledgement",
+    "conclusion",
+    "index",
+    "preface",
+    "contents",
+}
 
 
 def _explicit_numbering_key(title: str) -> Optional[str]:
@@ -64,6 +78,430 @@ def _explicit_numbering_key(title: str) -> Optional[str]:
     if not match:
         return None
     return match.group("number")
+
+
+def _content_outline_structure_key(value: Any) -> str:
+    return _coerce_text(value).casefold()
+
+
+def _is_numbered_structure(structure: Any) -> bool:
+    return bool(_NUMBERED_STRUCTURE_RE.fullmatch(_coerce_text(structure)))
+
+
+def _is_authoritative_heading_item(item: Dict[str, Any]) -> bool:
+    structure = _content_outline_structure_key(item.get("structure"))
+    title = _coerce_text(item.get("title"))
+    page = _physical_index_to_int(item.get("physical_index"))
+    if not title or page <= 0:
+        return False
+    if _is_numbered_structure(structure):
+        return True
+    return structure in _AUTHORITATIVE_UNNUMBERED_STRUCTURES
+
+
+def _title_has_own_number(title: Any) -> bool:
+    value = _coerce_text(title).replace(chr(0xFF0E), ".")
+    return bool(re.match(r"^\s*\d{1,3}(?:\.\d{1,3})*[.)]?\s+\S", value))
+
+
+def _content_outline_sort_key(item: Dict[str, Any]) -> Tuple[int, Tuple[Any, ...], int]:
+    page = _physical_index_to_int(item.get("physical_index")) or 10**9
+    structure = _content_outline_structure_key(item.get("structure"))
+    order = _coerce_int(item.get("_content_outline_order"), 10**6)
+    if structure == "0":
+        return (page, (-3, 0), order)
+    if structure.startswith("front-"):
+        return (page, (-2, order), order)
+    if structure == "abstract":
+        return (page, (-1, 0), order)
+    if _is_numbered_structure(structure):
+        parts = tuple(_coerce_int(part, 0) for part in structure.split("."))
+        return (page, (0, *parts), order)
+    if structure in {"acknowledgment", "acknowledgement"}:
+        return (page, (900, 0), order)
+    if structure == "references":
+        return (page, (910, 0), order)
+    if structure == "index":
+        return (page, (920, 0), order)
+    return (page, (999, order), order)
+
+
+def _merge_text_heading_facts(
+    flat_items: List[Dict[str, Any]],
+    *,
+    page_texts: List[str],
+    physical_start_page: int,
+    physical_end_page: int,
+) -> List[Dict[str, Any]]:
+    """Repair LLM outline facts with high-confidence headings from page text.
+
+    The LLM remains responsible for the document outline, but explicit numbered
+    headings and canonical paper sections such as ABSTRACT/REFERENCES are
+    reliable page-level evidence. They can safely fill omissions and correct
+    start pages without introducing a separate rule-only path.
+    """
+    try:
+        from pageindex.text_heading_extractor import extract_text_headings
+    except Exception:
+        return flat_items
+
+    heading_items = extract_text_headings(page_texts, start_page=physical_start_page)
+    heading_items = [
+        dict(item)
+        for item in heading_items
+        if isinstance(item, dict)
+        and physical_start_page
+        <= _physical_index_to_int(item.get("physical_index"))
+        <= physical_end_page
+    ]
+    authoritative = [item for item in heading_items if _is_authoritative_heading_item(item)]
+    if len(authoritative) < 3:
+        return flat_items
+
+    merged: List[Dict[str, Any]] = []
+    for order, item in enumerate(flat_items):
+        updated = dict(item)
+        updated.setdefault("_content_outline_order", order)
+        merged.append(updated)
+
+    # If the model labeled the document title as numeric section "1", move it
+    # to the deterministic front-matter structure so the real section 1 can
+    # remain a separate node.
+    front_heading_by_title = {
+        _normalize_title_key(item.get("title")): item
+        for item in heading_items
+        if _content_outline_structure_key(item.get("structure")).startswith("front-")
+    }
+    if physical_start_page == 1 and front_heading_by_title:
+        for item in merged:
+            title_key = _normalize_title_key(item.get("title"))
+            front = front_heading_by_title.get(title_key)
+            if not front:
+                continue
+            if _is_numbered_structure(item.get("structure")) and not _title_has_own_number(item.get("title")):
+                item["structure"] = front.get("structure") or "front-1"
+                item["level"] = 1
+                item["physical_index"] = _physical_index_to_int(front.get("physical_index"))
+
+    by_structure: Dict[str, Dict[str, Any]] = {}
+    for item in merged:
+        structure = _content_outline_structure_key(item.get("structure"))
+        if structure and structure not in by_structure:
+            by_structure[structure] = item
+
+    next_order = len(merged)
+    changed = 0
+    for heading in authoritative:
+        structure = _content_outline_structure_key(heading.get("structure"))
+        page = _physical_index_to_int(heading.get("physical_index"))
+        if not structure or page <= 0:
+            continue
+        existing = by_structure.get(structure)
+        if existing is not None:
+            if _physical_index_to_int(existing.get("physical_index")) != page:
+                existing["physical_index"] = page
+                existing["source"] = str(existing.get("source") or "llm_content_outline")
+                existing["heading_fact_verified"] = True
+                changed += 1
+            continue
+
+        added = dict(heading)
+        added["source"] = "text_heading_fact"
+        added["heading_fact_verified"] = True
+        added["_content_outline_order"] = next_order
+        next_order += 1
+        merged.append(added)
+        by_structure[structure] = added
+        changed += 1
+
+    if changed <= 0:
+        return flat_items
+
+    merged.sort(key=_content_outline_sort_key)
+    for item in merged:
+        item.pop("_content_outline_order", None)
+    return merged
+
+
+# ---------------------------------------------------------------------------
+# stage=content_outline: 官方式带物理页标签全文建树
+# ---------------------------------------------------------------------------
+
+_CONTENT_OUTLINE_INIT_PROMPT = """You are an expert in extracting hierarchical document structure.
+
+Generate a navigation outline from the provided page text.
+
+Rules:
+1. The text contains physical page tags like <physical_index_12>. Use those tags as the start page evidence.
+2. Extract meaningful sections and subsections in reading order.
+3. Preserve original heading wording when visible; only fix obvious spacing issues.
+4. Include meaningful front matter or introductory sections when they start before the first numbered chapter.
+5. If the document starts with a prominent document/report/paper title, include it as the first top-level node.
+6. Keep visible long headings complete when possible; do not shorten them unless only a shorter heading is visible.
+7. Do not invent unsupported sections. If unsure, return fewer items.
+8. Return a flat JSON list using structure numbers such as "1", "1.1", "1.2", "2".
+
+Return JSON only:
+{{
+  "items": [
+    {{"structure": "1", "title": "Section title", "physical_index": "<physical_index_1>"}}
+  ]
+}}
+
+Document text:
+{content}
+"""
+
+
+_CONTENT_OUTLINE_CONTINUE_PROMPT = """You are an expert in extracting hierarchical document structure.
+
+Continue the previous outline using only the current page text.
+
+Rules:
+1. The text contains physical page tags like <physical_index_12>. Use those tags as the start page evidence.
+2. Return only new sections/subsections that start in the current text.
+3. Preserve original heading wording when visible; only fix obvious spacing issues.
+4. Keep structure numbers consistent with the previous outline.
+5. If a new group starts with a prominent document/report/paper title not present in the previous outline, include it as a top-level node.
+6. Keep visible long headings complete when possible; do not shorten them unless only a shorter heading is visible.
+7. Do not invent unsupported sections. If unsure, return fewer items.
+
+Return JSON only:
+{{
+  "items": [
+    {{"structure": "2", "title": "Next section", "physical_index": "<physical_index_12>"}}
+  ]
+}}
+
+Previous outline JSON:
+{previous}
+
+Current page text:
+{content}
+"""
+
+
+def _page_labeled_text(page: int, text: Any) -> str:
+    value = _coerce_text(text)
+    if len(value) > CONTENT_OUTLINE_PAGE_CHAR_LIMIT:
+        value = value[:CONTENT_OUTLINE_PAGE_CHAR_LIMIT]
+    return f"<physical_index_{page}>\n{value}\n</physical_index_{page}>"
+
+
+def _build_page_labeled_groups(page_texts: List[str], *, physical_start_page: int = 1) -> List[str]:
+    groups: List[str] = []
+    current: List[str] = []
+    current_tokens = 0
+    for index, text in enumerate(page_texts, start=1):
+        labeled = _page_labeled_text(physical_start_page + index - 1, text)
+        if not labeled.strip():
+            continue
+        token_count = max(1, count_tokens(labeled))
+        if current and current_tokens + token_count > CONTENT_OUTLINE_GROUP_TOKEN_LIMIT:
+            groups.append("\n\n".join(current))
+            current = []
+            current_tokens = 0
+        current.append(labeled)
+        current_tokens += token_count
+    if current:
+        groups.append("\n\n".join(current))
+    return groups
+
+
+def _physical_index_to_int(value: Any) -> int:
+    if isinstance(value, bool) or value is None:
+        return 0
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(value)
+    text = _coerce_text(value)
+    if not text:
+        return 0
+    marker = re.search(r"physical_index_(\d+)", text)
+    if marker:
+        return _coerce_int(marker.group(1), 0)
+    page_marker = re.search(r"\bpage\s*(\d+)\b", text, flags=re.IGNORECASE)
+    if page_marker:
+        return _coerce_int(page_marker.group(1), 0)
+    return _coerce_int(text, 0)
+
+
+def _extract_outline_payload_items(payload: Any) -> List[Dict[str, Any]]:
+    if isinstance(payload, list):
+        return [item for item in payload if isinstance(item, dict)]
+    if not isinstance(payload, dict):
+        return []
+    for key in ("items", "toc_items", "outline", "structure", "chapters", "sections"):
+        value = payload.get(key)
+        if isinstance(value, list):
+            return [item for item in value if isinstance(item, dict)]
+    return []
+
+
+def _structure_depth(structure: str) -> int:
+    if not structure:
+        return 1
+    return structure.count(".") + 1
+
+
+def _normalize_content_outline_items(
+    payload: Any,
+    *,
+    min_page: int,
+    max_page: int,
+) -> List[Dict[str, Any]]:
+    raw_items = _extract_outline_payload_items(payload)
+    normalized: List[Dict[str, Any]] = []
+    seen: set[Tuple[str, str, int]] = set()
+
+    def append_item(item: Dict[str, Any], fallback_structure: str) -> None:
+        title = _coerce_text(
+            item.get("title")
+            or item.get("heading")
+            or item.get("name")
+        )
+        page = _physical_index_to_int(
+            item.get("physical_index")
+            or item.get("start_page")
+            or item.get("start_index")
+            or item.get("page")
+        )
+        if not title or page < min_page or page > max_page:
+            return
+        structure = _coerce_text(item.get("structure") or fallback_structure)
+        if not structure:
+            level = max(1, _coerce_int(item.get("level"), 1))
+            structure = ".".join("1" for _ in range(level))
+        key = (structure, _normalize_title_key(title), page)
+        if key in seen:
+            return
+        seen.add(key)
+        normalized.append(
+            {
+                "structure": structure,
+                "title": title,
+                "level": _structure_depth(structure),
+                "physical_index": page,
+                "source": "llm_content_outline",
+            }
+        )
+
+    def walk(items: List[Dict[str, Any]], parent_structure: str = "") -> None:
+        for index, item in enumerate(items, start=1):
+            fallback_structure = (
+                f"{parent_structure}.{index}" if parent_structure else str(index)
+            )
+            structure = _coerce_text(item.get("structure") or fallback_structure)
+            append_item(item, structure)
+            children = item.get("nodes") or item.get("children") or []
+            if isinstance(children, list):
+                walk([child for child in children if isinstance(child, dict)], structure)
+
+    walk(raw_items)
+    return normalized
+
+
+def _dedupe_content_outline_items(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    deduped: List[Dict[str, Any]] = []
+    seen: set[Tuple[str, str, int]] = set()
+    for item in items:
+        title = _coerce_text(item.get("title"))
+        page = _physical_index_to_int(item.get("physical_index"))
+        structure = _coerce_text(item.get("structure"))
+        key = (structure, _normalize_title_key(title), page)
+        if not title or page <= 0 or key in seen:
+            continue
+        seen.add(key)
+        deduped.append(dict(item))
+    return deduped
+
+
+async def extract_page_labeled_content_outline(
+    page_texts: List[str],
+    model: Optional[str] = None,
+    physical_start_page: int = 1,
+) -> Optional[Dict[str, Any]]:
+    """Build a full-document outline from page-tagged text.
+
+    This mirrors the official PageIndex no-TOC path: each page is labeled with
+    its 1-based physical PDF page and the model returns a flat structured list.
+    """
+    if not page_texts:
+        return None
+
+    physical_start_page = max(1, int(physical_start_page or 1))
+    groups = _build_page_labeled_groups(page_texts, physical_start_page=physical_start_page)
+    if not groups:
+        return None
+
+    page_count = len(page_texts)
+    physical_end_page = physical_start_page + page_count - 1
+    all_items: List[Dict[str, Any]] = []
+
+    from pageindex.post_processing import assign_page_ranges, build_tree, normalize_tree_page_ranges
+    from pageindex.utils import extract_json
+
+    for group_index, group in enumerate(groups):
+        if group_index == 0:
+            prompt = _CONTENT_OUTLINE_INIT_PROMPT.format(content=group)
+        else:
+            previous = json.dumps(all_items[-80:], ensure_ascii=False, indent=2)
+            prompt = _CONTENT_OUTLINE_CONTINUE_PROMPT.format(
+                previous=previous,
+                content=group,
+            )
+        response = await llm_acompletion(model, prompt)
+        if not response:
+            continue
+        payload = extract_json(response)
+        items = _normalize_content_outline_items(
+            payload,
+            min_page=physical_start_page,
+            max_page=physical_end_page,
+        )
+        all_items.extend(items)
+
+    flat_items = _dedupe_content_outline_items(all_items)
+    if len(flat_items) < MIN_CONTENT_OUTLINE_ITEMS:
+        return None
+    flat_items = _merge_text_heading_facts(
+        flat_items,
+        page_texts=page_texts,
+        physical_start_page=physical_start_page,
+        physical_end_page=physical_end_page,
+    )
+    flat_items = _dedupe_content_outline_items(flat_items)
+
+    ranged_items = assign_page_ranges([dict(item) for item in flat_items], physical_end_page)
+    tree = build_tree(ranged_items)
+    tree = normalize_tree_page_ranges(tree, physical_end_page)
+
+    total_nodes = len(flat_items)
+    root_count = len(tree)
+    confidence = 0.62
+    if total_nodes >= max(4, root_count + 2):
+        confidence += 0.12
+    if root_count >= 3:
+        confidence += 0.08
+
+    print(
+        "[TOC-CANDIDATE] provider=hierarchical "
+        f"stage=content_outline status=ok groups={len(groups)} items={total_nodes}"
+    )
+    return {
+        "items": tree,
+        "toc_items": tree,
+        "flat_items": ranged_items,
+        "structure": "hierarchical",
+        "source": "hierarchical_content_outline",
+        "confidence": min(confidence, 0.92),
+        "stages": {
+            "content_outline_groups": len(groups),
+            "content_outline_items": total_nodes,
+            "content_outline_roots": root_count,
+        },
+    }
 
 # ---------------------------------------------------------------------------
 # stage=framework: 提取一级框架
@@ -600,6 +1038,18 @@ async def extract_hierarchical_toc(
             }
         }
     """
+    print("[TOC-CANDIDATE] provider=hierarchical stage=content_outline status=started")
+    try:
+        content_outline = await extract_page_labeled_content_outline(page_texts, model)
+    except Exception as exc:
+        print(
+            "[TOC-CANDIDATE] provider=hierarchical "
+            f"stage=content_outline status=error error={type(exc).__name__}"
+        )
+        content_outline = None
+    if content_outline:
+        return content_outline
+
     print("[TOC-CANDIDATE] provider=hierarchical stage=framework status=started")
 
     # stage=framework

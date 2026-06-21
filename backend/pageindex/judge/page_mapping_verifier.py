@@ -58,6 +58,10 @@ class PageMappingVerifier:
             score *= 0.6
         if not in_range:
             score *= 0.6
+        unique_pages = len(set(pages))
+        page_collapse = bool(len(pages) >= 8 and unique_pages <= max(1, len(pages) // 4))
+        if page_collapse:
+            score = min(score, 0.35)
         return {
             "page_monotonic": monotonic,
             "pages_in_range": in_range,
@@ -65,6 +69,7 @@ class PageMappingVerifier:
             "verified_item_count": len(items),
             "total_item_count": len(all_items),
             "has_explicit_physical": has_explicit_physical,
+            "page_collapse": page_collapse,
             "page_mapping_score": round(score, 4),
         }
 

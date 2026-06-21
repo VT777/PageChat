@@ -23,6 +23,8 @@ def evaluate_code_toc(analysis: Dict[str, Any]) -> Dict[str, Any]:
         for section in code_toc.get("toc_sections") or []
         if isinstance(section, dict) and section.get("kind")
     ]
+    code_auxiliary_kinds = _code_toc_auxiliary_kinds(code_toc, section_kinds)
+    visible_auxiliary_kinds = _visible_auxiliary_kinds(analysis)
     section_reports = _section_reports(code_toc, page_count=page_count)
 
     reasons: List[str] = []
@@ -57,12 +59,20 @@ def evaluate_code_toc(analysis: Dict[str, Any]) -> Dict[str, Any]:
         or str(analysis.get("text_layer_quality") or "").lower() == "garbled"
         or str(analysis.get("content_type") or "").lower() == "ocr"
     )
-    if "bookmarks" in selected_source_parts and not _bookmark_density_ok(len(items), page_count, garbled_or_ocr=garbled_or_ocr):
+    if "bookmarks" in selected_source_parts and not _bookmark_density_ok(
+        len(items),
+        page_count,
+        garbled_or_ocr=garbled_or_ocr,
+        range_coverage=max(pages) / page_count if pages and page_count else 0.0,
+    ):
         reasons.append("sparse_bookmarks")
 
     range_coverage = max(pages) / page_count if pages and page_count else 0.0
     if range_coverage < 0.70:
         reasons.append("low_range_coverage")
+
+    for missing_kind in sorted(visible_auxiliary_kinds - code_auxiliary_kinds):
+        reasons.append(f"missing_visible_auxiliary_catalog:{missing_kind}")
 
     for section_report in section_reports:
         kind = section_report["kind"]
@@ -124,6 +134,35 @@ def _effective_items_and_source(code_toc: Dict[str, Any]) -> tuple[List[Dict[str
     )
 
 
+def _visible_auxiliary_kinds(analysis: Dict[str, Any]) -> set[str]:
+    detection = analysis.get("toc_page_detection")
+    if not isinstance(detection, dict):
+        return set()
+    if str(detection.get("status") or "").strip().lower() == "not_found":
+        return set()
+    kinds: set[str] = set()
+    for section in detection.get("sections") or []:
+        if not isinstance(section, dict):
+            continue
+        kind = str(section.get("kind") or "").strip()
+        if kind in {"figure_toc", "table_toc"}:
+            kinds.add(kind)
+    return kinds
+
+
+def _code_toc_auxiliary_kinds(code_toc: Dict[str, Any], section_kinds: List[str]) -> set[str]:
+    kinds = {kind for kind in section_kinds if kind in {"figure_toc", "table_toc"}}
+    for item in code_toc.get("items") or []:
+        if not isinstance(item, dict):
+            continue
+        catalog_type = str(item.get("catalog_type") or "").strip().lower()
+        if catalog_type in {"figure", "figures", "figure_toc"}:
+            kinds.add("figure_toc")
+        elif catalog_type in {"table", "tables", "table_toc"}:
+            kinds.add("table_toc")
+    return kinds
+
+
 def _section_reports(code_toc: Dict[str, Any], *, page_count: int) -> List[Dict[str, Any]]:
     reports: List[Dict[str, Any]] = []
     for section in code_toc.get("toc_sections") or []:
@@ -148,10 +187,18 @@ def _section_reports(code_toc: Dict[str, Any], *, page_count: int) -> List[Dict[
     return reports
 
 
-def _bookmark_density_ok(item_count: int, page_count: int, *, garbled_or_ocr: bool) -> bool:
+def _bookmark_density_ok(
+    item_count: int,
+    page_count: int,
+    *,
+    garbled_or_ocr: bool,
+    range_coverage: float,
+) -> bool:
     if garbled_or_ocr:
         return True
     if page_count <= 0:
+        return True
+    if item_count >= 3 and range_coverage >= 0.70:
         return True
     return item_count / page_count >= 0.75 or item_count >= 50
 

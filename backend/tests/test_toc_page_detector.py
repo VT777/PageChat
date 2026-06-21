@@ -171,6 +171,92 @@ def test_auxiliary_catalog_continuation_does_not_imply_main_toc_section() -> Non
     ]
 
 
+def test_text_detector_rejects_dense_body_table_page_without_toc_heading() -> None:
+    from pageindex.toc_detector import classify_toc_page_text
+
+    body_table_page = "\n".join(
+        [
+            "4 8",
+            "16",
+            "32",
+            "64",
+            "k",
+            "0.0",
+            "0.5",
+            "1.0",
+            "1.5",
+            "2.0",
+            "Query time (s)",
+            "CAP",
+            "COS",
+            "NET",
+            "SSP",
+            "TRA",
+            "SIA",
+            "(a) RETINA",
+            "4 8",
+            "16",
+            "32",
+            "64",
+            "k",
+            "0",
+            "5",
+            "10",
+            "15",
+            "Query time (s)",
+            "CAP",
+            "COS",
+            "NET",
+            "SSP",
+            "TRA",
+            "SIA",
+            "(b) IRMA",
+            "4 8",
+            "16",
+            "32",
+            "64",
+            "k",
+            "0",
+            "1",
+            "2",
+            "3",
+            "4",
+            "5",
+            "Query time (x103 s)",
+            "CAP",
+            "COS",
+            "NET",
+            "SSP",
+            "TRA",
+            "SIA",
+            "(c) PANORAMIO",
+            "4 8",
+            "16",
+            "32",
+            "64",
+            "k",
+            "0",
+            "5",
+            "10",
+            "15",
+            "20",
+            "Query time (x103 s)",
+            "CAP",
+            "COS",
+            "NET",
+            "SSP",
+            "TRA",
+            "SIA",
+            "(d) FRIENDS",
+            "Figure 9: Query time comparison.",
+        ]
+    )
+
+    candidate = classify_toc_page_text(body_table_page, page=10)
+
+    assert candidate["is_toc"] is False
+
+
 def test_llm_toc_page_payload_normalizes_typed_sections() -> None:
     from pageindex.toc_detector import normalize_llm_toc_page_payload
 

@@ -73,7 +73,7 @@ def test_index_diagnostics_exclude_ocr_prompt_and_raw_content():
                 {
                     "task": "page_text",
                     "model": "qwen3.5-ocr",
-                    "prompt_text": "Recognize all readable text in natural reading order.",
+                    "prompt_text": "Extract every visible text line in reading order, including section numbers and headings.",
                     "raw": {"content": "full OCR output"},
                     "diagnostics_path": "backend/data/ocr_diagnostics/doc/page_text-0001.json",
                 }

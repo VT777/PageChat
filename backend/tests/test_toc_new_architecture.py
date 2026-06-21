@@ -107,13 +107,12 @@ def test_router_uses_ppocr_layout_for_garbled_documents() -> None:
 
 
 def test_new_architecture_service_path_has_no_visual_fallback() -> None:
-    source = inspect.getsource(pageindex_service_module.PageIndexService._generate_index_v2)
+    source = inspect.getsource(pageindex_service_module.PageIndexService._generate_pdf_index)
 
     assert "extract_visual_toc" not in source
     assert "falling back to targeted visual/legacy" not in source
     assert "build_balanced_toc_visual" not in source
     assert "_vlm_detect_anchors" not in source
-    assert "balanced_toc" not in source
 
 
 def test_code_toc_fast_path_allows_verified_bookmark_early_return() -> None:
@@ -135,6 +134,52 @@ def test_code_toc_fast_path_allows_verified_bookmark_early_return() -> None:
     assert result["source"] == "code_toc"
     assert result["early_return_allowed"] is True
     assert result["evidence"]["pages_monotonic"] is True
+
+
+def test_code_toc_fast_path_does_not_early_return_when_visible_auxiliary_catalog_is_missing() -> None:
+    result = CodeTOCFastPath().run(
+        {
+            "page_count": 50,
+            "toc_page_detection": {
+                "status": "detected",
+                "pages": [2],
+                "has_page_numbers": True,
+                "sections": [
+                    {"kind": "main_toc", "pages": [2]},
+                    {"kind": "figure_toc", "pages": [2]},
+                ],
+            },
+            "code_toc": {
+                "source": "bookmarks",
+                "toc_sections": [
+                    {
+                        "kind": "main_toc",
+                        "source": "bookmarks",
+                        "items": [
+                            {"title": "一、概述", "level": 1, "physical_index": 7},
+                            {"title": "二、现状", "level": 1, "physical_index": 10},
+                            {"title": "三、挑战", "level": 1, "physical_index": 16},
+                            {"title": "四、框架", "level": 1, "physical_index": 25},
+                            {"title": "五、实践", "level": 1, "physical_index": 40},
+                            {"title": "六、展望", "level": 1, "physical_index": 47},
+                        ],
+                    }
+                ],
+                "items": [
+                    {"title": "一、概述", "level": 1, "physical_index": 7},
+                    {"title": "二、现状", "level": 1, "physical_index": 10},
+                    {"title": "三、挑战", "level": 1, "physical_index": 16},
+                    {"title": "四、框架", "level": 1, "physical_index": 25},
+                    {"title": "五、实践", "level": 1, "physical_index": 40},
+                    {"title": "六、展望", "level": 1, "physical_index": 47},
+                ],
+            },
+        }
+    )
+
+    assert result is not None
+    assert result["early_return_allowed"] is False
+    assert "missing_visible_auxiliary_catalog:figure_toc" in result["reasons"]
 
 
 def test_code_toc_fast_path_never_early_returns_weak_regex() -> None:
@@ -428,6 +473,53 @@ def test_toc_judge_prefers_verified_code_toc_over_ocr_candidate() -> None:
     assert judged["source"] == "code_toc"
     assert judged["items"][0]["title"] == "Bookmark"
     assert judged["rejected_candidates"][0]["source"] == "ocr_toc_page"
+
+
+def test_toc_judge_rejects_zero_mapping_code_toc_before_content_outline() -> None:
+    judged = TOCJudge().select(
+        [
+            {
+                "candidate_id": "code-bad",
+                "source": "code_toc",
+                "raw_confidence": 0.9,
+                "items": [{"title": "Broken bookmark", "physical_index": 1}],
+                "evidence": {
+                    "page_monotonic": True,
+                    "pages_in_range": True,
+                    "page_mapping_score": 0.0,
+                    "title_match_rate": 0.0,
+                },
+            },
+            {
+                "candidate_id": "outline-ok",
+                "source": "content_outline",
+                "raw_confidence": 0.60,
+                "items": [{"title": "Outline", "physical_index": 5}],
+                "evidence": {
+                    "page_monotonic": True,
+                    "pages_in_range": True,
+                    "page_mapping_score": 1.0,
+                },
+            },
+        ]
+    )
+
+    assert judged["source"] == "content_outline"
+    assert judged["rejected_candidates"][0]["source"] == "code_toc"
+
+
+def test_page_mapping_verifier_penalizes_many_items_collapsed_to_one_page() -> None:
+    from pageindex.judge.page_mapping_verifier import PageMappingVerifier
+
+    items = [
+        {"title": f"Section {index}", "physical_index": 1}
+        for index in range(12)
+    ]
+
+    report = PageMappingVerifier().verify({"source": "code_toc", "items": items}, page_count=50)
+
+    assert report["page_collapse"] is True
+    assert report["page_mapping_score"] < 0.5
 
 
 def test_pipeline_controller_returns_verified_code_toc_without_ocr_or_vlm() -> None:

@@ -31,6 +31,52 @@ def test_state_machine_accepts_high_quality_embedded_toc() -> None:
     assert plan["fallbacks"] == []
 
 
+def test_state_machine_rejects_embedded_toc_missing_visible_auxiliary_catalog() -> None:
+    plan = _plan(
+        {
+            "page_count": 50,
+            "content_type": "text",
+            "code_toc": {
+                "source": "bookmarks",
+                "toc_sections": [
+                    {
+                        "kind": "main_toc",
+                        "source": "bookmarks",
+                        "items": [
+                            {"title": "一、概述", "physical_index": 7},
+                            {"title": "二、现状", "physical_index": 10},
+                            {"title": "三、挑战", "physical_index": 16},
+                            {"title": "四、框架", "physical_index": 25},
+                            {"title": "五、实践", "physical_index": 40},
+                            {"title": "六、展望", "physical_index": 47},
+                        ],
+                    }
+                ],
+                "items": [
+                    {"title": "一、概述", "physical_index": 7},
+                    {"title": "二、现状", "physical_index": 10},
+                    {"title": "三、挑战", "physical_index": 16},
+                    {"title": "四、框架", "physical_index": 25},
+                    {"title": "五、实践", "physical_index": 40},
+                    {"title": "六、展望", "physical_index": 47},
+                ],
+            },
+            "toc_page_detection": {
+                "status": "detected",
+                "pages": [2],
+                "has_page_numbers": True,
+                "sections": [
+                    {"kind": "main_toc", "pages": [2]},
+                    {"kind": "figure_toc", "pages": [2]},
+                ],
+            },
+        }
+    )
+
+    assert plan["selected_path"] == "visible_toc_with_pages"
+    assert plan["fallbacks"][0]["reason"] == "embedded_toc_rejected"
+
+
 def test_state_machine_rejects_sparse_bookmark_outline_when_visible_toc_exists() -> None:
     plan = _plan(
         {

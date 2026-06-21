@@ -318,6 +318,54 @@ def test_quality_gate_accepts_adjacent_boundary_overlap() -> None:
     assert not report["status"].startswith("failed")
 
 
+def test_quality_gate_uses_selected_candidate_for_evidence_title_preservation() -> None:
+    report = build_index_quality_report(
+        {
+            "structure": [
+                {
+                    "title": "目录",
+                    "start_index": 7,
+                    "end_index": 50,
+                    "nodes": [
+                        _node("1 Overview", 7, 8),
+                        _node("2 Monetary Policy and Economic Developments", 9, 20),
+                        _node("3 Financial Stability", 21, 30),
+                        _node("4 Supervision and Regulation", 31, 50),
+                    ],
+                }
+            ],
+            "route_decision": {"selected_path": "visible_toc_with_pages"},
+            "diagnostics": {
+                "toc_candidates_summary": [
+                    {
+                        "candidate_id": "toc_page_text_rule_001",
+                        "source": "toc_page_text_rule",
+                        "item_count": 1,
+                        "status": "selected",
+                    },
+                    {
+                        "candidate_id": "code_toc_links",
+                        "source": "code_toc",
+                        "item_count": 49,
+                        "status": "rejected",
+                    },
+                ],
+                "balanced_quality_gate": {
+                    "child_expansion_attempted": False,
+                    "child_expansion_required_count": 0,
+                    "unexpanded_long_leaf_count": 0,
+                    "unexpanded_long_leaf_hard_count": 0,
+                },
+            },
+        },
+        page_count=50,
+    )
+
+    assert report["evidence_title_count"] == 1
+    assert report["title_preservation_rate"] == 1.0
+    assert "evidence_titles_lost_in_final_tree" not in report["hard_fail_reasons"]
+
+
 def test_quality_gate_hard_fails_auxiliary_catalog_mixed_into_main_tree() -> None:
     report = build_index_quality_report(
         {
