@@ -62,7 +62,7 @@ py -X utf8 scripts\run_ai_knowledge_toc_e2e.py `
 - 必须成功。
 - 必须达到最小 root/node/depth。
 - 必须包含关键 root 标题。
-- 关键标题必须映射到预期物理页。
+- 关键标题必须映射到预期物理页。这里的页码一律是 PDF 物理页，从 1 开始计数，不使用书籍/报告正文里印刷出来的页码。
 - 禁止泛节点坍缩、目录页大面积映射、优质 embedded TOC 被差 fallback 覆盖等。
 
 ## 3. 文档清单
@@ -111,3 +111,12 @@ eval0618/
 - E2E runner 支持 `--fixture`。
 - E2E report 支持 `acceptance.min_root_count`、`min_node_count`、`min_depth`、`required_root_titles`、`required_pages`、`forbidden_patterns.no_generic_single_node`。
 
+## 6. 页码口径校准
+
+`required_pages` 必须使用 PDF 物理页，而不是文档内印刷页码。以 `PRML.pdf` 为例，正文页脚里的书内页码和 PDF 物理页存在前置内容偏移：
+
+- `5 Neural Networks` 位于 PDF 物理页 245。
+- `References` 位于 PDF 物理页 731。
+- `Index` 位于 PDF 物理页 749。
+
+验证 runner 和最终 TOC 都以物理页为准，这样前端可以直接基于 `start_index` / `end_index` 定位和提取内容。

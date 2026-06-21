@@ -223,9 +223,9 @@
           "Introduction": 21,
           "Probability Distributions": 87,
           "Linear Models for Regression": 157,
-          "Neural Networks": 225,
-          "References": 697,
-          "Index": 721
+          "Neural Networks": 245,
+          "References": 731,
+          "Index": 749
         },
         "forbidden_patterns": {
           "no_generic_single_node": true,

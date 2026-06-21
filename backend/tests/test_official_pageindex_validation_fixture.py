@@ -88,6 +88,11 @@ def test_official_pageindex_fixture_has_known_regression_assertions() -> None:
     assert proposed["expected_route"]["selected_path"] == "embedded_toc"
     assert proposed["acceptance"]["required_pages"]["IV. Economic Analysis"] == 214
 
+    prml = by_file["PRML.pdf"]
+    assert prml["acceptance"]["required_pages"]["Neural Networks"] == 245
+    assert prml["acceptance"]["required_pages"]["References"] == 731
+    assert prml["acceptance"]["required_pages"]["Index"] == 749
+
 
 def test_official_pageindex_fixture_references_real_files_when_available() -> None:
     fixture = _load_fixture()
