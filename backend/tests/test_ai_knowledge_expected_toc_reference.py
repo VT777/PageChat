@@ -4,6 +4,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 REFERENCE_MD = ROOT / "docs" / "architecture" / "ai_knowledge_expected_toc_reference.md"
+CURRENT_BASELINE_MD = ROOT / "docs" / "architecture" / "ai_knowledge_current_e2e_baseline_2026-06-21.md"
 FIXTURE_PATH = ROOT / "backend" / "tests" / "fixtures" / "toc" / "ai_knowledge_expected_toc_reference.json"
 
 
@@ -17,6 +18,7 @@ def test_expected_toc_reference_fixture_covers_all_ai_knowledge_documents() -> N
     documents = fixture.get("documents")
 
     assert fixture["source_markdown"] == str(REFERENCE_MD)
+    assert fixture["current_e2e_baseline"] == str(CURRENT_BASELINE_MD)
     assert isinstance(documents, list)
     assert [doc["id"] for doc in documents] == [f"T{idx:02d}" for idx in range(1, 14)]
 
@@ -47,4 +49,14 @@ def test_expected_toc_reference_markdown_contains_all_fixture_documents() -> Non
 
     for doc in fixture["documents"]:
         assert f"## {doc['id']} " in markdown
+        assert doc["file"] in markdown
+
+
+def test_current_e2e_baseline_records_all_fixture_documents() -> None:
+    fixture = _load_fixture()
+    markdown = CURRENT_BASELINE_MD.read_text(encoding="utf-8")
+
+    assert "task6-full-final-v3" in markdown
+    for doc in fixture["documents"]:
+        assert f"| {doc['id']} |" in markdown
         assert doc["file"] in markdown
