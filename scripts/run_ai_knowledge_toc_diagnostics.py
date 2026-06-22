@@ -752,16 +752,12 @@ async def collect_build_diagnostics(
         await find_toc_pages(analysis, str(path), model=model)
         route_decision = PageIndexService._build_state_machine_route_decision("smart", analysis)
 
-    result = await service._run_unified_toc_controller(
-        file_path=path,
-        requested_mode="smart",
+    result = await service._run_toc_attempt_chain(
         analysis=analysis,
         route_decision=route_decision,
         page_count=int(analysis.get("page_count") or len(analysis.get("page_texts") or [])),
         model=model,
         anchors={"toc_pages": list(analysis.get("toc_pages") or [])},
-        ocr_text_map=analysis.get("ocr_text_map"),
-        dividers=[],
     )
     items = list((result or {}).get("items") or [])
     return {
@@ -855,16 +851,12 @@ async def collect_map_diagnostics(
 
     page_count = int(analysis.get("page_count") or len(analysis.get("page_texts") or []))
     anchors = {"toc_pages": list(analysis.get("toc_pages") or [])}
-    result = await service._run_unified_toc_controller(
-        file_path=path,
-        requested_mode="smart",
+    result = await service._run_toc_attempt_chain(
         analysis=analysis,
         route_decision=route_decision,
         page_count=page_count,
         model=model,
         anchors=anchors,
-        ocr_text_map=analysis.get("ocr_text_map"),
-        dividers=list(analysis.get("chapter_dividers") or []),
     )
     raw_items = list((result or {}).get("items") or [])
     if not result or not raw_items:

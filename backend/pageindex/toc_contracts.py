@@ -6,10 +6,15 @@ adopt the contract incrementally without a large type migration.
 
 from __future__ import annotations
 
-from typing import Any, Dict, Iterable, List, Optional
+from typing import Any, Dict, Iterable, List, Mapping, Optional
 
 SECTION_KINDS = {"main_toc", "figure_toc", "table_toc", "other_toc"}
 AUXILIARY_SECTION_KINDS = {"figure_toc", "table_toc"}
+FINAL_PAGE_FIELDS = {"physical_index", "start_index", "end_index"}
+
+
+class TocContractError(ValueError):
+    """Raised when a TOC payload violates the stage contract."""
 
 _SECTION_KIND_ALIASES = {
     "main": "main_toc",
@@ -66,7 +71,7 @@ def normalize_toc_draft_item(
 
     raw_page_label = _first_present(
         raw,
-        ("raw_page_label", "page_label", "printed_page", "logical_page", "page", "physical_index"),
+        ("raw_page_label", "page_label", "printed_page", "logical_page", "page"),
     )
     if raw_page_label is not None:
         normalized["raw_page_label"] = raw_page_label
@@ -81,6 +86,9 @@ def normalize_toc_draft_item(
         normalized["confidence"] = _safe_float(raw.get("confidence"), default=0.0)
     if isinstance(raw.get("metadata"), dict):
         normalized["metadata"] = dict(raw["metadata"])
+    for field in FINAL_PAGE_FIELDS:
+        if field in raw:
+            normalized[field] = raw[field]
 
     children = raw.get("children")
     if isinstance(children, list) and children:
@@ -94,9 +102,9 @@ def normalize_toc_draft_item(
 
 
 def normalize_toc_draft(
-    items: Iterable[Dict[str, Any]],
-    section_kind: str,
-    source: str,
+    items: Any,
+    section_kind: Optional[str] = None,
+    source: Optional[str] = None,
     *,
     title: Optional[str] = None,
     source_pages: Optional[List[int]] = None,
@@ -104,22 +112,143 @@ def normalize_toc_draft(
     metadata: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Wrap extracted TOC items as an S4 draft."""
+    if isinstance(items, Mapping):
+        return _normalize_toc_draft_payload(items)
+
     normalized_kind = normalize_section_kind(section_kind)
     normalized_items = [
         normalize_toc_draft_item(item, normalized_kind)
         for item in list(items or [])
         if isinstance(item, dict) and str(item.get("title") or "").strip()
     ]
-    return {
-        "type": "toc_draft",
-        "source": _require_source(source),
-        "section_kind": normalized_kind,
+    section = {
+        "kind": normalized_kind,
         "title": title or _default_section_title(normalized_kind),
         "items": normalized_items,
+    }
+    return {
+        "type": "toc_draft",
+        "source": _require_source(source or ""),
+        "section_kind": normalized_kind,
+        "title": section["title"],
+        "items": normalized_items,
+        "toc_sections": [section],
         "source_pages": list(source_pages or []),
         "confidence": float(confidence or 0.0),
         "metadata": dict(metadata or {}),
     }
+
+
+def assert_s4_draft_contract(draft: Mapping[str, Any]) -> None:
+    """Ensure an S4 draft contains structure only, never final physical pages."""
+    if not isinstance(draft, Mapping):
+        raise TocContractError("TOC draft must be a mapping")
+    if draft.get("type") not in (None, "toc_draft"):
+        raise TocContractError("TOC draft type must be 'toc_draft'")
+    for path, item in _walk_items(draft):
+        forbidden = sorted(field for field in FINAL_PAGE_FIELDS if field in item)
+        if forbidden:
+            raise TocContractError(
+                f"S4 draft item at {path} contains final page fields: {', '.join(forbidden)}"
+            )
+
+
+def normalize_mapped_toc(payload: Mapping[str, Any]) -> Dict[str, Any]:
+    """Normalize and validate an S5 mapped TOC payload."""
+    if not isinstance(payload, Mapping):
+        raise TocContractError("Mapped TOC must be a mapping")
+    result = dict(payload)
+    result["type"] = "mapped_toc"
+    items = list(result.get("items") or [])
+    sections = result.get("toc_sections")
+    if not items and isinstance(sections, list):
+        for section in sections:
+            if isinstance(section, Mapping):
+                items.extend(item for item in section.get("items") or [] if isinstance(item, Mapping))
+    result["items"] = [dict(item) for item in items if isinstance(item, Mapping)]
+    _assert_mapped_items(result)
+    return result
+
+
+def _normalize_toc_draft_payload(payload: Mapping[str, Any]) -> Dict[str, Any]:
+    source = _require_source(str(payload.get("source") or payload.get("provider") or "unknown"))
+    raw_sections = payload.get("toc_sections")
+    sections: List[Dict[str, Any]] = []
+
+    if isinstance(raw_sections, list) and raw_sections:
+        for raw_section in raw_sections:
+            if not isinstance(raw_section, Mapping):
+                continue
+            kind = normalize_section_kind(raw_section.get("kind") or raw_section.get("section_kind"))
+            section_items = [
+                normalize_toc_draft_item(dict(item), kind, source_page=_positive_int(raw_section.get("source_page")))
+                for item in raw_section.get("items") or []
+                if isinstance(item, Mapping) and str(item.get("title") or "").strip()
+            ]
+            sections.append(
+                {
+                    "kind": kind,
+                    "title": str(raw_section.get("title") or _default_section_title(kind)),
+                    "items": section_items,
+                }
+            )
+    else:
+        kind = normalize_section_kind(payload.get("section_kind") or payload.get("kind"))
+        section_items = [
+            normalize_toc_draft_item(dict(item), kind)
+            for item in payload.get("items") or []
+            if isinstance(item, Mapping) and str(item.get("title") or "").strip()
+        ]
+        sections.append(
+            {
+                "kind": kind,
+                "title": str(payload.get("title") or _default_section_title(kind)),
+                "items": section_items,
+            }
+        )
+
+    main_section = next((section for section in sections if section.get("kind") == "main_toc"), sections[0] if sections else None)
+    result: Dict[str, Any] = {
+        "type": "toc_draft",
+        "source": source,
+        "toc_sections": sections,
+        "items": list(main_section.get("items") or []) if isinstance(main_section, dict) else [],
+        "source_pages": list(payload.get("source_pages") or []),
+        "confidence": _safe_float(payload.get("confidence"), default=0.0),
+        "metadata": dict(payload.get("metadata") or {}),
+    }
+    if isinstance(main_section, dict):
+        result["section_kind"] = main_section.get("kind", "main_toc")
+        result["title"] = main_section.get("title") or _default_section_title(result["section_kind"])
+    return result
+
+
+def _assert_mapped_items(mapped: Mapping[str, Any]) -> None:
+    items = list(_walk_items(mapped))
+    if not items:
+        raise TocContractError("Mapped TOC must contain at least one mapped item")
+    for path, item in items:
+        missing = sorted(field for field in FINAL_PAGE_FIELDS if field not in item)
+        if missing:
+            raise TocContractError(
+                f"Mapped TOC item at {path} missing final page fields: {', '.join(missing)}"
+            )
+
+
+def _walk_items(payload: Mapping[str, Any]) -> Iterable[tuple[str, Mapping[str, Any]]]:
+    def walk_list(items: Any, prefix: str) -> Iterable[tuple[str, Mapping[str, Any]]]:
+        for index, item in enumerate(items or []):
+            if not isinstance(item, Mapping):
+                continue
+            path = f"{prefix}[{index}]"
+            yield path, item
+            yield from walk_list(item.get("children"), f"{path}.children")
+
+    yield from walk_list(payload.get("items"), "items")
+    for section_index, section in enumerate(payload.get("toc_sections") or []):
+        if not isinstance(section, Mapping):
+            continue
+        yield from walk_list(section.get("items"), f"toc_sections[{section_index}].items")
 
 
 def _first_present(raw: Dict[str, Any], keys: Iterable[str]) -> Any:

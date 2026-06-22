@@ -64,6 +64,36 @@ def test_infers_hierarchy_for_chinese_chapter_and_section_link_titles() -> None:
     ]
 
 
+def test_infers_unnumbered_same_page_content_after_chapter_as_child() -> None:
+    from pageindex.code_toc_collector import _infer_structure_from_titles
+
+    items = [
+        {"title": "第一章 AI Agent 技术概述与发展现状", "physical_index": 9, "catalog_type": "main"},
+        {"title": "引言：2025 年智能体进入产业落地阶段", "physical_index": 9, "catalog_type": "main"},
+        {"title": "AI Agent 的再定义：从自动化到自主智能", "physical_index": 10, "catalog_type": "main"},
+        {"title": "第二章 AI Agent 核心技术架构解析", "physical_index": 20, "catalog_type": "main"},
+    ]
+
+    structured = _infer_structure_from_titles(items)
+
+    assert [item["structure"] for item in structured] == ["1", "1.1", "1.2", "2"]
+
+
+def test_infers_chapter_hierarchy_after_unicode_compatibility_normalization() -> None:
+    from pageindex.code_toc_collector import _infer_structure_from_titles
+
+    items = [
+        {"title": "第⼀章：AI Agent 技术概述与发展现状", "physical_index": 9, "catalog_type": "main"},
+        {"title": "引⾔：2025，AI Agent 元年的开启", "physical_index": 9, "catalog_type": "main"},
+        {"title": "AI Agent 的再定义：从自动化到自主智能", "physical_index": 10, "catalog_type": "main"},
+        {"title": "第⼆章：AI Agent 核心技术架构解析", "physical_index": 20, "catalog_type": "main"},
+    ]
+
+    structured = _infer_structure_from_titles(items)
+
+    assert [item["structure"] for item in structured] == ["1", "1.1", "1.2", "2"]
+
+
 def test_collects_link_only_toc_for_ai_agent_report() -> None:
     from pageindex.code_toc_collector import collect_code_toc
 

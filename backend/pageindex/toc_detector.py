@@ -1,9 +1,8 @@
-"""Low-cost TOC page detection for the new layout-first pipeline.
+"""Low-cost TOC page detection over the unified PageTextMap.
 
 This module intentionally does not call image-model detection. Image-only,
-garbled, and low-text-quality documents are routed to the PP-OCR layout path by
-``pageindex.router``; this detector only reuses already available text/analysis
-signals.
+garbled, and low-text-quality documents are normalized to page text during S1;
+this detector only reuses already available text/analysis signals.
 """
 
 from __future__ import annotations

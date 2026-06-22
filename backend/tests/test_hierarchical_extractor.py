@@ -227,7 +227,37 @@ def test_expand_chapter_uses_page_excerpt_input_only(monkeypatch):
     assert "heading_candidates" not in prompt
     assert "short_summary" not in prompt
     assert "summary" not in prompt.lower()
-    assert "x" * 220 not in prompt
+    assert "x" * 220 in prompt
+    assert "x" * 320 not in prompt
+
+
+def test_expand_chapter_uses_400_character_page_excerpts(monkeypatch):
+    prompts = []
+
+    async def fake_llm_acompletion(model, prompt):
+        prompts.append(prompt)
+        return json.dumps({"sub_chapters": []})
+
+    monkeypatch.setattr(hierarchical_extractor, "llm_acompletion", fake_llm_acompletion)
+
+    page_texts = [
+        "cover",
+        "Heading A\n" + "x" * 500,
+    ]
+
+    asyncio.run(
+        hierarchical_extractor.expand_chapter(
+            "Chapter 1",
+            2,
+            2,
+            page_texts,
+            model="test-model",
+        )
+    )
+
+    prompt = prompts[0]
+    assert "x" * 350 in prompt
+    assert "x" * 420 not in prompt
 
 
 def test_expand_chapter_windows_long_ranges_and_merges_duplicates(monkeypatch):

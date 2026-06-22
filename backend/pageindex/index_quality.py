@@ -70,32 +70,6 @@ def _truthy(value: Any) -> bool:
     return bool(value)
 
 
-def _is_ocr_segment_fallback(index_payload: Dict[str, Any]) -> bool:
-    route_decision = index_payload.get("route_decision")
-    if not isinstance(route_decision, dict):
-        route_decision = {}
-
-    toc_source = (
-        route_decision.get("toc_source")
-        or route_decision.get("source")
-        or index_payload.get("toc_source")
-    )
-    if str(toc_source or "").strip().lower() != "segment_fallback":
-        return False
-
-    pipeline_path = str(
-        route_decision.get("pipeline_path")
-        or index_payload.get("pipeline_path")
-        or ""
-    ).strip().lower()
-    return (
-        _truthy(index_payload.get("ocr_used"))
-        or _truthy(route_decision.get("ocr_used"))
-        or _truthy(route_decision.get("is_image_only_pdf"))
-        or "ocr" in pipeline_path
-    )
-
-
 def _is_flat_or_full_span_fallback(
     nodes: List[Dict[str, Any]],
     *,
@@ -600,9 +574,6 @@ def _evidence_title_stats(index_payload: Dict[str, Any], nodes: List[Dict[str, A
     for candidate in candidates_to_score:
         if not isinstance(candidate, dict):
             continue
-        source = str(candidate.get("source") or "").strip()
-        if source == "segment_fallback":
-            continue
         count = _candidate_count(candidate)
         titles = _candidate_sample_titles(candidate)
         count = max(count, len(titles))
@@ -981,6 +952,7 @@ def build_toc_fidelity_digest(
         selected_path == "visible_toc_with_pages"
         and mapping_has_title_match
         and route_title_match_rate < 0.45
+        and str(mapping.get("strategy") or "") != "content_outline_declared_pages"
     ):
         warnings.append("visible TOC title anchors below route threshold")
         hard_fail_reasons.append("title_match_rate_below_route_threshold")
@@ -1041,18 +1013,6 @@ def build_toc_fidelity_digest(
     if hierarchy_flattened.get("flattened"):
         warnings.append("raw TOC hierarchy flattened in final tree")
         hard_fail_reasons.append("raw_toc_hierarchy_flattened")
-
-    is_segment_fallback = _is_ocr_segment_fallback(index_payload)
-    if is_segment_fallback and detected_style == "collapsed":
-        warnings.append("segment_fallback used for OCR/image document with flat full-document structure")
-        hard_fail_reasons.append("collapsed_single_entry")
-    if is_segment_fallback and detected_style == "collapsed" and page_range_coverage >= 0.9:
-        hard_fail_reasons.append("segment_fallback_flat_full_document")
-
-    if page_range_coverage < 0.35 and is_segment_fallback:
-        hard_fail_reasons.append("segment_fallback_low_coverage")
-    if mapping_reasons and "tail_collapse" in mapping_reasons and is_segment_fallback:
-        hard_fail_reasons.append("mapping_tail_collapse")
 
     if hard_fail_reasons:
         style_fit = "poor"

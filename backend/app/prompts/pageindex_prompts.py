@@ -593,6 +593,7 @@ This is a fidelity audit, not a hierarchy preference check.
 The TOC is good when it faithfully reflects the source document and provides useful navigation.
 A flat TOC is acceptable when the original document/catalog is flat or case-list-like.
 Do not mark a TOC as failed only because long nodes have no children.
+Repeated numbering under different parent chapters is acceptable when titles differ; do not fail or request repair solely for repeated numbering labels.
 
 Do not ask the model to verify whether each page number is true. Page-number truth is handled by deterministic physical page mapping before this prompt.
 Ignore internal fields such as logical_page, mapping_pending, offsets, source_page, synthetic roots, and bias/offset helper items unless they leak into user-visible titles.

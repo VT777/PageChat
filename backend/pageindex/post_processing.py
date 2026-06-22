@@ -112,7 +112,7 @@ def _should_preserve_unpaged_toc_skeleton(analysis: Optional[Dict[str, Any]]) ->
     if not isinstance(analysis, dict):
         return False
     source = str(analysis.get("toc_source") or analysis.get("toc_frozen_source") or "")
-    if source not in {"llm_toc_page", "ocr_toc_page", "toc_page_layout"}:
+    if source not in {"llm_toc_page"}:
         return False
     toc_page = analysis.get("toc_page") or {}
     has_toc_page = bool(toc_page.get("has_toc_page")) if isinstance(toc_page, dict) else False
@@ -456,6 +456,9 @@ def normalize_sibling_page_ranges(
         upper = lower
 
     for node in normalized:
+        if _is_auxiliary_catalog_node(node):
+            _normalize_auxiliary_catalog_range(node, page_count=max_page, lower=lower, upper=upper)
+            continue
         start = _node_start_page(node)
         start = _clamp_page(start or lower, max_page)
         start = max(lower, min(start, upper))
@@ -468,9 +471,19 @@ def normalize_sibling_page_ranges(
             node["physical_index"] = start
 
     for index, node in enumerate(normalized):
+        if _is_auxiliary_catalog_node(node):
+            continue
         start = node["start_index"]
-        if index < len(normalized) - 1:
-            next_start = normalized[index + 1]["start_index"]
+        next_regular = next(
+            (
+                candidate
+                for candidate in normalized[index + 1:]
+                if isinstance(candidate, dict) and not _is_auxiliary_catalog_node(candidate)
+            ),
+            None,
+        )
+        if next_regular is not None:
+            next_start = next_regular["start_index"]
             current_end = node.get("end_index") or upper
             end = next_start if next_start == current_end else next_start - 1
             node["end_index"] = max(start, min(end, upper))
@@ -548,6 +561,76 @@ def _is_catalog_container(node: Dict[str, Any]) -> bool:
         "表格目录",
         "listoftables",
     }
+
+
+def _is_auxiliary_catalog_node(node: Dict[str, Any]) -> bool:
+    catalog_type = str(node.get("catalog_type") or "").strip().lower()
+    page_type = str(node.get("page_type") or "").strip().lower()
+    node_type = str(node.get("node_type") or "").strip().lower()
+    return bool(
+        node.get("is_auxiliary")
+        or node_type in {"auxiliary_catalog", "auxiliary_catalog_item"}
+        or catalog_type in {
+            CATALOG_FIGURE,
+            CATALOG_TABLE,
+            "figure",
+            "table",
+            "figure_toc",
+            "table_toc",
+        }
+        or page_type in {"figure_catalog", "table_catalog"}
+    )
+
+
+def _normalize_auxiliary_catalog_range(
+    node: Dict[str, Any],
+    *,
+    page_count: int,
+    lower: int,
+    upper: int,
+) -> None:
+    children = node.get("nodes") or []
+    if children:
+        normalized_children = []
+        for child in children:
+            if not isinstance(child, dict):
+                continue
+            start = _node_start_page(child)
+            start = max(lower, min(_clamp_page(start or lower, page_count), upper))
+            item = child
+            item["start_index"] = start
+            item["end_index"] = start
+            if not _to_positive_int(item.get("physical_index")):
+                item["physical_index"] = start
+            nested = item.get("nodes") or []
+            if nested:
+                item["nodes"] = normalize_sibling_page_ranges(
+                    nested,
+                    page_count=page_count,
+                    parent_start=start,
+                    parent_end=start,
+                    copy_nodes=False,
+                )
+            normalized_children.append(item)
+        node["nodes"] = normalized_children
+        starts = [
+            child.get("start_index")
+            for child in normalized_children
+            if isinstance(child.get("start_index"), int)
+        ]
+        if starts:
+            node["start_index"] = min(starts)
+            node["end_index"] = max(starts)
+            if not _to_positive_int(node.get("physical_index")):
+                node["physical_index"] = node["start_index"]
+            return
+
+    start = _node_start_page(node)
+    start = max(lower, min(_clamp_page(start or lower, page_count), upper))
+    node["start_index"] = start
+    node["end_index"] = start
+    if not _to_positive_int(node.get("physical_index")):
+        node["physical_index"] = start
 
 
 # ---------------------------------------------------------------------------

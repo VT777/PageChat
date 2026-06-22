@@ -74,6 +74,7 @@ def map_toc_draft_to_physical(
                 "main_strong_anchor_count": report.get("main_strong_anchor_count"),
                 "strong_anchor_count": report.get("strong_anchor_count"),
                 "reasons": list(report.get("reasons") or []),
+                "warnings": list(report.get("warnings") or []),
             }
         )
 
@@ -233,8 +234,100 @@ def _map_section_items(
         prefer_printed_page_numbers=bool(
             has_raw_page_numbers and selected_path in {"visible_toc_with_pages", "embedded_toc"}
         ),
+        allow_neighbor_inference=not (selected_path == "visible_toc_no_pages" and not has_raw_page_numbers),
+        require_all_mapped=bool(selected_path == "visible_toc_no_pages" and not has_raw_page_numbers),
     )
+    if str(report.get("status") or "") != "ok" and selected_path == "content_outline":
+        declared = _map_content_outline_declared_pages(
+            items,
+            page_count=page_count,
+            toc_pages=toc_pages,
+            previous_report=report,
+        )
+        if declared is not None:
+            return declared
     return mapped, report
+
+
+def _map_content_outline_declared_pages(
+    items: List[Dict[str, Any]],
+    *,
+    page_count: int,
+    toc_pages: List[int],
+    previous_report: Dict[str, Any],
+) -> Optional[Tuple[List[Dict[str, Any]], Dict[str, Any]]]:
+    if not items or page_count <= 0:
+        return None
+    toc_page_set = {
+        page
+        for page in (_positive_int(value) for value in (toc_pages or []))
+        if page is not None
+    }
+    first_body_page = min(
+        (page for page in range(1, page_count + 1) if page not in toc_page_set),
+        default=1,
+    )
+    valid_declared = [
+        page
+        for page in (_positive_int(item.get("raw_page_label")) for item in items)
+        if page is not None and 1 <= page <= page_count and page not in toc_page_set
+    ]
+    if not valid_declared:
+        return None
+
+    mapped = [dict(item) for item in deepcopy(items)]
+    adjusted_count = 0
+    previous_page = first_body_page
+    pages: List[int] = []
+    for index, item in enumerate(items):
+        declared_page = _positive_int(item.get("raw_page_label"))
+        page = declared_page
+        if page is None or page < 1 or page > page_count or page in toc_page_set:
+            page = previous_page
+            adjusted_count += 1
+        if page < previous_page:
+            page = previous_page
+            adjusted_count += 1
+        page = min(max(first_body_page, page), page_count)
+        previous_page = page
+        pages.append(page)
+        mapped[index]["physical_index"] = int(page)
+        mapped[index]["start_index"] = int(page)
+        mapped[index]["mapping_source"] = "content_outline_declared_pages"
+        mapped[index]["mapping_confidence"] = 0.56
+        mapped[index]["mapping_evidence"] = {
+            "matched_page": int(page),
+            "source": "content_outline_raw_page_label",
+            "declared_page": declared_page,
+            "previous_strategy": previous_report.get("strategy"),
+            "previous_reasons": list(previous_report.get("reasons") or []),
+        }
+
+    warnings = ["low_title_validation"]
+    if adjusted_count:
+        warnings.append("declared_pages_adjusted")
+    return mapped, {
+        "status": "ok",
+        "strategy": "content_outline_declared_pages",
+        "excluded_pages": sorted(toc_page_set),
+        "logical_overflow": False,
+        "strong_anchor_count": 0,
+        "item_count": len(items),
+        "title_match_rate": 0.0,
+        "sample_match_rate": 0.0,
+        "mapping_monotonic": True,
+        "estimated_ratio": 0.0,
+        "toc_page_leakage_count": 0,
+        "page_mapping_score": 0.56,
+        "reasons": [],
+        "warnings": warnings,
+        "previous_report": {
+            "status": previous_report.get("status"),
+            "strategy": previous_report.get("strategy"),
+            "reasons": list(previous_report.get("reasons") or []),
+            "title_match_rate": previous_report.get("title_match_rate"),
+        },
+    }
 
 
 def _map_unpaged_items_by_repeated_catalog_sequence(
@@ -437,6 +530,8 @@ def _map_by_physical_identity(
     indexed_pages = [(index, page) for index, page in indexed_pages if page is not None]
     if not indexed_pages:
         return None
+    if len(indexed_pages) != len(items):
+        return None
     if len(indexed_pages) < max(1, len(items) // 2):
         return None
     if any(page < 1 or page > page_count for _, page in indexed_pages):
@@ -498,8 +593,10 @@ def _merge_section_reports(
 ) -> Dict[str, Any]:
     statuses = [str(report.get("status") or "") for report in section_reports]
     reasons: List[str] = []
+    warnings: List[str] = []
     for report in section_reports:
         reasons.extend(str(reason) for reason in report.get("reasons") or [])
+        warnings.extend(str(warning) for warning in report.get("warnings") or [])
     strategies = [str(report.get("strategy") or "") for report in section_reports if report.get("strategy")]
     strategy = strategies[0] if len(set(strategies)) == 1 else "section_isolated"
     return {
@@ -516,6 +613,7 @@ def _merge_section_reports(
         "main_sample_checked_count": _main_sample_checked_count(section_reports),
         "main_strong_anchor_count": _main_strong_anchor_count(section_reports),
         "reasons": sorted(set(reasons)),
+        "warnings": sorted(set(warnings)),
     }
 
 

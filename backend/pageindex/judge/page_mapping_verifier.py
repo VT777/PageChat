@@ -9,9 +9,7 @@ from pageindex.catalog_classifier import CATALOG_MAIN, detect_catalog_type
 
 
 OCR_LOGICAL_PAGE_SOURCES = {
-    "ocr_toc_page",
     "llm_toc_page",
-    "toc_page_layout",
 }
 
 

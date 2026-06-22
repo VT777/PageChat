@@ -18,7 +18,7 @@ from app.services.ocr_engines.task_prompts import (
 
 
 def test_page_text_prompt_is_short_reading_order_command() -> None:
-    assert PAGE_TEXT_PROMPT == "Extract every visible text line in reading order, including section numbers and headings."
+    assert PAGE_TEXT_PROMPT == "完整、准确地抽取内容，用markdown输出"
 
 
 def test_toc_page_prompt_is_generic_vlm_ocr_command() -> None:

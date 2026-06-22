@@ -180,7 +180,295 @@ def test_build_report_from_index_payload_matches_expected_contract(tmp_path: Pat
         "actual": 25,
         "ok": True,
     }
+
+
+def test_llm_quality_needs_repair_is_advisory_without_fact_hard_fail(tmp_path: Path) -> None:
+    module = _load_e2e_module()
+    expected = {
+        "id": "T12",
+        "file": "sample.pdf",
+        "page_count": 30,
+        "expected_route": {"content_type": "text", "selected_path": "visible_toc_no_pages"},
+    }
+    index_payload = {
+        "doc_name": "sample.pdf",
+        "page_count": 30,
+        "route_decision": {"content_type": "text", "selected_path": "visible_toc_no_pages"},
+        "structure": [
+            {"title": "目录", "start_index": 4, "end_index": 30, "nodes": []},
+        ],
+        "quality_report": {
+            "status": "needs_review",
+            "hard_fail_reasons": [],
+            "warnings": ["visible no-page TOC has long chapters without child expansion"],
+        },
+        "llm_quality_check": {
+            "needs_repair": True,
+            "overall_score": 0.8,
+            "warnings": ["duplicate numbering but distinct titles"],
+        },
+    }
+
+    report = module.build_report_from_index_payload(
+        file_path=tmp_path / "sample.pdf",
+        doc_id="e2e-sample",
+        index_payload=index_payload,
+        expected=expected,
+        elapsed_ms=100,
+    )
+
+    assert report["quality"]["llm_needs_repair"] is True
+    assert report["acceptance"]["quality"] is True
+    assert report["status"] == "ok"
     assert report["acceptance"]["ok"] is True
+
+
+def test_build_report_enforces_must_have_node_start_and_end_ranges(tmp_path: Path) -> None:
+    module = _load_e2e_module()
+    expected = {
+        "id": "T-range",
+        "file": "range.pdf",
+        "page_count": 12,
+        "expected_route": {"content_type": "text", "selected_path": "visible_toc_no_pages"},
+        "must_have_nodes": [
+            {"title": "Part 1 Market", "start_index": 3, "end_index": 5},
+            {"title": "Part 2 Growth", "start_index": 6, "end_index": 12},
+        ],
+    }
+    index_payload = {
+        "doc_name": "range.pdf",
+        "page_count": 12,
+        "route_decision": {"content_type": "text", "selected_path": "visible_toc_no_pages"},
+        "structure": [
+            {"title": "Part 1 Market", "start_index": 3, "end_index": 4, "nodes": []},
+            {"title": "Part 2 Growth", "start_index": 6, "end_index": 12, "nodes": []},
+        ],
+        "quality_report": {"status": "completed", "hard_fail_reasons": []},
+    }
+
+    report = module.build_report_from_index_payload(
+        file_path=tmp_path / "range.pdf",
+        doc_id="range",
+        index_payload=index_payload,
+        expected=expected,
+        elapsed_ms=100,
+    )
+
+    assert report["key_checks"]["must_have_nodes"]["ok"] is False
+    item = report["key_checks"]["must_have_nodes"]["items"]["Part 1 Market"]
+    assert item["expected_start"] == 3
+    assert item["expected_end"] == 5
+    assert item["actual_start"] == 3
+    assert item["actual_end"] == 4
+    assert item["auxiliary_end_ignored"] is False
+    assert item["ok"] is False
+    assert report["acceptance"]["must_have_nodes"] is False
+    assert report["acceptance"]["ok"] is False
+
+
+def test_must_have_node_uses_expected_range_when_titles_repeat(tmp_path: Path) -> None:
+    module = _load_e2e_module()
+    report = module.build_report_from_index_payload(
+        file_path=tmp_path / "repeat-title.pdf",
+        doc_id="repeat-title",
+        elapsed_ms=10,
+        expected={
+            "file": "repeat-title.pdf",
+            "expected_route": {"content_type": "text", "selected_path": "visible_toc_no_pages"},
+            "must_have_nodes": [
+                {"title": "风险提示", "start_index": 18, "end_index": 21},
+            ],
+        },
+        index_payload={
+            "doc_name": "repeat-title.pdf",
+            "page_count": 21,
+            "route_decision": {"content_type": "text", "selected_path": "visible_toc_no_pages"},
+            "structure": [
+                {
+                    "title": "产业链梳理",
+                    "start_index": 16,
+                    "end_index": 17,
+                    "nodes": [
+                        {"title": "风险提示", "start_index": 16, "end_index": 17, "nodes": []},
+                    ],
+                },
+                {"title": "风险提示", "start_index": 18, "end_index": 21, "nodes": []},
+            ],
+            "quality_report": {"status": "completed", "hard_fail_reasons": []},
+        },
+    )
+
+    item = report["key_checks"]["must_have_nodes"]["items"]["风险提示"]
+    assert item["actual_start"] == 18
+    assert item["actual_end"] == 21
+    assert item["ok"] is True
+    assert report["acceptance"]["must_have_nodes"] is True
+
+
+def test_build_report_treats_llm_qc_needs_repair_as_advisory_without_hard_facts(tmp_path: Path) -> None:
+    module = _load_e2e_module()
+    report = module.build_report_from_index_payload(
+        file_path=tmp_path / "needs-repair.pdf",
+        doc_id="needs-repair",
+        elapsed_ms=10,
+        expected={
+            "file": "needs-repair.pdf",
+            "expected_route": {"content_type": "text", "selected_path": "visible_toc_with_pages"},
+        },
+        index_payload={
+            "doc_name": "needs-repair.pdf",
+            "page_count": 10,
+            "route_decision": {"content_type": "text", "selected_path": "visible_toc_with_pages"},
+            "structure": [{"title": "Chapter 1", "start_index": 2, "end_index": 10, "nodes": []}],
+            "quality_report": {"status": "completed", "hard_fail_reasons": []},
+            "llm_quality_check": {"needs_repair": True, "overall_score": 0.2},
+        },
+    )
+
+    assert report["quality"]["llm_needs_repair"] is True
+    assert report["acceptance"]["quality"] is True
+    assert report["acceptance"]["ok"] is True
+
+
+def test_build_report_requires_child_expansion_when_reference_demands_it(tmp_path: Path) -> None:
+    module = _load_e2e_module()
+    report = module.build_report_from_index_payload(
+        file_path=tmp_path / "long-parts.pdf",
+        doc_id="long-parts",
+        elapsed_ms=10,
+        expected={
+            "file": "long-parts.pdf",
+            "expected_route": {"content_type": "hybrid", "selected_path": "visible_toc_no_pages"},
+            "required_checks": {"requires_child_expansion": True, "min_children_per_long_chapter": 1},
+            "must_have_nodes": [
+                {"title": "Part 1", "start_index": 5, "end_index": 12},
+            ],
+        },
+        index_payload={
+            "doc_name": "long-parts.pdf",
+            "page_count": 20,
+            "route_decision": {"content_type": "hybrid", "selected_path": "visible_toc_no_pages"},
+            "structure": [{"title": "Part 1", "start_index": 5, "end_index": 12, "nodes": []}],
+            "quality_report": {"status": "completed", "hard_fail_reasons": []},
+        },
+    )
+
+    assert report["key_checks"]["required_checks"]["requires_child_expansion"]["ok"] is False
+    assert report["acceptance"]["required_checks"] is False
+    assert report["acceptance"]["ok"] is False
+
+
+def test_build_report_treats_needs_child_expansion_status_as_required(tmp_path: Path) -> None:
+    module = _load_e2e_module()
+    report = module.build_report_from_index_payload(
+        file_path=tmp_path / "short-slide-report.pdf",
+        doc_id="short-slide-report",
+        elapsed_ms=10,
+        expected={
+            "file": "short-slide-report.pdf",
+            "reference_status": "needs_child_expansion",
+            "expected_route": {"content_type": "text", "selected_path": "visible_toc_no_pages"},
+            "must_have_nodes": [
+                {"title": "Part 1", "start_index": 3, "end_index": 8},
+                {"title": "Part 2", "start_index": 9, "end_index": 15},
+            ],
+        },
+        index_payload={
+            "doc_name": "short-slide-report.pdf",
+            "page_count": 21,
+            "route_decision": {"content_type": "text", "selected_path": "visible_toc_no_pages"},
+            "structure": [
+                {"title": "Part 1", "start_index": 3, "end_index": 8, "nodes": []},
+                {"title": "Part 2", "start_index": 9, "end_index": 15, "nodes": []},
+            ],
+            "quality_report": {"status": "completed", "hard_fail_reasons": []},
+        },
+    )
+
+    assert report["key_checks"]["required_checks"]["requires_child_expansion"]["ok"] is False
+    assert report["acceptance"]["required_checks"] is False
+    assert report["acceptance"]["ok"] is False
+
+
+def test_forbidden_start_pages_only_apply_to_effective_roots(tmp_path: Path) -> None:
+    module = _load_e2e_module()
+    report = module.build_report_from_index_payload(
+        file_path=tmp_path / "children.pdf",
+        doc_id="children",
+        elapsed_ms=10,
+        expected={
+            "file": "children.pdf",
+            "expected_route": {"content_type": "text", "selected_path": "visible_toc_no_pages"},
+            "forbidden_patterns": {"forbidden_start_pages": [4]},
+        },
+        index_payload={
+            "doc_name": "children.pdf",
+            "page_count": 12,
+            "route_decision": {"content_type": "text", "selected_path": "visible_toc_no_pages"},
+            "structure": [
+                {
+                    "title": "Part 1",
+                    "start_index": 3,
+                    "end_index": 8,
+                    "nodes": [{"title": "1.1 Child", "start_index": 4, "end_index": 5}],
+                }
+            ],
+            "quality_report": {"status": "completed", "hard_fail_reasons": []},
+        },
+    )
+
+    assert report["key_checks"]["forbidden_patterns"]["forbidden_start_pages"]["ok"] is True
+    assert report["acceptance"]["forbidden_patterns"] is True
+    assert report["acceptance"]["ok"] is True
+
+
+def test_must_have_node_allows_point_like_auxiliary_catalog_items(tmp_path: Path) -> None:
+    module = _load_e2e_module()
+    report = module.build_report_from_index_payload(
+        file_path=tmp_path / "figures.pdf",
+        doc_id="figures",
+        elapsed_ms=10,
+        expected={
+            "file": "figures.pdf",
+            "expected_route": {"content_type": "text", "selected_path": "visible_toc_with_pages"},
+            "must_have_nodes": [
+                {"title": "Figure 1 Model", "start_index": 8, "end_index": 12},
+            ],
+        },
+        index_payload={
+            "doc_name": "figures.pdf",
+            "page_count": 20,
+            "route_decision": {"content_type": "text", "selected_path": "visible_toc_with_pages"},
+            "structure": [
+                {
+                    "title": "List of Figures",
+                    "metadata": {"toc_section_kind": "figure_toc"},
+                    "node_type": "auxiliary_catalog",
+                    "catalog_type": "figure",
+                    "is_auxiliary": True,
+                    "start_index": 8,
+                    "end_index": 8,
+                    "nodes": [
+                        {
+                            "title": "Figure 1 Model",
+                            "node_type": "auxiliary_catalog_item",
+                            "catalog_type": "figure",
+                            "is_auxiliary": True,
+                            "start_index": 8,
+                            "end_index": 8,
+                            "nodes": [],
+                        }
+                    ],
+                }
+            ],
+            "quality_report": {"status": "completed", "hard_fail_reasons": []},
+        },
+    )
+
+    item = report["key_checks"]["must_have_nodes"]["items"]["Figure 1 Model"]
+    assert item["auxiliary_end_ignored"] is True
+    assert item["ok"] is True
+    assert report["acceptance"]["must_have_nodes"] is True
 
 
 def test_build_report_accepts_route_options_for_quality_fallback(tmp_path: Path) -> None:

@@ -127,6 +127,32 @@ def test_state_machine_falls_back_from_failed_s2_to_visible_toc_with_pages() -> 
     assert plan["fallbacks"]
     assert plan["fallbacks"][0]["from"] == "S2"
     assert plan["fallbacks"][0]["to"] == "S3"
+    assert [attempt["path"] for attempt in plan["attempts"]] == [
+        "visible_toc_with_pages",
+        "visible_toc_no_pages",
+        "content_outline",
+    ]
+
+
+def test_state_machine_outputs_visible_toc_attempt_chain() -> None:
+    plan = _plan(
+        {
+            "page_count": 40,
+            "content_type": "text",
+            "toc_page_detection": {
+                "status": "detected",
+                "pages": [2, 3],
+                "has_page_numbers": True,
+            },
+        }
+    )
+
+    assert plan["selected_path"] == "visible_toc_with_pages"
+    assert [attempt["path"] for attempt in plan["attempts"]] == [
+        "visible_toc_with_pages",
+        "visible_toc_no_pages",
+        "content_outline",
+    ]
 
 
 def test_state_machine_routes_no_page_number_toc_separately() -> None:

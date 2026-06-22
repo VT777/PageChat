@@ -10,7 +10,7 @@ from typing import Any, Dict, Iterable, List, Mapping, Optional
 from pageindex.page_text_map import PageTextEntry, PageTextMap
 
 
-PAGE_TEXT_OCR_PROMPT = "Extract every visible text line in reading order, including section numbers and headings."
+PAGE_TEXT_OCR_PROMPT = "完整、准确地抽取内容，用markdown输出"
 
 
 def infer_content_type(analysis: Mapping[str, Any]) -> str:

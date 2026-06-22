@@ -58,6 +58,86 @@ def test_map_toc_draft_keeps_physical_page_labels_when_titles_match() -> None:
     assert report["strategy"] == "physical_identity"
 
 
+def test_map_toc_draft_fills_missing_page_labels_with_title_search() -> None:
+    page_texts = [f"Body page {page}" for page in range(1, 27)]
+    page_texts[0] = "Cover"
+    page_texts[1] = "\n".join(
+        [
+            "目录",
+            "1. Review ........................................ 4",
+            "1.1 Overview ..................................... 4",
+            "2. Outlook ....................................... 9",
+            "3. Ecosystem ..................................... 20",
+            "4. Risk warning ..................................",
+        ]
+    )
+    page_texts[2] = "Figure catalog"
+    page_texts[3] = "1. Review\n1.1 Overview\nbody"
+    page_texts[8] = "2. Outlook\nbody"
+    page_texts[19] = "3. Ecosystem\nbody"
+    page_texts[24] = "4. Risk warning\nbody"
+    draft = {
+        "type": "toc_draft",
+        "toc_sections": [
+            {
+                "kind": "main_toc",
+                "items": [
+                    {"title": "1. Review", "level": 1, "raw_page_label": 4},
+                    {"title": "1.1 Overview", "level": 2, "raw_page_label": 4},
+                    {"title": "2. Outlook", "level": 1, "raw_page_label": 9},
+                    {"title": "3. Ecosystem", "level": 1, "raw_page_label": 20},
+                    {"title": "4. Risk warning", "level": 1},
+                ],
+            }
+        ],
+    }
+
+    mapped, report = map_toc_draft_to_physical(
+        draft,
+        page_texts=page_texts,
+        page_count=len(page_texts),
+        toc_pages=[2, 3],
+        selected_path="visible_toc_with_pages",
+    )
+
+    by_title = {item["title"]: item for item in mapped}
+    assert by_title["4. Risk warning"]["physical_index"] == 25
+    assert by_title["4. Risk warning"]["mapping_source"] == "title_search"
+    assert report["status"] == "ok"
+
+
+def test_content_outline_declared_pages_can_map_with_weak_ocr_title_match() -> None:
+    page_texts = [
+        "Cover",
+        "Catalog",
+        "OCR text whose heading is noisy",
+        "More OCR text",
+        "Another page",
+    ]
+    draft = {
+        "type": "toc_draft",
+        "source": "content_outline",
+        "section_kind": "main_toc",
+        "items": [
+            {"title": "Clean LLM heading A", "level": 1, "raw_page_label": 3},
+            {"title": "Clean LLM heading B", "level": 1, "raw_page_label": 5},
+        ],
+    }
+
+    mapped, report = map_toc_draft_to_physical(
+        draft,
+        page_texts=page_texts,
+        page_count=len(page_texts),
+        toc_pages=[2],
+        selected_path="content_outline",
+    )
+
+    assert [item["physical_index"] for item in mapped] == [3, 5]
+    assert report["status"] == "ok"
+    assert report["strategy"] == "content_outline_declared_pages"
+    assert "low_title_validation" in report["warnings"]
+
+
 def test_map_toc_draft_uses_printed_page_offset_only_with_content_anchors() -> None:
     page_texts = [
         "Cover",
@@ -159,6 +239,130 @@ def test_map_toc_draft_locates_unpaged_toc_by_title_search() -> None:
     assert [item["physical_index"] for item in mapped] == [4, 8]
     assert report["status"] == "ok"
     assert report["strategy"] == "content_title_search"
+
+
+def test_map_toc_draft_locates_part_title_across_split_heading_lines() -> None:
+    page_texts = ["Cover", "Contents\nPart01\nPart02\nPart03", "Preface"]
+    page_texts.extend([""] * 59)
+    page_texts[4] = "Part01\nMarket analysis\nM-shaped consumer trends and acquisition challenges"
+    page_texts[12] = (
+        "122,344,45,87,90,Part02\n"
+        "306,481,78,461,90,Growth Engine One: AI Mindshare\n"
+        "306,583,78,461,90,Predictive Social Ecosystem Guide"
+    )
+    page_texts[24] = "Part03\nContent marketing industrialization\nTag-thinking driven growth"
+    draft = {
+        "type": "toc_draft",
+        "source": "visible_toc_rule",
+        "section_kind": "main_toc",
+        "items": [
+            {
+                "title": "Part01: Market analysis: M-shaped consumer trends and acquisition challenges",
+                "level": 1,
+            },
+            {
+                "title": "Part02: AI Mindshare: Predictive Social Ecosystem Guide",
+                "level": 1,
+            },
+            {
+                "title": "Part03: Content marketing industrialization: Tag-thinking driven growth",
+                "level": 1,
+            },
+        ],
+    }
+
+    mapped, report = map_toc_draft_to_physical(
+        draft,
+        page_texts=page_texts,
+        page_count=len(page_texts),
+        toc_pages=[2],
+        selected_path="visible_toc_no_pages",
+    )
+
+    assert [item["physical_index"] for item in mapped] == [5, 13, 25]
+    assert [item["mapping_source"] for item in mapped] == ["title_search", "title_search", "title_search"]
+    assert report["status"] == "ok"
+    assert report["title_match_rate"] == 1.0
+
+
+def test_map_toc_draft_locates_chinese_part_title_across_split_heading_lines() -> None:
+    page_texts = [
+        "Cover",
+        "Contents\nPart01\nPart02\nPart03",
+        "Preface",
+    ]
+    page_texts.extend([""] * 59)
+    page_texts[4] = "Part01\n\u5e02\u573a\u5206\u6790\nM\u578b\u6d88\u8d39\u8d8b\u52bf\u4e0e\u83b7\u5ba2\u6311\u6218"
+    page_texts[12] = (
+        "122,344,45,87,90,Part02\n"
+        "306,481,78,461,90,\u589e\u957f\u5f15\u64ce\u4e00\uff1aAI\u5fc3\u667a\u5360\u4f4d\n"
+        "306,583,78,461,90,\u9884\u6d4b\u5f0f\u793e\u4ea4\u751f\u6001\u5b9e\u6218\u6307\u5357"
+    )
+    page_texts[24] = "Part03\n\u5185\u5bb9\u8425\u9500\u5de5\u4e1a\u5316\n\u6807\u7b7e\u601d\u7ef4\u9a71\u52a8\u5de5\u4e1a\u5316\u589e\u957f"
+    draft = {
+        "type": "toc_draft",
+        "source": "visible_toc_rule",
+        "section_kind": "main_toc",
+        "items": [
+            {
+                "title": "Part01: \u5e02\u573a\u5206\u6790\uff1a\u201cM\u578b\u201d\u6d88\u8d39\u8d8b\u52bf\u4e0e\u83b7\u5ba2\u6311\u6218",
+                "level": 1,
+            },
+            {
+                "title": "Part02: AI\u5fc3\u667a\u5360\u4f4d\uff1a\u9884\u6d4b\u5f0f\u793e\u4ea4\u751f\u6001\u5b9e\u6218\u6307\u5357",
+                "level": 1,
+            },
+            {
+                "title": "Part03: \u5185\u5bb9\u8425\u9500\u5de5\u4e1a\u5316\uff1a\u6807\u7b7e\u601d\u7ef4\u9a71\u52a8\u5de5\u4e1a\u5316\u589e\u957f",
+                "level": 1,
+            },
+        ],
+    }
+
+    mapped, report = map_toc_draft_to_physical(
+        draft,
+        page_texts=page_texts,
+        page_count=len(page_texts),
+        toc_pages=[2],
+        selected_path="visible_toc_no_pages",
+    )
+
+    assert [item["physical_index"] for item in mapped] == [5, 13, 25]
+    assert [item["mapping_source"] for item in mapped] == ["title_search", "title_search", "title_search"]
+    assert report["status"] == "ok"
+    assert report["title_match_rate"] == 1.0
+
+
+def test_unpaged_toc_mapping_fails_instead_of_collapsing_missing_anchor_to_previous_page() -> None:
+    page_texts = ["Cover", "Contents\nAlpha\nBeta\nGamma", "Preface"]
+    page_texts.extend([""] * 27)
+    page_texts[4] = "Alpha\nOpening chapter"
+    page_texts[19] = "Gamma\nFinal chapter"
+    draft = {
+        "type": "toc_draft",
+        "source": "visible_toc_rule",
+        "section_kind": "main_toc",
+        "items": [
+            {"title": "Alpha", "level": 1},
+            {"title": "Beta title not present in content", "level": 1},
+            {"title": "Gamma", "level": 1},
+        ],
+    }
+
+    mapped, report = map_toc_draft_to_physical(
+        draft,
+        page_texts=page_texts,
+        page_count=len(page_texts),
+        toc_pages=[2],
+        selected_path="visible_toc_no_pages",
+    )
+
+    assert mapped[0]["physical_index"] == 5
+    assert "physical_index" not in mapped[1]
+    assert mapped[1]["mapping_source"] == "unmapped"
+    assert mapped[2]["physical_index"] == 20
+    assert report["status"] == "failed"
+    assert "unmapped_required_anchor" in report["reasons"]
 
 
 def test_map_toc_draft_uses_repeated_catalog_pages_as_unpaged_section_dividers() -> None:

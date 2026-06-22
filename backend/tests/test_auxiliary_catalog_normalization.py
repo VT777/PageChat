@@ -4,6 +4,7 @@ import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from app.services.pageindex_service import PageIndexService
+from pageindex.post_processing import normalize_tree_page_ranges
 
 
 def test_normalize_catalog_groups_marks_figure_and_table_as_auxiliary() -> None:
@@ -145,3 +146,49 @@ def test_normalize_auxiliary_catalogs_merges_duplicate_sources() -> None:
     ]
     assert figure_catalogs[0]["nodes"][0]["start_index"] == 8
     assert figure_catalogs[0]["nodes"][0]["end_index"] == 9
+
+
+def test_final_range_normalization_keeps_auxiliary_items_point_like() -> None:
+    tree = [
+        {
+            "title": "Contents",
+            "node_type": "catalog_group",
+            "start_index": 4,
+            "end_index": 20,
+            "nodes": [
+                {"title": "Chapter 1", "start_index": 4},
+                {"title": "Chapter 2", "start_index": 10},
+            ],
+        },
+        {
+            "title": "List of Figures",
+            "node_type": "auxiliary_catalog",
+            "catalog_type": "figure",
+            "is_auxiliary": True,
+            "nodes": [
+                {
+                    "title": "Figure 1",
+                    "start_index": 5,
+                    "end_index": 5,
+                    "node_type": "auxiliary_catalog_item",
+                    "is_auxiliary": True,
+                },
+                {
+                    "title": "Figure 2",
+                    "start_index": 12,
+                    "end_index": 12,
+                    "node_type": "auxiliary_catalog_item",
+                    "is_auxiliary": True,
+                },
+            ],
+        },
+    ]
+
+    ranged = normalize_tree_page_ranges(tree, page_count=20)
+    normalized = PageIndexService._normalize_auxiliary_catalog_nodes(ranged)
+
+    figure_catalog = next(node for node in normalized if node.get("catalog_type") == "figure")
+    assert [(child["start_index"], child["end_index"]) for child in figure_catalog["nodes"]] == [
+        (5, 5),
+        (12, 12),
+    ]

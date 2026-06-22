@@ -28,6 +28,7 @@ class TocFlowPlan:
     states: List[str]
     post_route_states: List[str]
     fallbacks: List[Dict[str, Any]]
+    attempts: List[Dict[str, Any]]
     reason: str
     diagnostics: Dict[str, Any]
 
@@ -46,6 +47,8 @@ class TocFlowPlan:
             "selected_path": self.selected_path,
             "path": self.selected_path,
             "fallbacks": [dict(item) for item in self.fallbacks],
+            "attempts": [dict(item) for item in self.attempts],
+            "attempt_chain": [dict(item) for item in self.attempts],
             "reason": self.reason,
             "diagnostics": dict(self.diagnostics),
         }
@@ -58,8 +61,10 @@ class TocStateMachine:
         content_type = _content_type(analysis)
         preprocess_strategy = _preprocess_strategy(content_type)
         fallbacks: List[Dict[str, Any]] = []
+        toc_signal = _toc_page_signal(analysis)
 
         code_toc_disabled = bool(analysis.get("disable_code_toc_fast_path"))
+        has_code_signal = _has_code_toc_signal(analysis)
         embedded_candidate = None if code_toc_disabled else _embedded_toc_candidate(analysis)
         if embedded_candidate:
             return TocFlowPlan(
@@ -70,6 +75,11 @@ class TocStateMachine:
                 states=list(ROUTE_STATES_TO_EMBEDDED_TOC),
                 post_route_states=list(POST_ROUTE_STATES),
                 fallbacks=[],
+                attempts=_attempt_chain(
+                    TocFlowPath.EMBEDDED_TOC,
+                    toc_signal,
+                    include_embedded=True,
+                ),
                 reason="embedded_toc_accepted",
                 diagnostics={
                     "requested_mode": requested,
@@ -78,7 +88,7 @@ class TocStateMachine:
                 },
             )
 
-        if _has_code_toc_signal(analysis):
+        if has_code_signal:
             fallbacks.append(
                 {
                     "from": "S2",
@@ -88,7 +98,6 @@ class TocStateMachine:
                 }
             )
 
-        toc_signal = _toc_page_signal(analysis)
         if toc_signal["has_toc_page"]:
             selected_path = (
                 TocFlowPath.VISIBLE_TOC_WITH_PAGES
@@ -108,6 +117,11 @@ class TocStateMachine:
             states=list(ROUTE_STATES_TO_BUILT_TOC),
             post_route_states=list(POST_ROUTE_STATES),
             fallbacks=fallbacks,
+            attempts=_attempt_chain(
+                selected_path,
+                toc_signal,
+                include_embedded=False,
+            ),
             reason=reason,
             diagnostics={
                 "requested_mode": requested,
@@ -115,6 +129,47 @@ class TocStateMachine:
                 "has_page_numbers": bool(toc_signal["has_page_numbers"]),
             },
         )
+
+
+def _attempt_chain(
+    selected_path: TocFlowPath,
+    toc_signal: Dict[str, Any],
+    *,
+    include_embedded: bool,
+) -> List[Dict[str, Any]]:
+    attempts: List[Dict[str, Any]] = []
+
+    def add(path: TocFlowPath, reason: str) -> None:
+        if any(item.get("path") == path.value for item in attempts):
+            return
+        attempts.append({"path": path.value, "reason": reason})
+
+    if include_embedded:
+        add(TocFlowPath.EMBEDDED_TOC, "code_toc_signal")
+
+    if selected_path == TocFlowPath.EMBEDDED_TOC:
+        if toc_signal.get("has_toc_page"):
+            if toc_signal.get("has_page_numbers"):
+                add(TocFlowPath.VISIBLE_TOC_WITH_PAGES, "visible_toc_with_pages")
+                add(TocFlowPath.VISIBLE_TOC_NO_PAGES, "mapping_fallback")
+            else:
+                add(TocFlowPath.VISIBLE_TOC_NO_PAGES, "visible_toc_no_pages")
+        add(TocFlowPath.CONTENT_OUTLINE, "last_resort")
+        return attempts
+
+    if selected_path == TocFlowPath.VISIBLE_TOC_WITH_PAGES:
+        add(TocFlowPath.VISIBLE_TOC_WITH_PAGES, "visible_toc_with_pages")
+        add(TocFlowPath.VISIBLE_TOC_NO_PAGES, "mapping_fallback")
+        add(TocFlowPath.CONTENT_OUTLINE, "last_resort")
+        return attempts
+
+    if selected_path == TocFlowPath.VISIBLE_TOC_NO_PAGES:
+        add(TocFlowPath.VISIBLE_TOC_NO_PAGES, "visible_toc_no_pages")
+        add(TocFlowPath.CONTENT_OUTLINE, "last_resort")
+        return attempts
+
+    add(TocFlowPath.CONTENT_OUTLINE, "last_resort")
+    return attempts
 
 
 def _execution_mode_for(requested: str, *, embedded: bool) -> str:

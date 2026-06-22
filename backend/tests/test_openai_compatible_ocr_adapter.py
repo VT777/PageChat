@@ -48,11 +48,9 @@ class FakeClient:
         self.chat = FakeChat(self)
 
 
-def test_toc_page_prompt_requests_strict_json_and_parses_items() -> None:
+def test_toc_page_task_uses_unified_page_text_prompt_and_returns_markdown() -> None:
     async def run() -> None:
-        client = FakeClient(
-            '{"items":[{"title":"Intro","page":1,"level":1}],"confidence":0.88}'
-        )
+        client = FakeClient("# Contents\n\n- Intro 1")
         adapter = OpenAICompatibleOCRAdapter(
             api_key="dash-secret",
             base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
@@ -64,11 +62,10 @@ def test_toc_page_prompt_requests_strict_json_and_parses_items() -> None:
 
         call = client.calls[0]
         prompt = call["messages"][0]["content"][1]["text"]
-        assert "strict JSON" in prompt
-        assert "items" in prompt
-        assert result.pages[0].evidence_level == "model_inferred"
-        assert result.pages[0].structured_items == [{"title": "Intro", "page": 1, "level": 1}]
-        assert result.pages[0].raw["confidence"] == 0.88
+        assert prompt == "完整、准确地抽取内容，用markdown输出"
+        assert result.pages[0].evidence_level == "text_only"
+        assert result.pages[0].markdown == "# Contents\n\n- Intro 1"
+        assert result.pages[0].structured_items == []
 
     asyncio.run(run())
 
@@ -85,14 +82,14 @@ def test_page_text_prompt_requests_markdown_and_returns_text_only() -> None:
         result = await adapter.recognize("data:image/png;base64,abc", task="page_text")
 
         prompt = client.calls[0]["messages"][0]["content"][1]["text"]
-        assert "Markdown" in prompt
+        assert prompt == "完整、准确地抽取内容，用markdown输出"
         assert result.pages[0].evidence_level == "text_only"
         assert result.pages[0].markdown == "# Title\n\nBody text"
 
     asyncio.run(run())
 
 
-def test_toc_page_markdown_fallback_when_json_parse_fails() -> None:
+def test_toc_page_markdown_is_not_json_parsed() -> None:
     async def run() -> None:
         client = FakeClient("# Contents\n\n- Intro 1")
         adapter = OpenAICompatibleOCRAdapter(
@@ -105,7 +102,7 @@ def test_toc_page_markdown_fallback_when_json_parse_fails() -> None:
 
         assert result.pages[0].evidence_level == "text_only"
         assert result.pages[0].markdown == "# Contents\n\n- Intro 1"
-        assert result.pages[0].raw["parse_error"]
+        assert result.pages[0].raw == {}
 
     asyncio.run(run())
 

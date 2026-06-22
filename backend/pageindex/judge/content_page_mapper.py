@@ -21,6 +21,8 @@ def map_toc_items_to_physical_pages(
     excluded_pages: Optional[List[int]] = None,
     min_title_match_rate: float = 0.55,
     prefer_printed_page_numbers: bool = False,
+    allow_neighbor_inference: bool = True,
+    require_all_mapped: bool = False,
 ) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
     """Return TOC items with verified physical pages plus a compact report.
 
@@ -116,12 +118,14 @@ def map_toc_items_to_physical_pages(
         strong_anchor_indices.append(index)
         cursor_by_catalog[catalog_type] = physical_page
 
-    _infer_missing_between_anchors(items, page_count, start_page)
+    if allow_neighbor_inference:
+        _infer_missing_between_anchors(items, page_count, start_page)
     report = _build_report(
         items,
         shape,
         min_title_match_rate=min_title_match_rate,
         excluded_pages=excluded_page_set,
+        require_all_mapped=require_all_mapped,
     )
     return items, report
 
@@ -253,6 +257,10 @@ def score_title_on_page(title: str, page_text: str) -> Dict[str, Any]:
     if float(heading_match.get("score") or 0.0) > 0.0:
         candidates.append(heading_match)
 
+    segmented_match = _score_segmented_title_on_page(title, normalized_page)
+    if float(segmented_match.get("score") or 0.0) > 0.0:
+        candidates.append(segmented_match)
+
     if len(full) >= 4 and full in normalized_page:
         candidates.append({"score": 0.9, "matched_fragments": [full[:30]]})
     if 2 <= len(full) < 4:
@@ -354,6 +362,106 @@ def _best_scored_candidate(candidates: List[Dict[str, Any]]) -> Dict[str, Any]:
     if not candidates:
         return {"score": 0.0, "matched_fragments": []}
     return max(candidates, key=lambda candidate: float(candidate.get("score") or 0.0))
+
+
+def _score_segmented_title_on_page(title: str, normalized_page: str) -> Dict[str, Any]:
+    """Score headings whose visible title parts are split by layout text.
+
+    VLM/OCR output often inserts coordinates, badges, or subtitles between the
+    parts of a visible heading. Full-title substring matching then fails even
+    though the page contains the same heading in reading order. This scorer only
+    uses meaningful title segments and requires multiple pieces of evidence.
+    """
+    if not normalized_page:
+        return {"score": 0.0, "matched_fragments": []}
+
+    segments = _title_visible_segments(title)
+    if len(segments) < 2:
+        return {"score": 0.0, "matched_fragments": []}
+
+    matched: List[Tuple[str, int]] = []
+    cursor = 0
+    for segment in segments:
+        position = normalized_page.find(segment, cursor)
+        if position < 0:
+            position = normalized_page.find(segment)
+        if position >= 0:
+            matched.append((segment, position))
+            cursor = position + len(segment)
+
+    if len(matched) < 2:
+        return {"score": 0.0, "matched_fragments": []}
+
+    marker_segments = {segment for segment in segments if _is_outline_marker_segment(segment)}
+    matched_segments = {segment for segment, _position in matched}
+    content_segments = [segment for segment in segments if segment not in marker_segments]
+    matched_content = [segment for segment in content_segments if segment in matched_segments]
+    has_marker = bool(marker_segments)
+    marker_matched = bool(marker_segments.intersection(matched_segments))
+
+    if has_marker:
+        min_content_matches = min(2, len(content_segments))
+        if not marker_matched or len(matched_content) < max(1, min_content_matches):
+            return {"score": 0.0, "matched_fragments": []}
+        content_coverage = len(matched_content) / max(1, len(content_segments))
+        score = 0.82 + min(0.1, content_coverage * 0.1)
+    else:
+        if len(matched_content) < 2:
+            return {"score": 0.0, "matched_fragments": []}
+        coverage = len(matched_content) / max(1, len(content_segments))
+        if coverage < 0.5:
+            return {"score": 0.0, "matched_fragments": []}
+        score = 0.72 + min(0.18, coverage * 0.18)
+
+    ordered_positions = [position for _segment, position in matched]
+    if ordered_positions != sorted(ordered_positions):
+        score = min(score, 0.78)
+
+    return {
+        "score": round(min(0.92, score), 4),
+        "matched_fragments": [segment[:30] for segment, _position in matched[:5]],
+    }
+
+
+def _title_visible_segments(title: str) -> List[str]:
+    value = unicodedata.normalize("NFKC", str(title or "")).lower()
+    value = re.sub(r"<[^>]+>", " ", value)
+    raw_parts = re.split(
+        r"[\s:：;；,，、/\\|()\[\]{}<>《》“”\"'‘’\-–—]+",
+        value,
+    )
+    segments: List[str] = []
+    for part in raw_parts:
+        normalized = normalize_title_text(part)
+        if not normalized:
+            continue
+        if normalized in {"chapter", "part", "section"}:
+            continue
+        if len(normalized) < 4 and not _is_outline_marker_segment(normalized):
+            continue
+        segments.append(normalized)
+
+    # Titles without punctuation may still contain a leading outline marker.
+    compact = normalize_title_text(value)
+    marker = re.match(r"^(part\d{1,3}|chapter\d{1,3}|section\d{1,3}|\d{1,3}(?:\.\d{1,3})*)", compact)
+    if marker and marker.group(1) not in segments:
+        segments.insert(0, marker.group(1))
+
+    result: List[str] = []
+    seen: set[str] = set()
+    for segment in segments:
+        if segment in seen:
+            continue
+        seen.add(segment)
+        result.append(segment)
+    return result
+
+
+def _is_outline_marker_segment(segment: str) -> bool:
+    return bool(
+        re.fullmatch(r"(?:part|chapter|section)\d{1,3}", segment)
+        or re.fullmatch(r"\d{1,3}(?:\.\d{1,3})*", segment)
+    )
 
 
 def _contains_cjk(text: str) -> bool:
@@ -602,6 +710,7 @@ def _build_report(
     reasons: Optional[List[str]] = None,
     min_title_match_rate: float = 0.55,
     excluded_pages: Optional[Iterable[int]] = None,
+    require_all_mapped: bool = False,
 ) -> Dict[str, Any]:
     reasons = list(reasons or [])
     report_items = _items_for_main_mapping_report(items)
@@ -617,6 +726,12 @@ def _build_report(
         for item in report_items
         if _positive_int(item.get("physical_index")) is not None
     ]
+    unmapped_count = sum(
+        1
+        for item in report_items
+        if str(item.get("title") or "").strip()
+        and _positive_int(item.get("physical_index")) is None
+    )
     inferred_count = sum(1 for item in report_items if item.get("mapping_source") == "neighbor_inference")
     title_match_rate = len(strong_anchor_indices) / item_count if item_count else 0.0
     estimated_ratio = inferred_count / item_count if item_count else 0.0
@@ -646,6 +761,8 @@ def _build_report(
         reasons.append("toc_page_leakage")
     if item_count and title_match_rate < min_title_match_rate:
         reasons.append("title_match_rate_below_threshold")
+    if require_all_mapped and unmapped_count:
+        reasons.append("unmapped_required_anchor")
     if not mapping_monotonic:
         reasons.append("mapping_non_monotonic")
 
@@ -659,6 +776,7 @@ def _build_report(
             or "toc_page_leakage" in reasons
             or not mapping_monotonic
             or "title_match_rate_below_threshold" in reasons
+            or "unmapped_required_anchor" in reasons
         )
         status = "failed" if severe else "ok"
 
@@ -686,6 +804,7 @@ def _build_report(
         ),
         "strong_anchor_count": len(strong_anchor_indices),
         "item_count": item_count,
+        "unmapped_count": unmapped_count,
         "total_item_count": len(items),
         "auxiliary_item_count": len(items) - item_count,
         "title_match_rate": round(title_match_rate, 4),

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import unicodedata
 from typing import Any, Dict, List, Optional
 
 import pymupdf
@@ -355,6 +356,15 @@ def _infer_structure_from_titles(items: List[Dict[str, Any]]) -> List[Dict[str, 
             child_counters[current_main_structure] = child_counters.get(current_main_structure, 0) + 1
             structure = f"{current_main_structure}.{child_counters[current_main_structure]}"
             clean_title = title
+        elif (
+            catalog_type == CATALOG_MAIN
+            and current_main_structure
+            and current_main_allows_chinese_children
+            and _looks_like_unnumbered_chapter_child(title)
+        ):
+            child_counters[current_main_structure] = child_counters.get(current_main_structure, 0) + 1
+            structure = f"{current_main_structure}.{child_counters[current_main_structure]}"
+            clean_title = title
         elif catalog_type in {CATALOG_FIGURE, CATALOG_TABLE}:
             key = catalog_type
             counters[key] = counters.get(key, 0) + 1
@@ -373,28 +383,40 @@ def _infer_structure_from_titles(items: List[Dict[str, Any]]) -> List[Dict[str, 
 
 
 def _leading_structure(title: str) -> Optional[str]:
-    match = re.match(r"^\s*(\d+(?:\.\d+){0,4})(?:\s+|[.．、])", title)
+    match = re.match(r"^\s*(\d+(?:\.\d+){0,4})(?:\s+|[.．、])", _normalize_for_matching(title))
     if match:
         return match.group(1)
     return None
 
 
+def _looks_like_unnumbered_chapter_child(title: str) -> bool:
+    text = re.sub(r"\s+", " ", _normalize_for_matching(title).strip())
+    if len(text) < 4 or len(text) > 160:
+        return False
+    compact = re.sub(r"\s+", "", text).casefold()
+    if compact in {"目录", "contents", "tableofcontents", "图目录", "表目录"}:
+        return False
+    if re.match(r"^(preface|foreword|appendix|references?|index)\b", text, re.IGNORECASE):
+        return False
+    return bool(re.search(r"[A-Za-z\u4e00-\u9fff]", text))
+
+
 def _leading_chapter_number(title: str) -> Optional[int]:
-    match = re.match(r"^\s*第\s*([一二三四五六七八九十百零〇两\d]+)\s*[章节篇部分部]", title)
+    match = re.match(r"^\s*第\s*([一二三四五六七八九十百零〇两\d]+)\s*[章节篇部分部]", _normalize_for_matching(title))
     if not match:
         return None
     return _parse_chinese_or_int(match.group(1))
 
 
 def _leading_chinese_section_marker(title: str) -> Optional[int]:
-    match = re.match(r"^\s*([一二三四五六七八九十百零〇两\d]{1,4})\s*[、.．]\s*\S+", title)
+    match = re.match(r"^\s*([一二三四五六七八九十百零〇两\d]{1,4})\s*[、.．]\s*\S+", _normalize_for_matching(title))
     if not match:
         return None
     return _parse_chinese_or_int(match.group(1))
 
 
 def _parse_chinese_or_int(value: str) -> Optional[int]:
-    text = re.sub(r"\s+", "", str(value or ""))
+    text = re.sub(r"\s+", "", _normalize_for_matching(value))
     if not text:
         return None
     if text.isdigit():
@@ -429,6 +451,10 @@ def _parse_chinese_or_int(value: str) -> Optional[int]:
     if len(text) == 1:
         return digit_map.get(text)
     return None
+
+
+def _normalize_for_matching(value: Any) -> str:
+    return unicodedata.normalize("NFKC", str(value or ""))
 
 
 def _dedupe_adjacent(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:

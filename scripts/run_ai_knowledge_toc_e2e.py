@@ -139,21 +139,87 @@ def _title_aliases(value: str) -> list[str]:
 
 
 def _find_node_start(nodes: list[dict[str, Any]], title: str) -> int | None:
+    node = _find_node_by_title(nodes, title)
+    if not node:
+        return None
+    value = node.get("start_index") or node.get("physical_index")
+    return value if isinstance(value, int) else None
+
+
+def _candidate_nodes_by_title(nodes: list[dict[str, Any]], title: str) -> list[dict[str, Any]]:
     needles = [_normal_title(alias) for alias in _title_aliases(title) if _normal_title(alias)]
     if not needles:
-        return None
-    fallback: int | None = None
+        return []
+    exact: list[dict[str, Any]] = []
+    partial: list[dict[str, Any]] = []
     for node in _walk(nodes):
         node_title = _normal_title(str(node.get("title") or ""))
         if not node_title:
             continue
-        value = node.get("start_index") or node.get("physical_index")
-        page = value if isinstance(value, int) else None
         if any(node_title == needle for needle in needles):
-            return page
-        if fallback is None and any(needle in node_title for needle in needles):
-            fallback = page
-    return fallback
+            exact.append(node)
+        elif any(needle in node_title for needle in needles):
+            partial.append(node)
+    return exact or partial
+
+
+def _find_node_by_title(nodes: list[dict[str, Any]], title: str) -> dict[str, Any] | None:
+    candidates = _candidate_nodes_by_title(nodes, title)
+    return candidates[0] if candidates else None
+
+
+def _find_node_by_title_and_range(
+    nodes: list[dict[str, Any]],
+    title: str,
+    *,
+    expected_start: Any = None,
+    expected_end: Any = None,
+) -> dict[str, Any] | None:
+    candidates = _candidate_nodes_by_title(nodes, title)
+    if not candidates:
+        return None
+
+    def score(node: dict[str, Any]) -> tuple[int, int, int]:
+        matched = 0
+        if isinstance(expected_start, int) and _node_start(node) == expected_start:
+            matched += 2
+        if isinstance(expected_end, int) and _node_end(node) == expected_end:
+            matched += 1
+        has_children = 1 if _children(node) else 0
+        return matched, has_children, -abs((_node_start(node) or 0) - expected_start) if isinstance(expected_start, int) else 0
+
+    if isinstance(expected_start, int) or isinstance(expected_end, int):
+        return max(candidates, key=score)
+    return candidates[0]
+
+
+def _node_start(node: dict[str, Any] | None) -> int | None:
+    if not isinstance(node, dict):
+        return None
+    value = node.get("start_index") or node.get("physical_index")
+    return value if isinstance(value, int) else None
+
+
+def _node_end(node: dict[str, Any] | None) -> int | None:
+    if not isinstance(node, dict):
+        return None
+    value = node.get("end_index") or node.get("start_index") or node.get("physical_index")
+    return value if isinstance(value, int) else None
+
+
+def _is_auxiliary_node(node: dict[str, Any] | None) -> bool:
+    if not isinstance(node, dict):
+        return False
+    catalog_type = str(node.get("catalog_type") or "").strip().lower()
+    node_type = str(node.get("node_type") or "").strip().lower()
+    metadata = node.get("metadata") if isinstance(node.get("metadata"), dict) else {}
+    kind = str(metadata.get("toc_section_kind") or node.get("toc_section_kind") or "").strip().lower()
+    return bool(
+        node.get("is_auxiliary")
+        or node_type in {"auxiliary_catalog", "auxiliary_catalog_item"}
+        or catalog_type in {"figure", "table", "figure_toc", "table_toc"}
+        or kind in {"figure_toc", "table_toc"}
+    )
 
 
 def _node_section_kind(node: dict[str, Any]) -> str:
@@ -258,6 +324,167 @@ def _known_page_checks(nodes: list[dict[str, Any]], known_pages: dict[str, Any])
     return checks
 
 
+def _must_have_node_checks(
+    nodes: list[dict[str, Any]],
+    must_have_nodes: list[dict[str, Any]],
+) -> dict[str, Any]:
+    checks: dict[str, Any] = {"ok": True, "items": {}}
+    if not must_have_nodes:
+        return checks
+
+    for expected in must_have_nodes:
+        if not isinstance(expected, dict):
+            continue
+        title = str(expected.get("title") or "")
+        if not title:
+            continue
+        expected_start = expected.get("start_index")
+        expected_end = expected.get("end_index")
+        node = _find_node_by_title_and_range(
+            nodes,
+            title,
+            expected_start=expected_start,
+            expected_end=expected_end,
+        )
+        actual_start = _node_start(node)
+        actual_end = _node_end(node)
+        auxiliary_end_ignored = _is_auxiliary_node(node) and isinstance(expected_end, int)
+        item_ok = node is not None
+        if isinstance(expected_start, int):
+            item_ok = item_ok and actual_start == expected_start
+        if isinstance(expected_end, int) and not auxiliary_end_ignored:
+            item_ok = item_ok and actual_end == expected_end
+        item = {
+            "expected_start": expected_start,
+            "expected_end": expected_end,
+            "actual_start": actual_start,
+            "actual_end": actual_end,
+            "auxiliary_end_ignored": auxiliary_end_ignored,
+            "ok": bool(item_ok),
+        }
+        checks["items"][title] = item
+        checks["ok"] = checks["ok"] and bool(item_ok)
+    return checks
+
+
+def _count_leaf_nodes(nodes: list[dict[str, Any]]) -> int:
+    count = 0
+    for node in _walk(nodes):
+        if not _children(node):
+            count += 1
+    return count
+
+
+def _physical_pages_check(nodes: list[dict[str, Any]], page_count: Any) -> dict[str, Any]:
+    if not isinstance(page_count, int) or page_count <= 0:
+        return {"ok": True, "invalid": []}
+    invalid = []
+    for node in _walk(nodes):
+        start = _node_start(node)
+        end = _node_end(node)
+        if (
+            not isinstance(start, int)
+            or not isinstance(end, int)
+            or start < 1
+            or end < 1
+            or start > page_count
+            or end > page_count
+            or start > end
+        ):
+            invalid.append(
+                {
+                    "title": str(node.get("title") or ""),
+                    "start": start,
+                    "end": end,
+                }
+            )
+    return {"ok": not invalid, "invalid": invalid[:10]}
+
+
+def _required_behavior_checks(
+    nodes: list[dict[str, Any]],
+    expected: dict[str, Any],
+    index_payload: dict[str, Any],
+) -> dict[str, Any]:
+    spec = dict(expected.get("required_checks") or {})
+    if expected.get("reference_status") == "needs_child_expansion":
+        spec.setdefault("requires_child_expansion", True)
+        spec.setdefault("min_child_expansion_span", 6)
+    checks: dict[str, Any] = {"ok": True}
+    if not spec:
+        return checks
+
+    page_count = index_payload.get("page_count")
+
+    if spec.get("physical_pages_only"):
+        check = _physical_pages_check(nodes, page_count)
+        checks["physical_pages_only"] = check
+        checks["ok"] = checks["ok"] and bool(check.get("ok"))
+
+    if spec.get("full_document_ocr"):
+        ok = bool(index_payload.get("ocr_used") or index_payload.get("page_text_map_ocr_completed"))
+        checks["full_document_ocr"] = {"expected": True, "actual": ok, "ok": ok}
+        checks["ok"] = checks["ok"] and ok
+
+    expected_leaf_count = spec.get("expected_leaf_count")
+    if isinstance(expected_leaf_count, int):
+        actual = _count_leaf_nodes(nodes)
+        ok = actual >= expected_leaf_count
+        checks["expected_leaf_count"] = {"expected_min": expected_leaf_count, "actual": actual, "ok": ok}
+        checks["ok"] = checks["ok"] and ok
+
+    visible_toc_pages = spec.get("visible_toc_pages")
+    if isinstance(visible_toc_pages, list):
+        diagnostics = index_payload.get("diagnostics") if isinstance(index_payload.get("diagnostics"), dict) else {}
+        detection = diagnostics.get("toc_page_detection") if isinstance(diagnostics.get("toc_page_detection"), dict) else {}
+        mapping = diagnostics.get("toc_content_mapping") if isinstance(diagnostics.get("toc_content_mapping"), dict) else {}
+        actual_pages = detection.get("pages") or mapping.get("toc_pages") or []
+        actual_set = {page for page in actual_pages if isinstance(page, int)}
+        missing = [page for page in visible_toc_pages if isinstance(page, int) and page not in actual_set]
+        ok = not missing
+        checks["visible_toc_pages"] = {"expected": visible_toc_pages, "actual": sorted(actual_set), "missing": missing, "ok": ok}
+        checks["ok"] = checks["ok"] and ok
+
+    if spec.get("requires_child_expansion"):
+        min_children = int(spec.get("min_children_per_long_chapter") or 1)
+        min_span = int(spec.get("min_child_expansion_span") or 8)
+        missing: list[dict[str, Any]] = []
+        expected_nodes = [item for item in (expected.get("must_have_nodes") or []) if isinstance(item, dict)]
+        targets: list[tuple[str, dict[str, Any], int, int]] = []
+        for item in expected_nodes:
+            title = str(item.get("title") or "")
+            start = item.get("start_index")
+            end = item.get("end_index")
+            if not title or not isinstance(start, int) or not isinstance(end, int):
+                continue
+            if end - start + 1 >= min_span:
+                node = _find_node_by_title(nodes, title) or {}
+                targets.append((title, node, start, end))
+        if not targets:
+            for node in _effective_root_nodes(nodes):
+                start = _node_start(node)
+                end = _node_end(node)
+                if isinstance(start, int) and isinstance(end, int) and end - start + 1 >= min_span:
+                    targets.append((str(node.get("title") or ""), node, start, end))
+        for title, node, start, end in targets:
+            child_count = len(_children(node)) if isinstance(node, dict) else 0
+            if child_count < min_children:
+                missing.append(
+                    {
+                        "title": title,
+                        "start": start,
+                        "end": end,
+                        "child_count": child_count,
+                        "expected_min_children": min_children,
+                    }
+                )
+        ok = not missing
+        checks["requires_child_expansion"] = {"ok": ok, "missing": missing[:10]}
+        checks["ok"] = checks["ok"] and ok
+
+    return checks
+
+
 def _minimum_shape_check(nodes: list[dict[str, Any]], acceptance_spec: dict[str, Any]) -> dict[str, Any]:
     effective_roots = _effective_root_nodes(nodes)
     root_count = len(effective_roots)
@@ -302,6 +529,45 @@ def _forbidden_pattern_checks(nodes: list[dict[str, Any]], forbidden: dict[str, 
         checks["no_generic_single_node"] = not generic_single
         checks["evaluated"].append("no_generic_single_node")
         checks["ok"] = checks["ok"] and not generic_single
+    forbidden_start_pages = [
+        page for page in (forbidden.get("forbidden_start_pages") or []) if isinstance(page, int)
+    ]
+    if forbidden_start_pages:
+        hits = [
+            {"title": str(node.get("title") or ""), "start": _node_start(node)}
+            for node in _effective_root_nodes(nodes)
+            if _node_start(node) in forbidden_start_pages
+        ]
+        checks["forbidden_start_pages"] = {"expected_absent": forbidden_start_pages, "hits": hits[:10], "ok": not hits}
+        checks["evaluated"].append("forbidden_start_pages")
+        checks["ok"] = checks["ok"] and not hits
+
+    max_same_page = forbidden.get("max_nodes_on_same_non_toc_page")
+    forbidden_mass_page = forbidden.get("forbidden_mass_page")
+    if isinstance(max_same_page, int) and max_same_page >= 0:
+        counts: dict[int, int] = {}
+        for node in _walk(nodes):
+            page = _node_start(node)
+            if not isinstance(page, int):
+                continue
+            counts[page] = counts.get(page, 0) + 1
+        if isinstance(forbidden_mass_page, int):
+            violating = {forbidden_mass_page: counts.get(forbidden_mass_page, 0)}
+            ok = violating[forbidden_mass_page] <= max_same_page
+        else:
+            violating = {
+                page: count
+                for page, count in counts.items()
+                if count > max_same_page
+            }
+            ok = not violating
+        checks["max_nodes_on_same_non_toc_page"] = {
+            "max": max_same_page,
+            "violating": violating,
+            "ok": ok,
+        }
+        checks["evaluated"].append("max_nodes_on_same_non_toc_page")
+        checks["ok"] = checks["ok"] and ok
     return checks
 
 
@@ -320,6 +586,7 @@ def build_report_from_index_payload(
         structure = []
     quality_report = dict(index_payload.get("quality_report") or {})
     diagnostics = dict(index_payload.get("diagnostics") or {})
+    llm_quality_check = dict(index_payload.get("llm_quality_check") or {})
     top_titles = [str(node.get("title") or "") for node in structure if isinstance(node, dict)]
     effective_root_titles = [
         str(node.get("title") or "")
@@ -328,6 +595,8 @@ def build_report_from_index_payload(
     ]
     section_kinds = _section_kinds(structure)
     known_pages = _known_page_checks(structure, expected.get("known_pages") or {})
+    must_have_nodes = _must_have_node_checks(structure, list(expected.get("must_have_nodes") or []))
+    required_checks = _required_behavior_checks(structure, expected, index_payload)
     acceptance_spec = dict(expected.get("acceptance") or {})
     required_pages = _required_pages_checks(structure, acceptance_spec.get("required_pages") or {})
     required_sections = list(expected.get("must_have_sections") or [])
@@ -341,13 +610,13 @@ def build_report_from_index_payload(
         list(acceptance_spec.get("required_root_titles") or []),
     )
     minimum_shape = _minimum_shape_check(structure, acceptance_spec)
-    forbidden_patterns = _forbidden_pattern_checks(
-        structure,
-        dict(acceptance_spec.get("forbidden_patterns") or {}),
-    )
+    forbidden_spec = dict(acceptance_spec.get("forbidden_patterns") or {})
+    forbidden_spec.update(dict(expected.get("forbidden_patterns") or {}))
+    forbidden_patterns = _forbidden_pattern_checks(structure, forbidden_spec)
     route_ok = _route_matches_expected(route, expected)
     quality_status = str(quality_report.get("status") or "")
     hard_fail_reasons = list(quality_report.get("hard_fail_reasons") or [])
+    llm_needs_repair = bool(llm_quality_check.get("needs_repair"))
     quality_ok = not quality_status.startswith("failed") and not hard_fail_reasons
     page_count_ok = not expected.get("page_count") or index_payload.get("page_count") == expected.get("page_count")
     known_pages_ok = all(item.get("ok") for item in known_pages.values())
@@ -360,6 +629,8 @@ def build_report_from_index_payload(
         "required_sections": not missing_sections,
         "top_level": bool(top_level_check.get("ok")),
         "known_pages": known_pages_ok,
+        "must_have_nodes": bool(must_have_nodes.get("ok")),
+        "required_checks": bool(required_checks.get("ok")),
         "minimum_shape": bool(minimum_shape.get("ok")),
         "required_root_titles": bool(required_root_check.get("ok")),
         "required_pages": all(item.get("ok") for item in required_pages.values()),
@@ -402,9 +673,13 @@ def build_report_from_index_payload(
             "status": quality_status,
             "hard_fail_reasons": hard_fail_reasons,
             "warnings": list(quality_report.get("warnings") or []),
+            "llm_needs_repair": llm_needs_repair,
+            "llm_overall_score": llm_quality_check.get("overall_score"),
         },
         "key_checks": {
             "known_pages": known_pages,
+            "must_have_nodes": must_have_nodes,
+            "required_checks": required_checks,
             "required_pages": required_pages,
             "minimum_shape": minimum_shape,
             "forbidden_patterns": forbidden_patterns,

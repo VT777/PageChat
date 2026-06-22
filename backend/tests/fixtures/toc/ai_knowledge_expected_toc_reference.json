@@ -80,7 +80,7 @@
       "expected_path": "text -> visible_toc_no_pages",
       "reference_status": "needs_child_expansion",
       "expected_route": {"content_type": "text", "selected_path": "visible_toc_no_pages"},
-      "required_checks": {"section_numbers_are_not_pages": true, "divider_pages_are_section_starts": true},
+      "required_checks": {"section_numbers_are_not_pages": true, "divider_pages_are_section_starts": true, "requires_child_expansion": true, "min_child_expansion_span": 6},
       "must_have_nodes": [
         {"title": "国外大厂AI应用落地", "start_index": 3, "end_index": 8},
         {"title": "国内大厂AI应用落地", "start_index": 9, "end_index": 15},

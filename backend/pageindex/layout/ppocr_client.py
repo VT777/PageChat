@@ -44,7 +44,7 @@ class PPOCRClient:
     def recognize_pages(self, file_path: str, pages: Optional[List[int]] = None, options: Optional[Dict[str, Any]] = None) -> List[PPOCRPageResult]:
         if self.backend != "remote_aistudio":
             raise NotImplementedError(f"unsupported ppocr backend: {self.backend}")
-        print(f"[TOC-OCR] task=toc_page engine=ppocr_legacy model={self.model}")
+        print(f"[TOC-OCR] task=page_text engine=ppocr_legacy model={self.model}")
         job_id = self._submit_job(file_path, options or {})
         jsonl_url = self._poll_job(job_id)
         results = self._download_jsonl(jsonl_url)

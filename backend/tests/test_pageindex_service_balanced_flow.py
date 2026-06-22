@@ -9,19 +9,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from app.services.pageindex_service import PageIndexService
 
 
-def test_should_skip_legacy_toc_detection_when_anchor_toc_exists_and_provider_succeeded():
-    analysis = {"toc_pages": [2], "toc_page": {"has_toc_page": True, "pages": [2]}}
-    result = {"items": [{"title": "A"}], "prevalidated": True, "source": "toc_page_text"}
-
-    assert PageIndexService._should_skip_legacy_toc_detection(analysis, result) is True
-
-
-def test_should_not_skip_legacy_toc_detection_without_result():
-    analysis = {"toc_pages": [2], "toc_page": {"has_toc_page": True, "pages": [2]}}
-
-    assert PageIndexService._should_skip_legacy_toc_detection(analysis, None) is False
-
-
 def test_service_builds_route_decision_from_state_machine():
     analysis = {
         "page_count": 62,
@@ -75,143 +62,6 @@ def test_prepare_prebuilt_toc_tree_normalizes_invalid_child_ranges_before_qc():
     assert child["source_anchor"]["end_page"] == 49
 
 
-def test_collect_candidates_respects_selected_visible_toc_path(monkeypatch, tmp_path):
-    service = PageIndexService()
-
-    def forbidden(*_args, **_kwargs):
-        raise AssertionError("selected visible TOC path must not run other complete TOC builders")
-
-    async def fake_extract_toc_text(*_args, **_kwargs):
-        return {
-            "toc_items": [
-                {"title": "第一章", "page": 5, "physical_index": 5, "level": 1}
-            ],
-            "source": "llm_toc_page",
-        }
-
-    monkeypatch.setattr(service, "_try_balanced_provider_shortcut", forbidden)
-    monkeypatch.setattr(service, "_try_text_heading_toc", forbidden)
-    monkeypatch.setattr(service, "_extract_toc_text", fake_extract_toc_text)
-    monkeypatch.setattr(
-        service,
-        "_build_text_toc_candidate",
-        lambda *_args, **_kwargs: forbidden(),
-    )
-
-    candidates = asyncio.run(
-        service._collect_text_toc_candidates(
-            analysis={
-                "page_texts": ["", "目录\n第一章 ........ 5", "正文"],
-                "toc_page_detection": {
-                    "status": "detected",
-                    "pages": [2],
-                    "has_page_numbers": True,
-                },
-            },
-            route_decision={
-                "selected_path": "visible_toc_with_pages",
-                "path": "visible_toc_with_pages",
-            },
-            file_path=tmp_path / "sample.pdf",
-            page_count=10,
-            model="qwen3.6-flash",
-            anchors={"toc_pages": [2]},
-            ocr_text_map=None,
-            dividers=[],
-        )
-    )
-
-    assert [candidate["source"] for candidate in candidates] == ["llm_toc_page"]
-
-
-def test_collect_candidates_uses_page_text_map_for_layout_required_visible_toc(monkeypatch, tmp_path):
-    service = PageIndexService()
-    calls = {"llm": 0}
-
-    def fake_rule(*_args, **_kwargs):
-        return None
-
-    async def fake_extract_toc_text(*_args, **_kwargs):
-        calls["llm"] += 1
-        return {
-            "toc_items": [
-                {"title": "01 Case Alpha", "page": 1, "physical_index": 3, "level": 1},
-                {"title": "02 Case Beta", "page": 3, "physical_index": 5, "level": 1},
-            ],
-            "source": "llm_toc_page",
-        }
-
-    monkeypatch.setattr(
-        "pageindex.visible_toc_rule_extractor.extract_visible_toc_with_pages",
-        fake_rule,
-    )
-    monkeypatch.setattr(service, "_extract_toc_text", fake_extract_toc_text)
-
-    candidates = asyncio.run(
-        service._collect_text_toc_candidates(
-            analysis={
-                "layout_type": "scanned_image_pdf",
-                "structure_policy": "layout_required",
-                "content_type": "ocr",
-                "page_texts": [
-                    "Cover",
-                    "Catalog\n01 Case Alpha ........ 1\n02 Case Beta ........ 3",
-                    "01 Case Alpha\nBody",
-                    "More body",
-                    "02 Case Beta\nBody",
-                ],
-                "toc_page_detection": {
-                    "status": "detected",
-                    "pages": [2],
-                    "has_page_numbers": True,
-                },
-            },
-            route_decision={
-                "selected_path": "visible_toc_with_pages",
-                "path": "visible_toc_with_pages",
-            },
-            file_path=tmp_path / "scan.pdf",
-            page_count=5,
-            model="qwen3.6-flash",
-            anchors={"toc_pages": [2]},
-            ocr_text_map=None,
-            dividers=[],
-        )
-    )
-
-    assert calls["llm"] == 1
-    assert [candidate["source"] for candidate in candidates] == ["llm_toc_page"]
-
-
-def test_legacy_visual_toc_layout_is_disabled_by_default_after_s1() -> None:
-    analysis = {
-        "structure_policy": "layout_required",
-        "page_texts": [],
-    }
-    route_decision = {
-        "path": "ppocr_layout",
-        "selected_path": "content_outline",
-    }
-
-    assert not PageIndexService._should_run_legacy_toc_layout(route_decision, analysis)
-
-
-def test_legacy_visual_toc_layout_requires_explicit_opt_in_and_no_page_text_map() -> None:
-    route_decision = {
-        "path": "ppocr_layout",
-        "allow_legacy_visual_toc": True,
-    }
-
-    assert PageIndexService._should_run_legacy_toc_layout(
-        route_decision,
-        {"structure_policy": "layout_required", "page_texts": []},
-    )
-    assert not PageIndexService._should_run_legacy_toc_layout(
-        route_decision,
-        {"structure_policy": "layout_required", "page_texts": ["OCR text"]},
-    )
-
-
 def test_llm_outline_expandable_parents_use_fact_based_span_policy() -> None:
     tree = [
         {
@@ -263,6 +113,7 @@ def test_llm_outline_expandable_parents_expand_short_slide_report_sections() -> 
         page_count=60,
         analysis={
             "route_decision": {"selected_path": "visible_toc_no_pages"},
+            "toc_source": "slide_outline",
             "layout_type": "mixed_layout_report",
             "content_type": "hybrid",
             "image_coverage": 1.0,
@@ -272,523 +123,36 @@ def test_llm_outline_expandable_parents_expand_short_slide_report_sections() -> 
     assert [node["title"] for node in parents] == ["Part05: AI营销案例"]
 
 
-def test_collect_candidates_falls_back_to_text_tree_for_paged_visible_toc(monkeypatch, tmp_path):
-    service = PageIndexService()
-    calls = {"text_tree": 0}
-
-    monkeypatch.setattr(
-        "pageindex.visible_toc_rule_extractor.extract_visible_toc_with_pages",
-        lambda *_args, **_kwargs: None,
-    )
-
-    async def empty_llm_toc(*_args, **_kwargs):
-        return None
-
-    async def fake_text_tree(*_args, **_kwargs):
-        calls["text_tree"] += 1
-        return {
-            "toc_items": [
-                {"title": "Case 01", "physical_index": 3, "level": 1},
-                {"title": "Case 02", "physical_index": 5, "level": 1},
+def test_llm_outline_expandable_parents_ignore_unused_agenda_signal_for_text_toc() -> None:
+    tree = [
+        {
+            "title": "目录",
+            "node_type": "catalog_group",
+            "nodes": [
+                {"title": "国外大厂AI应用落地", "start_index": 3, "end_index": 8, "nodes": []},
+                {"title": "国内大厂AI应用落地", "start_index": 9, "end_index": 15, "nodes": []},
+                {"title": "产业链梳理", "start_index": 16, "end_index": 17, "nodes": []},
+                {"title": "风险提示", "start_index": 18, "end_index": 21, "nodes": []},
             ],
-            "source": "text_tree",
         }
-
-    monkeypatch.setattr(service, "_extract_toc_text", empty_llm_toc)
-    monkeypatch.setattr(service, "_build_text_toc_candidate", fake_text_tree)
-
-    candidates = asyncio.run(
-        service._collect_text_toc_candidates(
-            analysis={
-                "page_texts": [
-                    "Cover",
-                    "Catalog\nCase 01 .... 1\nCase 02 .... 3",
-                    "Case 01\nBody",
-                    "More body",
-                    "Case 02\nBody",
-                ],
-                "toc_page_detection": {
-                    "status": "detected",
-                    "pages": [2],
-                    "has_page_numbers": True,
-                },
-            },
-            route_decision={
-                "selected_path": "visible_toc_with_pages",
-                "path": "visible_toc_with_pages",
-            },
-            file_path=tmp_path / "scan.pdf",
-            page_count=5,
-            model="qwen3.6-flash",
-            anchors={"toc_pages": [2]},
-            ocr_text_map=None,
-            dividers=[],
-        )
-    )
-
-    assert calls["text_tree"] == 1
-    assert [candidate["source"] for candidate in candidates] == ["text_tree"]
-
-
-def test_collect_candidates_adds_content_outline_backup_for_weak_paged_toc(monkeypatch, tmp_path):
-    service = PageIndexService()
-
-    monkeypatch.setattr(
-        "pageindex.visible_toc_rule_extractor.extract_visible_toc_with_pages",
-        lambda *_args, **_kwargs: None,
-    )
-
-    async def weak_llm_toc(*_args, **_kwargs):
-        return {
-            "toc_items": [{"title": "Catalog fragment", "page": 99, "level": 1}],
-            "source": "llm_toc_page",
-        }
-
-    async def fake_content_outline(*_args, **_kwargs):
-        return {
-            "toc_items": [
-                {"title": "Case 01", "physical_index": 3, "level": 1},
-                {"title": "Case 02", "physical_index": 5, "level": 1},
-            ],
-            "source": "content_outline",
-        }
-
-    monkeypatch.setattr(service, "_extract_toc_text", weak_llm_toc)
-    monkeypatch.setattr(service, "_extract_content_outline_candidate", fake_content_outline)
-
-    candidates = asyncio.run(
-        service._collect_text_toc_candidates(
-            analysis={
-                "page_texts": [
-                    "Cover",
-                    "Catalog\nCase 01 .... 1\nCase 02 .... 3",
-                    "Case 01\nBody",
-                    "More body",
-                    "Case 02\nBody",
-                ],
-                "toc_page_detection": {
-                    "status": "detected",
-                    "pages": [2],
-                    "has_page_numbers": True,
-                },
-            },
-            route_decision={
-                "selected_path": "visible_toc_with_pages",
-                "path": "visible_toc_with_pages",
-            },
-            file_path=tmp_path / "scan.pdf",
-            page_count=5,
-            model="qwen3.6-flash",
-            anchors={"toc_pages": [2]},
-            ocr_text_map=None,
-            dividers=[],
-        )
-    )
-
-    assert [candidate["source"] for candidate in candidates] == [
-        "llm_toc_page",
-        "content_outline",
     ]
 
-
-def test_collect_candidates_keeps_rule_and_llm_for_standard_paged_visible_toc(monkeypatch, tmp_path):
-    service = PageIndexService()
-
-    async def fake_extract_toc_text(*_args, **_kwargs):
-        return {
-            "toc_items": [
-                {"title": "OpenAI product matrix", "page": 4, "physical_index": 4, "level": 1},
-                {"title": "Model capability outlook", "page": 10, "physical_index": 10, "level": 1},
-                {"title": "AGI platform entrance", "page": 18, "physical_index": 18, "level": 1},
-                {"title": "Risk warning", "page": 25, "physical_index": 25, "level": 1},
-            ],
-            "source": "llm_toc_page",
-            "mapped": True,
-        }
-
-    monkeypatch.setattr(service, "_extract_toc_text", fake_extract_toc_text)
-
-    page_texts = [
-        "Cover",
-        (
-            "目录\n"
-            "第一章 复盘：OpenAI 产品矩阵 ................ 4\n"
-            "第二章 展望：模型能力持续提升 ................ 10\n"
-            "第三章 愿景：AGI 平台入口 ................ 18\n"
-            "第四章 风险提示 ................ 25\n"
-            "图目录\n"
-            "图1 OpenAI 产品时间线 ................ 5"
-        ),
-        "表目录\n表1 OpenAI 融资情况梳理 ................ 8",
-        "第一章 复盘：OpenAI 产品矩阵\n正文",
-        "图1 OpenAI 产品时间线\n正文",
-        "正文",
-        "正文",
-        "表1 OpenAI 融资情况梳理\n正文",
-        "正文",
-        "第二章 展望：模型能力持续提升\n正文",
-        "正文",
-        "正文",
-        "正文",
-        "正文",
-        "正文",
-        "正文",
-        "正文",
-        "第三章 愿景：AGI 平台入口\n正文",
-        "正文",
-        "正文",
-        "正文",
-        "正文",
-        "正文",
-        "正文",
-        "第四章 风险提示\n正文",
-        "尾页",
-    ]
-
-    candidates = asyncio.run(
-        service._collect_text_toc_candidates(
-            analysis={
-                "page_texts": page_texts,
-                "toc_page_detection": {
-                    "status": "detected",
-                    "pages": [2, 3],
-                    "has_page_numbers": True,
-                },
-            },
-            route_decision={
-                "selected_path": "visible_toc_with_pages",
-                "path": "visible_toc_with_pages",
-            },
-            file_path=tmp_path / "sample.pdf",
-            page_count=len(page_texts),
-            model="qwen3.6-flash",
-            anchors={"toc_pages": [2, 3]},
-            ocr_text_map=None,
-            dividers=[],
-        )
-    )
-
-    assert [candidate["source"] for candidate in candidates] == ["toc_page_text_rule", "llm_toc_page"]
-    roots = candidates[0]["items"]
-    assert [root["title"] for root in roots] == ["目录", "图目录", "表目录"]
-
-
-def test_collect_candidates_keeps_rule_and_llm_for_unpaged_visible_toc(monkeypatch, tmp_path):
-    service = PageIndexService()
-
-    async def fake_extract_toc_text(*_args, **_kwargs):
-        return {
-            "toc_items": [
-                {"title": "Global AI applications", "physical_index": 3, "level": 1},
-                {"title": "China AI applications", "physical_index": 4, "level": 1},
-                {"title": "Industry chain", "physical_index": 5, "level": 1},
-                {"title": "Risk warning", "physical_index": 6, "level": 1},
-            ],
-            "source": "llm_toc_page",
-            "mapped": True,
-        }
-
-    monkeypatch.setattr(service, "_extract_toc_text", fake_extract_toc_text)
-    page_texts = [
-        "Cover",
-        (
-            "目录\n"
-            "国外大厂AI应用落地\n"
-            "01\n"
-            "国内大厂AI应用落地\n"
-            "02\n"
-            "产业链梳理\n"
-            "03\n"
-            "风险提示\n"
-            "04"
-        ),
-        "国外大厂AI应用落地\n正文",
-        "国内大厂AI应用落地\n正文",
-        "产业链梳理\n正文",
-        "风险提示\n正文",
-    ]
-
-    candidates = asyncio.run(
-        service._collect_text_toc_candidates(
-            analysis={
-                "page_texts": page_texts,
-                "toc_page_detection": {
-                    "status": "detected",
-                    "pages": [2],
-                    "has_page_numbers": False,
-                },
-            },
-            route_decision={
-                "selected_path": "visible_toc_no_pages",
-                "path": "visible_toc_no_pages",
-            },
-            file_path=tmp_path / "sample.pdf",
-            page_count=len(page_texts),
-            model="qwen3.6-flash",
-            anchors={"toc_pages": [2]},
-            ocr_text_map=None,
-            dividers=[],
-        )
-    )
-
-    assert [candidate["source"] for candidate in candidates] == ["toc_page_text_rule", "llm_toc_page"]
-    assert candidates[0]["evidence"]["semi_frozen"] is True
-
-
-def test_collect_candidates_continues_when_rule_draft_mapping_fails(monkeypatch, tmp_path):
-    service = PageIndexService()
-    calls = {"content_outline": 0}
-
-    def fake_rule_draft(*_args, **_kwargs):
-        return {
-            "type": "toc_draft",
-            "source": "toc_page_text_rule",
-            "has_page_numbers": True,
-            "items": [
-                {"title": "第一章 错误页码", "level": 1, "raw_page_label": 99},
-                {"title": "第二章 错误页码", "level": 1, "raw_page_label": 199},
-            ],
-        }
-
-    def fake_mapper(*_args, **_kwargs):
-        return [], {
-            "status": "failed",
-            "strategy": "printed_offset",
-            "reasons": ["title_match_rate_below_threshold"],
-        }
-
-    async def empty_llm_toc(*_args, **_kwargs):
-        return None
-
-    async def fake_content_outline(*_args, **_kwargs):
-        calls["content_outline"] += 1
-        return {
-            "toc_items": [
-                {"title": "正文第一章", "physical_index": 3, "level": 1},
-                {"title": "正文第二章", "physical_index": 6, "level": 1},
-            ],
-            "source": "content_outline",
-        }
-
-    monkeypatch.setattr(
-        "pageindex.visible_toc_rule_extractor.extract_visible_toc_with_pages_draft",
-        fake_rule_draft,
-    )
-    monkeypatch.setattr("pageindex.toc_mapping.map_toc_draft_to_physical", fake_mapper)
-    monkeypatch.setattr(service, "_extract_toc_text", empty_llm_toc)
-    monkeypatch.setattr(service, "_extract_content_outline_candidate", fake_content_outline)
-
-    candidates = asyncio.run(
-        service._collect_text_toc_candidates(
-            analysis={
-                "page_texts": [
-                    "Cover",
-                    "目录\n第一章 错误页码 ........ 99\n第二章 错误页码 ........ 199",
-                    "正文第一章\nBody",
-                    "Body",
-                    "Body",
-                    "正文第二章\nBody",
-                ],
-                "toc_page_detection": {
-                    "status": "detected",
-                    "pages": [2],
-                    "has_page_numbers": True,
-                },
-            },
-            route_decision={
-                "selected_path": "visible_toc_with_pages",
-                "path": "visible_toc_with_pages",
-            },
-            file_path=tmp_path / "sample.pdf",
-            page_count=6,
-            model="qwen3.6-flash",
-            anchors={"toc_pages": [2]},
-            ocr_text_map=None,
-            dividers=[],
-        )
-    )
-
-    assert calls["content_outline"] == 1
-    assert [candidate["source"] for candidate in candidates] == ["content_outline"]
-
-
-def test_unified_controller_preserves_child_expansion_state_for_unpaged_rule(monkeypatch, tmp_path):
-    service = PageIndexService()
-
-    async def fake_llm_toc(*_args, **_kwargs):
-        return {
-            "toc_items": [
-                {"title": "Chapter One", "level": 1, "physical_index": 3},
-                {"title": "Chapter Two", "level": 1, "physical_index": 5},
-                {"title": "Chapter Three", "level": 1, "physical_index": 7},
-            ],
-            "source": "llm_toc_page",
-            "mapped": True,
-        }
-
-    def fake_rule_draft(*_args, **_kwargs):
-        return {
-            "type": "toc_draft",
-            "source": "toc_page_text_rule",
-            "has_page_numbers": False,
-            "items": [
-                {"title": "Chapter One", "level": 1},
-                {"title": "Chapter Two", "level": 1},
-                {"title": "Chapter Three", "level": 1},
-            ],
-        }
-
-    def fake_mapper(*_args, **_kwargs):
-        return [
-            {"title": "Chapter One", "level": 1, "physical_index": 3, "start_index": 3},
-            {"title": "Chapter Two", "level": 1, "physical_index": 5, "start_index": 5},
-            {"title": "Chapter Three", "level": 1, "physical_index": 7, "start_index": 7},
-        ], {
-            "status": "ok",
-            "strategy": "title_search",
-            "title_match_rate": 1.0,
-            "strong_anchor_count": 3,
-            "reasons": [],
-        }
-
-    monkeypatch.setattr(
-        "pageindex.visible_toc_rule_extractor.extract_visible_toc_no_pages_draft",
-        fake_rule_draft,
-    )
-    monkeypatch.setattr("pageindex.toc_mapping.map_toc_draft_to_physical", fake_mapper)
-    monkeypatch.setattr(service, "_extract_toc_text", fake_llm_toc)
-    page_texts = [
-        "Cover",
-        (
-            "Contents\n"
-            "Chapter One\n"
-            "01\n"
-            "Chapter Two\n"
-            "02\n"
-            "Chapter Three\n"
-            "03"
-        ),
-        "Chapter One\nBody",
-        "More one",
-        "Chapter Two\nBody",
-        "More two",
-        "Chapter Three\nBody",
-    ]
-    analysis = {
-        "page_texts": page_texts,
-        "toc_page_detection": {
-            "status": "detected",
-            "pages": [2],
-            "has_page_numbers": False,
+    parents = PageIndexService._llm_outline_expandable_parents(
+        tree,
+        page_count=21,
+        analysis={
+            "route_decision": {"selected_path": "visible_toc_no_pages"},
+            "toc_source": "toc_page_text_rule",
+            "layout_type": "native_text_report",
+            "content_type": "text",
+            "agenda_outline_candidate": True,
         },
-    }
-
-    result = asyncio.run(
-        service._run_unified_toc_controller(
-            file_path=tmp_path / "sample.pdf",
-            requested_mode="smart",
-            analysis=analysis,
-            route_decision={
-                "selected_path": "visible_toc_no_pages",
-                "path": "visible_toc_no_pages",
-            },
-            page_count=len(page_texts),
-            model="qwen3.6-flash",
-            anchors={"toc_pages": [2]},
-            ocr_text_map=None,
-            dividers=[],
-        )
     )
 
-    assert result is not None
-    assert result["source"] == "toc_page_text_rule"
-    assert result["allow_child_expansion"] is True
-    assert analysis["allow_child_expansion"] is True
-    assert analysis["toc_semi_frozen"] is True
-
-
-def test_unified_controller_keeps_winner_mapping_report_when_loser_mapping_fails(monkeypatch, tmp_path):
-    service = PageIndexService()
-
-    def fake_rule_draft(*_args, **_kwargs):
-        return {
-            "type": "toc_draft",
-            "source": "toc_page_text_rule",
-            "has_page_numbers": True,
-            "items": [
-                {"title": "Chapter One", "level": 1, "raw_page_label": 3},
-                {"title": "Chapter Two", "level": 1, "raw_page_label": 5},
-            ],
-        }
-
-    async def fake_llm_toc(*_args, **_kwargs):
-        return {
-            "toc_items": [
-                {"title": "Wrong One", "level": 1, "page": 99},
-                {"title": "Wrong Two", "level": 1, "page": 199},
-            ],
-            "source": "llm_toc_page",
-        }
-
-    def fake_mapper(draft, **_kwargs):
-        if draft.get("source") == "toc_page_text_rule":
-            return [
-                {"title": "Chapter One", "level": 1, "physical_index": 3, "start_index": 3},
-                {"title": "Chapter Two", "level": 1, "physical_index": 5, "start_index": 5},
-            ], {
-                "status": "ok",
-                "strategy": "physical_identity",
-                "title_match_rate": 1.0,
-                "strong_anchor_count": 2,
-                "reasons": [],
-            }
-        return [], {
-            "status": "failed",
-            "strategy": "printed_page_offset",
-            "title_match_rate": 0.0,
-            "strong_anchor_count": 0,
-            "reasons": ["printed_pages_non_monotonic"],
-        }
-
-    monkeypatch.setattr(
-        "pageindex.visible_toc_rule_extractor.extract_visible_toc_with_pages_draft",
-        fake_rule_draft,
-    )
-    monkeypatch.setattr("pageindex.toc_mapping.map_toc_draft_to_physical", fake_mapper)
-    monkeypatch.setattr(service, "_extract_toc_text", fake_llm_toc)
-
-    analysis = {
-        "page_texts": [
-            "Cover",
-            "Contents\nChapter One .... 3\nChapter Two .... 5",
-            "Chapter One\nBody",
-            "Body",
-            "Chapter Two\nBody",
-        ],
-        "toc_page_detection": {"status": "detected", "pages": [2], "has_page_numbers": True},
-    }
-
-    result = asyncio.run(
-        service._run_unified_toc_controller(
-            file_path=tmp_path / "sample.pdf",
-            requested_mode="smart",
-            analysis=analysis,
-            route_decision={
-                "selected_path": "visible_toc_with_pages",
-                "path": "visible_toc_with_pages",
-            },
-            page_count=5,
-            model="qwen3.6-flash",
-            anchors={"toc_pages": [2]},
-            ocr_text_map=None,
-            dividers=[],
-        )
-    )
-
-    assert result is not None
-    assert result["source"] == "toc_page_text_rule"
-    assert analysis["toc_content_mapping"]["status"] == "ok"
-    assert analysis["toc_content_mapping"]["strategy"] == "physical_identity"
+    assert [parent["title"] for parent in parents] == [
+        "国外大厂AI应用落地",
+        "国内大厂AI应用落地",
+    ]
 
 
 def test_main_toc_member_nodes_are_expandable_not_catalog_containers() -> None:
@@ -814,7 +178,7 @@ def test_main_toc_member_nodes_are_expandable_not_catalog_containers() -> None:
     assert [parent["title"] for parent in parents] == ["第一章：发展学生智能素养"]
 
 
-def test_content_outline_path_uses_internal_llm_outline_before_segment_fallback(monkeypatch):
+def test_content_outline_path_uses_internal_llm_outline(monkeypatch):
     service = PageIndexService()
 
     async def fake_extract_hierarchical_toc(page_texts, model):
@@ -828,16 +192,14 @@ def test_content_outline_path_uses_internal_llm_outline_before_segment_fallback(
             "source": "hierarchical",
         }
 
-    monkeypatch.setattr(service, "_try_text_heading_toc", lambda _analysis: None)
     monkeypatch.setattr(
         "pageindex.hierarchical_extractor.extract_hierarchical_toc",
         fake_extract_hierarchical_toc,
     )
 
     result = asyncio.run(
-        service._build_text_toc_candidate(
+        service._extract_content_outline_candidate(
             {"page_texts": ["Opening page", "Chapter-like page", "Closing page"]},
-            toc_pages=[],
             page_count=3,
             model="qwen3.6-flash",
         )

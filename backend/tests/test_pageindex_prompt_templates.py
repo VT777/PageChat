@@ -15,3 +15,13 @@ def test_toc_detector_single_prompt_requests_typed_sections() -> None:
     assert "figure_toc" in prompt
     assert "table_toc" in prompt
     assert "not toc pages" not in prompt
+
+
+def test_toc_quality_prompt_allows_repeated_numbering_under_different_parents() -> None:
+    from app.prompts.pageindex_prompts import TOC_QUALITY_CHECK_PROMPT
+
+    prompt = TOC_QUALITY_CHECK_PROMPT.lower()
+
+    assert "repeated numbering" in prompt
+    assert "different parent" in prompt
+    assert "do not fail" in prompt
