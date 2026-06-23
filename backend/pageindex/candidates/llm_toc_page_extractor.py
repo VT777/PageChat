@@ -10,6 +10,7 @@ from typing import Any, Dict, List, Optional, Tuple
 @dataclass(frozen=True)
 class LLMTOCExtractionResult:
     items: List[Dict[str, Any]]
+    toc_sections: List[Dict[str, Any]]
     has_printed_page_numbers: bool
     raw_numeric_labels: List[int]
     missing_numeric_labels: List[int]
@@ -37,31 +38,26 @@ Requirements:
 3. Put visible printed page numbers in "page". Use null if absent.
 4. Do not infer page offsets or physical PDF pages.
 5. Return JSON only with this shape:
-{{"toc_items":[{{"title":"Chapter title","level":1,"page":1}}]}}
-If no reliable TOC exists, return {{"toc_items":[]}}."""
+{{"toc_sections":[{{"kind":"main_toc","title":"Contents","items":[{{"title":"Chapter title","level":1,"page":1}}]}}]}}
+Use kind values: main_toc, figure_toc, table_toc, other_toc.
+If no reliable TOC exists, return {{"toc_sections":[]}}."""
 
 
 def normalize_llm_toc_payload(payload: Dict[str, Any]) -> LLMTOCExtractionResult:
-    raw_items = payload.get("toc_items") or payload.get("items") or []
-    items: List[Dict[str, Any]] = []
-    for raw in raw_items if isinstance(raw_items, list) else []:
-        if not isinstance(raw, dict):
-            continue
-        title = _clean_title(raw.get("title"))
-        if not title or _is_plain_catalog_heading(title):
-            continue
-        page = _positive_int(raw.get("page"))
-        level = _positive_int(raw.get("level")) or 1
-        item: Dict[str, Any] = {
-            "title": title,
-            "level": max(1, min(6, level)),
-            "page": page,
-            "physical_index": None,
-            "nodes": [],
-        }
-        items.append(item)
+    toc_sections = _normalize_typed_sections(payload)
+    if not toc_sections:
+        raw_items = payload.get("toc_items") or payload.get("items") or []
+        items = _normalize_items(raw_items, "main_toc")
+        items = _merge_standalone_markers_with_adjacent_titles(items)
+        if items:
+            toc_sections = [{"kind": "main_toc", "title": "Contents", "items": items}]
 
-    items = _merge_standalone_markers_with_adjacent_titles(items)
+    items = [
+        dict(item)
+        for section in toc_sections
+        for item in (section.get("items") or [])
+        if isinstance(item, dict)
+    ]
 
     labels = [label for label in (_leading_label_order(item) for item in items) if label is not None]
     missing: List[int] = []
@@ -83,9 +79,11 @@ def normalize_llm_toc_payload(payload: Dict[str, Any]) -> LLMTOCExtractionResult
         "marker_normalized_count": sum(1 for item in items if item.get("marker_normalized")),
         "max_level": max(level_distribution.keys(), default=1),
         "level_distribution": dict(sorted(level_distribution.items())),
+        "section_kinds": [section.get("kind") for section in toc_sections],
     }
     return LLMTOCExtractionResult(
         items=items,
+        toc_sections=toc_sections,
         has_printed_page_numbers=has_page_numbers,
         raw_numeric_labels=labels,
         missing_numeric_labels=missing,
@@ -106,6 +104,13 @@ def build_llm_toc_candidate(
         "source": "llm_toc_page",
         "cost_level": "high",
         "items": [dict(item) for item in extraction.items],
+        "toc_sections": [
+            {
+                **section,
+                "items": [dict(item) for item in (section.get("items") or [])],
+            }
+            for section in extraction.toc_sections
+        ],
         "raw_confidence": 0.72 if not extraction.missing_numeric_labels else 0.58,
         "reasons": ["llm_structured_from_confirmed_toc_pages"],
         "evidence": {
@@ -353,6 +358,9 @@ def _leading_label_order(item: Dict[str, Any]) -> Optional[int]:
 
 
 def _parse_chinese_number(value: str) -> Optional[int]:
+    text = str(value or "").strip()
+    if not text:
+        return None
     digits = {
         "零": 0,
         "〇": 0,
@@ -367,9 +375,6 @@ def _parse_chinese_number(value: str) -> Optional[int]:
         "八": 8,
         "九": 9,
     }
-    text = str(value or "").strip()
-    if not text:
-        return None
     if text in digits and digits[text] > 0:
         return digits[text]
     if text == "十":
@@ -389,6 +394,85 @@ def _parse_chinese_number(value: str) -> Optional[int]:
             return None
         return parsed if parsed > 0 else None
     return None
+
+
+def _normalize_typed_sections(payload: Dict[str, Any]) -> List[Dict[str, Any]]:
+    raw_sections = payload.get("toc_sections")
+    if not isinstance(raw_sections, list):
+        return []
+
+    sections: List[Dict[str, Any]] = []
+    for raw_section in raw_sections:
+        if not isinstance(raw_section, dict):
+            continue
+        kind = _normalize_section_kind(raw_section.get("kind") or raw_section.get("section_kind"))
+        section_items = _normalize_items(raw_section.get("items") or [], kind)
+        if kind == "main_toc":
+            section_items = _merge_standalone_markers_with_adjacent_titles(section_items)
+        if not section_items:
+            continue
+        sections.append(
+            {
+                "kind": kind,
+                "title": str(raw_section.get("title") or _default_section_title(kind)).strip(),
+                "items": section_items,
+            }
+        )
+    return sections
+
+
+def _normalize_items(raw_items: Any, section_kind: str) -> List[Dict[str, Any]]:
+    items: List[Dict[str, Any]] = []
+    for raw in raw_items if isinstance(raw_items, list) else []:
+        if not isinstance(raw, dict):
+            continue
+        title = _clean_title(raw.get("title"))
+        if not title or _is_plain_catalog_heading(title):
+            continue
+        page = _positive_int(raw.get("page"))
+        level = _positive_int(raw.get("level")) or 1
+        item: Dict[str, Any] = {
+            "title": title,
+            "level": max(1, min(6, level)),
+            "page": page,
+            "section_kind": section_kind,
+            "physical_index": None,
+            "nodes": [],
+        }
+        if raw.get("structure") not in (None, ""):
+            item["structure"] = str(raw.get("structure") or "").strip()
+        items.append(item)
+    return items
+
+
+def _normalize_section_kind(value: Any) -> str:
+    raw = str(value or "").strip().lower()
+    aliases = {
+        "main": "main_toc",
+        "toc": "main_toc",
+        "contents": "main_toc",
+        "main_toc": "main_toc",
+        "figure": "figure_toc",
+        "figures": "figure_toc",
+        "list_of_figures": "figure_toc",
+        "figure_toc": "figure_toc",
+        "table": "table_toc",
+        "tables": "table_toc",
+        "list_of_tables": "table_toc",
+        "table_toc": "table_toc",
+        "other": "other_toc",
+        "other_toc": "other_toc",
+    }
+    return aliases.get(raw, "other_toc")
+
+
+def _default_section_title(kind: str) -> str:
+    return {
+        "main_toc": "Contents",
+        "figure_toc": "List of Figures",
+        "table_toc": "List of Tables",
+        "other_toc": "Other TOC",
+    }.get(kind, "Contents")
 
 
 def _leading_numeric_label(value: Any) -> Optional[int]:

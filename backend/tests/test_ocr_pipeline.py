@@ -12,7 +12,6 @@ from app.services.ocr_engines.contracts import OCRDocumentResult, OCRPageResult
 from app.services.pageindex_service import PageIndexService
 from app.services.ocr_engines.task_prompts import (
     PAGE_TEXT_PROMPT,
-    TOC_PAGE_PROMPT,
     default_task_prompt,
 )
 
@@ -21,11 +20,20 @@ def test_page_text_prompt_is_short_reading_order_command() -> None:
     assert PAGE_TEXT_PROMPT == "完整、准确地抽取内容，用markdown输出"
 
 
-def test_toc_page_prompt_is_generic_vlm_ocr_command() -> None:
-    assert TOC_PAGE_PROMPT == PAGE_TEXT_PROMPT
-    prompt, prompt_name = default_task_prompt("toc_page")
+def test_page_text_default_prompt_is_generic_vlm_ocr_command() -> None:
+    prompt, prompt_name = default_task_prompt("page_text")
     assert prompt == PAGE_TEXT_PROMPT
-    assert prompt_name == "toc_page_text_reading_order_v1"
+    assert prompt_name == "page_text_reading_order_v1"
+
+
+def test_ocr_task_contract_exposes_page_text_only() -> None:
+    from typing import get_args
+
+    from app.services.ocr_settings_service import OCR_TASKS
+    from app.services.ocr_engines.contracts import OCRTask
+
+    assert OCR_TASKS == {"page_text"}
+    assert get_args(OCRTask) == ("page_text",)
 
 
 def test_ocr_service_extract_text_prefers_markdown() -> None:
@@ -117,6 +125,60 @@ def test_selected_page_ocr_renders_only_requested_pages(monkeypatch, tmp_path) -
         {"page_num": 4, "text": "OCR page 4", "ok": True, "ocr_image_targets": 1, "ocr_image_hits": 1, "error": ""},
     ]
     assert result["overlay_all_pages"] is False
+
+
+def test_selected_page_ocr_does_not_fallback_to_legacy_service(monkeypatch, tmp_path) -> None:
+    import app.services.pageindex_service as svc_module
+
+    service = PageIndexService()
+
+    def fake_render_pages_to_images(file_path, page_indices, *, dpi=150):
+        return [
+            {
+                "page_index": page_index,
+                "image_base64": f"image-{page_index}",
+                "image_mime_type": "image/jpeg",
+            }
+            for page_index in page_indices
+        ]
+
+    async def fail_ocr_image(*_args, **_kwargs):
+        raise RuntimeError("resolver exploded")
+
+    monkeypatch.setattr(svc_module, "OCR_MAX_CONCURRENCY", 20)
+    monkeypatch.setitem(
+        sys.modules,
+        "pageindex.layout.page_renderer",
+        SimpleNamespace(render_pages_to_images=fake_render_pages_to_images),
+    )
+    service._ocr_image_with_resolver = fail_ocr_image  # type: ignore[method-assign]
+
+    analysis = {"doc_id": "doc-no-legacy"}
+    result = asyncio.run(
+        service._run_pdf_ocr_pages_by_images(
+            tmp_path / "demo.pdf",
+            [0],
+            analysis=analysis,
+            prompt=PAGE_TEXT_PROMPT,
+        )
+    )
+
+    assert result["ocr_pages"] == [
+        {
+            "page_num": 1,
+            "text": "",
+            "ok": False,
+            "ocr_image_targets": 1,
+            "ocr_image_hits": 0,
+            "error": "ocr_failed:RuntimeError",
+        }
+    ]
+    assert result["ocr_coverage"] == 0.0
+    assert result["ocr_missing_pages"] == [1]
+    assert analysis["ocr_calls"][0]["engine_type"] == "page_text_ocr"
+    assert analysis["ocr_calls"][0]["status"] == "missing"
+    assert analysis["ocr_calls_summary"]["page_text"]["missing"] == 1
+    assert analysis["ocr_calls_summary"]["page_text"]["fallback"] == 0
 
 
 def test_page_text_ocr_writes_per_page_diagnostics(monkeypatch, tmp_path) -> None:

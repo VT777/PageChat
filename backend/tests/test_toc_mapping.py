@@ -56,6 +56,8 @@ def test_map_toc_draft_keeps_physical_page_labels_when_titles_match() -> None:
     assert [item["mapping_source"] for item in mapped] == ["physical_identity", "physical_identity"]
     assert report["status"] == "ok"
     assert report["strategy"] == "physical_identity"
+    assert report["toc_pages"] == [2]
+    assert report["excluded_pages"] == [2]
 
 
 def test_map_toc_draft_fills_missing_page_labels_with_title_search() -> None:
@@ -104,9 +106,11 @@ def test_map_toc_draft_fills_missing_page_labels_with_title_search() -> None:
     assert by_title["4. Risk warning"]["physical_index"] == 25
     assert by_title["4. Risk warning"]["mapping_source"] == "title_search"
     assert report["status"] == "ok"
+    assert report["toc_pages"] == [2, 3]
+    assert report["excluded_pages"] == [2, 3]
 
 
-def test_content_outline_declared_pages_can_map_with_weak_ocr_title_match() -> None:
+def test_content_outline_declared_pages_do_not_bypass_title_evidence() -> None:
     page_texts = [
         "Cover",
         "Catalog",
@@ -132,10 +136,9 @@ def test_content_outline_declared_pages_can_map_with_weak_ocr_title_match() -> N
         selected_path="content_outline",
     )
 
-    assert [item["physical_index"] for item in mapped] == [3, 5]
-    assert report["status"] == "ok"
-    assert report["strategy"] == "content_outline_declared_pages"
-    assert "low_title_validation" in report["warnings"]
+    assert report["status"] == "failed"
+    assert report["strategy"] == "content_title_search"
+    assert {item["mapping_source"] for item in mapped} == {"unmapped"}
 
 
 def test_map_toc_draft_uses_printed_page_offset_only_with_content_anchors() -> None:
@@ -422,6 +425,12 @@ def test_map_toc_draft_uses_repeated_catalog_pages_as_unpaged_section_dividers()
 
     assert report["status"] == "ok"
     assert report["strategy"] == "section_divider_sequence"
+    assert report["boundary_anchor_count"] == 4
+    assert report["page_mapping_score"] == 0.76
+    assert report["evidence_modes"] == ["boundary_sequence"]
+    assert report["toc_pages"] == [3]
+    assert report["excluded_pages"] == [3]
+    assert report["section_divider_pages"] == [9, 16, 18]
     assert [item["physical_index"] for item in mapped] == [3, 9, 16, 18]
 
 
@@ -478,6 +487,8 @@ def test_unpaged_section_divider_sequence_reorders_by_explicit_markers() -> None
 
     assert report["status"] == "ok"
     assert report["strategy"] == "section_divider_sequence"
+    assert report["boundary_anchor_count"] == 5
+    assert report["evidence_modes"] == ["boundary_sequence"]
     assert [item["title"] for item in mapped] == [
         "AI驱动的第五科研范式",
         "百花齐放的大模型时代",
@@ -594,6 +605,144 @@ def test_derive_toc_ranges_recursively_uses_sibling_boundaries() -> None:
     assert derived[0]["end_index"] == 9
     assert derived[1]["end_index"] == 20
     assert [child["end_index"] for child in derived[0]["nodes"]] == [6, 9]
+
+
+def test_derive_toc_ranges_allows_boundary_overlap_when_next_title_is_not_near_page_top() -> None:
+    tree = [
+        {
+            "title": "Chapter 1",
+            "start_index": 3,
+            "mapping_evidence": {"matched_page": 3, "near_page_top": True},
+        },
+        {
+            "title": "Chapter 2",
+            "start_index": 10,
+            "mapping_evidence": {"matched_page": 10, "near_page_top": False},
+        },
+        {
+            "title": "Chapter 3",
+            "start_index": 15,
+            "mapping_evidence": {"matched_page": 15, "near_page_top": True},
+        },
+    ]
+
+    derived = derive_toc_ranges(tree, page_count=20)
+
+    assert derived[0]["end_index"] == 10
+    assert derived[0]["range_boundary"] == "overlap_with_next_start"
+    assert derived[1]["end_index"] == 14
+    assert derived[1]["range_boundary"] == "exclusive_before_next_start"
+
+
+def test_title_search_mapping_sets_near_page_top_evidence_for_boundary_ranges() -> None:
+    page_texts = [
+        "Cover",
+        "Contents\nChapter 1\nChapter 2\nChapter 3",
+        "Chapter 1\nopening body",
+        "Chapter 1 continued",
+        "Chapter 1 still running\n\n\n\n\n\nChapter 2\nstarts after prior chapter text",
+        "Chapter 2 continued",
+        "Chapter 3\nnew page heading",
+        "Tail",
+    ]
+    draft = {
+        "type": "toc_draft",
+        "source": "llm_toc_page",
+        "section_kind": "main_toc",
+        "items": [
+            {"title": "Chapter 1", "level": 1},
+            {"title": "Chapter 2", "level": 1},
+            {"title": "Chapter 3", "level": 1},
+        ],
+    }
+
+    mapped, report = map_toc_draft_to_physical(
+        draft,
+        page_texts=page_texts,
+        page_count=len(page_texts),
+        toc_pages=[2],
+        selected_path="visible_toc_no_pages",
+    )
+    derived = derive_toc_ranges(mapped, page_count=len(page_texts))
+
+    assert report["status"] == "ok"
+    assert mapped[1]["physical_index"] == 5
+    assert mapped[1]["mapping_evidence"]["near_page_top"] is False
+    assert derived[0]["end_index"] == 5
+    assert derived[0]["range_boundary"] == "overlap_with_next_start"
+
+
+def test_mapping_can_be_restricted_to_parent_page_range() -> None:
+    page_texts = [
+        "Subsection A appears in unrelated front matter",
+        "Contents",
+        "Chapter parent",
+        "Body before child",
+        "Subsection A\nactual child heading",
+        "Tail inside chapter",
+        "Back matter",
+    ]
+    draft = {
+        "type": "toc_draft",
+        "source": "llm_chapter_snippet",
+        "section_kind": "main_toc",
+        "items": [
+            {
+                "title": "Subsection A",
+                "level": 2,
+                "raw_page_label": 4,
+            }
+        ],
+    }
+
+    mapped, report = map_toc_draft_to_physical(
+        draft,
+        page_texts=page_texts,
+        page_count=len(page_texts),
+        toc_pages=[2],
+        selected_path="visible_toc_no_pages",
+        allowed_page_range=(3, 6),
+    )
+
+    assert report["status"] == "ok"
+    assert mapped[0]["physical_index"] == 5
+    assert mapped[0]["mapping_source"] == "title_search"
+
+
+def test_parent_scoped_unpaged_mapping_skips_top_level_divider_sequence() -> None:
+    page_texts = [
+        "Cover",
+        "Contents",
+        "Parent chapter",
+        "3.1 Alpha\n3.2 Beta\n3.3 Gamma",
+        "Intro text",
+        "3.1 Alpha\nActual alpha body",
+        "3.2 Beta\nActual beta body",
+        "3.3 Gamma\nActual gamma body",
+    ]
+    draft = {
+        "type": "toc_draft",
+        "source": "llm_chapter_snippet",
+        "section_kind": "main_toc",
+        "items": [
+            {"title": "3.1 Alpha", "level": 2, "structure": "3.1"},
+            {"title": "3.2 Beta", "level": 2, "structure": "3.2"},
+            {"title": "3.3 Gamma", "level": 2, "structure": "3.3"},
+        ],
+    }
+
+    mapped, report = map_toc_draft_to_physical(
+        draft,
+        page_texts=page_texts,
+        page_count=len(page_texts),
+        toc_pages=[4],
+        selected_path="visible_toc_no_pages",
+        allowed_page_range=(4, 8),
+    )
+
+    assert report["status"] == "ok"
+    assert report["strategy"] == "content_title_search"
+    assert [item["physical_index"] for item in mapped] == [6, 7, 8]
 
 
 def test_derive_toc_ranges_clamps_invalid_child_ranges_to_parent() -> None:

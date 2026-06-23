@@ -83,6 +83,43 @@ def test_rule_extractor_builds_typed_catalog_roots_from_standard_toc_pages() -> 
     assert result["mapping_report"]["status"] == "ok"
 
 
+def test_paged_draft_extracts_pipe_table_rows_without_valid_markdown_separator() -> None:
+    from pageindex.visible_toc_rule_extractor import extract_visible_toc_with_pages_draft
+
+    page_texts = [
+        "Cover",
+        (
+            "Contents\n"
+            "| 01 | Alpha rollout | 01 |\n"
+            "| --- | --- |\n"
+            "| 02 | Beta launch | 03 |\n"
+            "| 03 | Gamma operations | 05 |\n"
+            "| 04 | Delta risk | 07 |\n"
+        ),
+        "01\nAlpha rollout\nBody",
+        "02 Beta launch\nBody",
+        "03 Gamma operations\nBody",
+        "04 Delta risk\nBody",
+    ]
+
+    draft = extract_visible_toc_with_pages_draft(
+        page_texts,
+        toc_pages=[2],
+        page_count=len(page_texts),
+    )
+
+    assert draft is not None
+    assert [
+        (item["title"], item["raw_page_label"], item["structure"])
+        for item in draft["items"]
+    ] == [
+        ("01 Alpha rollout", 1, "01"),
+        ("02 Beta launch", 3, "02"),
+        ("03 Gamma operations", 5, "03"),
+        ("04 Delta risk", 7, "04"),
+    ]
+
+
 def test_rule_extractor_rejects_ambiguous_chapter_numbers_as_page_numbers() -> None:
     from pageindex.visible_toc_rule_extractor import extract_visible_toc_with_pages
 

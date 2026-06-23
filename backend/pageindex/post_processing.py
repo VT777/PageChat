@@ -934,6 +934,9 @@ def _get_depth(structure: str) -> int:
     if not structure or structure == "0":
         return 0
 
+    if "." in structure:
+        return structure.count(".") + 1
+
     # 标准阿拉伯数字层级（1, 1.1, 1.2.3）
     if re.match(r"^[\d.]+", structure):
         return structure.count(".") + 1
@@ -1070,13 +1073,29 @@ def check_completeness(tree: List[Dict], page_count: int) -> Dict[str, Any]:
 def _collect_ranges(tree: List[Dict], ranges: List[Tuple[int, int]]) -> None:
     """递归收集所有节点的 [start_index, end_index]。"""
     for node in tree:
+        if _excluded_subtree_from_coverage(node):
+            continue
         s = node.get("start_index")
         e = node.get("end_index")
-        if s is not None and e is not None:
+        if s is not None and e is not None and not _excluded_node_range_from_coverage(node):
             ranges.append((s, e))
         children = node.get("nodes", [])
         if children:
             _collect_ranges(children, ranges)
+
+
+def _excluded_subtree_from_coverage(node: Dict) -> bool:
+    if not isinstance(node, dict):
+        return False
+    if bool(node.get("exclude_from_coverage")) or bool(node.get("is_auxiliary")):
+        return True
+    return node.get("node_type") in {"auxiliary_catalog", "auxiliary_catalog_item"}
+
+
+def _excluded_node_range_from_coverage(node: Dict) -> bool:
+    if _excluded_subtree_from_coverage(node):
+        return True
+    return node.get("node_type") == "catalog_group" or node.get("page_type") == "catalog_group"
 
 
 # ---------------------------------------------------------------------------

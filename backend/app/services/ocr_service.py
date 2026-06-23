@@ -87,7 +87,7 @@ class OCRService:
         async with self._model_identity_log_lock:
             if self._model_identity_logged:
                 return
-            print(f"[TOC-OCR] task=page_text engine=legacy_openai_ocr model={self.model}")
+            print(f"[TOC-OCR] task=page_text engine=openai_compatible_ocr model={self.model}")
             self._model_identity_logged = True
 
     @staticmethod

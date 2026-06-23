@@ -7,10 +7,11 @@ from pathlib import Path
 import re
 from typing import Any, Dict, Iterable, List, Mapping, Optional
 
+from app.services.ocr_engines.task_prompts import PAGE_TEXT_PROMPT
 from pageindex.page_text_map import PageTextEntry, PageTextMap
 
 
-PAGE_TEXT_OCR_PROMPT = "完整、准确地抽取内容，用markdown输出"
+PAGE_TEXT_OCR_PROMPT = PAGE_TEXT_PROMPT
 
 
 def infer_content_type(analysis: Mapping[str, Any]) -> str:

@@ -6,7 +6,7 @@ import re
 import time
 from copy import deepcopy
 from pathlib import Path
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any, List, Tuple
 
 # 濠电儑缍€濠?pageindex 闂?Python 闁荤姳璀﹂崹鎵?
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -35,7 +35,6 @@ from app.prompts.pageindex_prompts import (
 )
 from app.services.multi_format_adapter import generate_multi_format_index
 from app.services.model_gateway import ModelGateway
-from app.services.ocr_service import OCRService
 from app.services.runtime_settings_service import runtime_settings_service
 
 
@@ -663,243 +662,6 @@ class PageIndexService:
             return OCRPageResult(page_num=page_num, text=text.strip(), ok=bool(text.strip()))
         finally:
             await self._close_ocr_adapter(getattr(resolved, "adapter", None))
-
-    async def _build_layout_with_resolver(
-        self,
-        file_path: Path,
-        page_count: int,
-        analysis: Optional[Dict[str, Any]] = None,
-        doc_id: Optional[str] = None,
-    ):
-        from pageindex.layout.ocr_normalizer import normalize_ocr_document
-
-        resolved = await self._resolve_ocr_engine("page_text")
-        try:
-            route = resolved.route or {}
-            engine_type = str(route.get("engine_type") or "")
-            model_name = str(route.get("model") or "")
-            if engine_type == "openai_compatible_ocr" or "vl" in model_name.lower():
-                response = await self._recognize_toc_pages_with_vl(
-                    resolved,
-                    file_path=file_path,
-                    page_count=page_count,
-                    analysis=analysis,
-                )
-            else:
-                response = resolved.adapter.recognize(
-                    str(file_path),
-                    task="page_text",
-                    options=route.get("options") or {},
-                )
-            if hasattr(response, "__await__"):
-                response = await response
-            call_diagnostics = self._ocr_call_diagnostics(resolved, response, "page_text")
-            if doc_id:
-                diag_path = self._persist_ocr_diagnostics(
-                    doc_id,
-                    task="page_text",
-                    response=response,
-                    call_diagnostics=call_diagnostics,
-                )
-                if diag_path is not None and analysis is not None:
-                    call_diagnostics = {
-                        **call_diagnostics,
-                        "diagnostics_path": str(diag_path),
-                    }
-            if analysis is not None:
-                compact_call = self._compact_ocr_call_diagnostics(call_diagnostics)
-                analysis["ocr_route"] = compact_call
-                analysis.setdefault("ocr_calls", []).append(compact_call)
-                analysis.setdefault("ocr_calls_summary", {})["page_text"] = {
-                    "engine": call_diagnostics.get("engine_type"),
-                    "model": call_diagnostics.get("model"),
-                    "pages": call_diagnostics.get("result_pages"),
-                    "status": "done",
-                }
-                if call_diagnostics.get("diagnostics_path"):
-                    analysis["ocr_calls_summary"]["page_text"]["diagnostics_path"] = call_diagnostics.get("diagnostics_path")
-            print(
-                f"[TOC-OCR] task=page_text status=done engine={call_diagnostics.get('engine_type')} "
-                f"model={call_diagnostics.get('model')} pages={call_diagnostics.get('result_pages', 0)}"
-            )
-            return normalize_ocr_document(
-                response,
-                doc_id=str(file_path),
-                page_count=page_count,
-            )
-        finally:
-            await self._close_ocr_adapter(getattr(resolved, "adapter", None))
-
-    async def _recognize_toc_pages_with_vl(
-        self,
-        resolved,
-        *,
-        file_path: Path,
-        page_count: int,
-        analysis: Optional[Dict[str, Any]] = None,
-    ):
-        from app.services.ocr_engines.contracts import OCRDocumentResult
-        from pageindex.layout.page_renderer import render_pages_to_images
-
-        route_options = dict((resolved.route or {}).get("options") or {})
-        batch_size = self._toc_detector_batch_size(analysis)
-        scan_limit = self._toc_detector_scan_limit(analysis, page_count)
-        model = getattr(self.opt, "model", "qwen3.6-flash")
-
-        confirmed_pages = self._confirmed_toc_pages_from_analysis(analysis, page_count)
-        explicit_page_indices = [page - 1 for page in confirmed_pages]
-        scan_mode = not explicit_page_indices and page_count > batch_size
-
-        pages = []
-        diagnostics = None
-        raw_results = []
-        rendered_inputs = []
-        rendered_page_numbers: List[int] = []
-        detection_candidates: List[Dict[str, Any]] = []
-        detected_pages: List[int] = []
-        seen_toc = False
-        stop_reason = "scan_exhausted"
-        batch_count = 0
-        classified_count = 0
-        ocr_sem = asyncio.Semaphore(min(batch_size, max(1, int(OCR_MAX_CONCURRENCY))))
-
-        async def recognize_image(image: Dict[str, Any]) -> Dict[str, Any]:
-            physical_page = int(image.get("page_index") or 0) + 1
-            image_mime_type = str(image.get("image_mime_type") or "image/jpeg")
-            rendered_input = {
-                "page_num": physical_page,
-                "page_index": int(image.get("page_index") or 0),
-                "dpi": image.get("dpi") or 150,
-                "image_format": image.get("image_format") or "jpeg",
-                "image_mime_type": image_mime_type,
-                "image_sha256": image.get("image_sha256"),
-                "width": image.get("width"),
-                "height": image.get("height"),
-            }
-            rendered_input = {key: value for key, value in rendered_input.items() if value is not None}
-            image_url = f"data:{image_mime_type};base64,{image.get('image_base64') or ''}"
-            async with ocr_sem:
-                response = resolved.adapter.recognize(
-                    image_url,
-                    task="page_text",
-                    options=route_options,
-                )
-                if hasattr(response, "__await__"):
-                    response = await response
-            raw_result = dict(getattr(response, "raw", {}) or {})
-            raw_result["rendered_input"] = rendered_input
-            page_results = []
-            for page in getattr(response, "pages", []) or []:
-                page.page_num = physical_page
-                if not getattr(page, "width", 0):
-                    page.width = int(image.get("width") or 0)
-                if not getattr(page, "height", 0):
-                    page.height = int(image.get("height") or 0)
-                page_results.append(page)
-            return {
-                "physical_page": physical_page,
-                "rendered_input": rendered_input,
-                "raw_result": raw_result,
-                "diagnostics": dict(getattr(response, "diagnostics", {}) or {}),
-                "pages": page_results,
-            }
-
-        async def recognize_batch(page_indices: List[int]) -> List[Any]:
-            nonlocal diagnostics
-            images = render_pages_to_images(str(file_path), page_indices, dpi=150)
-            results = await asyncio.gather(*(recognize_image(image) for image in images))
-            batch_pages = []
-            for result in sorted(results, key=lambda item: int(item.get("physical_page") or 0)):
-                rendered_inputs.append(result["rendered_input"])
-                raw_results.append(result["raw_result"])
-                rendered_page_numbers.append(int(result["physical_page"]))
-                if result.get("diagnostics"):
-                    diagnostics = dict(result.get("diagnostics") or diagnostics or {})
-                for page in result.get("pages") or []:
-                    pages.append(page)
-                    batch_pages.append(page)
-            return batch_pages
-
-        if not scan_mode:
-            page_indices = explicit_page_indices or self._toc_probe_page_indices(analysis or {}, page_count)
-            for offset in range(0, len(page_indices), batch_size):
-                batch_count += 1
-                await recognize_batch(page_indices[offset : offset + batch_size])
-        else:
-            cursor = 0
-            scanned_count = 0
-            while cursor < page_count:
-                if not seen_toc and scanned_count >= scan_limit:
-                    stop_reason = "scan_limit_reached"
-                    break
-                if seen_toc:
-                    take = min(batch_size, page_count - cursor)
-                else:
-                    take = min(batch_size, page_count - cursor, scan_limit - scanned_count)
-                if take <= 0:
-                    stop_reason = "scan_limit_reached"
-                    break
-                page_indices = list(range(cursor, cursor + take))
-                batch_count += 1
-                batch_pages = await recognize_batch(page_indices)
-                scanned_count += len(page_indices)
-                cursor += len(page_indices)
-                batch_candidates = await self._classify_toc_pages_with_llm(
-                    batch_pages,
-                    model=model,
-                    batch_index=batch_count,
-                )
-                classified_count += len(batch_candidates)
-                seen_toc, should_stop, stop_reason = self._consume_toc_detection_candidates(
-                    batch_candidates,
-                    detected_pages=detected_pages,
-                    candidates=detection_candidates,
-                    seen_toc=seen_toc,
-                )
-                if should_stop:
-                    break
-                if seen_toc:
-                    last_batch_page = page_indices[-1] + 1
-                    if last_batch_page in detected_pages:
-                        stop_reason = "scan_exhausted"
-                        continue
-                    stop_reason = "contiguous_toc_run_ended"
-                    break
-
-            status = "detected" if detected_pages else "not_found"
-            report = {
-                "source": "llm_classifier",
-                "status": status,
-                "pages": detected_pages,
-                "candidates": detection_candidates,
-                "reason": "confirmed_by_llm_classifier" if detected_pages else stop_reason,
-                "scan_limit": scan_limit,
-                "batch_size": batch_size,
-                "batch_count": batch_count,
-                "classified_pages": classified_count,
-                "classification_complete": True,
-            }
-            self._sync_llm_toc_detection_report(analysis, report, page_count=page_count)
-
-        merged_diagnostics = {
-            **(diagnostics or {}),
-            "input_type": "rendered_pdf_page_data_url",
-            "result_pages": len(pages),
-            "rendered_pages": rendered_page_numbers,
-            "rendered_page_inputs": rendered_inputs,
-            "ocr_batch_size": batch_size,
-            "ocr_batch_count": batch_count,
-        }
-        return OCRDocumentResult(
-            task="page_text",
-            engine_type=str((resolved.route or {}).get("engine_type") or "openai_compatible_ocr"),
-            model=str((resolved.route or {}).get("model") or ""),
-            pages=pages,
-            profile_id=(resolved.route or {}).get("profile_id"),
-            profile_version=(resolved.route or {}).get("profile_version"),
-            diagnostics=merged_diagnostics,
-            raw={"diagnostics": merged_diagnostics, "page_results": raw_results},
-        )
 
     @staticmethod
     def _safe_ocr_diagnostics_id(value: str) -> str:
@@ -1585,46 +1347,6 @@ class PageIndexService:
         ranges.append(str(start) if start == prev else f"{start}-{prev}")
         return "[" + ",".join(ranges) + "]"
 
-    async def _ocr_pages_for_toc_validation(
-        self, file_path: Path, page_indices: List[int]
-    ) -> Dict[int, str]:
-        """Run lightweight OCR for selected pages.
-
-        Returns: {physical_page_number(1-indexed): OCR text}
-        """
-        if not page_indices:
-            return {}
-
-        from pageindex.layout.page_renderer import render_pages_to_images
-
-        images = render_pages_to_images(str(file_path), page_indices, dpi=150)
-        if not images:
-            return {}
-
-        sem = asyncio.Semaphore(max(1, int(OCR_MAX_CONCURRENCY)))
-
-        async def ocr_single(img_info):
-            page_num = img_info["page_index"] + 1  # 0-indexed 闁?1-indexed
-            async with sem:
-                try:
-                    result = await self._ocr_image_with_resolver(
-                        img_info["image_base64"], page_num=page_num
-                    )
-                except Exception as exc:
-                    fallback_service = OCRService()
-                    try:
-                        result = await fallback_service.ocr_image_base64(
-                            img_info["image_base64"], page_num=page_num
-                        )
-                    finally:
-                        await fallback_service.aclose()
-            return page_num, result.text if result.ok else ""
-
-        results = await asyncio.gather(*[ocr_single(img) for img in images])
-        return {
-            page_num: text for page_num, text in results if text
-        }
-
     async def _run_pdf_ocr_pages_by_images(
         self,
         file_path: Path,
@@ -1682,19 +1404,21 @@ class PageIndexService:
                         analysis,
                         {
                             "task": "page_text",
-                            "engine_type": "legacy_openai_ocr",
-                            "model": "legacy",
-                            "fallback_reason": "resolver_failed",
-                            "fallback_error_type": type(exc).__name__,
+                            "engine_type": "page_text_ocr",
+                            "model": "unavailable",
+                            "error_type": type(exc).__name__,
                         },
                         page_num=page_num,
-                        status="fallback",
+                        status="missing",
                     )
-                    fallback_service = OCRService(log_model_identity=False)
-                    try:
-                        r = await fallback_service.ocr_image_base64(image_b64, page_num)
-                    finally:
-                        await fallback_service.aclose()
+                    return {
+                        "page_num": page_num,
+                        "text": "",
+                        "ok": False,
+                        "ocr_image_targets": 1,
+                        "ocr_image_hits": 0,
+                        "error": f"ocr_failed:{type(exc).__name__}",
+                    }
 
             text = self._normalize_page_text_for_ocr(r.text if getattr(r, "ok", False) else "")
             return {
@@ -2233,26 +1957,14 @@ class PageIndexService:
         """Extract TOC from TOC page text using LLM."""
         try:
             page_texts = analysis.get("page_texts", [])
-            toc_text = "\n".join([page_texts[p - 1] for p in toc_pages if p - 1 < len(page_texts)])
+            from pageindex.candidates.llm_toc_page_extractor import build_llm_toc_prompt
 
-            prompt = f"""Extract catalog entries from the following TOC page text.
-
-TOC text:
-{toc_text[:12000]}
-
-Requirements:
-1. Keep original titles.
-2. Return visible printed catalog page numbers as page and hierarchy as level.
-3. Do not infer missing page numbers or page offsets.
-4. Return JSON only.
-
-Example:
-{{
-  "toc_items": [
-    {{"title": "Chapter 1", "level": 1, "page": 5}},
-    {{"title": "1.1 Introduction", "level": 2, "page": 6}}
-  ]
-}}"""
+            page_blocks = [
+                {"page": p, "text": page_texts[p - 1]}
+                for p in toc_pages
+                if p - 1 < len(page_texts)
+            ]
+            prompt = build_llm_toc_prompt(page_blocks)
 
             response = await self._indexing_completion(
                 messages=[{"role": "user", "content": prompt}],
@@ -2268,23 +1980,34 @@ Example:
             json_match = re.search(r"\{.*\}", content, re.DOTALL)
             if json_match:
                 result = json.loads(json_match.group())
-                if "toc_items" in result or "items" in result:
+                if "toc_sections" in result or "toc_items" in result or "items" in result:
                     from pageindex.candidates.llm_toc_page_extractor import normalize_llm_toc_payload
 
                     extraction = normalize_llm_toc_payload(result)
                     if not extraction.items:
                         return None
-                    draft_items: List[Dict[str, Any]] = []
-                    for item in extraction.items:
-                        draft_item = {
-                            "title": item.get("title"),
-                            "level": item.get("level") or 1,
-                            "section_kind": "main_toc",
-                            "raw_page_label": item.get("page"),
-                        }
-                        if item.get("structure"):
-                            draft_item["structure"] = item.get("structure")
-                        draft_items.append(draft_item)
+                    sections: List[Dict[str, Any]] = []
+                    for section in extraction.toc_sections:
+                        draft_items: List[Dict[str, Any]] = []
+                        kind = str(section.get("kind") or "main_toc")
+                        for item in section.get("items") or []:
+                            draft_item = {
+                                "title": item.get("title"),
+                                "level": item.get("level") or 1,
+                                "section_kind": item.get("section_kind") or kind,
+                                "raw_page_label": item.get("page"),
+                            }
+                            if item.get("structure"):
+                                draft_item["structure"] = item.get("structure")
+                            draft_items.append(draft_item)
+                        if draft_items:
+                            sections.append(
+                                {
+                                    "kind": kind,
+                                    "title": section.get("title") or kind,
+                                    "items": draft_items,
+                                }
+                            )
                     return {
                         "toc_draft": {
                             "type": "toc_draft",
@@ -2292,7 +2015,17 @@ Example:
                             "section_kind": "main_toc",
                             "toc_pages": list(toc_pages or []),
                             "has_page_numbers": extraction.has_printed_page_numbers,
-                            "items": draft_items,
+                            "toc_sections": sections,
+                            "items": [
+                                item
+                                for section in sections
+                                if section.get("kind") == "main_toc"
+                                for item in (section.get("items") or [])
+                            ] or [
+                                item
+                                for section in sections
+                                for item in (section.get("items") or [])
+                            ],
                         },
                         "source": "llm_toc_page",
                         "has_printed_page_numbers": extraction.has_printed_page_numbers,
@@ -4050,11 +3783,191 @@ Example:
     @staticmethod
     def _prepare_prebuilt_toc_tree(toc_items: List[Dict], page_count: int) -> List[Dict]:
         """Normalize a provider-returned tree before QC/enrichment uses it."""
-        from pageindex.post_processing import normalize_tree_page_ranges
+        from pageindex.toc_mapping import derive_toc_ranges
 
-        normalized = normalize_tree_page_ranges(toc_items or [], page_count)
+        normalized = derive_toc_ranges(toc_items or [], page_count=page_count)
         PageIndexService._sync_page_source_anchors_to_ranges(normalized)
         return normalized
+
+    @staticmethod
+    def _build_s5_toc_tree(
+        toc_items: List[Dict[str, Any]],
+        *,
+        page_count: int,
+        analysis: Optional[Dict[str, Any]] = None,
+    ) -> tuple[List[Dict[str, Any]], Dict[str, Any]]:
+        """Build the saved TOC tree without re-owning S5 page mapping."""
+        from copy import deepcopy
+
+        from pageindex.catalog_classifier import (
+            AUXILIARY_CATALOG_TYPES,
+            CATALOG_FIGURE,
+            CATALOG_MAIN,
+            CATALOG_TABLE,
+            catalog_group_title,
+            detect_catalog_type,
+        )
+        from pageindex.post_processing import _ensure_level_structures, build_tree, check_completeness
+        from pageindex.toc_mapping import derive_toc_ranges
+
+        page_count = max(1, int(page_count or 1))
+        items = [
+            deepcopy(item)
+            for item in (toc_items or [])
+            if isinstance(item, dict) and str(item.get("title") or "").strip()
+        ]
+        if not items:
+            tree = [
+                {
+                    "structure": "1",
+                    "title": "Document Content",
+                    "physical_index": 1,
+                    "start_index": 1,
+                    "end_index": page_count,
+                    "nodes": [],
+                }
+            ]
+            return tree, check_completeness(tree, page_count)
+
+        if any(isinstance(item.get("nodes"), list) and item.get("nodes") for item in items):
+            items = PageIndexService._prepend_front_matter_to_prebuilt_toc_tree(
+                items,
+                page_count,
+                page_texts=(analysis or {}).get("page_texts") or [],
+            )
+            tree = derive_toc_ranges(items, page_count=page_count)
+            PageIndexService._sync_page_source_anchors_to_ranges(tree)
+            return tree, check_completeness(tree, page_count)
+
+        def build_family_tree(family_items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+            prepared = _ensure_level_structures(deepcopy(family_items))
+            return derive_toc_ranges(build_tree(prepared), page_count=page_count)
+
+        groups: Dict[str, List[Dict[str, Any]]] = {
+            CATALOG_MAIN: [],
+            CATALOG_FIGURE: [],
+            CATALOG_TABLE: [],
+        }
+        for item in items:
+            catalog_type = detect_catalog_type(item)
+            item["catalog_type"] = catalog_type
+            groups.setdefault(catalog_type, []).append(item)
+
+        tree: List[Dict[str, Any]]
+        if any(groups.get(catalog_type) for catalog_type in AUXILIARY_CATALOG_TYPES):
+            tree = []
+            for catalog_type in (CATALOG_MAIN, CATALOG_FIGURE, CATALOG_TABLE):
+                family_items = groups.get(catalog_type) or []
+                if not family_items:
+                    continue
+                if catalog_type == CATALOG_MAIN:
+                    family_items = PageIndexService._prepend_front_matter_node_if_needed(
+                        family_items,
+                        page_count,
+                        page_texts=(analysis or {}).get("page_texts") or [],
+                    )
+                family_tree = build_family_tree(family_items)
+                starts = [
+                    node.get("start_index")
+                    for node in PageIndexService._flatten_toc_nodes(family_tree)
+                    if isinstance(node.get("start_index"), int)
+                ]
+                ends = [
+                    node.get("end_index")
+                    for node in PageIndexService._flatten_toc_nodes(family_tree)
+                    if isinstance(node.get("end_index"), int)
+                ]
+                is_auxiliary = catalog_type in AUXILIARY_CATALOG_TYPES
+                tree.append(
+                    {
+                        "title": catalog_group_title(catalog_type),
+                        "structure": "contents" if catalog_type == CATALOG_MAIN else catalog_type,
+                        "node_type": "auxiliary_catalog" if is_auxiliary else "catalog_group",
+                        "catalog_type": catalog_type,
+                        "is_auxiliary": is_auxiliary,
+                        "exclude_from_coverage": is_auxiliary,
+                        "exclude_from_llm_qc": is_auxiliary,
+                        "exclude_from_text": is_auxiliary,
+                        "physical_index": min(starts) if starts else 1,
+                        "start_index": min(starts) if starts else 1,
+                        "end_index": max(ends) if ends else page_count,
+                        "nodes": family_tree,
+                    }
+                )
+        else:
+            main_items = PageIndexService._prepend_front_matter_node_if_needed(
+                groups.get(CATALOG_MAIN) or items,
+                page_count,
+                page_texts=(analysis or {}).get("page_texts") or [],
+            )
+            tree = build_family_tree(main_items)
+
+        tree = derive_toc_ranges(tree, page_count=page_count)
+        PageIndexService._sync_page_source_anchors_to_ranges(tree)
+        return tree, check_completeness(tree, page_count)
+
+    @staticmethod
+    def _prepend_front_matter_to_prebuilt_toc_tree(
+        items: List[Dict[str, Any]],
+        page_count: int,
+        *,
+        page_texts: Optional[List[str]] = None,
+    ) -> List[Dict[str, Any]]:
+        from copy import deepcopy
+
+        from pageindex.catalog_classifier import (
+            AUXILIARY_CATALOG_TYPES,
+            CATALOG_MAIN,
+            detect_catalog_type,
+        )
+
+        roots = [
+            deepcopy(item)
+            for item in (items or [])
+            if isinstance(item, dict) and str(item.get("title") or "").strip()
+        ]
+        if not roots:
+            return roots
+
+        updated: List[Dict[str, Any]] = []
+        found_main_container = False
+        for root in roots:
+            children = root.get("nodes")
+            catalog_type = detect_catalog_type(root)
+            if (
+                isinstance(children, list)
+                and children
+                and catalog_type == CATALOG_MAIN
+                and not bool(root.get("is_auxiliary"))
+            ):
+                found_main_container = True
+                root["nodes"] = PageIndexService._prepend_front_matter_node_if_needed(
+                    children,
+                    page_count,
+                    page_texts=page_texts or [],
+                )
+            updated.append(root)
+
+        if found_main_container:
+            return updated
+
+        if all(detect_catalog_type(root) not in AUXILIARY_CATALOG_TYPES for root in updated):
+            return PageIndexService._prepend_front_matter_node_if_needed(
+                updated,
+                page_count,
+                page_texts=page_texts or [],
+            )
+        return updated
+
+    @staticmethod
+    def _flatten_toc_nodes(nodes: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        flattened: List[Dict[str, Any]] = []
+        for node in nodes or []:
+            if not isinstance(node, dict):
+                continue
+            flattened.append(node)
+            flattened.extend(PageIndexService._flatten_toc_nodes(node.get("nodes") or []))
+        return flattened
 
     @staticmethod
     def _sync_page_source_anchors_to_ranges(nodes: List[Dict]) -> None:
@@ -4399,6 +4312,8 @@ Example:
         *,
         parent_start: int,
         parent_end: int,
+        page_texts: Optional[List[str]] = None,
+        page_count: Optional[int] = None,
     ) -> List[Dict[str, Any]]:
         parent_structure = str(parent.get("structure") or "").strip()
         indexed: List[tuple[int, Dict[str, Any]]] = [
@@ -4416,8 +4331,7 @@ Example:
             )
         )
 
-        roots: List[Dict[str, Any]] = []
-        stack: List[tuple[int, Dict[str, Any]]] = []
+        drafts: List[Dict[str, Any]] = []
         counters: Dict[int, int] = {}
         seen: set[str] = set()
         parent_key = PageIndexService._normalize_outline_title_key(str(parent.get("title") or ""))
@@ -4440,8 +4354,6 @@ Example:
                 continue
             level = PageIndexService._coerce_positive_int(sub.get("level")) or 2
             level = max(2, min(6, level))
-            if level > 2 and not any(parent_level < level for parent_level, _ in stack):
-                level = 2
 
             for existing_level in list(counters):
                 if existing_level > level:
@@ -4452,39 +4364,157 @@ Example:
             parts = [parent_structure] if parent_structure else []
             parts.extend(str(counters[depth]) for depth in sorted(counters) if depth >= 2 and depth <= level)
             structure = str(sub.get("structure") or ".".join(part for part in parts if part)).strip()
-            marker_family = PageIndexService._outline_sequence_marker_family(title)
-
-            node = {
+            draft = {
                 "title": title,
                 "structure": structure,
                 "level": level,
-                "physical_index": page,
-                "start_index": page,
-                "end_index": parent_end,
-                "nodes": [],
-                "source": "llm_chapter_snippet",
-                "mapping_confidence": float(sub.get("confidence") or 0.72),
-                "title_confidence": float(sub.get("confidence") or 0.72),
+                "confidence": float(sub.get("confidence") or 0.72),
+                "metadata": {
+                    "outline_source": "llm_chapter_snippet",
+                    "llm_page_hint": page,
+                },
             }
-            while stack and (
-                stack[-1][0] >= level
-                or (
-                    marker_family
-                    and PageIndexService._outline_sequence_marker_family(
-                        str(stack[-1][1].get("title") or "")
-                    )
-                    == marker_family
-                )
-            ):
-                stack.pop()
-            if stack:
-                stack[-1][1].setdefault("nodes", []).append(node)
-            else:
-                roots.append(node)
-            stack.append((level, node))
+            drafts.append(draft)
             seen.add(key)
 
-        return roots
+        return PageIndexService._map_outline_child_drafts_to_parent(
+            parent,
+            drafts,
+            page_texts=page_texts or [],
+            parent_start=parent_start,
+            parent_end=parent_end,
+            page_count=page_count or len(page_texts or []) or parent_end,
+        )
+
+    @staticmethod
+    def _map_outline_child_drafts_to_parent(
+        parent: Dict[str, Any],
+        drafts: List[Dict[str, Any]],
+        *,
+        page_texts: List[str],
+        parent_start: int,
+        parent_end: int,
+        page_count: int,
+        exclude_parent_start: bool = True,
+        allow_parent_start_retry: bool = False,
+    ) -> List[Dict[str, Any]]:
+        if not drafts or not page_texts:
+            return []
+
+        from pageindex.post_processing import _ensure_level_structures, build_tree
+        from pageindex.toc_mapping import derive_toc_ranges, map_toc_draft_to_physical
+
+        def run_mapping(*, exclude_start: bool) -> tuple[List[Dict[str, Any]], Dict[str, Any]]:
+            return map_toc_draft_to_physical(
+                {
+                    "type": "toc_draft",
+                    "source": "llm_chapter_snippet",
+                    "section_kind": "main_toc",
+                    "items": drafts,
+                },
+                page_texts=page_texts,
+                page_count=page_count,
+                toc_pages=[parent_start] if exclude_start else [],
+                selected_path="visible_toc_no_pages",
+                allowed_page_range=(parent_start, parent_end),
+            )
+
+        def has_enough_mapped_items(items: List[Dict[str, Any]]) -> bool:
+            mapped_count = sum(
+                1
+                for item in items
+                if (
+                    PageIndexService._coerce_positive_int(item.get("start_index"))
+                    or PageIndexService._coerce_positive_int(item.get("physical_index"))
+                )
+                and str(item.get("mapping_source") or "") != "unmapped"
+            )
+            required = max(2, (len(drafts) + 1) // 2)
+            return mapped_count >= required
+
+        mapped_items, report = run_mapping(exclude_start=exclude_parent_start)
+        if str(report.get("status") or "") != "ok" and not has_enough_mapped_items(mapped_items):
+            if allow_parent_start_retry and exclude_parent_start:
+                retry_items, retry_report = run_mapping(exclude_start=False)
+                if str(retry_report.get("status") or "") == "ok" or has_enough_mapped_items(retry_items):
+                    mapped_items, report = retry_items, retry_report
+                else:
+                    return []
+            else:
+                return []
+
+        parent_key = PageIndexService._normalize_outline_title_key(str(parent.get("title") or ""))
+        scoped_items: List[Dict[str, Any]] = []
+        for item in mapped_items:
+            title = str(item.get("title") or "").strip()
+            key = PageIndexService._normalize_outline_title_key(title)
+            if str(item.get("mapping_source") or "") == "unmapped":
+                continue
+            start = (
+                PageIndexService._coerce_positive_int(item.get("start_index"))
+                or PageIndexService._coerce_positive_int(item.get("physical_index"))
+            )
+            if not title or not key or key == parent_key:
+                continue
+            if start is None or start < parent_start or start > parent_end:
+                continue
+            normalized = dict(item)
+            normalized["source"] = "llm_chapter_snippet"
+            normalized["title_confidence"] = float(normalized.get("confidence") or 0.72)
+            scoped_items.append(normalized)
+
+        if not scoped_items:
+            return []
+
+        scoped_items = PageIndexService._assign_parent_scoped_child_structures(
+            scoped_items,
+            parent_structure=str(parent.get("structure") or "").strip(),
+        )
+        tree = build_tree(_ensure_level_structures(scoped_items))
+        tree = derive_toc_ranges(
+            tree,
+            page_count=page_count,
+            parent_start=parent_start,
+            parent_end=parent_end,
+        )
+        PageIndexService._sync_page_source_anchors_to_ranges(tree)
+        return tree
+
+    @staticmethod
+    def _assign_parent_scoped_child_structures(
+        items: List[Dict[str, Any]],
+        *,
+        parent_structure: str,
+    ) -> List[Dict[str, Any]]:
+        counters: Dict[int, int] = {}
+        assigned: List[Dict[str, Any]] = []
+        parent_structure = str(parent_structure or "").strip()
+        for item in items or []:
+            node = dict(item)
+            structure = str(node.get("structure") or "").strip()
+            if structure and (
+                not parent_structure
+                or structure == parent_structure
+                or structure.startswith(f"{parent_structure}.")
+            ):
+                assigned.append(node)
+                continue
+
+            level = PageIndexService._coerce_positive_int(node.get("level")) or 2
+            relative_depth = max(1, min(5, level - 1))
+            while relative_depth > 1 and (relative_depth - 1) not in counters:
+                relative_depth -= 1
+            for depth in list(counters):
+                if depth > relative_depth:
+                    counters.pop(depth, None)
+            counters[relative_depth] = counters.get(relative_depth, 0) + 1
+            for depth in range(1, relative_depth):
+                counters.setdefault(depth, 1)
+            parts = [parent_structure] if parent_structure else []
+            parts.extend(str(counters[depth]) for depth in range(1, relative_depth + 1))
+            node["structure"] = ".".join(part for part in parts if part)
+            assigned.append(node)
+        return assigned
 
     @staticmethod
     async def _build_content_outline_child_tree_for_parent(
@@ -4523,29 +4553,52 @@ Example:
         else:
             candidates = [node for node in nodes if isinstance(node, dict)]
 
-        children: List[Dict[str, Any]] = []
+        child_drafts: List[Dict[str, Any]] = []
         seen: set[str] = set()
-        for node in candidates:
+
+        def append_candidate(node: Dict[str, Any]) -> None:
             title = str(node.get("title") or "").strip()
             key = PageIndexService._normalize_outline_title_key(title)
             if not title or not key or key == parent_key or key in seen:
-                continue
+                return
             start = (
-                PageIndexService._coerce_positive_int(node.get("start_index"))
+                PageIndexService._coerce_positive_int(node.get("page"))
+                or PageIndexService._coerce_positive_int(node.get("raw_page_label"))
+                or PageIndexService._coerce_positive_int(node.get("start_index"))
                 or PageIndexService._coerce_positive_int(node.get("physical_index"))
             )
             if start is None or start < parent_start or start > parent_end:
-                continue
-            child = deepcopy(node)
-            child["level"] = max(2, PageIndexService._coerce_positive_int(child.get("level")) or 2)
-            child["physical_index"] = start
-            child["start_index"] = start
-            child["end_index"] = PageIndexService._coerce_positive_int(child.get("end_index")) or parent_end
-            child["source"] = child.get("source") or "llm_content_outline_child"
-            child.setdefault("nodes", [])
-            children.append(child)
+                return
+            child_drafts.append(
+                {
+                    "title": title,
+                    "level": max(2, PageIndexService._coerce_positive_int(node.get("level")) or 2),
+                    "structure": str(node.get("structure") or "").strip(),
+                    "confidence": float(node.get("confidence") or 0.62),
+                    "metadata": {
+                        "outline_source": "llm_content_outline_child",
+                        "llm_page_hint": start,
+                    },
+                }
+            )
             seen.add(key)
-        return children
+            for child in node.get("nodes") or []:
+                if isinstance(child, dict):
+                    append_candidate(child)
+
+        for node in candidates:
+            append_candidate(node)
+
+        return PageIndexService._map_outline_child_drafts_to_parent(
+            parent,
+            child_drafts,
+            page_texts=page_texts,
+            parent_start=parent_start,
+            parent_end=parent_end,
+            page_count=len(page_texts),
+            exclude_parent_start=True,
+            allow_parent_start_retry=str(parent.get("mapping_source") or "") != "section_divider_sequence",
+        )
 
     @staticmethod
     async def _expand_page_outline_with_llm_snippets(
@@ -4640,6 +4693,8 @@ Example:
                 sub_chapters,
                 parent_start=start,
                 parent_end=end,
+                page_texts=full_page_texts,
+                page_count=page_count,
             )
             if not children:
                 try:
@@ -4663,9 +4718,9 @@ Example:
             expanded += 1
 
         if added:
-            from pageindex.post_processing import normalize_tree_page_ranges
+            from pageindex.toc_mapping import derive_toc_ranges
 
-            toc_tree[:] = normalize_tree_page_ranges(toc_tree, page_count)
+            toc_tree[:] = derive_toc_ranges(toc_tree, page_count=page_count)
             PageIndexService._sync_page_source_anchors_to_ranges(toc_tree)
 
         expected = len(parents)
@@ -4732,501 +4787,6 @@ Example:
             updated["quality"] = "bad"
         analysis["balanced_quality_gate"] = gate
         return fixed_tree, updated
-
-    @staticmethod
-    def _existing_mapping_page_value(item: Dict[str, Any]) -> Optional[int]:
-        return (
-            PageIndexService._coerce_positive_int(item.get("physical_index"))
-            or PageIndexService._coerce_positive_int(item.get("start_index"))
-        )
-
-    @staticmethod
-    def _existing_physical_mapping_report(
-        toc_items: List[Dict[str, Any]],
-        *,
-        page_count: int,
-        toc_pages: Optional[List[int]],
-    ) -> Dict[str, Any]:
-        pages = [
-            PageIndexService._existing_mapping_page_value(item)
-            for item in toc_items or []
-            if isinstance(item, dict)
-        ]
-        pages = [page for page in pages if page is not None]
-        item_count = len([item for item in toc_items or [] if isinstance(item, dict)])
-        toc_page_set = {
-            int(page)
-            for page in (toc_pages or [])
-            if isinstance(page, int) and not isinstance(page, bool) and page > 0
-        }
-        mapped_ratio = len(pages) / item_count if item_count else 0.0
-        monotonic = all(left <= right for left, right in zip(pages, pages[1:]))
-        in_range = all(1 <= page <= page_count for page in pages) if page_count else False
-        toc_page_leakage_count = sum(1 for page in pages if page in toc_page_set)
-        leakage_ratio = toc_page_leakage_count / item_count if item_count else 0.0
-        reasons: List[str] = []
-        if item_count == 0:
-            reasons.append("empty_items")
-        if mapped_ratio < 1.0:
-            reasons.append("incomplete_existing_mapping")
-        if not monotonic:
-            reasons.append("mapping_non_monotonic")
-        if not in_range:
-            reasons.append("mapping_out_of_range")
-        if toc_page_leakage_count >= 2 and leakage_ratio >= 0.3:
-            reasons.append("toc_page_leakage")
-        status = "ok" if not reasons else "failed"
-        return {
-            "status": status,
-            "strategy": "existing_physical_mapping",
-            "excluded_pages": sorted(toc_page_set),
-            "strong_anchor_count": len(pages),
-            "item_count": item_count,
-            "title_match_rate": 1.0 if status == "ok" else 0.0,
-            "sample_match_rate": 1.0 if status == "ok" else 0.0,
-            "mapping_monotonic": monotonic,
-            "estimated_ratio": 0.0,
-            "tail_collapse": False,
-            "front_collapse": False,
-            "toc_page_leakage_count": toc_page_leakage_count,
-            "page_mapping_score": 1.0 if status == "ok" else 0.0,
-            "reasons": sorted(set(reasons)),
-        }
-
-    @staticmethod
-    def _page_text_map_from_page_list(page_list: List[Any]) -> Dict[int, str]:
-        page_texts: Dict[int, str] = {}
-        for index, page in enumerate(page_list or [], start=1):
-            text = ""
-            if isinstance(page, (list, tuple)) and page:
-                text = str(page[0] or "")
-            elif isinstance(page, dict):
-                text = str(page.get("text") or page.get("plain_text") or page.get("markdown") or "")
-            elif isinstance(page, str):
-                text = page
-            page_texts[index] = text
-        return page_texts
-
-    @staticmethod
-    def _existing_physical_mapping_title_report(
-        toc_items: List[Dict[str, Any]],
-        *,
-        page_list: List[Any],
-        page_count: int,
-        toc_pages: Optional[List[int]],
-        min_title_match_rate: float = 0.5,
-    ) -> Dict[str, Any]:
-        report = PageIndexService._existing_physical_mapping_report(
-            toc_items,
-            page_count=page_count,
-            toc_pages=toc_pages,
-        )
-        if report.get("status") != "ok":
-            return report
-
-        from pageindex.catalog_classifier import CATALOG_MAIN, detect_catalog_type
-        from pageindex.judge.content_page_mapper import score_title_on_page
-
-        page_texts = PageIndexService._page_text_map_from_page_list(page_list)
-        main_items = [
-            item
-            for item in toc_items or []
-            if isinstance(item, dict) and detect_catalog_type(item) == CATALOG_MAIN
-        ]
-        items = main_items or [item for item in toc_items or [] if isinstance(item, dict)]
-        checked_count = 0
-        matched_count = 0
-        for item in items:
-            title = str(item.get("title") or "").strip()
-            page = PageIndexService._existing_mapping_page_value(item)
-            if not title or page is None:
-                continue
-            checked_count += 1
-            scored = score_title_on_page(title, page_texts.get(page, ""))
-            if float(scored.get("score") or 0.0) >= 0.58:
-                matched_count += 1
-
-        title_match_rate = matched_count / checked_count if checked_count else 0.0
-        reasons = list(report.get("reasons") or [])
-        if checked_count >= 3 and title_match_rate < min_title_match_rate:
-            reasons.append("existing_title_match_rate_below_threshold")
-
-        status = "ok" if not reasons else "failed"
-        report.update(
-            {
-                "status": status,
-                "strong_anchor_count": matched_count,
-                "title_match_rate": round(title_match_rate, 4),
-                "sample_match_rate": round(title_match_rate, 4),
-                "page_mapping_score": round(
-                    title_match_rate if status == "ok" else min(title_match_rate, 0.49),
-                    4,
-                ),
-                "reasons": sorted(set(reasons)),
-            }
-        )
-        return report
-
-    @staticmethod
-    def _can_preserve_unpaged_existing_mapping(
-        analysis: Dict[str, Any],
-        toc_items: List[Dict[str, Any]],
-    ) -> bool:
-        source = str(analysis.get("toc_source") or "").strip()
-        if source not in {
-            "llm_toc_page",
-            "toc_page_text",
-            "toc_page_text_rule",
-        }:
-            return False
-
-        llm_toc_page = analysis.get("llm_toc_page") if isinstance(analysis, dict) else None
-        if isinstance(llm_toc_page, dict) and llm_toc_page.get("has_printed_page_numbers"):
-            return False
-
-        for item in toc_items or []:
-            if not isinstance(item, dict):
-                continue
-            if PageIndexService._coerce_positive_int(item.get("page") or item.get("logical_page")) is not None:
-                return False
-        return True
-
-    @staticmethod
-    def _divider_sequence_for_unpaged_toc(
-        toc_items: List[Dict[str, Any]],
-        *,
-        analysis: Dict[str, Any],
-        toc_pages: Optional[List[int]],
-        page_count: int,
-    ) -> Optional[List[int]]:
-        if not PageIndexService._can_preserve_unpaged_existing_mapping(analysis, toc_items):
-            return None
-        dividers = [
-            PageIndexService._coerce_positive_int(value)
-            for value in (analysis.get("chapter_dividers") or [])
-        ]
-        dividers = sorted({page for page in dividers if page is not None and 1 <= page <= page_count})
-        if not dividers:
-            return None
-        resolved_toc_pages = PageIndexService._resolved_toc_pages(toc_pages, analysis)
-        last_toc_page = max(resolved_toc_pages or [0])
-        candidates = [page for page in dividers if page >= last_toc_page] if last_toc_page else dividers
-
-        from pageindex.catalog_classifier import CATALOG_MAIN, detect_catalog_type
-
-        main_items = [
-            item
-            for item in (toc_items or [])
-            if isinstance(item, dict) and str(item.get("catalog_type") or detect_catalog_type(item)) == CATALOG_MAIN
-        ]
-        if not main_items or len(main_items) != len(toc_items or []):
-            return None
-        if len(candidates) != len(main_items):
-            return None
-        if any(left >= right for left, right in zip(candidates, candidates[1:])):
-            return None
-        return candidates
-
-    @staticmethod
-    def _map_unpaged_toc_items_to_dividers(
-        toc_items: List[Dict[str, Any]],
-        *,
-        analysis: Dict[str, Any],
-        toc_pages: Optional[List[int]],
-        page_count: int,
-    ) -> Optional[tuple[List[Dict[str, Any]], Dict[str, Any]]]:
-        divider_pages = PageIndexService._divider_sequence_for_unpaged_toc(
-            toc_items,
-            analysis=analysis,
-            toc_pages=toc_pages,
-            page_count=page_count,
-        )
-        if not divider_pages:
-            return None
-        mapped_items: List[Dict[str, Any]] = []
-        for item, page in zip(toc_items, divider_pages):
-            mapped = dict(item)
-            mapped["physical_index"] = page
-            mapped["start_index"] = page
-            mapped["mapping_source"] = "chapter_divider_sequence"
-            mapped["mapping_confidence"] = 0.84
-            mapped["mapping_evidence"] = {
-                "matched_page": page,
-                "divider_pages": divider_pages,
-            }
-            mapped_items.append(mapped)
-        item_count = len(mapped_items)
-        report = {
-            "status": "ok",
-            "strategy": "chapter_divider_sequence",
-            "excluded_pages": sorted(PageIndexService._resolved_toc_pages(toc_pages, analysis)),
-            "logical_overflow": False,
-            "regular_step": None,
-            "regular_step_ratio": 0.0,
-            "multi_logical_per_physical_suspected": False,
-            "strong_anchor_count": item_count,
-            "boundary_anchor_count": item_count,
-            "item_count": item_count,
-            "total_item_count": item_count,
-            "auxiliary_item_count": 0,
-            "title_match_rate": 1.0,
-            "sample_match_rate": 1.0,
-            "anchor_coverage": {"front": True, "middle": item_count >= 3, "back": item_count >= 2},
-            "mapping_monotonic": True,
-            "estimated_ratio": 0.0,
-            "tail_collapse": False,
-            "front_collapse": False,
-            "toc_page_leakage_count": 0,
-            "page_mapping_score": 0.9,
-            "reasons": [],
-        }
-        return mapped_items, report
-
-    @staticmethod
-    def _page_list_has_text_evidence(page_list: Optional[List[Any]]) -> bool:
-        for page in page_list or []:
-            text = ""
-            if isinstance(page, (list, tuple)) and page:
-                text = str(page[0] or "")
-            elif isinstance(page, dict):
-                text = str(page.get("text") or page.get("plain_text") or page.get("markdown") or "")
-            elif isinstance(page, str):
-                text = page
-            if text.strip():
-                return True
-        return False
-
-    @staticmethod
-    def _resolved_toc_pages(
-        toc_pages: Optional[List[int]],
-        analysis: Optional[Dict[str, Any]],
-    ) -> List[int]:
-        def collect(sources: List[Any]) -> List[int]:
-            pages: List[int] = []
-            for source in sources:
-                if not isinstance(source, list):
-                    continue
-                for value in source:
-                    parsed = PageIndexService._coerce_positive_int(value)
-                    if parsed is not None and parsed not in pages:
-                        pages.append(parsed)
-            return pages
-
-        if isinstance(analysis, dict):
-            toc_page = analysis.get("toc_page") if isinstance(analysis.get("toc_page"), dict) else {}
-            detection = analysis.get("toc_page_detection") if isinstance(analysis.get("toc_page_detection"), dict) else {}
-            analysis_pages = collect([
-                analysis.get("toc_pages"),
-                toc_page.get("pages"),
-                detection.get("pages"),
-            ])
-            if analysis_pages:
-                return analysis_pages
-        return collect([toc_pages])
-
-    @staticmethod
-    def _should_run_final_content_mapping(
-        *,
-        toc_source: str,
-        toc_items: List[Dict[str, Any]],
-        page_list: List[Any],
-        page_count: int,
-        toc_pages: Optional[List[int]],
-        analysis: Dict[str, Any],
-        needs_ocr: bool,
-    ) -> bool:
-        """Return whether selected TOC items need final physical page mapping.
-
-        TOC-page extraction produces a skeleton from catalog pages. Its page
-        values may be printed/logical pages, so final saved output must be
-        anchored against body content whenever body text evidence is available.
-        """
-        if not toc_items or page_count <= 0:
-            return False
-        if not PageIndexService._page_list_has_text_evidence(page_list):
-            return False
-
-        mapping_report = analysis.get("toc_content_mapping") if isinstance(analysis, dict) else {}
-        if (
-            isinstance(mapping_report, dict)
-            and mapping_report.get("source") == "unified_s5"
-            and str(mapping_report.get("status") or "").lower() == "ok"
-            and all(
-                isinstance(item, dict)
-                and (
-                    PageIndexService._coerce_positive_int(item.get("physical_index")) is not None
-                    or PageIndexService._coerce_positive_int(item.get("start_index")) is not None
-                )
-                for item in toc_items
-            )
-        ):
-            return False
-
-        source = str(toc_source or "").strip()
-        detected_toc_pages = PageIndexService._resolved_toc_pages(toc_pages, analysis)
-        has_source_page_hint = any(
-            isinstance(item, dict)
-            and PageIndexService._coerce_positive_int(item.get("source_page")) is not None
-            for item in toc_items
-        )
-        has_toc_page_context = bool(detected_toc_pages or has_source_page_hint)
-
-        toc_page_sources = {
-            "llm_toc_page",
-            "toc_page_text",
-            "toc_page_text_rule",
-        }
-        if source in toc_page_sources:
-            return has_toc_page_context
-
-        if source == "official_baseline":
-            judge = analysis.get("toc_judge") if isinstance(analysis, dict) else {}
-            evidence = judge.get("evidence") if isinstance(judge, dict) else {}
-            provider_source = str((evidence or {}).get("provider_source") or "").strip()
-            return has_toc_page_context and provider_source in toc_page_sources
-
-        return bool(needs_ocr and source in toc_page_sources)
-
-    @staticmethod
-    def _should_reverify_existing_toc_mapping(analysis: Dict[str, Any]) -> bool:
-        if not isinstance(analysis, dict):
-            return False
-        source = str(analysis.get("toc_source") or "").strip()
-        toc_page_sources = {
-            "llm_toc_page",
-            "toc_page_text",
-            "toc_page_text_rule",
-        }
-        if source in toc_page_sources:
-            return True
-        if source != "official_baseline":
-            return False
-        judge = analysis.get("toc_judge") if isinstance(analysis.get("toc_judge"), dict) else {}
-        evidence = judge.get("evidence") if isinstance(judge.get("evidence"), dict) else {}
-        provider_source = str(evidence.get("provider_source") or "").strip()
-        return provider_source in toc_page_sources
-
-    @staticmethod
-    def _map_toc_items_after_content_ocr(
-        toc_items: List[Dict[str, Any]],
-        *,
-        page_list: List[Any],
-        page_count: int,
-        toc_pages: Optional[List[int]],
-        analysis: Dict[str, Any],
-    ) -> List[Dict[str, Any]]:
-        from pageindex.judge.content_page_mapper import map_toc_items_to_physical_pages
-
-        resolved_toc_pages = PageIndexService._resolved_toc_pages(toc_pages, analysis)
-        if resolved_toc_pages:
-            toc_pages = resolved_toc_pages
-
-        page_texts = [page[0] if isinstance(page, (list, tuple)) and page else "" for page in (page_list or [])]
-        divider_mapping = PageIndexService._map_unpaged_toc_items_to_dividers(
-            toc_items,
-            analysis=analysis,
-            toc_pages=toc_pages or [],
-            page_count=page_count,
-        )
-        if divider_mapping is not None:
-            mapped_items, report = divider_mapping
-            analysis["ocr_text_map"] = {
-                index: str(page[0] or "")
-                for index, page in enumerate(page_list or [], start=1)
-                if isinstance(page, (list, tuple)) and len(page) >= 1
-            }
-            analysis["toc_content_mapping"] = report
-            analysis.setdefault("toc_judge", {})
-            analysis["toc_judge"]["content_mapping"] = report
-            print(
-                "[TOC-MAPPING] "
-                f"strategy={report.get('strategy')} "
-                f"status={report.get('status')} "
-                f"anchors={report.get('strong_anchor_count')}/{report.get('item_count')} "
-                f"title_match={report.get('title_match_rate', 0):.0%} "
-                f"estimated={report.get('estimated_ratio', 0):.0%}"
-            )
-            return mapped_items
-
-        existing_report = PageIndexService._existing_physical_mapping_report(
-            toc_items,
-            page_count=page_count,
-            toc_pages=toc_pages or [],
-        )
-        should_reverify_existing = PageIndexService._should_reverify_existing_toc_mapping(analysis)
-        if (
-            existing_report["status"] == "ok"
-            and not should_reverify_existing
-        ):
-            mapped_items = [dict(item) for item in toc_items]
-            report = existing_report
-        elif (
-            existing_report["status"] == "ok"
-            and should_reverify_existing
-            and PageIndexService._can_preserve_unpaged_existing_mapping(analysis, toc_items)
-        ):
-            verified_report = PageIndexService._existing_physical_mapping_title_report(
-                toc_items,
-                page_list=page_list,
-                page_count=page_count,
-                toc_pages=toc_pages or [],
-            )
-            if verified_report.get("status") == "ok":
-                mapped_items = [dict(item) for item in toc_items]
-                report = verified_report
-            else:
-                prefer_printed_page_numbers = False
-                llm_toc_page = analysis.get("llm_toc_page") if isinstance(analysis, dict) else None
-                if isinstance(llm_toc_page, dict):
-                    prefer_printed_page_numbers = bool(llm_toc_page.get("has_printed_page_numbers"))
-                mapped_items, report = map_toc_items_to_physical_pages(
-                    toc_items,
-                    page_texts=page_texts,
-                    page_count=page_count,
-                    toc_pages=toc_pages or [],
-                    prefer_printed_page_numbers=prefer_printed_page_numbers,
-                )
-        else:
-            prefer_printed_page_numbers = False
-            llm_toc_page = analysis.get("llm_toc_page") if isinstance(analysis, dict) else None
-            if isinstance(llm_toc_page, dict):
-                prefer_printed_page_numbers = bool(llm_toc_page.get("has_printed_page_numbers"))
-            mapped_items, report = map_toc_items_to_physical_pages(
-                toc_items,
-                page_texts=page_texts,
-                page_count=page_count,
-                toc_pages=toc_pages or [],
-                prefer_printed_page_numbers=prefer_printed_page_numbers,
-            )
-        if (
-            isinstance(report, dict)
-            and str(report.get("status") or "").lower() == "failed"
-            and existing_report.get("status") == "ok"
-            and should_reverify_existing
-        ):
-            failed_report = dict(report)
-            mapped_items = [dict(item) for item in toc_items]
-            report = dict(existing_report)
-            report["fallback_from"] = failed_report.get("strategy") or "content_title_search"
-            report["fallback_reasons"] = list(failed_report.get("reasons") or [])
-            report["warnings"] = ["preserved_existing_unpaged_mapping_after_failed_remap"]
-        analysis["ocr_text_map"] = {
-            index: str(page[0] or "")
-            for index, page in enumerate(page_list or [], start=1)
-            if isinstance(page, (list, tuple)) and len(page) >= 1
-        }
-        analysis["toc_content_mapping"] = report
-        analysis.setdefault("toc_judge", {})
-        analysis["toc_judge"]["content_mapping"] = report
-        print(
-            "[TOC-MAPPING] "
-            f"strategy={report.get('strategy')} "
-            f"status={report.get('status')} "
-            f"anchors={report.get('strong_anchor_count')}/{report.get('item_count')} "
-            f"title_match={report.get('title_match_rate', 0):.0%} "
-            f"estimated={report.get('estimated_ratio', 0):.0%}"
-        )
-        return mapped_items
 
     @staticmethod
     def _collect_toc_quality_failure_reasons(
@@ -5349,6 +4909,24 @@ Example:
         if initial != "fast" or final != "fast":
             return False
         return True
+
+    @staticmethod
+    def _should_retry_toc_attempt_with_balanced(
+        route_decision: Dict[str, Any],
+        *,
+        requested_mode: str,
+        initial_execution_mode: str,
+    ) -> bool:
+        if str(requested_mode or "") not in {"smart", "fast"}:
+            return False
+        if str(initial_execution_mode or "") != "fast":
+            return False
+        selected_path = str(
+            (route_decision or {}).get("selected_path")
+            or (route_decision or {}).get("path")
+            or ""
+        )
+        return selected_path == "embedded_toc"
 
     @staticmethod
     def _can_retain_best_candidate_after_retry_failure(
@@ -5654,7 +5232,6 @@ Example:
         from pageindex.agenda_outline_extractor import (
             is_agenda_outline_document,
         )
-        from pageindex.post_processing import post_process_toc
         from pageindex.node_filler import (
             fill_node_text,
             generate_summaries,
@@ -5791,6 +5368,35 @@ Example:
             anchors=anchors,
         )
         if not new_architecture_result or not new_architecture_result.get("items"):
+            if self._should_retry_toc_attempt_with_balanced(
+                route_decision,
+                requested_mode=requested_mode,
+                initial_execution_mode=initial_execution_mode,
+            ):
+                failure_reasons = []
+                if isinstance(new_architecture_result, dict):
+                    failure_reasons = [
+                        str(reason)
+                        for reason in (new_architecture_result.get("failure_reasons") or [])
+                        if str(reason).strip()
+                    ]
+                print(
+                    "[TOC-PIPELINE] stage=route action=retry_balanced "
+                    f"reason={';'.join(failure_reasons) or 'fast_attempt_failed'}"
+                )
+                return await self._generate_pdf_index(
+                    file_path,
+                    doc_id,
+                    "balanced",
+                    _quality_retry=False,
+                    _disable_code_toc=True,
+                    _fallback_from={
+                        "requested_mode": requested_mode,
+                        "execution_mode": execution_mode,
+                        "selected_path": route_decision.get("selected_path"),
+                        "reasons": failure_reasons or ["fast_attempt_failed"],
+                    },
+                )
             raise ValueError("TOC_PIPELINE_NO_CANDIDATE: no unified TOC attempt returned items")
 
         toc_items = new_architecture_result["items"]
@@ -5850,62 +5456,6 @@ Example:
             f"[TOC-ROUTE] decision=accept items={len(toc_items)} "
             f"source={toc_source} path={new_architecture_result.get('selected_path')}"
         )
-        document_needs_ocr = (
-            len(analysis.get("image_only_pages", [])) > 0
-            or len(analysis.get("garbled_pages", [])) > 0
-        )
-        content_ocr_ran = False
-        if document_needs_ocr and not analysis.get("page_text_map_ocr_completed"):
-            analysis["ocr_role"] = "content_fill"
-            content_ocr_stage = self._content_ocr_stage_name()
-            self._log_index_stage(
-                4,
-                content_ocr_stage,
-                "started",
-                role="content_fill",
-                pages=len(analysis.get("image_only_pages", []))
-                + len(analysis.get("garbled_pages", [])),
-            )
-            ocr_result = await self._run_pdf_ocr_pages_by_images(
-                Path(analysis["file_path"]),
-                sorted(set(analysis.get("image_only_pages", []) + analysis.get("garbled_pages", []))),
-                analysis=analysis,
-                prompt=PAGE_TEXT_OCR_PROMPT,
-            )
-            page_text_map = await preprocess_page_text_map(
-                file_path,
-                analysis,
-                ocr_pages_fn=lambda *_args, **_kwargs: ocr_result,
-                prompt=PAGE_TEXT_OCR_PROMPT,
-            )
-            page_list = page_text_map.to_page_list()
-            analysis["page_list"] = page_list
-            content_ocr_ran = True
-            self._log_index_stage(
-                4,
-                content_ocr_stage,
-                "done",
-                role="content_fill",
-                coverage=f"{len(page_list)}/{page_count}",
-            )
-
-        if self._should_run_final_content_mapping(
-            toc_source=toc_source,
-            toc_items=toc_items,
-            page_list=page_list,
-            page_count=page_count,
-            toc_pages=anchors.get("toc_pages", []),
-            analysis=analysis,
-            needs_ocr=document_needs_ocr,
-        ):
-            toc_items = self._map_toc_items_after_content_ocr(
-                toc_items,
-                page_list=page_list,
-                page_count=page_count,
-                toc_pages=anchors.get("toc_pages", []),
-                analysis=analysis,
-            )
-
         self._enable_child_outline_expansion_for_shallow_toc(
             analysis,
             toc_items,
@@ -5913,42 +5463,22 @@ Example:
             toc_source=toc_source,
         )
 
-        # Check whether extraction already returned a nested tree.
-        has_prebuilt_tree = any(
-            isinstance(item.get("nodes"), list) and bool(item.get("nodes"))
-            for item in toc_items
-        )
-
-        if has_prebuilt_tree:
+        if any(isinstance(item.get("nodes"), list) and bool(item.get("nodes")) for item in toc_items):
             print(f"[TOC-POST] action=assign_page_ranges prebuilt_tree=true roots={len(toc_items)}")
-            toc_tree = self._prepare_prebuilt_toc_tree(toc_items, page_count)
-            completeness = {
-                "quality": "good",
-                "coverage": 1.0,
-                "gaps": [],
-                "reaches_end": True,
-                "ok": True,
-                "needs_repair": False,
-            }
+            toc_tree, completeness = self._build_s5_toc_tree(
+                toc_items,
+                page_count=page_count,
+                analysis=analysis,
+            )
             print(f"[TOC-POST] action=preserve_prebuilt_tree entries={sum(len(item.get('nodes', [])) for item in toc_tree)}")
         else:
-            print(f"[TOC-POST] action=post_process input_items={len(toc_items)}")
+            print(f"[TOC-POST] action=s5_tree_build input_items={len(toc_items)}")
             self._log_index_stage(5, "post_process", "started", input_items=len(toc_items))
-            if execution_mode == "fast":
-                toc_tree, completeness = post_process_toc(
-                    toc_items,
-                    page_count,
-                    dividers=dividers,
-                )
-            else:
-                toc_tree, completeness = post_process_toc(
-                    toc_items,
-                    page_count,
-                    dividers=dividers,
-                    analysis=analysis,
-                    use_llm_grouping=True,
-                    model=model,
-                )
+            toc_tree, completeness = self._build_s5_toc_tree(
+                toc_items,
+                page_count=page_count,
+                analysis=analysis,
+            )
             self._log_index_stage(
                 5,
                 "post_process",
@@ -6016,9 +5546,9 @@ Example:
                 f"{', '.join(node.get('title', '') for node in auxiliary_catalogs)}"
             )
 
-        from pageindex.post_processing import normalize_tree_page_ranges
+        from pageindex.toc_mapping import derive_toc_ranges
 
-        toc_tree = normalize_tree_page_ranges(toc_tree, page_count)
+        toc_tree = derive_toc_ranges(toc_tree, page_count=page_count)
         toc_tree = self._normalize_auxiliary_catalog_nodes(toc_tree)
         toc_tree = self._normalize_final_tree_schema(
             toc_tree,
@@ -6051,7 +5581,7 @@ Example:
                 "code_toc_disabled": bool(analysis.get("disable_code_toc_fast_path")),
             },
             "completeness": completeness,
-            "ocr_used": bool(analysis.get("page_text_map_ocr_completed")) or content_ocr_ran,
+            "ocr_used": bool(analysis.get("page_text_map_ocr_completed")),
             "llm_quality_check": llm_quality_check_result,
             "enrichment_status": "pending",
         }

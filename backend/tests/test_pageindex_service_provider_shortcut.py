@@ -139,6 +139,9 @@ def test_expand_page_outline_uses_llm_snippets_for_catalog_children(monkeypatch)
     ]
     long_page = "A" * 260 + "\nThis tail must not be sent to the LLM snippet expander"
     page_list = [[f"Page {page} {long_page}"] for page in range(1, 21)]
+    page_list[3][0] = "Consumer pressure\n" + page_list[3][0]
+    page_list[5][0] = "Channel response\n" + page_list[5][0]
+    page_list[11][0] = "Operating model\n" + page_list[11][0]
     calls = []
 
     async def fake_expand_chapter(chapter_title, start_page, end_page, page_texts, model=None):
@@ -200,6 +203,8 @@ def test_llm_outline_child_tree_filters_body_text_leakage():
         ],
         parent_start=13,
         parent_end=24,
+        page_texts=[""] * 14 + ["商业逻辑变革：从响应式到预测式营销\n正文"] + [""] * 9,
+        page_count=24,
     )
 
     assert [child["title"] for child in children] == [
@@ -225,12 +230,286 @@ def test_llm_outline_child_tree_keeps_long_structured_step_heading():
         ],
         parent_start=25,
         parent_end=34,
+        page_texts=[""] * 29
+        + [
+            "Step1——小额测试，找出“商品标签X用户标签”的有效组合爆款是结果，资产是能力；冷启动期严禁考核ROI，只看标签有效性",
+            "Step2——规模放量",
+        ]
+        + [""] * 3,
+        page_count=34,
     )
 
     assert [child["title"] for child in children] == [
         "Step1——小额测试，找出“商品标签X用户标签”的有效组合爆款是结果，资产是能力；冷启动期严禁考核ROI，只看标签有效性",
         "Step2——规模放量",
     ]
+
+
+def test_llm_outline_child_tree_maps_child_pages_with_s5_title_evidence():
+    parent = {
+        "title": "Part03: Content operations",
+        "structure": "3",
+    }
+    page_texts = [
+        "Front matter mentions Step1",
+        "Contents",
+        "Part03: Content operations",
+        "intro before steps",
+        "Step1 - Small test\nbody",
+        "Step2 - Scale rollout\nbody",
+        "tail",
+    ]
+
+    children = PageIndexService._build_llm_outline_child_tree(
+        parent,
+        [
+            {"title": "Step1 - Small test", "level": 2, "page": 4},
+            {"title": "Step2 - Scale rollout", "level": 2, "page": 4},
+        ],
+        parent_start=3,
+        parent_end=7,
+        page_texts=page_texts,
+        page_count=len(page_texts),
+    )
+
+    assert [(child["title"], child["start_index"], child["mapping_source"]) for child in children] == [
+        ("Step1 - Small test", 5, "title_search"),
+        ("Step2 - Scale rollout", 6, "title_search"),
+    ]
+
+
+def test_llm_outline_child_tree_ignores_parent_overview_page_as_child_start():
+    parent = {
+        "title": "Chapter 3: Talent development",
+        "structure": "3",
+    }
+    page_texts = [
+        "Cover",
+        "Contents",
+        "Chapter 3: Talent development",
+        "3.1 Talent model\n3.2 Teaching model\n3.3 International teaching",
+        "Opening discussion before child sections",
+        "3.1 Talent model\nActual section body",
+        "3.2 Teaching model\nActual section body",
+        "3.3 International teaching\nActual section body",
+        "Tail",
+    ]
+
+    children = PageIndexService._build_llm_outline_child_tree(
+        parent,
+        [
+            {"title": "3.1 Talent model", "level": 2, "page": 4},
+            {"title": "3.2 Teaching model", "level": 2, "page": 4},
+            {"title": "3.3 International teaching", "level": 2, "page": 4},
+        ],
+        parent_start=4,
+        parent_end=9,
+        page_texts=page_texts,
+        page_count=len(page_texts),
+    )
+
+    assert [(child["title"], child["start_index"], child["mapping_source"]) for child in children] == [
+        ("3.1 Talent model", 6, "title_search"),
+        ("3.2 Teaching model", 7, "title_search"),
+        ("3.3 International teaching", 8, "title_search"),
+    ]
+
+
+def test_llm_outline_child_tree_keeps_mapped_subset_when_one_child_is_unverified():
+    parent = {
+        "title": "Chapter 3: Talent development",
+        "structure": "3",
+    }
+    page_texts = [
+        "Cover",
+        "Contents",
+        "Chapter 3: Talent development",
+        "3.1 Talent model\n3.2 Teaching model\n3.3 International teaching",
+        "Opening discussion before child sections",
+        "3.1 Talent model\nActual section body",
+        "3.2 Teaching model\nActual section body",
+        "Different heading text\nActual section body",
+        "Tail",
+    ]
+
+    children = PageIndexService._build_llm_outline_child_tree(
+        parent,
+        [
+            {"title": "3.1 Talent model", "level": 2, "page": 4},
+            {"title": "3.2 Teaching model", "level": 2, "page": 4},
+            {"title": "3.3 International teaching", "level": 2, "page": 4},
+        ],
+        parent_start=4,
+        parent_end=9,
+        page_texts=page_texts,
+        page_count=len(page_texts),
+    )
+
+    assert [(child["title"], child["start_index"], child["mapping_source"]) for child in children] == [
+        ("3.1 Talent model", 6, "title_search"),
+        ("3.2 Teaching model", 7, "title_search"),
+    ]
+
+
+def test_content_outline_child_fallback_maps_pages_with_s5_title_evidence(monkeypatch):
+    parent = {
+        "title": "Part03: Content operations",
+        "structure": "3",
+    }
+    page_texts = [
+        "Front matter mentions Step1",
+        "Contents",
+        "Part03: Content operations",
+        "intro before steps",
+        "Step1 - Small test\nbody",
+        "Step2 - Scale rollout\nbody",
+        "tail",
+    ]
+
+    async def fake_content_outline(_page_texts, _model=None, physical_start_page=1):
+        return {
+            "toc_items": [
+                {
+                    "title": "Part03: Content operations",
+                    "level": 1,
+                    "physical_index": physical_start_page,
+                    "nodes": [
+                        {"title": "Step1 - Small test", "level": 2, "physical_index": 4},
+                        {"title": "Step2 - Scale rollout", "level": 2, "physical_index": 4},
+                    ],
+                }
+            ]
+        }
+
+    monkeypatch.setattr(
+        "pageindex.hierarchical_extractor.extract_page_labeled_content_outline",
+        fake_content_outline,
+    )
+
+    children = asyncio.run(
+        PageIndexService._build_content_outline_child_tree_for_parent(
+            parent,
+            page_texts,
+            parent_start=3,
+            parent_end=7,
+            model="qwen3.6-flash",
+        )
+    )
+
+    assert [(child["title"], child["start_index"], child["mapping_source"]) for child in children] == [
+        ("Step1 - Small test", 5, "title_search"),
+        ("Step2 - Scale rollout", 6, "title_search"),
+    ]
+
+
+def test_content_outline_child_fallback_prefers_body_pages_over_parent_overview(monkeypatch):
+    parent = {
+        "title": "Chapter 1",
+        "structure": "1",
+    }
+    page_texts = [
+        "Cover",
+        "Contents",
+        "Chapter 1",
+        "1.1 Alpha\n1.2 Beta\n1.3 Gamma",
+        "1.1 Alpha\nActual alpha body",
+        "1.2 Beta\nActual beta body",
+        "Tail",
+    ]
+
+    async def fake_content_outline(_page_texts, _model=None, physical_start_page=1):
+        return {
+            "toc_items": [
+                {
+                    "title": "Chapter 1",
+                    "level": 1,
+                    "physical_index": physical_start_page,
+                    "nodes": [
+                        {"title": "1.1 Alpha", "level": 2, "physical_index": 4},
+                        {"title": "1.2 Beta", "level": 2, "physical_index": 4},
+                        {"title": "1.3 Gamma", "level": 2, "physical_index": 4},
+                    ],
+                }
+            ]
+        }
+
+    monkeypatch.setattr(
+        "pageindex.hierarchical_extractor.extract_page_labeled_content_outline",
+        fake_content_outline,
+    )
+
+    children = asyncio.run(
+        PageIndexService._build_content_outline_child_tree_for_parent(
+            parent,
+            page_texts,
+            parent_start=4,
+            parent_end=7,
+            model="qwen3.6-flash",
+        )
+    )
+
+    assert [(child["title"], child["start_index"], child["mapping_source"]) for child in children] == [
+        ("1.1 Alpha", 5, "title_search"),
+        ("1.2 Beta", 6, "title_search"),
+    ]
+
+
+def test_content_outline_child_fallback_does_not_retry_section_divider_parent_start(monkeypatch):
+    parent = {
+        "title": "国内大厂AI应用落地",
+        "structure": "2",
+        "mapping_source": "section_divider_sequence",
+    }
+    page_texts = [
+        "Cover",
+        "Contents",
+        "国外大厂AI应用落地",
+        "OpenAI body",
+        "Anthropic body",
+        "Amazon body",
+        "Google body",
+        "Nvidia body",
+        "国外大厂AI应用落地\n国内大厂AI应用落地\n产业链梳理\n风险提示",
+        "阿里巴巴 AQ健康品牌升级为蚂蚁阿福",
+        "阿里巴巴 千问APP公测上线",
+        "字节 官宣成为央视春晚独家AI伙伴",
+        "DeepSeek 预计发布V4旗舰模型",
+        "腾讯 AI应用小程序成长计划",
+        "MiniMax 智谱上市",
+    ]
+
+    async def fake_content_outline(_page_texts, _model=None, physical_start_page=1):
+        return {
+            "toc_items": [
+                {
+                    "title": "国内大厂AI应用落地",
+                    "level": 1,
+                    "physical_index": physical_start_page,
+                    "nodes": [
+                        {"title": "国外大厂AI应用落地", "level": 2, "physical_index": physical_start_page},
+                        {"title": "产业链梳理", "level": 2, "physical_index": physical_start_page},
+                        {"title": "风险提示", "level": 2, "physical_index": physical_start_page},
+                    ],
+                }
+            ]
+        }
+
+    monkeypatch.setattr(
+        "pageindex.hierarchical_extractor.extract_page_labeled_content_outline",
+        fake_content_outline,
+    )
+
+    children = asyncio.run(
+        PageIndexService._build_content_outline_child_tree_for_parent(
+            parent,
+            page_texts,
+            parent_start=9,
+            parent_end=15,
+            model="qwen3.6-flash",
+        )
+    )
+
+    assert children == []
 
 
 def test_llm_outline_child_tree_keeps_multiple_clean_children_on_same_page():
@@ -250,6 +529,20 @@ def test_llm_outline_child_tree_keeps_multiple_clean_children_on_same_page():
         ],
         parent_start=13,
         parent_end=34,
+        page_texts=[""] * 14
+        + [
+            "2.1 大模型发展历程\n2.1 DeepSeek系列大模型",
+        ]
+        + [""] * 6
+        + [
+            "2.2 智能体\n2.2 多智能体协作",
+        ]
+        + [""] * 4
+        + [
+            "2.3 智能体实例",
+        ]
+        + [""] * 7,
+        page_count=34,
     )
 
     assert [(child["title"], child["start_index"]) for child in children] == [

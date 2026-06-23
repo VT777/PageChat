@@ -36,6 +36,39 @@ def test_normalize_llm_toc_payload_merges_standalone_markers_with_titles() -> No
     assert extraction.has_printed_page_numbers is False
 
 
+def test_normalize_llm_toc_payload_preserves_typed_toc_sections() -> None:
+    from pageindex.candidates.llm_toc_page_extractor import (
+        build_llm_toc_prompt,
+        normalize_llm_toc_payload,
+    )
+
+    prompt = build_llm_toc_prompt([{"page": 2, "text": "目录\nChapter A 4\n图目录\nFigure 1 5"}])
+    assert "toc_sections" in prompt
+    assert "figure_toc" in prompt
+    assert "toc_items" not in prompt
+
+    extraction = normalize_llm_toc_payload(
+        {
+            "toc_sections": [
+                {
+                    "kind": "main_toc",
+                    "title": "目录",
+                    "items": [{"title": "Chapter A", "level": 1, "page": 4}],
+                },
+                {
+                    "kind": "figure_toc",
+                    "title": "图目录",
+                    "items": [{"title": "Figure 1", "level": 1, "page": 5}],
+                },
+            ]
+        }
+    )
+
+    assert [section["kind"] for section in extraction.toc_sections] == ["main_toc", "figure_toc"]
+    assert [item["section_kind"] for item in extraction.items] == ["main_toc", "figure_toc"]
+    assert extraction.has_printed_page_numbers is True
+
+
 def test_normalize_llm_toc_payload_dedupes_repeated_marker_sections() -> None:
     from pageindex.candidates.llm_toc_page_extractor import normalize_llm_toc_payload
 

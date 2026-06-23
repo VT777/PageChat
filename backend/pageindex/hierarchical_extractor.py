@@ -616,12 +616,39 @@ Chapter metadata:
 
 Requirements:
 1. Extract all second-level, third-level, and deeper section headings under this chapter.
-2. For each subsection, return title, hierarchy level (2, 3, 4, ...), and 1-based physical start page.
+2. For each subsection, return title, hierarchy level (2, 3, 4, ...), and the page value from the provided excerpt where the heading appears. This page is only a hint; final physical page mapping is handled later.
 3. Keep original numbering when present, such as "1.1" or "(a)".
 4. Titles must be concise headings, not paragraphs, table cells, or body text.
 5. If unsure, return fewer items instead of guessing.
 6. Ignore headers, footers, page numbers, table cells, and decorative text.
 7. Do not return end pages.
+
+Return JSON only:
+{{
+  "sub_chapters": [
+    {{"title": "Subsection title", "level": 2, "page": 5}}
+  ]
+}}
+
+Page excerpts JSON:
+{content}
+"""
+
+
+_EXPAND_RETRY_PROMPT = """You are a document structure analyst. Re-check the chapter page excerpts and extract subsection titles.
+
+Chapter metadata:
+- Title: {chapter_title}
+- Start page: {start_page}
+- End page: {end_page}
+
+Requirements:
+1. Extract visible subsection headings under this chapter in reading order.
+2. If a page begins with a prominent content heading, include it when it belongs to this chapter.
+3. Return title, hierarchy level, and the page value from the excerpt where the heading appears.
+4. Ignore headers, footers, page numbers, table cells, and decorative text.
+5. Do not invent unsupported headings. If unsure, return fewer items.
+6. Do not return end pages.
 
 Return JSON only:
 {{
@@ -798,6 +825,27 @@ async def expand_chapter(
             )
 
         merged = _merge_window_sub_chapters(valid)
+        if not merged and len(windows) == 1:
+            retry_valid: List[Dict[str, Any]] = []
+            for window in windows:
+                prompt = _EXPAND_RETRY_PROMPT.format(
+                    chapter_title=chapter_title,
+                    start_page=start_page,
+                    end_page=end_page,
+                    content=_format_excerpt_window(window),
+                )
+                response = await llm_acompletion(model, prompt)
+                if not response:
+                    continue
+                retry_valid.extend(
+                    _valid_sub_chapters_from_response(
+                        response,
+                        chapter_title=chapter_title,
+                        start_page=start_page,
+                        end_page=end_page,
+                    )
+                )
+            merged = _merge_window_sub_chapters(retry_valid)
         print(f"[TOC-CANDIDATE] provider=hierarchical stage=expand status=ok chapter='{chapter_title}' sub_chapters={len(merged)}")
         return merged
 

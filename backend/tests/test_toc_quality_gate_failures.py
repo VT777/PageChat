@@ -57,6 +57,29 @@ def test_quality_gate_hard_fails_many_body_nodes_on_toc_pages() -> None:
     assert report["toc_page_leakage_count"] == 3
 
 
+def test_quality_gate_hard_fails_body_ranges_overlapping_toc_pages() -> None:
+    report = build_index_quality_report(
+        {
+            "structure": [
+                _node("Preface", 1, 5),
+                _node("Chapter 1", 3, 5),
+                _node("Chapter 2", 4, 5),
+                _node("Chapter 3", 6, 10),
+            ],
+            "diagnostics": {
+                "toc_page_detection": {"pages": [5]},
+            },
+            "route_decision": {"selected_path": "visible_toc_with_pages"},
+        },
+        page_count=10,
+    )
+
+    assert report["status"] == "failed:toc_quality"
+    assert "toc_page_leakage" in report["hard_fail_reasons"]
+    assert report["toc_page_leakage_count"] == 3
+    assert report["toc_page_leakage_sample"][0]["page"] == 5
+
+
 def test_quality_gate_hard_fails_failed_mapping_report() -> None:
     report = build_index_quality_report(
         {
@@ -76,6 +99,56 @@ def test_quality_gate_hard_fails_failed_mapping_report() -> None:
 
     assert report["status"] == "failed:toc_quality"
     assert "toc_content_mapping_failed" in report["hard_fail_reasons"]
+
+
+def test_quality_gate_hard_fails_low_evidence_content_outline_declared_pages() -> None:
+    report = build_index_quality_report(
+        {
+            "structure": [
+                _node("Generated heading A", 1, 2),
+                _node("Generated heading B", 3, 8),
+            ],
+            "diagnostics": {
+                "toc_content_mapping": {
+                    "status": "ok",
+                    "strategy": "content_outline_declared_pages",
+                    "title_match_rate": 0.0,
+                    "warnings": ["low_title_validation"],
+                },
+            },
+            "route_decision": {"selected_path": "content_outline"},
+        },
+        page_count=8,
+    )
+
+    assert report["status"] == "failed:toc_quality"
+    assert "low_evidence_content_outline_mapping" in report["hard_fail_reasons"]
+
+
+def test_quality_gate_hard_fails_low_evidence_section_divider_sequence() -> None:
+    report = build_index_quality_report(
+        {
+            "structure": [
+                _node("Chapter A", 3, 8),
+                _node("Chapter B", 9, 20),
+            ],
+            "diagnostics": {
+                "toc_content_mapping": {
+                    "status": "ok",
+                    "strategy": "section_divider_sequence",
+                    "item_count": 2,
+                    "boundary_anchor_count": 0,
+                    "page_mapping_score": 0.76,
+                    "title_match_rate": 0.0,
+                },
+            },
+            "route_decision": {"selected_path": "visible_toc_no_pages"},
+        },
+        page_count=20,
+    )
+
+    assert report["status"] == "failed:toc_quality"
+    assert "low_evidence_section_divider_sequence" in report["hard_fail_reasons"]
 
 
 def test_quality_gate_hard_fails_unusable_node_content_from_page_text_map() -> None:
@@ -364,6 +437,96 @@ def test_quality_gate_uses_selected_candidate_for_evidence_title_preservation() 
     assert report["evidence_title_count"] == 1
     assert report["title_preservation_rate"] == 1.0
     assert "evidence_titles_lost_in_final_tree" not in report["hard_fail_reasons"]
+
+
+def test_quality_gate_selected_candidate_without_source_does_not_crash() -> None:
+    report = build_index_quality_report(
+        {
+            "structure": [_node("1 Overview", 1, 10)],
+            "diagnostics": {
+                "toc_candidates_summary": [
+                    {
+                        "candidate_id": "toc_page_text_rule_001",
+                        "item_count": 1,
+                        "status": "selected",
+                    }
+                ],
+            },
+        },
+        page_count=10,
+    )
+
+    assert report["evidence_source"] == "toc_page_text_rule_001"
+
+
+def test_quality_gate_reads_new_runner_selected_attempt_summary() -> None:
+    report = build_index_quality_report(
+        {
+            "structure": [
+                {
+                    "title": "Contents",
+                    "start_index": 1,
+                    "end_index": 30,
+                    "nodes": [
+                        _node("Only surviving title", 1, 30),
+                    ],
+                }
+            ],
+            "diagnostics": {
+                "toc_candidates_summary": {
+                    "attempt_chain": [
+                        {
+                            "path": "visible_toc_with_pages",
+                            "status": "selected",
+                            "item_count": 8,
+                            "sample_titles": [
+                                "Chapter A",
+                                "Chapter B",
+                                "Chapter C",
+                                "Chapter D",
+                                "Chapter E",
+                                "Chapter F",
+                            ],
+                        }
+                    ]
+                }
+            },
+        },
+        page_count=30,
+    )
+
+    assert report["evidence_title_count"] == 8
+    assert report["title_preservation_rate"] < 0.35
+    assert "evidence_titles_lost_in_final_tree" in report["hard_fail_reasons"]
+
+
+def test_quality_gate_does_not_treat_section_divider_pages_as_toc_leakage() -> None:
+    report = build_index_quality_report(
+        {
+            "structure": [
+                _node("Chapter 1", 3, 8),
+                _node("Chapter 2", 9, 14),
+                _node("Chapter 3", 15, 20),
+            ],
+            "diagnostics": {
+                "toc_page_detection": {"pages": [2]},
+                "mapping": {
+                    "status": "ok",
+                    "strategy": "section_divider_sequence",
+                    "toc_pages": [2],
+                    "excluded_pages": [2],
+                    "section_divider_pages": [3, 9, 15],
+                    "boundary_anchor_count": 3,
+                    "item_count": 3,
+                    "total_item_count": 3,
+                },
+            },
+        },
+        page_count=20,
+    )
+
+    assert report["toc_page_leakage_count"] == 0
+    assert "toc_page_leakage" not in report["hard_fail_reasons"]
 
 
 def test_quality_gate_hard_fails_auxiliary_catalog_mixed_into_main_tree() -> None:

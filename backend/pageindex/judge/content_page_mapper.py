@@ -114,6 +114,7 @@ def map_toc_items_to_physical_pages(
             "matched_page": physical_page,
             "score": round(float(match["score"]), 4),
             "matched_fragments": match.get("matched_fragments", [])[:3],
+            **_match_position_evidence(match),
         }
         strong_anchor_indices.append(index)
         cursor_by_catalog[catalog_type] = physical_page
@@ -530,12 +531,79 @@ def find_title_page(
             "page": page,
             "score": score,
             "matched_fragments": scored.get("matched_fragments") or [],
+            **_title_position_evidence(title, page_text_map.get(page, "")),
         }
         if best is None or score > float(best["score"]):
             best = candidate
         if score >= 0.95:
             return candidate
     return best
+
+
+def _match_position_evidence(match: Dict[str, Any]) -> Dict[str, Any]:
+    evidence: Dict[str, Any] = {}
+    for key in ("line_index", "char_offset", "meaningful_lines_before", "near_page_top"):
+        if key in match:
+            evidence[key] = match[key]
+    return evidence
+
+
+def _title_position_evidence(title: str, page_text: str) -> Dict[str, Any]:
+    variants = _title_match_variants(title)
+    if not variants:
+        return {}
+
+    text = str(page_text or "")
+    char_offset = 0
+    meaningful_before = 0
+    for line_index, line in enumerate(text.splitlines()):
+        stripped = str(line or "").strip()
+        if not stripped:
+            char_offset += len(line) + 1
+            continue
+        line_variants = _title_match_variants(stripped)
+        matched = False
+        for title_variant in variants:
+            for line_variant in line_variants:
+                if (
+                    _score_heading_line_variant(title_variant, line_variant) >= 0.58
+                    or (len(title_variant) >= 4 and title_variant in line_variant)
+                ):
+                    matched = True
+                    break
+            if matched:
+                break
+        if matched:
+            return {
+                "line_index": line_index,
+                "char_offset": char_offset,
+                "meaningful_lines_before": meaningful_before,
+                "near_page_top": line_index <= 2 and meaningful_before <= 1 and char_offset <= 160,
+            }
+        meaningful_before += 1
+        char_offset += len(line) + 1
+
+    full = normalize_title_text(title)
+    normalized = normalize_title_text(text)
+    normalized_offset = normalized.find(full) if full else -1
+    if normalized_offset < 0:
+        return {}
+    return {
+        "char_offset": normalized_offset,
+        "near_page_top": normalized_offset <= 80,
+    }
+
+
+def _regex_match_position_evidence(text: str, start: int) -> Dict[str, Any]:
+    prefix = str(text or "")[: max(0, int(start or 0))]
+    line_index = prefix.count("\n")
+    meaningful_before = sum(1 for line in prefix.splitlines() if line.strip())
+    return {
+        "line_index": line_index,
+        "char_offset": max(0, int(start or 0)),
+        "meaningful_lines_before": meaningful_before,
+        "near_page_top": line_index <= 2 and meaningful_before <= 1 and int(start or 0) <= 160,
+    }
 
 
 def find_outline_marker_page(
@@ -563,6 +631,7 @@ def find_outline_marker_page(
                     "score": 0.82,
                     "matched_fragments": [marker_match.group(0).strip()[:30]],
                     "source": "outline_marker",
+                    **_regex_match_position_evidence(text, marker_match.start()),
                 }
 
     match = re.match(r"^\s*(\d{1,3})(?:[.)\u3001\uff0e]\s*|\s+)", str(title or ""))
@@ -586,6 +655,7 @@ def find_outline_marker_page(
             "score": 0.78,
             "matched_fragments": [marker_match.group(0).strip()[:30]],
             "source": "outline_marker",
+            **_regex_match_position_evidence(text, marker_match.start()),
         }
     return None
 
@@ -1182,6 +1252,7 @@ def _apply_title_overrides_after_printed_mapping(
             "score": round(score, 4),
             "matched_fragments": match.get("matched_fragments", [])[:3],
             "overrode": "printed_page_offset" if current_page is not None else "unmapped",
+            **_match_position_evidence(match),
         }
         cursor_by_catalog[catalog_type] = physical_page
 

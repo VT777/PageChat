@@ -227,6 +227,12 @@ def extract_visible_toc_no_pages(
             min_title_match_rate=0.0,
             prefer_printed_page_numbers=False,
         )
+        mapping_report = {
+            **(mapping_report or {}),
+            "toc_pages": sorted(set(toc_pages or [])),
+            "excluded_pages": sorted(set(toc_pages or [])),
+            "section_divider_pages": sorted(set(repeated_catalog_pages or [])),
+        }
     if mapping_report.get("status") != "ok":
         return None
 
@@ -430,7 +436,9 @@ def _build_divider_mapping_report(
     return {
         "status": status,
         "strategy": "section_divider_sequence",
-        "excluded_pages": sorted(set(toc_pages or []) | set(repeated_catalog_pages or [])),
+        "toc_pages": sorted(set(toc_pages or [])),
+        "excluded_pages": sorted(set(toc_pages or [])),
+        "section_divider_pages": sorted(set(repeated_catalog_pages or [])),
         "logical_overflow": False,
         "regular_step": None,
         "regular_step_ratio": 0.0,
@@ -630,6 +638,10 @@ def _parse_unpaged_toc_pages(page_texts: List[str], toc_pages: Iterable[int]) ->
 
 
 def _parse_catalog_line(line: str) -> Optional[Tuple[str, Any]]:
+    pipe_row = _parse_pipe_catalog_line(line)
+    if pipe_row is not None:
+        return pipe_row
+
     match = _LINE_WITH_PAGE_RE.match(line)
     if not match:
         return None
@@ -643,6 +655,38 @@ def _parse_catalog_line(line: str) -> Optional[Tuple[str, Any]]:
         page = raw_page
     if isinstance(page, int) and page <= 0:
         return None
+    return title, page
+
+
+def _parse_pipe_catalog_line(line: str) -> Optional[Tuple[str, Any]]:
+    if "|" not in line:
+        return None
+    cells = [cell.strip() for cell in str(line or "").strip().strip("|").split("|")]
+    cells = [cell for cell in cells if cell]
+    if len(cells) < 3:
+        return None
+    if all(re.fullmatch(r":?-{2,}:?", cell) for cell in cells):
+        return None
+
+    marker = cells[0]
+    raw_page = cells[-1]
+    title = _clean_title(" ".join(cells[1:-1]))
+    if not title or _is_heading_like(title):
+        return None
+    if not re.fullmatch(r"\d{1,4}|[A-Za-z]{1,6}|[IVXLCDMivxlcdm]{1,8}", str(marker or "")):
+        marker = ""
+
+    try:
+        page: Any = int(str(raw_page).strip())
+    except (TypeError, ValueError):
+        raw_page_text = str(raw_page or "").strip()
+        if not re.fullmatch(r"[ivxlcdmIVXLCDM]{1,8}", raw_page_text):
+            return None
+        page = raw_page_text
+    if isinstance(page, int) and page <= 0:
+        return None
+    if marker and not _clean_title(title).startswith(str(marker).strip()):
+        title = f"{marker} {title}"
     return title, page
 
 

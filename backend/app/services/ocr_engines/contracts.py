@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Literal, Optional
 
 
-OCRTask = Literal["toc_page", "page_text"]
+OCRTask = Literal["page_text"]
 OCREvidenceLevel = Literal["line_box", "text_only", "model_inferred"]
 
 

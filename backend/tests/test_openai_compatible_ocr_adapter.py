@@ -48,7 +48,7 @@ class FakeClient:
         self.chat = FakeChat(self)
 
 
-def test_toc_page_task_uses_unified_page_text_prompt_and_returns_markdown() -> None:
+def test_page_text_task_uses_unified_prompt_and_returns_markdown() -> None:
     async def run() -> None:
         client = FakeClient("# Contents\n\n- Intro 1")
         adapter = OpenAICompatibleOCRAdapter(
@@ -58,7 +58,7 @@ def test_toc_page_task_uses_unified_page_text_prompt_and_returns_markdown() -> N
             client=client,
         )
 
-        result = await adapter.recognize("https://example.test/toc.png", task="toc_page")
+        result = await adapter.recognize("https://example.test/toc.png", task="page_text")
 
         call = client.calls[0]
         prompt = call["messages"][0]["content"][1]["text"]
@@ -89,7 +89,7 @@ def test_page_text_prompt_requests_markdown_and_returns_text_only() -> None:
     asyncio.run(run())
 
 
-def test_toc_page_markdown_is_not_json_parsed() -> None:
+def test_page_text_markdown_is_not_json_parsed() -> None:
     async def run() -> None:
         client = FakeClient("# Contents\n\n- Intro 1")
         adapter = OpenAICompatibleOCRAdapter(
@@ -98,7 +98,7 @@ def test_toc_page_markdown_is_not_json_parsed() -> None:
             client=client,
         )
 
-        result = await adapter.recognize("https://example.test/toc.png", task="toc_page")
+        result = await adapter.recognize("https://example.test/toc.png", task="page_text")
 
         assert result.pages[0].evidence_level == "text_only"
         assert result.pages[0].markdown == "# Contents\n\n- Intro 1"

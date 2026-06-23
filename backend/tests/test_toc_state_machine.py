@@ -29,6 +29,7 @@ def test_state_machine_accepts_high_quality_embedded_toc() -> None:
     assert plan["execution_mode"] == "fast"
     assert plan["states"] == ["S0", "S1", "S2", "S5", "S6"]
     assert plan["fallbacks"] == []
+    assert [attempt["path"] for attempt in plan["attempts"]] == ["embedded_toc"]
 
 
 def test_state_machine_rejects_embedded_toc_missing_visible_auxiliary_catalog() -> None:
@@ -153,6 +154,28 @@ def test_state_machine_outputs_visible_toc_attempt_chain() -> None:
         "visible_toc_no_pages",
         "content_outline",
     ]
+
+
+def test_fast_mode_without_embedded_toc_escalates_to_balanced() -> None:
+    plan = _plan(
+        {
+            "page_count": 40,
+            "content_type": "text",
+            "toc_page_detection": {
+                "status": "detected",
+                "pages": [2, 3],
+                "has_page_numbers": True,
+            },
+        },
+        requested_mode="fast",
+    )
+
+    assert plan["selected_path"] == "visible_toc_with_pages"
+    assert plan["execution_mode"] == "balanced"
+    assert any(
+        fallback.get("reason") == "fast_requires_embedded_toc"
+        for fallback in plan["fallbacks"]
+    )
 
 
 def test_state_machine_routes_no_page_number_toc_separately() -> None:

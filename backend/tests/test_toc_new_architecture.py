@@ -85,6 +85,195 @@ def test_pageindex_service_does_not_keep_legacy_candidate_lifecycle() -> None:
         assert token not in source
 
 
+def test_pdf_main_flow_keeps_s5_as_single_page_mapping_owner() -> None:
+    source = inspect.getsource(pageindex_service_module.PageIndexService._generate_pdf_index)
+
+    assert "_should_run_final_content_mapping" not in source
+    assert "_map_toc_items_after_content_ocr" not in source
+    assert "normalize_tree_page_ranges" not in source
+    assert "post_process_toc(" not in source
+
+
+def test_pdf_main_flow_does_not_rebuild_page_text_map_after_s5() -> None:
+    source = inspect.getsource(pageindex_service_module.PageIndexService._generate_pdf_index)
+    route_accept_index = source.index("decision=accept")
+
+    assert "_run_pdf_ocr_pages_by_images" not in source[route_accept_index:]
+    assert "preprocess_page_text_map(" not in source[route_accept_index:]
+
+
+def test_s5_tree_builder_preserves_mapped_boundary_overlap() -> None:
+    items = [
+        {
+            "title": "Chapter 1",
+            "level": 1,
+            "structure": "1",
+            "physical_index": 3,
+            "start_index": 3,
+            "mapping_evidence": {"near_page_top": True},
+        },
+        {
+            "title": "Chapter 2",
+            "level": 1,
+            "structure": "2",
+            "physical_index": 10,
+            "start_index": 10,
+            "mapping_evidence": {"near_page_top": False},
+        },
+        {
+            "title": "Chapter 3",
+            "level": 1,
+            "structure": "3",
+            "physical_index": 15,
+            "start_index": 15,
+            "mapping_evidence": {"near_page_top": True},
+        },
+    ]
+
+    tree, completeness = PageIndexService._build_s5_toc_tree(
+        items,
+        page_count=20,
+        analysis={"top_level_frozen": True},
+    )
+
+    assert completeness["needs_repair"] is False
+    chapters = [node for node in tree if str(node.get("title") or "").startswith("Chapter")]
+    assert [node["end_index"] for node in chapters] == [10, 14, 20]
+    assert chapters[0]["range_boundary"] == "overlap_with_next_start"
+
+
+def test_s5_tree_builder_preserves_multicatalog_main_coverage() -> None:
+    items = [
+        {"title": "Chapter 1", "level": 1, "structure": "1", "physical_index": 6},
+        {"title": "Chapter 2", "level": 1, "structure": "2", "physical_index": 12},
+        {"title": "Figure 1 architecture", "level": 1, "structure": "F1", "physical_index": 20, "catalog_type": "figure"},
+        {"title": "Table 1 benchmark", "level": 1, "structure": "T1", "physical_index": 22, "catalog_type": "table"},
+    ]
+
+    tree, completeness = PageIndexService._build_s5_toc_tree(
+        items,
+        page_count=30,
+        analysis={"page_texts": [""] * 30},
+    )
+
+    assert completeness["needs_repair"] is False
+    assert [node["title"] for node in tree] == ["目录", "图目录", "表目录"]
+    main_root = tree[0]
+    assert main_root["start_index"] == 1
+    assert main_root["end_index"] == 30
+    assert [child["title"] for child in main_root["nodes"]] == ["Preface", "Chapter 1", "Chapter 2"]
+    assert main_root["nodes"][-1]["end_index"] == 30
+    assert tree[1]["exclude_from_coverage"] is True
+    assert tree[2]["exclude_from_coverage"] is True
+
+
+def test_s5_tree_builder_adds_front_matter_inside_prebuilt_main_catalog() -> None:
+    items = [
+        {
+            "title": "目录",
+            "node_type": "catalog_group",
+            "catalog_type": "main",
+            "nodes": [
+                {"title": "Chapter 1", "level": 1, "structure": "1", "physical_index": 6},
+                {"title": "Chapter 2", "level": 1, "structure": "2", "physical_index": 12},
+            ],
+        },
+        {
+            "title": "图目录",
+            "node_type": "auxiliary_catalog",
+            "catalog_type": "figure",
+            "is_auxiliary": True,
+            "exclude_from_coverage": True,
+            "nodes": [
+                {"title": "Figure 1 architecture", "level": 1, "physical_index": 20, "catalog_type": "figure"}
+            ],
+        },
+    ]
+
+    tree, completeness = PageIndexService._build_s5_toc_tree(
+        items,
+        page_count=30,
+        analysis={"page_texts": [""] * 30},
+    )
+
+    assert completeness["needs_repair"] is False
+    main_root = tree[0]
+    assert main_root["title"] == "目录"
+    assert main_root["nodes"][0]["title"] == "Preface"
+    assert main_root["nodes"][0]["start_index"] == 1
+    assert main_root["nodes"][0]["end_index"] == 5
+    assert main_root["nodes"][-1]["end_index"] == 30
+
+
+def test_completeness_ignores_auxiliary_catalog_coverage() -> None:
+    from pageindex.post_processing import check_completeness
+
+    tree = [
+        {"title": "Body", "start_index": 1, "end_index": 6, "nodes": []},
+        {
+            "title": "Figure catalog",
+            "node_type": "auxiliary_catalog",
+            "is_auxiliary": True,
+            "exclude_from_coverage": True,
+            "start_index": 7,
+            "end_index": 20,
+            "nodes": [
+                {
+                    "title": "Figure 1",
+                    "node_type": "auxiliary_catalog_item",
+                    "is_auxiliary": True,
+                    "exclude_from_coverage": True,
+                    "start_index": 7,
+                    "end_index": 20,
+                }
+            ],
+        },
+    ]
+
+    completeness = check_completeness(tree, page_count=20)
+
+    assert completeness["needs_repair"] is True
+    assert completeness["coverage"] == 0.3
+    assert completeness["gaps"] == [(7, 20)]
+
+
+def test_completeness_does_not_use_catalog_group_range_as_body_coverage() -> None:
+    from pageindex.post_processing import check_completeness
+
+    tree = [
+        {
+            "title": "Contents",
+            "node_type": "catalog_group",
+            "start_index": 1,
+            "end_index": 20,
+            "nodes": [
+                {"title": "Preface", "start_index": 1, "end_index": 5, "nodes": []},
+                {"title": "Chapter 2", "start_index": 10, "end_index": 20, "nodes": []},
+            ],
+        }
+    ]
+
+    completeness = check_completeness(tree, page_count=20)
+
+    assert completeness["needs_repair"] is True
+    assert completeness["gaps"] == [(6, 9)]
+
+
+def test_build_tree_treats_chinese_decimal_structures_as_siblings() -> None:
+    from pageindex.post_processing import build_tree
+
+    tree = build_tree(
+        [
+            {"title": "第一节", "structure": "一.1", "nodes": []},
+            {"title": "第二节", "structure": "一.2", "nodes": []},
+            {"title": "第三节", "structure": "一.3", "nodes": []},
+        ]
+    )
+
+    assert [node["title"] for node in tree] == ["第一节", "第二节", "第三节"]
+    assert all(not node.get("nodes") for node in tree)
+
+
 def test_code_toc_fast_path_allows_verified_bookmark_early_return() -> None:
     result = CodeTOCFastPath().run(
         {

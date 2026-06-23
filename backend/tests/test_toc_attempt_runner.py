@@ -77,7 +77,7 @@ def _mapping_failure_then_ok(draft: dict, _context: dict, attempt: dict) -> dict
     return _mapped(draft["items"][0]["title"])
 
 
-def test_attempt_runner_keeps_best_candidate_when_all_attempts_fail() -> None:
+def test_attempt_runner_keeps_failed_best_candidate_for_diagnostics_only() -> None:
     runner = TocAttemptRunner(
         builders={
             "embedded_toc": lambda _context: _draft("Embedded"),
@@ -96,6 +96,7 @@ def test_attempt_runner_keeps_best_candidate_when_all_attempts_fail() -> None:
     ))
 
     assert result["status"] == "failed"
+    assert result["items"] == []
     assert result["best_candidate"]["items"][0]["title"] == "Embedded"
     assert len(result["attempt_chain"]) == 2
     assert result["failure_reasons"] == ["embedded_toc_bad", "content_outline_bad"]

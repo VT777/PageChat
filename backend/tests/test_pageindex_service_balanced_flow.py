@@ -402,7 +402,8 @@ def test_llm_outline_expansion_falls_back_to_page_labeled_content_outline(monkey
         }
     ]
     page_texts = [f"Page {page}" for page in range(1, 54)]
-    page_texts[43] = "Appendix page " + ("full text " * 40)
+    page_texts[43] = "Syntax\nAppendix page " + ("full text " * 40)
+    page_texts[44] = "Parsing\nAppendix continuation"
 
     async def fake_expand_chapter(*_args, **_kwargs):
         return []
@@ -489,239 +490,6 @@ def test_legacy_llm_toc_text_path_uses_shared_marker_normalization(monkeypatch):
     ]
     assert result["toc_draft"]["items"][0]["raw_page_label"] is None
     assert all("physical_index" not in item for item in result["toc_draft"]["items"])
-
-
-def test_final_mapping_skips_items_already_mapped_by_unified_s5() -> None:
-    analysis = {
-        "toc_content_mapping": {
-            "source": "unified_s5",
-            "status": "ok",
-            "strategy": "physical_identity",
-        }
-    }
-    toc_items = [
-        {"title": "Alpha", "physical_index": 4, "start_index": 4},
-        {"title": "Beta", "physical_index": 8, "start_index": 8},
-    ]
-
-    should_map = PageIndexService._should_run_final_content_mapping(
-        toc_source="llm_toc_page",
-        toc_items=toc_items,
-        page_list=[("Cover",), ("Contents",), ("Intro",), ("Alpha",), ("Body",), ("Body",), ("Body",), ("Beta",)],
-        page_count=8,
-        toc_pages=[2],
-        analysis=analysis,
-        needs_ocr=False,
-    )
-
-    assert should_map is False
-
-
-def test_final_mapping_preserves_verified_unpaged_toc_physical_pages():
-    toc_items = [
-        {"title": "Alpha Research", "physical_index": 3, "level": 1},
-        {"title": "Beta Models", "physical_index": 5, "level": 1},
-        {"title": "Gamma Hypotheses", "physical_index": 7, "level": 1},
-        {"title": "Delta Papers", "physical_index": 9, "level": 1},
-        {"title": "Epsilon Outlook", "physical_index": 11, "level": 1},
-    ]
-    page_list = [
-        ("Cover",),
-        ("Contents\nAlpha Research\nBeta Models\nGamma Hypotheses\nDelta Papers\nEpsilon Outlook",),
-        ("Alpha Research\nBody",),
-        ("Beta Models\nGamma Hypotheses\nDelta Papers\nEpsilon Outlook\nOverview",),
-        ("Beta Models\nBody",),
-        ("More beta",),
-        ("Gamma Hypotheses\nBody",),
-        ("More gamma",),
-        ("Delta Papers\nBody",),
-        ("More delta",),
-        ("Epsilon Outlook\nBody",),
-        ("Appendix",),
-    ]
-    analysis = {
-        "toc_source": "llm_toc_page",
-        "llm_toc_page": {
-            "status": "ok",
-            "source": "llm_toc_page",
-            "has_printed_page_numbers": False,
-        },
-    }
-
-    mapped = PageIndexService._map_toc_items_after_content_ocr(
-        toc_items,
-        page_list=page_list,
-        page_count=len(page_list),
-        toc_pages=[2],
-        analysis=analysis,
-    )
-
-    assert [item["physical_index"] for item in mapped] == [3, 5, 7, 9, 11]
-    assert analysis["toc_content_mapping"]["status"] == "ok"
-    assert analysis["toc_content_mapping"]["strategy"] == "existing_physical_mapping"
-    assert analysis["toc_content_mapping"]["title_match_rate"] == 1.0
-
-
-def test_final_mapping_treats_start_index_as_existing_physical_mapping():
-    toc_items = [
-        {"title": "Alpha Research", "start_index": 3, "level": 1},
-        {"title": "Beta Models", "start_index": 5, "level": 1},
-        {"title": "Gamma Hypotheses", "start_index": 7, "level": 1},
-        {"title": "Delta Papers", "start_index": 9, "level": 1},
-        {"title": "Epsilon Outlook", "start_index": 11, "level": 1},
-    ]
-    page_list = [
-        ("Cover",),
-        ("Contents\nAlpha Research\nBeta Models\nGamma Hypotheses\nDelta Papers\nEpsilon Outlook",),
-        ("Alpha Research\nBody",),
-        ("Beta Models\nGamma Hypotheses\nDelta Papers\nEpsilon Outlook\nOverview",),
-        ("Beta Models\nBody",),
-        ("More beta",),
-        ("Gamma Hypotheses\nBody",),
-        ("More gamma",),
-        ("Delta Papers\nBody",),
-        ("More delta",),
-        ("Epsilon Outlook\nBody",),
-        ("Appendix",),
-    ]
-    analysis = {
-        "toc_source": "llm_toc_page",
-        "llm_toc_page": {
-            "status": "ok",
-            "source": "llm_toc_page",
-            "has_printed_page_numbers": False,
-        },
-    }
-
-    mapped = PageIndexService._map_toc_items_after_content_ocr(
-        toc_items,
-        page_list=page_list,
-        page_count=len(page_list),
-        toc_pages=[2],
-        analysis=analysis,
-    )
-
-    assert [item["start_index"] for item in mapped] == [3, 5, 7, 9, 11]
-    assert analysis["toc_content_mapping"]["status"] == "ok"
-    assert analysis["toc_content_mapping"]["strategy"] == "existing_physical_mapping"
-
-
-def test_final_mapping_falls_back_to_existing_unpaged_mapping_when_title_search_collapses():
-    toc_items = [
-        {"title": "Alpha Research", "physical_index": 3, "level": 1},
-        {"title": "Beta Models", "physical_index": 5, "level": 1},
-        {"title": "Gamma Hypotheses", "physical_index": 7, "level": 1},
-        {"title": "Delta Papers", "physical_index": 9, "level": 1},
-        {"title": "Epsilon Outlook", "physical_index": 11, "level": 1},
-    ]
-    page_list = [
-        ("Cover",),
-        ("Contents\nAlpha Research\nBeta Models\nGamma Hypotheses\nDelta Papers\nEpsilon Outlook",),
-        ("Section body without visible heading",),
-        ("Beta Models\nGamma Hypotheses\nDelta Papers\nEpsilon Outlook\nOverview",),
-        ("More beta body without heading",),
-        ("More beta",),
-        ("More gamma body without heading",),
-        ("More gamma",),
-        ("More delta body without heading",),
-        ("More delta",),
-        ("Final outlook body without heading",),
-        ("Appendix",),
-    ]
-    analysis = {
-        "toc_source": "llm_toc_page",
-        "llm_toc_page": {
-            "status": "ok",
-            "source": "llm_toc_page",
-            "has_printed_page_numbers": False,
-        },
-    }
-
-    mapped = PageIndexService._map_toc_items_after_content_ocr(
-        toc_items,
-        page_list=page_list,
-        page_count=len(page_list),
-        toc_pages=[2],
-        analysis=analysis,
-    )
-
-    assert [item["physical_index"] for item in mapped] == [3, 5, 7, 9, 11]
-    assert analysis["toc_content_mapping"]["status"] == "ok"
-    assert analysis["toc_content_mapping"]["strategy"] == "existing_physical_mapping"
-    assert analysis["toc_content_mapping"]["fallback_from"] == "content_title_search"
-
-
-def test_final_mapping_falls_back_to_existing_mapping_when_printed_page_remap_fails():
-    toc_items = [
-        {"title": "Case 01", "page": 1, "physical_index": 3, "level": 1},
-        {"title": "Case 02", "page": 5, "physical_index": 4, "level": 1},
-        {"title": "Case 03", "page": 3, "physical_index": 5, "level": 1},
-        {"title": "Case 04", "page": 7, "physical_index": 6, "level": 1},
-        {"title": "Case 05", "page": 9, "physical_index": 7, "level": 1},
-    ]
-    page_list = [
-        ("Cover",),
-        ("Contents",),
-        ("Case 01\nBody",),
-        ("Case 02\nBody",),
-        ("Case 03\nBody",),
-        ("Case 04\nBody",),
-        ("Case 05\nBody",),
-    ]
-    analysis = {
-        "toc_source": "llm_toc_page",
-        "llm_toc_page": {
-            "status": "ok",
-            "source": "llm_toc_page",
-            "has_printed_page_numbers": True,
-        },
-    }
-
-    mapped = PageIndexService._map_toc_items_after_content_ocr(
-        toc_items,
-        page_list=page_list,
-        page_count=len(page_list),
-        toc_pages=[2],
-        analysis=analysis,
-    )
-
-    assert [item["physical_index"] for item in mapped] == [3, 4, 5, 6, 7]
-    assert analysis["toc_content_mapping"]["status"] == "ok"
-    assert analysis["toc_content_mapping"]["strategy"] == "existing_physical_mapping"
-    assert analysis["toc_content_mapping"]["fallback_from"] == "printed_page_offset"
-
-
-def test_unpaged_toc_existing_mapping_prefers_matching_chapter_dividers():
-    toc_items = [
-        {"title": "One AI research paradigm", "level": 2, "physical_index": 4},
-        {"title": "Two model landscape", "level": 4, "physical_index": 17},
-        {"title": "Three hypothesis generation", "level": 4, "physical_index": 30},
-        {"title": "Four papers and projects", "level": 4, "physical_index": 43},
-        {"title": "Five outlook", "level": 4, "physical_index": 56},
-    ]
-    page_list = [("Body",)] * 68
-    analysis = {
-        "toc_source": "llm_toc_page",
-        "toc_pages": [2, 3],
-        "chapter_dividers": [2, 3, 13, 35, 49, 61],
-        "llm_toc_page": {
-            "status": "ok",
-            "source": "llm_toc_page",
-            "has_printed_page_numbers": False,
-        },
-    }
-
-    mapped = PageIndexService._map_toc_items_after_content_ocr(
-        toc_items,
-        page_list=page_list,
-        page_count=len(page_list),
-        toc_pages=[2, 3],
-        analysis=analysis,
-    )
-
-    assert [item["physical_index"] for item in mapped] == [3, 13, 35, 49, 61]
-    assert analysis["toc_content_mapping"]["strategy"] == "chapter_divider_sequence"
-    assert analysis["toc_content_mapping"]["status"] == "ok"
 
 
 def test_llm_quality_advisory_score_does_not_trigger_hard_failure():
@@ -844,3 +612,16 @@ def test_mapping_failure_cannot_be_retained_as_best_candidate_after_retry_failur
     ]
 
     assert not PageIndexService._can_retain_best_candidate_after_retry_failure(result, reasons)
+
+
+def test_fast_embedded_attempt_failure_can_retry_balanced() -> None:
+    assert PageIndexService._should_retry_toc_attempt_with_balanced(
+        {"selected_path": "embedded_toc"},
+        requested_mode="smart",
+        initial_execution_mode="fast",
+    )
+    assert not PageIndexService._should_retry_toc_attempt_with_balanced(
+        {"selected_path": "visible_toc_with_pages"},
+        requested_mode="smart",
+        initial_execution_mode="balanced",
+    )

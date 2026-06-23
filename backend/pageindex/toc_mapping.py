@@ -30,6 +30,7 @@ def map_toc_draft_to_physical(
     page_count: int,
     toc_pages: Optional[List[int]] = None,
     selected_path: str,
+    allowed_page_range: Optional[Tuple[int, int]] = None,
 ) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
     """Map an S4 TOC draft to final physical pages.
 
@@ -54,6 +55,7 @@ def map_toc_draft_to_physical(
             page_count=page_count,
             toc_pages=toc_pages or [],
             selected_path=selected_path,
+            allowed_page_range=allowed_page_range,
         )
         for item in mapped_items:
             item["section_kind"] = section_kind
@@ -73,6 +75,12 @@ def map_toc_draft_to_physical(
                 "main_sample_checked_count": report.get("main_sample_checked_count"),
                 "main_strong_anchor_count": report.get("main_strong_anchor_count"),
                 "strong_anchor_count": report.get("strong_anchor_count"),
+                "boundary_anchor_count": report.get("boundary_anchor_count"),
+                "evidence_mode": report.get("evidence_mode"),
+                "page_mapping_score": report.get("page_mapping_score"),
+                "toc_pages": list(report.get("toc_pages") or []),
+                "excluded_pages": list(report.get("excluded_pages") or []),
+                "section_divider_pages": list(report.get("section_divider_pages") or []),
                 "reasons": list(report.get("reasons") or []),
                 "warnings": list(report.get("warnings") or []),
             }
@@ -130,11 +138,19 @@ def derive_toc_ranges(
         start = int(node["start_index"])
         if _is_auxiliary_catalog_item(node):
             end = start
+            node["range_boundary"] = "point"
         elif index < len(derived) - 1:
             next_start = starts[index + 1]
-            end = max(start, min(next_start - 1, upper))
+            end, boundary = _derive_sibling_end_from_next_start(
+                start=start,
+                next_start=next_start,
+                next_node=derived[index + 1],
+                upper=upper,
+            )
+            node["range_boundary"] = boundary
         else:
             end = max(start, upper)
+            node["range_boundary"] = "document_end"
         node["end_index"] = end
 
         children = node.get("nodes") or []
@@ -147,6 +163,25 @@ def derive_toc_ranges(
                 copy_nodes=False,
             )
     return derived
+
+
+def _derive_sibling_end_from_next_start(
+    *,
+    start: int,
+    next_start: int,
+    next_node: Dict[str, Any],
+    upper: int,
+) -> Tuple[int, str]:
+    if _next_title_is_known_not_near_page_top(next_node):
+        return max(start, min(next_start, upper)), "overlap_with_next_start"
+    return max(start, min(next_start - 1, upper)), "exclusive_before_next_start"
+
+
+def _next_title_is_known_not_near_page_top(next_node: Dict[str, Any]) -> bool:
+    evidence = next_node.get("mapping_evidence") if isinstance(next_node, dict) else None
+    if not isinstance(evidence, dict):
+        return False
+    return evidence.get("near_page_top") is False
 
 
 def _draft_sections(draft: Dict[str, Any]) -> List[Dict[str, Any]]:
@@ -195,28 +230,31 @@ def _map_section_items(
     page_count: int,
     toc_pages: List[int],
     selected_path: str,
+    allowed_page_range: Optional[Tuple[int, int]] = None,
 ) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
     if not items:
-        return [], {
+        return [], _with_explicit_toc_pages({
             "status": "failed",
             "strategy": "empty",
             "item_count": 0,
             "strong_anchor_count": 0,
             "title_match_rate": 0.0,
             "reasons": ["empty_items"],
-        }
+        }, toc_pages)
 
     identity = _map_by_physical_identity(
         items,
         page_texts=page_texts,
         page_count=page_count,
         toc_pages=toc_pages,
+        allowed_page_range=allowed_page_range,
     )
     if identity is not None:
-        return identity
+        mapped, report = identity
+        return mapped, _with_explicit_toc_pages(report, toc_pages)
 
     has_raw_page_numbers = any(_positive_int(item.get("raw_page_label")) is not None for item in items)
-    if selected_path == "visible_toc_no_pages" and not has_raw_page_numbers:
+    if selected_path == "visible_toc_no_pages" and not has_raw_page_numbers and allowed_page_range is None:
         divider_sequence = _map_unpaged_items_by_repeated_catalog_sequence(
             items,
             page_texts=page_texts,
@@ -224,110 +262,37 @@ def _map_section_items(
             toc_pages=toc_pages,
         )
         if divider_sequence is not None:
-            return divider_sequence
+            mapped, report = divider_sequence
+            return mapped, _with_explicit_toc_pages(report, toc_pages)
 
     mapped, report = map_toc_items_to_physical_pages(
         items,
         page_texts=page_texts,
         page_count=page_count,
         toc_pages=toc_pages,
+        excluded_pages=_excluded_pages_outside_allowed_range(page_count, allowed_page_range),
         prefer_printed_page_numbers=bool(
             has_raw_page_numbers and selected_path in {"visible_toc_with_pages", "embedded_toc"}
         ),
         allow_neighbor_inference=not (selected_path == "visible_toc_no_pages" and not has_raw_page_numbers),
         require_all_mapped=bool(selected_path == "visible_toc_no_pages" and not has_raw_page_numbers),
     )
-    if str(report.get("status") or "") != "ok" and selected_path == "content_outline":
-        declared = _map_content_outline_declared_pages(
-            items,
-            page_count=page_count,
-            toc_pages=toc_pages,
-            previous_report=report,
-        )
-        if declared is not None:
-            return declared
-    return mapped, report
+    return mapped, _with_explicit_toc_pages(report, toc_pages)
 
 
-def _map_content_outline_declared_pages(
-    items: List[Dict[str, Any]],
-    *,
-    page_count: int,
-    toc_pages: List[int],
-    previous_report: Dict[str, Any],
-) -> Optional[Tuple[List[Dict[str, Any]], Dict[str, Any]]]:
-    if not items or page_count <= 0:
-        return None
-    toc_page_set = {
-        page
-        for page in (_positive_int(value) for value in (toc_pages or []))
-        if page is not None
-    }
-    first_body_page = min(
-        (page for page in range(1, page_count + 1) if page not in toc_page_set),
-        default=1,
-    )
-    valid_declared = [
-        page
-        for page in (_positive_int(item.get("raw_page_label")) for item in items)
-        if page is not None and 1 <= page <= page_count and page not in toc_page_set
-    ]
-    if not valid_declared:
-        return None
-
-    mapped = [dict(item) for item in deepcopy(items)]
-    adjusted_count = 0
-    previous_page = first_body_page
-    pages: List[int] = []
-    for index, item in enumerate(items):
-        declared_page = _positive_int(item.get("raw_page_label"))
-        page = declared_page
-        if page is None or page < 1 or page > page_count or page in toc_page_set:
-            page = previous_page
-            adjusted_count += 1
-        if page < previous_page:
-            page = previous_page
-            adjusted_count += 1
-        page = min(max(first_body_page, page), page_count)
-        previous_page = page
-        pages.append(page)
-        mapped[index]["physical_index"] = int(page)
-        mapped[index]["start_index"] = int(page)
-        mapped[index]["mapping_source"] = "content_outline_declared_pages"
-        mapped[index]["mapping_confidence"] = 0.56
-        mapped[index]["mapping_evidence"] = {
-            "matched_page": int(page),
-            "source": "content_outline_raw_page_label",
-            "declared_page": declared_page,
-            "previous_strategy": previous_report.get("strategy"),
-            "previous_reasons": list(previous_report.get("reasons") or []),
+def _with_explicit_toc_pages(report: Dict[str, Any], toc_pages: Iterable[int]) -> Dict[str, Any]:
+    normalized_toc_pages = sorted(
+        {
+            page
+            for page in (_positive_int(value) for value in (toc_pages or []))
+            if page is not None
         }
-
-    warnings = ["low_title_validation"]
-    if adjusted_count:
-        warnings.append("declared_pages_adjusted")
-    return mapped, {
-        "status": "ok",
-        "strategy": "content_outline_declared_pages",
-        "excluded_pages": sorted(toc_page_set),
-        "logical_overflow": False,
-        "strong_anchor_count": 0,
-        "item_count": len(items),
-        "title_match_rate": 0.0,
-        "sample_match_rate": 0.0,
-        "mapping_monotonic": True,
-        "estimated_ratio": 0.0,
-        "toc_page_leakage_count": 0,
-        "page_mapping_score": 0.56,
-        "reasons": [],
-        "warnings": warnings,
-        "previous_report": {
-            "status": previous_report.get("status"),
-            "strategy": previous_report.get("strategy"),
-            "reasons": list(previous_report.get("reasons") or []),
-            "title_match_rate": previous_report.get("title_match_rate"),
-        },
-    }
+    )
+    normalized = dict(report)
+    normalized["toc_pages"] = normalized_toc_pages
+    if "excluded_pages" not in normalized:
+        normalized["excluded_pages"] = normalized_toc_pages
+    return normalized
 
 
 def _map_unpaged_items_by_repeated_catalog_sequence(
@@ -493,13 +458,16 @@ def _build_divider_sequence_report(
     return {
         "status": status,
         "strategy": "section_divider_sequence",
-        "excluded_pages": sorted(set(toc_pages or []) | set(repeated_pages or [])),
+        "toc_pages": sorted(set(toc_pages or [])),
+        "excluded_pages": sorted(set(toc_pages or [])),
+        "section_divider_pages": sorted(set(repeated_pages or [])),
         "logical_overflow": False,
         "regular_step": None,
         "regular_step_ratio": 0.0,
         "multi_logical_per_physical_suspected": False,
         "strong_anchor_count": 0,
         "boundary_anchor_count": item_count if status == "ok" else 0,
+        "evidence_mode": "boundary_sequence",
         "item_count": item_count,
         "total_item_count": item_count,
         "auxiliary_item_count": 0,
@@ -522,6 +490,7 @@ def _map_by_physical_identity(
     page_texts: List[str],
     page_count: int,
     toc_pages: Iterable[int],
+    allowed_page_range: Optional[Tuple[int, int]] = None,
 ) -> Optional[Tuple[List[Dict[str, Any]], Dict[str, Any]]]:
     indexed_pages = [
         (index, _positive_int(item.get("raw_page_label")))
@@ -535,6 +504,9 @@ def _map_by_physical_identity(
     if len(indexed_pages) < max(1, len(items) // 2):
         return None
     if any(page < 1 or page > page_count for _, page in indexed_pages):
+        return None
+    allowed_range = _normalized_allowed_page_range(page_count, allowed_page_range)
+    if any(not _page_in_allowed_range(page, allowed_range) for _, page in indexed_pages):
         return None
 
     toc_page_set = {page for page in (_positive_int(value) for value in (toc_pages or [])) if page is not None}
@@ -599,6 +571,9 @@ def _merge_section_reports(
         warnings.extend(str(warning) for warning in report.get("warnings") or [])
     strategies = [str(report.get("strategy") or "") for report in section_reports if report.get("strategy")]
     strategy = strategies[0] if len(set(strategies)) == 1 else "section_isolated"
+    toc_pages = _merge_report_pages(section_reports, "toc_pages")
+    excluded_pages = _merge_report_pages(section_reports, "excluded_pages")
+    section_divider_pages = _merge_report_pages(section_reports, "section_divider_pages")
     return {
         "status": "ok" if statuses and all(status == "ok" for status in statuses) else "failed",
         "strategy": strategy,
@@ -606,15 +581,72 @@ def _merge_section_reports(
         "page_count": page_count,
         "sections": section_reports,
         "section_kinds": [report["kind"] for report in section_reports],
+        "toc_pages": toc_pages,
+        "excluded_pages": excluded_pages,
+        "section_divider_pages": section_divider_pages,
         "item_count": len(mapped_items),
         "strong_anchor_count": sum(int(report.get("strong_anchor_count") or 0) for report in section_reports),
+        "boundary_anchor_count": sum(int(report.get("boundary_anchor_count") or 0) for report in section_reports),
+        "evidence_modes": sorted(
+            {
+                str(report.get("evidence_mode"))
+                for report in section_reports
+                if str(report.get("evidence_mode") or "").strip()
+            }
+        ),
         "title_match_rate": _weighted_title_match_rate(section_reports),
+        "page_mapping_score": _weighted_page_mapping_score(section_reports),
         "main_title_match_rate": _main_title_match_rate(section_reports),
         "main_sample_checked_count": _main_sample_checked_count(section_reports),
         "main_strong_anchor_count": _main_strong_anchor_count(section_reports),
         "reasons": sorted(set(reasons)),
         "warnings": sorted(set(warnings)),
     }
+
+
+def _merge_report_pages(section_reports: List[Dict[str, Any]], key: str) -> List[int]:
+    pages: set[int] = set()
+    for report in section_reports:
+        for value in report.get(key) or []:
+            page = _positive_int(value)
+            if page is not None:
+                pages.add(page)
+    return sorted(pages)
+
+
+def _excluded_pages_outside_allowed_range(
+    page_count: int,
+    allowed_page_range: Optional[Tuple[int, int]],
+) -> List[int]:
+    allowed = _normalized_allowed_page_range(page_count, allowed_page_range)
+    if allowed is None:
+        return []
+    start, end = allowed
+    return [page for page in range(1, max(1, int(page_count or 1)) + 1) if page < start or page > end]
+
+
+def _normalized_allowed_page_range(
+    page_count: int,
+    allowed_page_range: Optional[Tuple[int, int]],
+) -> Optional[Tuple[int, int]]:
+    if not allowed_page_range:
+        return None
+    start = _positive_int(allowed_page_range[0])
+    end = _positive_int(allowed_page_range[1])
+    if start is None or end is None:
+        return None
+    max_page = max(1, int(page_count or 1))
+    start = max(1, min(start, max_page))
+    end = max(1, min(end, max_page))
+    if end < start:
+        end = start
+    return start, end
+
+
+def _page_in_allowed_range(page: int, allowed_range: Optional[Tuple[int, int]]) -> bool:
+    if allowed_range is None:
+        return True
+    return allowed_range[0] <= page <= allowed_range[1]
 
 
 def _weighted_title_match_rate(section_reports: List[Dict[str, Any]]) -> float:
@@ -624,6 +656,22 @@ def _weighted_title_match_rate(section_reports: List[Dict[str, Any]]) -> float:
     weighted = sum(
         int(report.get("item_count") or 0) * float(report.get("title_match_rate") or 0.0)
         for report in section_reports
+    )
+    return round(weighted / total, 4)
+
+
+def _weighted_page_mapping_score(section_reports: List[Dict[str, Any]]) -> float:
+    total = sum(
+        int(report.get("item_count") or 0)
+        for report in section_reports
+        if report.get("page_mapping_score") is not None
+    )
+    if total <= 0:
+        return 0.0
+    weighted = sum(
+        int(report.get("item_count") or 0) * float(report.get("page_mapping_score") or 0.0)
+        for report in section_reports
+        if report.get("page_mapping_score") is not None
     )
     return round(weighted / total, 4)
 

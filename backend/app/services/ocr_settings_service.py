@@ -17,7 +17,7 @@ from app.services.model_settings_service import (
 )
 
 
-OCR_TASKS = {"toc_page", "page_text"}
+OCR_TASKS = {"page_text"}
 
 
 class OCRSettingsService:

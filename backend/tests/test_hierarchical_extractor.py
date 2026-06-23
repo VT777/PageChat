@@ -260,6 +260,49 @@ def test_expand_chapter_uses_400_character_page_excerpts(monkeypatch):
     assert "x" * 420 not in prompt
 
 
+def test_expand_chapter_retries_once_when_initial_result_is_empty(monkeypatch):
+    prompts = []
+
+    async def fake_llm_acompletion(model, prompt):
+        prompts.append(prompt)
+        if len(prompts) == 1:
+            return json.dumps({"sub_chapters": []})
+        return json.dumps(
+            {
+                "sub_chapters": [
+                    {"title": "Vendor A launch", "level": 2, "page": 10},
+                    {"title": "Vendor B update", "level": 2, "page": 11},
+                ]
+            }
+        )
+
+    monkeypatch.setattr(hierarchical_extractor, "llm_acompletion", fake_llm_acompletion)
+
+    page_texts = [
+        "",
+        "Section menu",
+        "Vendor A launch\nBody",
+        "Vendor B update\nBody",
+    ]
+
+    result = asyncio.run(
+        hierarchical_extractor.expand_chapter(
+            "Market applications",
+            10,
+            11,
+            page_texts + [""] * 8,
+            model="test-model",
+        )
+    )
+
+    assert result == [
+        {"title": "Vendor A launch", "level": 2, "page": 10},
+        {"title": "Vendor B update", "level": 2, "page": 11},
+    ]
+    assert len(prompts) == 2
+    assert "re-check" in prompts[1].lower()
+
+
 def test_expand_chapter_windows_long_ranges_and_merges_duplicates(monkeypatch):
     calls = []
 

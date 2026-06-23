@@ -412,8 +412,14 @@ def _extract_toc_pages(index_payload: Dict[str, Any], mapping: Dict[str, Any]) -
     sources: List[Any] = [
         index_payload.get("toc_pages"),
         diagnostics.get("toc_pages"),
-        mapping.get("excluded_pages") if isinstance(mapping, dict) else None,
     ]
+    if isinstance(mapping, dict):
+        mapping_toc_pages = mapping.get("toc_pages")
+        sources.append(
+            mapping_toc_pages
+            if isinstance(mapping_toc_pages, list)
+            else mapping.get("excluded_pages")
+        )
 
     detection = diagnostics.get("toc_page_detection")
     if isinstance(detection, dict):
@@ -454,9 +460,17 @@ def _toc_page_leakage_stats(
         page_range = _node_page_range(node)
         if page_range is None:
             continue
-        start, _ = page_range
-        if start in toc_page_set:
-            leaked.append({"title": str(node.get("title") or "").strip(), "page": start})
+        start, end = page_range
+        overlapping_pages = [page for page in toc_page_set if start <= page <= end]
+        if overlapping_pages:
+            leaked.append(
+                {
+                    "title": str(node.get("title") or "").strip(),
+                    "page": min(overlapping_pages),
+                    "start": start,
+                    "end": end,
+                }
+            )
 
     return {
         "toc_page_leakage_count": len(leaked),
@@ -557,6 +571,8 @@ def _evidence_title_stats(index_payload: Dict[str, Any], nodes: List[Dict[str, A
     if not isinstance(diagnostics, dict):
         diagnostics = {}
     summaries = diagnostics.get("toc_candidates_summary") or index_payload.get("toc_candidates_summary") or []
+    if isinstance(summaries, dict):
+        summaries = summaries.get("candidates") or summaries.get("attempt_chain") or []
     if not isinstance(summaries, list):
         summaries = []
 
@@ -579,7 +595,7 @@ def _evidence_title_stats(index_payload: Dict[str, Any], nodes: List[Dict[str, A
         count = max(count, len(titles))
         if count > best_count:
             best_count = count
-            best_source = source
+            best_source = str(candidate.get("source") or candidate.get("candidate_id") or "")
             best_titles = titles
 
     final_title_keys = []
@@ -878,6 +894,8 @@ def build_toc_fidelity_digest(
     mapping_status = str(mapping.get("status") or "").strip().lower()
     mapping_score = _bounded_float(mapping.get("page_mapping_score"))
     title_match_rate = _bounded_float(mapping.get("title_match_rate"))
+    boundary_anchor_count = int(mapping.get("boundary_anchor_count") or 0)
+    mapping_item_count = int(mapping.get("item_count") or 0)
     main_title_match_rate = _bounded_float(mapping.get("main_title_match_rate"))
     main_sample_checked_count = int(mapping.get("main_sample_checked_count") or 0)
     route_title_match_rate = (
@@ -940,9 +958,22 @@ def build_toc_fidelity_digest(
     if mapping_status.startswith("failed"):
         warnings.append("toc content mapping failed")
         hard_fail_reasons.append("toc_content_mapping_failed")
+    if (
+        str(mapping.get("strategy") or "") == "content_outline_declared_pages"
+        and title_match_rate < 0.2
+        and "low_title_validation" in [str(warning) for warning in (mapping.get("warnings") or [])]
+    ):
+        warnings.append("content outline mapping lacks title validation")
+        hard_fail_reasons.append("low_evidence_content_outline_mapping")
     if mapping_tail_collapse:
         warnings.append("tail collapse detected")
         hard_fail_reasons.append("tail_collapse")
+    if (
+        str(mapping.get("strategy") or "") == "section_divider_sequence"
+        and boundary_anchor_count < max(2, mapping_item_count)
+    ):
+        warnings.append("section divider sequence lacks boundary anchors")
+        hard_fail_reasons.append("low_evidence_section_divider_sequence")
 
     if not auxiliary_isolation.get("auxiliary_catalog_isolation", True):
         warnings.append("auxiliary figure/table catalog mixed into main TOC tree")
@@ -1055,6 +1086,7 @@ def build_toc_fidelity_digest(
         "anchor_confidence": round(anchor_confidence, 4),
         "page_mapping_score": round(mapping_score, 4),
         "title_match_rate": round(title_match_rate, 4),
+        "boundary_anchor_count": boundary_anchor_count,
         "mapping_status": mapping_status or "unknown",
         "mapping_tail_collapse": mapping_tail_collapse,
         "selected_path": selected_path,
@@ -1083,6 +1115,7 @@ def build_toc_fidelity_digest(
         "warnings": warnings,
         "hard_fail_reasons": sorted(set(hard_fail_reasons)),
         "evidence_title_count": int(evidence_stats.get("evidence_title_count") or 0),
+        "evidence_source": str(evidence_stats.get("evidence_source") or ""),
         "final_tree_title_count": int(evidence_stats.get("final_tree_title_count") or 0),
         "title_preservation_rate": round(_bounded_float(evidence_stats.get("title_preservation_rate")), 4),
         "raw_toc_numeric_label_loss": raw_label_loss,

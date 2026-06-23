@@ -68,6 +68,8 @@ class TocAttemptRunner:
 
             draft_items = _item_count(draft)
             record["draft_item_count"] = draft_items
+            record["item_count"] = draft_items
+            record["sample_titles"] = _sample_titles(draft)
             if draft_items <= 0:
                 _record_failure(record, "draft_empty")
                 attempt_chain.append(record)
@@ -113,10 +115,12 @@ class TocAttemptRunner:
             hard_fail_reasons = list((quality or {}).get("hard_fail_reasons") or [])
             if quality_status == "failed" or hard_fail_reasons:
                 _record_failure(record, *(hard_fail_reasons or ["quality_failed"]))
+                record["status"] = "rejected"
                 attempt_chain.append(record)
                 failure_reasons.extend(record["failure_reasons"])
                 continue
 
+            record["status"] = "selected"
             attempt_chain.append(record)
             provider_source = str(mapped.get("provider_source") or mapped.get("source") or path)
             result = dict(mapped)
@@ -136,7 +140,7 @@ class TocAttemptRunner:
             "status": "failed",
             "source": (attempts[-1].get("path") if attempts else ""),
             "selected_path": (attempts[-1].get("path") if attempts else ""),
-            "items": list((best_candidate or {}).get("items") or []),
+            "items": [],
             "best_candidate": best_candidate,
             "attempt_chain": attempt_chain,
             "failure_reasons": _unique(failure_reasons),
@@ -173,8 +177,35 @@ def _item_count(payload: Mapping[str, Any]) -> int:
     return total
 
 
+def _sample_titles(payload: Mapping[str, Any], *, limit: int = 50) -> list[str]:
+    titles: list[str] = []
+    seen: set[str] = set()
+
+    def add(value: Any) -> None:
+        title = str(value or "").strip()
+        key = "".join(title.casefold().split())
+        if not title or not key or key in seen:
+            return
+        seen.add(key)
+        titles.append(title)
+
+    def walk(items: Any) -> None:
+        for item in items or []:
+            if not isinstance(item, Mapping) or len(titles) >= limit:
+                continue
+            add(item.get("title"))
+            walk(item.get("children") or item.get("nodes"))
+
+    walk(payload.get("items"))
+    for section in payload.get("toc_sections") or []:
+        if isinstance(section, Mapping) and len(titles) < limit:
+            walk(section.get("items"))
+    return titles[:limit]
+
+
 def _record_failure(record: dict[str, Any], *reasons: Any) -> None:
     record["quality_status"] = "failed" if record.get("quality_status") == "not_run" else record["quality_status"]
+    record.setdefault("status", "rejected")
     normalized = [str(reason) for reason in reasons if str(reason or "").strip()]
     record["failure_reasons"].extend(normalized or ["failed"])
 

@@ -97,6 +97,14 @@ class TocStateMachine:
                     "code_toc_source": (analysis.get("code_toc") or {}).get("source"),
                 }
             )
+        if requested == "fast":
+            fallbacks.append(
+                {
+                    "from": "S1",
+                    "to": "balanced",
+                    "reason": "fast_requires_embedded_toc",
+                }
+            )
 
         if toc_signal["has_toc_page"]:
             selected_path = (
@@ -148,13 +156,6 @@ def _attempt_chain(
         add(TocFlowPath.EMBEDDED_TOC, "code_toc_signal")
 
     if selected_path == TocFlowPath.EMBEDDED_TOC:
-        if toc_signal.get("has_toc_page"):
-            if toc_signal.get("has_page_numbers"):
-                add(TocFlowPath.VISIBLE_TOC_WITH_PAGES, "visible_toc_with_pages")
-                add(TocFlowPath.VISIBLE_TOC_NO_PAGES, "mapping_fallback")
-            else:
-                add(TocFlowPath.VISIBLE_TOC_NO_PAGES, "visible_toc_no_pages")
-        add(TocFlowPath.CONTENT_OUTLINE, "last_resort")
         return attempts
 
     if selected_path == TocFlowPath.VISIBLE_TOC_WITH_PAGES:
@@ -175,6 +176,8 @@ def _attempt_chain(
 def _execution_mode_for(requested: str, *, embedded: bool) -> str:
     if requested == "smart":
         return "fast" if embedded else "balanced"
+    if requested == "fast" and not embedded:
+        return "balanced"
     return requested
 
 
