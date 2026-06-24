@@ -22,10 +22,19 @@ import { settingsApi } from '@/api'
 import { useUserStore } from '@/stores/user'
 import type { ModelProviderConfig, ModelProviderPreset } from '@/types/modelSettings'
 import {
+  defaultWebSearchSettings,
+  type WebSearchContentType,
+  type WebSearchSettings,
+} from '@/types/webSearchSettings'
+import {
   PARSING_BATCH_CONCURRENCY_SETTING,
   PARSE_MODE_OPTIONS,
   SETTINGS_NAV_SECTIONS,
+  WEB_SEARCH_CONTENT_TYPE_OPTIONS,
+  WEB_SEARCH_LANGUAGE_OPTIONS,
   WEB_SEARCH_MODE_OPTIONS,
+  WEB_SEARCH_PROVIDER_OPTIONS,
+  WEB_SEARCH_ZONE_OPTIONS,
 } from '@/ui/pagechatContracts'
 
 type SectionId = typeof SETTINGS_NAV_SECTIONS.primary[number]['id'] | typeof SETTINGS_NAV_SECTIONS.footer[number]['id']
@@ -49,6 +58,12 @@ const testingProviderId = ref<string | null>(null)
 const providerMessage = ref('')
 const providerError = ref('')
 const expandedProviderId = ref<string | null>(null)
+const webSearchSettings = ref<WebSearchSettings>(defaultWebSearchSettings())
+const webSearchApiKey = ref('')
+const loadingWebSearchSettings = ref(false)
+const savingWebSearchSettings = ref(false)
+const webSearchMessage = ref('')
+const webSearchError = ref('')
 
 const providerForm = ref({
   providerId: '',
@@ -73,7 +88,6 @@ const parsingSettings = ref({
 
 const qaSettings = ref({
   model: 'OpenAI Compatible: gpt-4.1',
-  webSearchMode: 'on-demand',
 })
 
 const iconMap = {
@@ -169,6 +183,74 @@ async function loadProviders() {
   }
 }
 
+function normalizeWebSearchSettings(raw: Partial<WebSearchSettings> | null | undefined): WebSearchSettings {
+  const defaults = defaultWebSearchSettings()
+  const contentTypes = Array.isArray(raw?.content_types)
+    ? raw.content_types.filter((item): item is WebSearchContentType =>
+      WEB_SEARCH_CONTENT_TYPE_OPTIONS.some((option) => option.id === item),
+    )
+    : defaults.content_types
+
+  return {
+    provider: raw?.provider === 'anysearch' ? raw.provider : defaults.provider,
+    mode: raw?.mode === 'auto' ? 'auto' : defaults.mode,
+    zone: raw?.zone === 'intl' ? 'intl' : defaults.zone,
+    language: raw?.language === 'en' ? 'en' : defaults.language,
+    max_results: Math.min(10, Math.max(1, Number(raw?.max_results || defaults.max_results))),
+    content_types: contentTypes.length > 0 ? contentTypes : defaults.content_types,
+    api_key_mask: raw?.api_key_mask || '',
+    updated_at: raw?.updated_at,
+  }
+}
+
+async function loadWebSearchSettings() {
+  loadingWebSearchSettings.value = true
+  webSearchError.value = ''
+  try {
+    const response = await settingsApi.getWebSearchSettings()
+    webSearchSettings.value = normalizeWebSearchSettings(response.data)
+  } catch (error: any) {
+    webSearchSettings.value = defaultWebSearchSettings()
+    webSearchError.value = error?.response?.data?.detail || 'Web Search 配置暂时无法加载，已显示默认设置。'
+  } finally {
+    loadingWebSearchSettings.value = false
+  }
+}
+
+function toggleWebSearchContentType(type: WebSearchContentType) {
+  const current = webSearchSettings.value.content_types
+  if (current.includes(type)) {
+    if (current.length === 1) return
+    webSearchSettings.value.content_types = current.filter((item) => item !== type)
+    return
+  }
+  webSearchSettings.value.content_types = [...current, type]
+}
+
+async function saveWebSearchSettings() {
+  savingWebSearchSettings.value = true
+  webSearchMessage.value = ''
+  webSearchError.value = ''
+  try {
+    const response = await settingsApi.updateWebSearchSettings({
+      provider: webSearchSettings.value.provider,
+      mode: webSearchSettings.value.mode,
+      zone: webSearchSettings.value.zone,
+      language: webSearchSettings.value.language,
+      max_results: webSearchSettings.value.max_results,
+      content_types: webSearchSettings.value.content_types,
+      ...(webSearchApiKey.value.trim() ? { api_key: webSearchApiKey.value.trim() } : {}),
+    })
+    webSearchSettings.value = normalizeWebSearchSettings(response.data)
+    webSearchApiKey.value = ''
+    webSearchMessage.value = 'Web Search 设置已保存。'
+  } catch (error: any) {
+    webSearchError.value = error?.response?.data?.detail || '保存 Web Search 设置失败。'
+  } finally {
+    savingWebSearchSettings.value = false
+  }
+}
+
 function startConfigure(provider: string, baseUrl: string, providerId = '') {
   providerForm.value = {
     providerId,
@@ -233,7 +315,10 @@ function close() {
   emit('update:open', false)
 }
 
-onMounted(loadProviders)
+onMounted(() => {
+  loadProviders()
+  loadWebSearchSettings()
+})
 </script>
 
 <template>
@@ -477,16 +562,96 @@ onMounted(loadProviders)
                 <button
                   v-for="mode in WEB_SEARCH_MODE_OPTIONS"
                   :key="mode.id"
-                  :class="{ active: qaSettings.webSearchMode === mode.id }"
+                  :class="{ active: webSearchSettings.mode === mode.id }"
                   type="button"
-                  @click="qaSettings.webSearchMode = mode.id"
+                  @click="webSearchSettings.mode = mode.id"
                 >
                   <strong>{{ mode.label }}</strong>
                   <small>{{ mode.description }}</small>
                 </button>
               </div>
             </div>
+
+            <label>
+              搜索供应商
+              <select v-model="webSearchSettings.provider">
+                <option
+                  v-for="provider in WEB_SEARCH_PROVIDER_OPTIONS"
+                  :key="provider.id"
+                  :value="provider.id"
+                >
+                  {{ provider.label }}
+                </option>
+              </select>
+            </label>
+            <label>
+              API Key
+              <input
+                v-model="webSearchApiKey"
+                type="password"
+                autocomplete="new-password"
+                :placeholder="webSearchSettings.api_key_mask || '留空则使用匿名额度'"
+              />
+            </label>
+            <label>
+              搜索区域
+              <select v-model="webSearchSettings.zone">
+                <option v-for="zone in WEB_SEARCH_ZONE_OPTIONS" :key="zone.id" :value="zone.id">
+                  {{ zone.label }}
+                </option>
+              </select>
+            </label>
+            <label>
+              语言
+              <select v-model="webSearchSettings.language">
+                <option v-for="language in WEB_SEARCH_LANGUAGE_OPTIONS" :key="language.id" :value="language.id">
+                  {{ language.label }}
+                </option>
+              </select>
+            </label>
+            <label>
+              最大结果数
+              <input v-model.number="webSearchSettings.max_results" type="number" min="1" max="10" />
+            </label>
+            <div>
+              <div class="field-label">内容类型</div>
+              <div class="checkbox-row">
+                <button
+                  v-for="contentType in WEB_SEARCH_CONTENT_TYPE_OPTIONS"
+                  :key="contentType.id"
+                  :class="{ active: webSearchSettings.content_types.includes(contentType.id) }"
+                  type="button"
+                  @click="toggleWebSearchContentType(contentType.id)"
+                >
+                  <CheckCircle2 v-if="webSearchSettings.content_types.includes(contentType.id)" />
+                  <span v-else />
+                  {{ contentType.label }}
+                </button>
+              </div>
+            </div>
+
+            <div class="wide settings-actions">
+              <span>
+                <template v-if="loadingWebSearchSettings">正在加载 Web Search 设置...</template>
+                <template v-else-if="webSearchSettings.api_key_mask">已保存密钥：{{ webSearchSettings.api_key_mask }}</template>
+                <template v-else>API Key 可选；留空时使用 AnySearch 匿名额度。</template>
+              </span>
+              <button
+                type="button"
+                :disabled="savingWebSearchSettings || loadingWebSearchSettings"
+                @click="saveWebSearchSettings"
+              >
+                <Loader2 v-if="savingWebSearchSettings" class="spin" />
+                <CheckCircle2 v-else />
+                保存 Web Search
+              </button>
+            </div>
           </div>
+          <p v-if="webSearchMessage" class="success-message">{{ webSearchMessage }}</p>
+          <p v-if="webSearchError" class="error-message">
+            <AlertCircle />
+            {{ webSearchError }}
+          </p>
         </section>
 
         <section v-else-if="activeSection === 'language'" class="settings-section narrow">
@@ -821,6 +986,7 @@ onMounted(loadProviders)
 
 .provider-actions button,
 .credential-actions button,
+.settings-actions button,
 .account-card button {
   display: inline-flex;
   align-items: center;
@@ -837,6 +1003,7 @@ onMounted(loadProviders)
 
 .provider-actions button:hover,
 .credential-actions button:hover,
+.settings-actions button:hover,
 .account-card button:hover {
   background: var(--kc-surface-muted);
   color: var(--kc-text);
@@ -972,6 +1139,24 @@ textarea:focus {
   font-size: 11.5px;
 }
 
+.settings-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  border-radius: var(--kc-radius-md);
+  background: #f3f6fb;
+  padding: 10px;
+}
+
+.settings-actions span {
+  min-width: 220px;
+  flex: 1;
+  color: var(--kc-text-tertiary);
+  font-size: 11.5px;
+  line-height: 17px;
+}
+
 .form-grid {
   grid-template-columns: repeat(2, minmax(0, 1fr));
 }
@@ -1022,6 +1207,47 @@ textarea:focus {
   color: var(--kc-text-tertiary);
   font-size: 11.5px;
   line-height: 17px;
+}
+
+.checkbox-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.checkbox-row button {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  height: 34px;
+  border: 1px solid var(--kc-border);
+  border-radius: var(--kc-radius-md);
+  background: #fff;
+  padding: 0 10px;
+  color: var(--kc-text-secondary);
+  font-size: 12.5px;
+  font-weight: 560;
+}
+
+.checkbox-row button.active {
+  border-color: rgba(47, 128, 237, 0.32);
+  background: #eaf3ff;
+  color: #145eb8;
+}
+
+.checkbox-row button span,
+.checkbox-row button svg {
+  display: grid;
+  width: 15px;
+  height: 15px;
+  place-items: center;
+  border: 1px solid currentColor;
+  border-radius: 4px;
+}
+
+.checkbox-row button svg {
+  border-color: transparent;
+  stroke-width: 2;
 }
 
 .account-card {

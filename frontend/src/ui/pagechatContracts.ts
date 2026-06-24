@@ -97,6 +97,25 @@ export const WEB_SEARCH_MODE_OPTIONS = [
   },
 ] as const
 
+export const WEB_SEARCH_PROVIDER_OPTIONS = [
+  { id: 'anysearch', label: 'AnySearch' },
+] as const
+
+export const WEB_SEARCH_ZONE_OPTIONS = [
+  { id: 'cn', label: '中国区' },
+  { id: 'intl', label: '国际区' },
+] as const
+
+export const WEB_SEARCH_LANGUAGE_OPTIONS = [
+  { id: 'zh-CN', label: '简体中文' },
+  { id: 'en', label: 'English' },
+] as const
+
+export const WEB_SEARCH_CONTENT_TYPE_OPTIONS = [
+  { id: 'web', label: 'Web' },
+  { id: 'news', label: 'News' },
+] as const
+
 export const COMPOSER_ACTIONS = [
   { id: 'image', label: '添加图片', icon: 'ImagePlus' },
   { id: 'web-search', label: '网页搜索', icon: 'Globe' },

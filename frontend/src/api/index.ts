@@ -1,6 +1,7 @@
 import axios from 'axios'
 import type { ChatScopeRequest } from '@/types/retrieval'
 import type { ModelProviderInput, ModelProviderUpdateInput, ModelRouteMapping } from '@/types/modelSettings'
+import type { WebSearchSettingsUpdate } from '@/types/webSearchSettings'
 
 export interface ProcessingStep {
   step_type: string
@@ -167,6 +168,9 @@ export const settingsApi = {
   getPageIndexSettings: () => api.get('/settings/pageindex'),
   updatePageIndexSettings: (pageindex_mode: 'smart' | 'balanced' | 'fast') =>
     api.put('/settings/pageindex', { pageindex_mode }),
+  getWebSearchSettings: () => api.get('/settings/web-search'),
+  updateWebSearchSettings: (payload: WebSearchSettingsUpdate) =>
+    api.put('/settings/web-search', payload),
   getModelProviderPresets: () => api.get('/settings/model-providers/presets'),
   listModelProviders: () => api.get('/settings/model-providers'),
   saveModelProvider: (payload: ModelProviderInput) =>

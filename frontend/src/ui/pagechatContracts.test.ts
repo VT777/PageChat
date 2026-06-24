@@ -8,6 +8,7 @@ import {
   PRODUCT_NAME,
   SETTINGS_NAV_SECTIONS,
   WEB_SEARCH_MODE_OPTIONS,
+  WEB_SEARCH_PROVIDER_OPTIONS,
   buildConversationExportMarkdown,
   buildDocumentBreadcrumb,
   buildDocumentChatRoute,
@@ -24,6 +25,7 @@ import {
   selectableDocumentIds,
   summarizeToolStep,
 } from './pagechatContracts'
+import { defaultWebSearchSettings } from '@/types/webSearchSettings'
 
 describe('PageChat UI contracts', () => {
   it('uses PageChat as the only product name for the authenticated shell', () => {
@@ -72,6 +74,17 @@ describe('PageChat UI contracts', () => {
   it('models web search as user-requested or automatic answering behavior', () => {
     expect(WEB_SEARCH_MODE_OPTIONS.map((mode) => mode.id)).toEqual(['on-demand', 'auto'])
     expect(WEB_SEARCH_MODE_OPTIONS.map((mode) => mode.label)).toEqual(['用户要求使用', '自动调用'])
+    expect(WEB_SEARCH_PROVIDER_OPTIONS).toEqual([
+      { id: 'anysearch', label: 'AnySearch' },
+    ])
+    expect(defaultWebSearchSettings()).toMatchObject({
+      provider: 'anysearch',
+      mode: 'on-demand',
+      zone: 'cn',
+      language: 'zh-CN',
+      max_results: 5,
+      content_types: ['web', 'news'],
+    })
   })
 
   it('keeps composer actions behind the plus menu', () => {
