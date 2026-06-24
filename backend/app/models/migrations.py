@@ -143,11 +143,31 @@ async def _add_ocr_settings_tables(db: aiosqlite.Connection) -> None:
     )
 
 
+async def _add_web_search_settings_table(db: aiosqlite.Connection) -> None:
+    await db.execute(
+        """
+        CREATE TABLE IF NOT EXISTS web_search_settings (
+            user_id TEXT PRIMARY KEY,
+            provider TEXT NOT NULL DEFAULT 'anysearch',
+            mode TEXT NOT NULL DEFAULT 'on-demand',
+            api_key_ciphertext TEXT,
+            api_key_mask TEXT,
+            zone TEXT NOT NULL DEFAULT 'cn',
+            language TEXT NOT NULL DEFAULT 'zh-CN',
+            max_results INTEGER NOT NULL DEFAULT 5,
+            content_types_json TEXT NOT NULL DEFAULT '["web","news"]',
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+        """
+    )
+
+
 MIGRATIONS: tuple[Migration, ...] = (
     ("20260610_001_add_documents_last_reindex_at", _add_documents_last_reindex_at),
     ("20260610_002_add_core_indexes", _add_core_indexes),
     ("20260611_003_add_model_settings_tables", _add_model_settings_tables),
     ("20260615_004_add_ocr_settings_tables", _add_ocr_settings_tables),
+    ("20260625_005_add_web_search_settings_table", _add_web_search_settings_table),
 )
 
 
