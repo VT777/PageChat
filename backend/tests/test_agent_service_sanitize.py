@@ -6,6 +6,7 @@ from types import SimpleNamespace
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+import app.services.agent_service as agent_service_module
 from app.services.agent_service import AgentService
 
 
@@ -200,3 +201,59 @@ def test_stream_sanitizes_image_tool_events_but_keeps_model_vision_payload(monke
         )
 
     asyncio.run(run())
+
+
+def test_conversation_history_cache_omits_multimodal_base64(monkeypatch) -> None:
+    async def run() -> None:
+        agent_service_module._CONVERSATION_MESSAGES.clear()
+        agent_service_module._CONVERSATION_CACHES.clear()
+        agent = AgentService.__new__(AgentService)
+        agent.db = None
+        agent.pageindex_service = FakePageIndexService()
+        agent.document_service = FakeDocumentService()
+        seen_messages = []
+        call_count = 0
+
+        async def fake_execute_initial_retrieval_plan(**kwargs):
+            return []
+
+        async def fake_chat_by_scenario(**kwargs):
+            nonlocal call_count
+            call_count += 1
+            seen_messages.append(kwargs["messages"])
+            if call_count == 1:
+                return FakeStream([FakeToolCallChunk()])
+            return FakeStream([FakeContentChunk()])
+
+        monkeypatch.setattr("app.services.agent_service.ToolExecutor", FakeToolExecutor)
+        monkeypatch.setattr(
+            AgentService,
+            "_execute_initial_retrieval_plan",
+            staticmethod(fake_execute_initial_retrieval_plan),
+        )
+        monkeypatch.setattr("app.services.agent_service.chat_by_scenario", fake_chat_by_scenario)
+
+        events = [
+            event
+            async for event in agent.run_agent_stream(
+                question="look at the image",
+                conversation_id="conv-image",
+                user_id="user-a",
+                max_steps=2,
+            )
+        ]
+
+        assert events
+        assert any(
+            "data:image/jpeg;base64,AAAA" in str(message)
+            for message in seen_messages[-1]
+        )
+        cached = list(agent_service_module._CONVERSATION_MESSAGES.values())[0]
+        assert "AAAA" not in str(cached)
+        assert "data:image" not in str(cached)
+
+    try:
+        asyncio.run(run())
+    finally:
+        agent_service_module._CONVERSATION_MESSAGES.clear()
+        agent_service_module._CONVERSATION_CACHES.clear()

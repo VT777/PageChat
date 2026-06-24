@@ -580,7 +580,9 @@ class AgentService:
 
         # 保存完整消息历史到全局缓存（包含工具调用记录，供下一轮使用）
         if conversation_state_key:
-            _CONVERSATION_MESSAGES[conversation_state_key] = messages.copy()
+            _CONVERSATION_MESSAGES[conversation_state_key] = (
+                self._sanitize_messages_for_conversation_history(messages)
+            )
 
     def _build_tool_content(self, tool_name: str, result: dict) -> str:
         """
@@ -678,6 +680,28 @@ class AgentService:
     def _sanitize_tool_result_for_client(result: Any) -> Any:
         """移除 SSE 和持久化 UI 状态中的大体积图片字段。"""
         return AgentService._sanitize_tool_result_for_history(result)
+
+    @staticmethod
+    def _sanitize_messages_for_conversation_history(messages: Any) -> Any:
+        """Remove multimodal base64 payloads before storing reusable in-memory history."""
+        if isinstance(messages, list):
+            return [
+                AgentService._sanitize_messages_for_conversation_history(item)
+                for item in messages
+            ]
+        if isinstance(messages, dict):
+            if messages.get("type") == "image_url":
+                return {
+                    "type": "text",
+                    "text": "[image payload omitted from conversation history]",
+                }
+            return {
+                key: AgentService._sanitize_messages_for_conversation_history(value)
+                for key, value in messages.items()
+            }
+        if isinstance(messages, str) and messages.startswith("data:image/"):
+            return "[omitted-base64-image-url]"
+        return messages
 
     @staticmethod
     def _vision_message_for_tool_result(

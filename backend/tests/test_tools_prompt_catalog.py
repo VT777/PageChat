@@ -26,4 +26,5 @@ def test_agent_prompt_prefers_navigation_tools_over_raw_retrieval() -> None:
     assert "browse_documents -> inspect each structure" in prompt
     assert "find_related_documents only to identify candidate documents" not in prompt
     assert "call this first" not in prompt
+    assert "not as final evidence" in prompt
     assert "visual pages intentionally omit OCR text" in prompt

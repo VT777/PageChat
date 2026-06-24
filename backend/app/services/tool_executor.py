@@ -14,10 +14,14 @@ from app.services.folder_service import FolderService
 from app.services.cache_service import cache_service
 from app.services.table_analysis_service import TableAnalysisService
 from app.services.source_anchor_resolver import resolve_source_anchor
+from app.core.config import DATA_DIR, INDEXES_DIR
 
 
 MAX_PAGE_CONTENT_PAGES = 10
 MAX_TEXT_PAGE_CHARS = 4000
+MAX_STRUCTURE_ITEMS_PER_PART = 80
+DEFAULT_BROWSE_PAGE_SIZE = 20
+INDEX_ASSET_ROOTS = (INDEXES_DIR, DATA_DIR / "index_assets")
 
 
 # ============================================================
@@ -203,12 +207,20 @@ AGENT_TOOLS = [
                         "type": "string",
                         "description": "Document ID",
                     },
+                    "doc_name": {
+                        "type": "string",
+                        "description": "Document name when doc_id is not available.",
+                    },
+                    "folder_id": {
+                        "type": "string",
+                        "description": "Folder ID used with doc_name disambiguation.",
+                    },
                     "page": {
                         "type": "integer",
                         "description": "1-based page number.",
                     },
                 },
-                "required": ["doc_id", "page"],
+                "required": ["page"],
             },
         },
     },
@@ -332,6 +344,46 @@ class ToolExecutor:
             return True
         return doc_id in self.allowed_doc_ids
 
+    @staticmethod
+    def _path_is_under(path: Path, root: Path) -> bool:
+        try:
+            path.resolve().relative_to(root.resolve())
+            return True
+        except Exception:
+            return False
+
+    @classmethod
+    def _is_controlled_asset_path(cls, storage_path: Path) -> bool:
+        return any(cls._path_is_under(storage_path, root) for root in INDEX_ASSET_ROOTS)
+
+    @staticmethod
+    def _browse_offset_to_page(offset: str) -> int:
+        try:
+            return max(int(offset or "1"), 1)
+        except Exception:
+            return 1
+
+    @staticmethod
+    def _doc_matches_folder_scope(
+        doc,
+        folder_id: Optional[str],
+        recursive: bool,
+        folder_path: Optional[str] = None,
+    ) -> bool:
+        folder_id = ToolExecutor._normalize_root_folder_id(folder_id)
+        if not folder_id:
+            return True
+        if getattr(doc, "folder_id", None) == folder_id:
+            return True
+        if not recursive:
+            return False
+        doc_folder_path = getattr(doc, "folder_path", None) or ""
+        if folder_path and doc_folder_path:
+            return doc_folder_path == folder_path or doc_folder_path.startswith(
+                f"{folder_path}/"
+            )
+        return False
+
     async def _resolve_document(
         self,
         doc_id: Optional[str] = None,
@@ -372,7 +424,9 @@ class ToolExecutor:
         return None if folder_id in {None, "", "root", "null", "undefined"} else folder_id
 
     @staticmethod
-    def _parse_page_request(page_nums: Any = None, pages: Any = None) -> List[int]:
+    def _parse_page_request(
+        page_nums: Any = None, pages: Any = None, limit: bool = True
+    ) -> List[int]:
         raw = pages if pages is not None else page_nums
         if raw is None:
             return []
@@ -400,7 +454,7 @@ class ToolExecutor:
         for page in values:
             if page > 0 and page not in normalized:
                 normalized.append(page)
-        return normalized[:MAX_PAGE_CONTENT_PAGES]
+        return normalized[:MAX_PAGE_CONTENT_PAGES] if limit else normalized
 
     @staticmethod
     def _page_range_label(pages: List[int]) -> str:
@@ -425,17 +479,31 @@ class ToolExecutor:
             "page_count": doc.page_count,
         }
 
+    @staticmethod
+    def _paginate_structure(
+        structure: Any, part: int
+    ) -> tuple[Any, bool, int]:
+        if not isinstance(structure, list):
+            return structure, False, 1
+        safe_part = max(int(part or 1), 1)
+        start = (safe_part - 1) * MAX_STRUCTURE_ITEMS_PER_PART
+        end = start + MAX_STRUCTURE_ITEMS_PER_PART
+        return structure[start:end], end < len(structure), safe_part
+
     async def execute(self, tool_name: str, arguments: dict) -> dict:
         """执行工具并返回结果"""
         try:
             if tool_name in {
                 "get_document_structure",
                 "get_page_content",
+                "get_document_image",
                 "get_page_image",
                 "search_within_document",
             }:
                 doc_id = arguments.get("doc_id")
                 if doc_id and not self._is_doc_allowed(doc_id):
+                    if tool_name == "get_document_image":
+                        return {"success": False, "error": "文档不存在或无访问权限"}
                     return {"error": "文档不存在或无访问权限"}
 
             if tool_name == "view_folder_structure":
@@ -483,15 +551,18 @@ class ToolExecutor:
 
         cached_toc = cache_service.get_structure(self.user_id, doc_id)
         if cached_toc is not None and not compact:
+            paged_toc, has_more_parts, safe_part = self._paginate_structure(
+                cached_toc, part
+            )
             return {
                 "success": True,
                 "doc_id": doc_id,
                 "doc_name": doc.original_name,
                 "file_type": doc.file_type,
                 "total_pages": doc.page_count,
-                "part": int(part or 1),
-                "has_more_parts": False,
-                "structure": cached_toc,
+                "part": safe_part,
+                "has_more_parts": has_more_parts,
+                "structure": paged_toc,
                 "cache_hit": True,
             }
 
@@ -512,19 +583,24 @@ class ToolExecutor:
             toc = self._extract_structure(nodes, doc.file_type)
             cache_service.set_structure(self.user_id, doc_id, toc)
 
+        paged_toc, has_more_parts, safe_part = self._paginate_structure(toc, part)
         result = {
             "success": True,
             "doc_id": doc_id,
             "doc_name": doc.original_name,
             "file_type": doc.file_type,
             "total_pages": doc.page_count,
-            "part": int(part or 1),
-            "has_more_parts": False,
-            "structure": toc,
+            "part": safe_part,
+            "has_more_parts": has_more_parts,
+            "structure": paged_toc,
             "cache_hit": False,
             "next_steps": {
                 "summary": "Document structure retrieved successfully.",
-                "options": ["Use get_page_content() to read specific source pages."],
+                "options": (
+                    ["Use get_document_structure() with the next part before reading pages."]
+                    if has_more_parts
+                    else ["Use get_page_content() to read specific source pages."]
+                ),
             },
         }
         if compact:
@@ -568,9 +644,13 @@ class ToolExecutor:
         folder_id: Optional[str] = None,
     ) -> dict:
         """读取页面内容。图片页只返回图片引用，不返回 OCR/正文全文。"""
-        page_numbers = self._parse_page_request(page_nums=page_nums, pages=pages)
+        requested_page_numbers = self._parse_page_request(
+            page_nums=page_nums, pages=pages, limit=False
+        )
+        page_numbers = requested_page_numbers[:MAX_PAGE_CONTENT_PAGES]
         if not page_numbers:
             return {"status": "error", "data": {}, "error": "pages is required"}
+        request_truncated = len(requested_page_numbers) > len(page_numbers)
 
         doc, error = await self._resolve_document(doc_id, doc_name, folder_id)
         if error:
@@ -630,6 +710,14 @@ class ToolExecutor:
                 "auto_retry": "基于当前页面内容组织答案",
                 "summary": "文本内容获取成功",
             }
+        if request_truncated:
+            next_steps["options"].append(
+                f"本次最多返回 {MAX_PAGE_CONTENT_PAGES} 页，请继续请求后续页"
+            )
+            next_steps["continuation_hint"] = (
+                f"继续调用 get_page_content(pages={page_numbers[-1] + 1}-...)"
+            )
+            next_steps["summary"] += "，请求页范围已截断"
 
         return {
             "status": "success",
@@ -639,10 +727,11 @@ class ToolExecutor:
                 "content": content,
                 "pages": content,
                 "total_pages": doc.page_count,
-                "requested_pages": self._page_range_label(page_numbers),
+                "requested_pages": self._page_range_label(requested_page_numbers),
                 "returned_pages": self._page_range_label(
                     [p["page"] for p in content if "error" not in p]
                 ),
+                "request_truncated": request_truncated,
                 "total_requested": len(page_numbers),
                 "total_returned": len([p for p in content if "error" not in p]),
                 "has_errors": any("error" in p for p in content),
@@ -858,6 +947,8 @@ class ToolExecutor:
     ) -> dict:
         """读取索引阶段持久化的嵌入图片；旧 doc_id/page_num 调用转到 get_page_image。"""
         if not image_path and doc_id:
+            if not self._is_doc_allowed(doc_id):
+                return {"success": False, "error": "文档不存在或无访问权限"}
             return await self._get_page_image(doc_id=doc_id, page=page or page_num)
         if not image_path:
             return {"success": False, "error": "image_path is required"}
@@ -867,6 +958,8 @@ class ToolExecutor:
             try:
                 _, rest = image_path.split("://", 1)
                 fallback_doc_id, fallback_page = rest.strip("/").split("/", 1)
+                if not self._is_doc_allowed(fallback_doc_id):
+                    return {"success": False, "error": "文档不存在或无访问权限"}
                 return await self._get_page_image(
                     doc_id=fallback_doc_id, page=int(fallback_page)
                 )
@@ -891,6 +984,12 @@ class ToolExecutor:
                         "error": "Indexed image asset is missing",
                         "image_path": image_path,
                     }
+                if not self._is_controlled_asset_path(storage_path):
+                    return {
+                        "success": False,
+                        "error": "Indexed image asset access denied",
+                        "image_path": image_path,
+                    }
                 data = base64.b64encode(storage_path.read_bytes()).decode("ascii")
                 mime_type = (
                     image.get("mimeType")
@@ -912,12 +1011,20 @@ class ToolExecutor:
 
         return {"success": False, "error": "Image not found or access denied"}
 
-    async def _get_page_image(self, doc_id: str, page: Optional[int] = None, page_num: Optional[int] = None) -> dict:
+    async def _get_page_image(
+        self,
+        doc_id: Optional[str] = None,
+        page: Optional[int] = None,
+        page_num: Optional[int] = None,
+        doc_name: Optional[str] = None,
+        folder_id: Optional[str] = None,
+    ) -> dict:
         """获取指定页面的整页图片（base64格式）- 视觉 fallback。"""
         page_num = int(page if page is not None else page_num or 0)
-        doc = await self.document_service.get_document(doc_id, user_id=self.user_id)
-        if not doc:
-            return {"status": "error", "data": {}, "error": f"文档 {doc_id} 不存在"}
+        doc, error = await self._resolve_document(doc_id, doc_name, folder_id)
+        if error:
+            return {"status": "error", "data": {}, **error}
+        doc_id = doc.id
 
         # 检查页码有效性
         if doc.page_count and (page_num < 1 or page_num > doc.page_count):
@@ -1032,6 +1139,14 @@ class ToolExecutor:
             docs = [doc for doc in docs if doc.id in explicit_doc_ids]
         doc_map = {doc.id: doc for doc in docs}
         scoped_doc_ids = list(doc_map.keys())
+        scope_folder_path = None
+        if folder_id:
+            for doc in docs:
+                if getattr(doc, "folder_id", None) == folder_id and getattr(
+                    doc, "folder_path", None
+                ):
+                    scope_folder_path = doc.folder_path
+                    break
         search_allowed_doc_ids = (
             scoped_doc_ids
             if self.allowed_doc_ids is not None or explicit_doc_ids
@@ -1059,8 +1174,14 @@ class ToolExecutor:
                 seen.add(result.doc_id)
                 doc = doc_map.get(result.doc_id)
                 if doc is not None:
+                    if not self._doc_matches_folder_scope(
+                        doc, folder_id, recursive, scope_folder_path
+                    ):
+                        continue
                     item = self._compact_document_item(doc)
                 else:
+                    if folder_id:
+                        continue
                     item = {
                         "doc_id": result.doc_id,
                         "name": result.doc_name,
@@ -1076,12 +1197,27 @@ class ToolExecutor:
         elif explicit_doc_ids:
             folders = []
             document_items = [self._compact_document_item(doc) for doc in docs]
+        elif recursive:
+            folders = []
+            if folder_id and not scope_folder_path:
+                folder = await FolderService().get_folder(folder_id, user_id=self.user_id)
+                scope_folder_path = folder.path if folder else None
+            document_items = [
+                self._compact_document_item(doc)
+                for doc in docs
+                if self._doc_matches_folder_scope(
+                    doc, folder_id, True, scope_folder_path
+                )
+            ]
+            has_more = False
+            current_page = 1
         else:
             folder_service = FolderService()
+            page = self._browse_offset_to_page(offset)
             data = await folder_service.get_compact_folder_contents(
                 folder_id=folder_id,
-                page=1,
-                page_size=20,
+                page=page,
+                page_size=DEFAULT_BROWSE_PAGE_SIZE,
                 user_id=self.user_id,
             )
             folders = data.get("child_folders") or []
@@ -1099,17 +1235,25 @@ class ToolExecutor:
                 for doc in (data.get("documents") or [])
                 if self._is_doc_allowed(doc.get("doc_id"))
             ]
+            total_documents = int(data.get("total_documents") or len(document_items))
+            page_size = int(data.get("page_size") or DEFAULT_BROWSE_PAGE_SIZE)
+            current_page = int(data.get("page") or page)
+            has_more = total_documents > current_page * page_size
 
         if sort in {"name", "created_at", "updated_at"} and sort != "relevance":
             document_items.sort(key=lambda item: str(item.get(sort) or item.get("name") or ""))
+
+        if query or explicit_doc_ids:
+            has_more = False
+            current_page = 1
 
         return {
             "success": True,
             "sort": sort or ("relevance" if query else "updated_at"),
             "folders": folders,
             "documents": document_items,
-            "has_more": False,
-            "next_offset": "",
+            "has_more": has_more,
+            "next_offset": str(current_page + 1) if has_more else "",
             "next_steps": {
                 "summary": f"Showing {len(folders)} folder(s) and {len(document_items)} document(s)",
                 "options": [

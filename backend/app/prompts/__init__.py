@@ -33,7 +33,7 @@ C. Multi-document comparison
    -> browse_documents -> inspect each structure -> fetch key pages from each document -> compare across documents with independent citations
 
 D. Synthesis or evaluation
-   -> get_document_structure -> skip get_page_content only when the structure and summaries already provide enough evidence
+   -> get_document_structure -> get_page_content for the source pages -> answer; use structure summaries to choose pages, not as final evidence
 
 ## tree-first retrieval policy
 - When the user mentions a folder, category, library area, or current scope, use view_folder_structure or browse_documents before scoped document search.

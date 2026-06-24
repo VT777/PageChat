@@ -196,15 +196,19 @@ class ChatService:
         docs = await self.document_service.get_indexed_documents(user_id=user_id)
         available_doc_ids = [d.id for d in docs]
 
-        # 前端可指定"优先检索文档"，但会话可访问范围始终是当前用户全部可用文档
+        # 前端可指定文档范围：默认严格限制在选中文档；strict_scope=false 时才扩展到用户库。
         preferred_document_ids: Optional[List[str]] = None
+        requested_document_scope = document_ids is not None
+        valid_ids: List[str] = []
         if document_ids:
             valid_ids = [did for did in document_ids if did in available_doc_ids]
             if valid_ids:
                 preferred_document_ids = valid_ids
 
-        # 可访问范围 = 当前用户全部已索引文档
-        document_ids = available_doc_ids if available_doc_ids else None
+        if requested_document_scope and strict_scope is not False:
+            document_ids = valid_ids
+        else:
+            document_ids = available_doc_ids if available_doc_ids else None
 
         agent = self._get_agent_service()
 
