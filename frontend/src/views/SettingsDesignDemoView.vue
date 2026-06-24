@@ -131,7 +131,7 @@ const themeOptions = [
           </button>
           <div>
             <p>设置</p>
-            <h1>KnowClaw</h1>
+            <h1>PageChat</h1>
           </div>
         </div>
 
@@ -300,10 +300,10 @@ const themeOptions = [
         <section v-else-if="activeSection === 'account'" class="content-body">
           <section class="block">
             <div class="account-card">
-              <div class="avatar">K</div>
+              <div class="avatar">P</div>
               <div>
                 <h3>admin</h3>
-                <p>admin@knowclaw.local</p>
+                <p>admin@pagechat.local</p>
               </div>
               <span class="status-note success">
                 <CheckCircle2 class="h-4 w-4" />

@@ -1,6 +1,7 @@
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
 import { chatApi } from '@/api'
+import { buildConversationExportMarkdown } from '@/ui/pagechatContracts'
 import type {
   StreamEnvelope,
   ThinkingData,
@@ -11,6 +12,12 @@ import type {
 } from '@/types/stream'
 import type { ChatScopeRequest, RetrievalScopeTrace } from '@/types/retrieval'
 import type { SourceAnchor } from '@/types/preview'
+
+export interface DocumentChatContext {
+  id: string
+  label: string
+  type?: 'document' | 'folder'
+}
 
 export interface EvidenceItem {
   docId?: string
@@ -56,8 +63,24 @@ export interface Conversation {
   messageCount: number
 }
 
-const STORAGE_KEY = 'knowclaw_chat_sessions'
-const SESSIONS_DATA_KEY = 'knowclaw_sessions_data'
+interface StoredChatSession {
+  messages?: Message[]
+  conversationId?: string | null
+  documentContexts?: DocumentChatContext[]
+  timestamp?: number
+}
+
+interface StoredChatSessions {
+  lastActiveSessionId: string | null
+  sessions: Record<string, StoredChatSession>
+}
+
+const STORAGE_KEY = 'pagechat_chat_sessions'
+const SESSIONS_DATA_KEY = 'pagechat_sessions_data'
+const DOCUMENT_CONTEXTS_KEY = 'pagechat_document_contexts'
+const DRAFT_COMPOSER_TEXT_KEY = 'pagechat_draft_composer_text'
+const LEGACY_STORAGE_KEY = 'know' + 'claw_chat_sessions'
+const LEGACY_SESSIONS_DATA_KEY = 'know' + 'claw_sessions_data'
 
 let _msgIDCounter = 0
 function _generateMsgID(): string {
@@ -71,32 +94,234 @@ export const useChatStore = defineStore('chat', () => {
   const conversationId = ref<string | null>(null)
   const isLoading = ref(false)
   const rollbackHistory = ref<RollbackState[]>([])
+  const documentContexts = ref<DocumentChatContext[]>([])
+  const draftComposerText = ref('')
   
   // 对话历史记录列表
   const conversations = ref<Conversation[]>([])
   const currentSessionId = ref<string | null>(null)
 
-  // 从localStorage加载会话历史
-  function loadConversationsFromStorage() {
+  function contextType(context: DocumentChatContext): 'document' | 'folder' {
+    return context.type === 'folder' ? 'folder' : 'document'
+  }
+
+  function normalizeDocumentContexts(contexts: DocumentChatContext[]): DocumentChatContext[] {
+    const normalized = contexts
+      .filter((context) => context.id)
+      .map((context) => {
+        const normalized: DocumentChatContext = {
+          id: context.id,
+          label: context.label || context.id,
+        }
+        if (contextType(context) === 'folder') normalized.type = 'folder'
+        return normalized
+      })
+    const byId = new Map<string, DocumentChatContext>()
+    for (const context of normalized) {
+      const existing = byId.get(context.id)
+      if (!existing || context.type === 'folder' || existing.type !== 'folder') {
+        byId.set(context.id, context)
+      }
+    }
+    return Array.from(byId.values())
+  }
+
+  function replaceContextsByType(type: 'document' | 'folder', contexts: DocumentChatContext[]) {
+    const normalized = normalizeDocumentContexts(
+      contexts.map((context) => ({
+        ...context,
+        type,
+      })),
+    )
+    const replacementIds = new Set(normalized.map((context) => context.id))
+    documentContexts.value = [
+      ...documentContexts.value.filter((context) =>
+        contextType(context) !== type && !replacementIds.has(context.id),
+      ),
+      ...normalized,
+    ]
+    if (currentSessionId.value) {
+      saveCurrentSession()
+    } else {
+      persistDraftDocumentContexts()
+    }
+  }
+
+  function persistDraftDocumentContexts() {
     try {
-      const stored = localStorage.getItem(STORAGE_KEY)
+      if (documentContexts.value.length > 0) {
+        localStorage.setItem(DOCUMENT_CONTEXTS_KEY, JSON.stringify(documentContexts.value))
+      } else {
+        localStorage.removeItem(DOCUMENT_CONTEXTS_KEY)
+      }
+    } catch (e) {
+      console.error('Failed to persist document contexts:', e)
+    }
+  }
+
+  function clearPersistedDraftDocumentContexts() {
+    try {
+      localStorage.removeItem(DOCUMENT_CONTEXTS_KEY)
+    } catch (e) {
+      console.error('Failed to clear draft document contexts:', e)
+    }
+  }
+
+  function loadDraftDocumentContexts(): DocumentChatContext[] {
+    try {
+      const stored = localStorage.getItem(DOCUMENT_CONTEXTS_KEY)
+      if (!stored) return []
+      const parsed = JSON.parse(stored)
+      const contexts = Array.isArray(parsed)
+        ? parsed.filter((context): context is DocumentChatContext =>
+          typeof context?.id === 'string' && typeof context?.label === 'string',
+        )
+        : []
+      return normalizeDocumentContexts(contexts)
+    } catch (e) {
+      console.error('Failed to load document contexts:', e)
+      return []
+    }
+  }
+
+  function persistDraftComposerText() {
+    try {
+      const value = draftComposerText.value.trim()
+      if (value.length > 0) {
+        localStorage.setItem(DRAFT_COMPOSER_TEXT_KEY, draftComposerText.value)
+      } else {
+        localStorage.removeItem(DRAFT_COMPOSER_TEXT_KEY)
+      }
+    } catch (e) {
+      console.error('Failed to persist draft composer text:', e)
+    }
+  }
+
+  function clearPersistedDraftComposerText() {
+    try {
+      localStorage.removeItem(DRAFT_COMPOSER_TEXT_KEY)
+    } catch (e) {
+      console.error('Failed to clear draft composer text:', e)
+    }
+  }
+
+  function loadDraftComposerText(): string {
+    try {
+      return localStorage.getItem(DRAFT_COMPOSER_TEXT_KEY) || ''
+    } catch (e) {
+      console.error('Failed to load draft composer text:', e)
+      return ''
+    }
+  }
+
+  function setDraftComposerText(text: string) {
+    draftComposerText.value = text
+    persistDraftComposerText()
+  }
+
+  function clearDraftComposerText() {
+    draftComposerText.value = ''
+    clearPersistedDraftComposerText()
+  }
+
+  function mergeConversationMetadata(primary: Conversation, secondary?: Conversation): Conversation {
+    if (!secondary) return { ...primary }
+    return {
+      id: primary.id,
+      title: primary.title || secondary.title,
+      firstMessage: primary.firstMessage || secondary.firstMessage,
+      timestamp: Math.max(primary.timestamp || 0, secondary.timestamp || 0),
+      messageCount: Math.max(primary.messageCount || 0, secondary.messageCount || 0),
+    }
+  }
+
+  function dedupeConversationsById() {
+    const mergedById = new Map<string, Conversation>()
+    for (const conversation of conversations.value) {
+      const existing = mergedById.get(conversation.id)
+      if (!existing) {
+        mergedById.set(conversation.id, { ...conversation })
+        continue
+      }
+      const newer = (conversation.timestamp || 0) > (existing.timestamp || 0) ? conversation : existing
+      const older = newer === conversation ? existing : conversation
+      mergedById.set(conversation.id, mergeConversationMetadata(newer, older))
+    }
+
+    const seen = new Set<string>()
+    const deduped: Conversation[] = []
+    for (const conversation of conversations.value) {
+      if (seen.has(conversation.id)) continue
+      seen.add(conversation.id)
+      const merged = mergedById.get(conversation.id)
+      if (merged) deduped.push(merged)
+    }
+
+    if (deduped.length !== conversations.value.length) {
+      conversations.value = deduped
+      saveConversationsToStorage()
+    }
+  }
+
+  function parseSessionsData(raw: string | null): StoredChatSessions {
+    if (!raw) {
+      return { lastActiveSessionId: null, sessions: {} }
+    }
+    const parsed = JSON.parse(raw)
+    return {
+      lastActiveSessionId: parsed.lastActiveSessionId || null,
+      sessions: parsed.sessions || {},
+    }
+  }
+
+  function loadStoredSession(sessionId: string): StoredChatSession | null {
+    const sessionsData = localStorage.getItem(SESSIONS_DATA_KEY) || localStorage.getItem(LEGACY_SESSIONS_DATA_KEY)
+    if (!sessionsData) return null
+    const data = parseSessionsData(sessionsData)
+    return data.sessions[sessionId] || null
+  }
+
+  function writeSessionsData(data: StoredChatSessions) {
+    localStorage.setItem(SESSIONS_DATA_KEY, JSON.stringify(data))
+  }
+
+  // 从localStorage加载会话历史
+  function loadConversationsFromStorage(options: { restoreLastActive?: boolean; restoreDraft?: boolean } = {}) {
+    try {
+      const restoreLastActive = options.restoreLastActive ?? true
+      const restoreDraft = options.restoreDraft ?? true
+      let loadedSession = false
+      const stored = localStorage.getItem(STORAGE_KEY) || localStorage.getItem(LEGACY_STORAGE_KEY)
       if (stored) {
         conversations.value = JSON.parse(stored)
+        localStorage.setItem(STORAGE_KEY, stored)
+        dedupeConversationsById()
       }
       
       // 加载所有会话的数据
-      const sessionsData = localStorage.getItem(SESSIONS_DATA_KEY)
+      const sessionsData = localStorage.getItem(SESSIONS_DATA_KEY) || localStorage.getItem(LEGACY_SESSIONS_DATA_KEY)
       if (sessionsData) {
-        const data = JSON.parse(sessionsData)
+        const data = parseSessionsData(sessionsData)
+        localStorage.setItem(SESSIONS_DATA_KEY, sessionsData)
         // 找到最近活跃的会话并加载
         const lastActiveSessionId = data.lastActiveSessionId
-        if (lastActiveSessionId && data.sessions && data.sessions[lastActiveSessionId]) {
+        if (restoreLastActive && lastActiveSessionId && data.sessions && data.sessions[lastActiveSessionId]) {
           const session = data.sessions[lastActiveSessionId]
           messages.value = session.messages || []
           conversationId.value = session.conversationId || null
+          documentContexts.value = Array.isArray(session.documentContexts)
+            ? normalizeDocumentContexts(session.documentContexts)
+            : []
           currentSessionId.value = lastActiveSessionId
+          loadedSession = true
           console.log('Loaded session:', lastActiveSessionId, 'with', messages.value.length, 'messages')
         }
+      }
+      if (restoreDraft && !loadedSession && documentContexts.value.length === 0) {
+        documentContexts.value = loadDraftDocumentContexts()
+      }
+      if (restoreDraft && !loadedSession && draftComposerText.value.length === 0) {
+        draftComposerText.value = loadDraftComposerText()
       }
     } catch (e) {
       console.error('Failed to load conversations from storage:', e)
@@ -118,20 +343,21 @@ export const useChatStore = defineStore('chat', () => {
       if (!currentSessionId.value) return
       
       // 获取现有数据
-      let data: { lastActiveSessionId: string | null; sessions: Record<string, any> } = {
+      let data: StoredChatSessions = {
         lastActiveSessionId: null,
         sessions: {}
       }
       
       const existing = localStorage.getItem(SESSIONS_DATA_KEY)
       if (existing) {
-        data = JSON.parse(existing)
+        data = parseSessionsData(existing)
       }
       
       // 保存当前会话
       data.sessions[currentSessionId.value] = {
         messages: messages.value,
         conversationId: conversationId.value,
+        documentContexts: documentContexts.value,
         timestamp: Date.now()
       }
       
@@ -158,11 +384,13 @@ export const useChatStore = defineStore('chat', () => {
     
     // 检查是否已有当前对话记录
     let currentConv = conversations.value.find(c => c.id === currentSessionId.value)
+    let createdNewSession = false
     
     if (!currentConv) {
       // 如果没有找到对话记录（可能是新会话或ID丢失），创建新的
       const newSessionId = `session-${Date.now()}-${++_msgIDCounter}`
       currentSessionId.value = newSessionId
+      createdNewSession = true
       
       const newConversation: Conversation = {
         id: newSessionId,
@@ -193,6 +421,10 @@ export const useChatStore = defineStore('chat', () => {
     
     // 保存当前会话状态
     saveCurrentSession()
+    if (createdNewSession) {
+      clearPersistedDraftDocumentContexts()
+      clearDraftComposerText()
+    }
   }
 
   function deleteMessage(messageId: string) {
@@ -388,26 +620,60 @@ export const useChatStore = defineStore('chat', () => {
 
       try {
         const sessionsData = localStorage.getItem(SESSIONS_DATA_KEY)
-        if (sessionsData) {
-          const sessionStore = JSON.parse(sessionsData)
-          if (sessionStore.sessions && sessionStore.sessions[oldSessionId]) {
-            sessionStore.sessions[backendConversationId] = sessionStore.sessions[oldSessionId]
-            delete sessionStore.sessions[oldSessionId]
-            sessionStore.lastActiveSessionId = backendConversationId
-            localStorage.setItem(SESSIONS_DATA_KEY, JSON.stringify(sessionStore))
-            console.log('Migrated session from', oldSessionId, 'to', backendConversationId)
-          }
+        const sessionStore = parseSessionsData(sessionsData)
+        const oldSession = sessionStore.sessions[oldSessionId]
+        const existingSession = sessionStore.sessions[backendConversationId]
+        const oldMessages = Array.isArray(oldSession?.messages) ? oldSession.messages : []
+        const existingMessages = Array.isArray(existingSession?.messages) ? existingSession.messages : []
+        const activeMessages = messages.value.length > 0 ? messages.value : oldMessages
+        const activeDocumentContexts = documentContexts.value.length > 0
+          ? documentContexts.value
+          : Array.isArray(oldSession?.documentContexts)
+            ? oldSession.documentContexts
+            : Array.isArray(existingSession?.documentContexts)
+              ? existingSession.documentContexts
+              : []
+
+        sessionStore.sessions[backendConversationId] = {
+          ...existingSession,
+          ...oldSession,
+          messages: oldMessages.length > 0
+            ? oldMessages
+            : activeMessages.length > 0
+              ? activeMessages
+              : existingMessages,
+          conversationId: backendConversationId,
+          documentContexts: activeDocumentContexts,
+          timestamp: Date.now(),
         }
+        delete sessionStore.sessions[oldSessionId]
+        sessionStore.lastActiveSessionId = backendConversationId
+        writeSessionsData(sessionStore)
+        console.log('Migrated session from', oldSessionId, 'to', backendConversationId)
       } catch (e) {
         console.error('Failed to migrate session:', e)
       }
 
       const convIndex = conversations.value.findIndex(c => c.id === oldSessionId)
+      const existingIndex = conversations.value.findIndex(c => c.id === backendConversationId)
       if (convIndex !== -1) {
-        conversations.value[convIndex].id = backendConversationId
+        const currentConversation: Conversation = {
+          ...conversations.value[convIndex],
+          id: backendConversationId,
+          timestamp: Math.max(conversations.value[convIndex].timestamp || 0, Date.now()),
+          messageCount: Math.max(conversations.value[convIndex].messageCount || 0, messages.value.length),
+        }
+        const existingConversation = existingIndex !== -1 ? conversations.value[existingIndex] : undefined
+        const mergedConversation = mergeConversationMetadata(currentConversation, existingConversation)
+        conversations.value[convIndex] = mergedConversation
+        if (existingIndex !== -1 && existingIndex !== convIndex) {
+          conversations.value.splice(existingIndex, 1)
+        }
+        saveConversationsToStorage()
       }
     } else if (!currentSessionId.value) {
       currentSessionId.value = backendConversationId
+      saveCurrentSession()
     }
   }
 
@@ -524,16 +790,86 @@ export const useChatStore = defineStore('chat', () => {
     conversationId.value = null
     currentSessionId.value = null
     rollbackHistory.value = []
+    documentContexts.value = []
+    clearPersistedDraftDocumentContexts()
+    clearDraftComposerText()
     // 不调用 saveCurrentSession，因为清空意味着要新建对话
   }
 
+  function setDocumentContexts(contexts: DocumentChatContext[]) {
+    replaceContextsByType('document', contexts)
+  }
+
+  function setFolderContexts(contexts: DocumentChatContext[]) {
+    replaceContextsByType('folder', contexts)
+  }
+
+  function clearDocumentContexts() {
+    replaceContextsByType('document', [])
+  }
+
+  function clearFolderContexts() {
+    replaceContextsByType('folder', [])
+  }
+
+  function startDraftWithDocumentContexts(contexts: DocumentChatContext[]) {
+    if (currentSessionId.value && messages.value.length > 0) {
+      saveCurrentSession()
+    }
+    messages.value = []
+    conversationId.value = null
+    currentSessionId.value = null
+    rollbackHistory.value = []
+    documentContexts.value = normalizeDocumentContexts(contexts)
+    persistDraftDocumentContexts()
+  }
+
   // 加载指定对话
-  function loadConversation(conversationId: string) {
-    const conversation = conversations.value.find(c => c.id === conversationId)
+  function attachDocumentContextsToCurrentChat(contexts: DocumentChatContext[]) {
+    setDocumentContexts(contexts)
+  }
+
+  function startEmptyDraft() {
+    if (currentSessionId.value && messages.value.length > 0) {
+      saveCurrentSession()
+    }
+    messages.value = []
+    conversationId.value = null
+    currentSessionId.value = null
+    rollbackHistory.value = []
+    documentContexts.value = []
+    clearPersistedDraftDocumentContexts()
+    clearDraftComposerText()
+  }
+
+  function openDraftChat() {
+    if (currentSessionId.value && messages.value.length > 0) {
+      saveCurrentSession()
+    }
+    messages.value = []
+    conversationId.value = null
+    currentSessionId.value = null
+    rollbackHistory.value = []
+    documentContexts.value = loadDraftDocumentContexts()
+    draftComposerText.value = loadDraftComposerText()
+  }
+
+  function loadConversation(sessionId: string) {
+    const conversation = conversations.value.find(c => c.id === sessionId)
     if (!conversation) return false
 
     // 如果是当前对话，不做任何事
-    if (currentSessionId.value === conversationId) return true
+    if (currentSessionId.value === sessionId) {
+      try {
+        const session = loadStoredSession(sessionId)
+        if (session) {
+          conversationId.value = session.conversationId || null
+        }
+      } catch (e) {
+        console.error('Failed to restore current conversation id:', e)
+      }
+      return true
+    }
 
     // 保存当前会话（如果有）
     if (messages.value.length > 0) {
@@ -541,19 +877,20 @@ export const useChatStore = defineStore('chat', () => {
     }
 
     // 加载新对话
-    currentSessionId.value = conversationId
+    currentSessionId.value = sessionId
 
     // 尝试从新的存储结构中恢复该对话的完整消息
     try {
-      const sessionsData = localStorage.getItem(SESSIONS_DATA_KEY)
-      if (sessionsData) {
-        const data = JSON.parse(sessionsData)
-        if (data.sessions && data.sessions[conversationId] && data.sessions[conversationId].messages) {
-          messages.value = data.sessions[conversationId].messages
+      const session = loadStoredSession(sessionId)
+      if (session && session.messages) {
+          messages.value = session.messages
+          conversationId.value = session.conversationId || null
+          documentContexts.value = Array.isArray(session.documentContexts)
+            ? normalizeDocumentContexts(session.documentContexts)
+            : []
           saveCurrentSession()
-          console.log('Loaded conversation:', conversationId, 'with', messages.value.length, 'messages')
+          console.log('Loaded conversation:', sessionId, 'with', messages.value.length, 'messages')
           return true
-        }
       }
     } catch (e) {
       console.error('Failed to load conversation:', e)
@@ -569,10 +906,41 @@ export const useChatStore = defineStore('chat', () => {
       isLoading: false,
       timestamp: conversation.timestamp,
     }]
+    conversationId.value = null
+    documentContexts.value = []
 
     saveCurrentSession()
-    console.log('Created new conversation from first message:', conversationId)
+    console.log('Created new conversation from first message:', sessionId)
     return true
+  }
+
+  function messagesForConversationExport(conversationId: string): Message[] {
+    if (currentSessionId.value === conversationId) {
+      return messages.value
+    }
+    try {
+      const sessionsData = localStorage.getItem(SESSIONS_DATA_KEY) || localStorage.getItem(LEGACY_SESSIONS_DATA_KEY)
+      if (!sessionsData) return []
+      const data = JSON.parse(sessionsData)
+      const sessionMessages = data.sessions?.[conversationId]?.messages
+      return Array.isArray(sessionMessages) ? sessionMessages : []
+    } catch (e) {
+      console.error('Failed to load conversation export:', e)
+      return []
+    }
+  }
+
+  function exportConversationMarkdown(conversationId: string, exportedAt = new Date().toISOString()) {
+    const conversation = conversations.value.find(c => c.id === conversationId)
+    return buildConversationExportMarkdown({
+      title: conversation?.title || 'PageChat Conversation',
+      exportedAt,
+      messages: messagesForConversationExport(conversationId).map((message) => ({
+        role: message.role,
+        content: message.content,
+        toolSteps: message.toolSteps,
+      })),
+    })
   }
 
   // 删除对话记录
@@ -666,6 +1034,8 @@ export const useChatStore = defineStore('chat', () => {
     conversationId,
     isLoading,
     rollbackHistory,
+    documentContexts,
+    draftComposerText,
     conversations,
     currentSessionId,
     addUserMessage,
@@ -673,6 +1043,16 @@ export const useChatStore = defineStore('chat', () => {
     updateLastMessage,
     sendMessage,
     clearMessages,
+    setDocumentContexts,
+    setFolderContexts,
+    clearDocumentContexts,
+    clearFolderContexts,
+    startDraftWithDocumentContexts,
+    attachDocumentContextsToCurrentChat,
+    startEmptyDraft,
+    openDraftChat,
+    setDraftComposerText,
+    clearDraftComposerText,
     handleEnvelope,
     deleteMessage,
     editMessage,
@@ -682,6 +1062,7 @@ export const useChatStore = defineStore('chat', () => {
     clearRollbackHistory,
     loadConversationsFromStorage,
     loadConversation,
+    exportConversationMarkdown,
     deleteConversation,
     saveCurrentSession,
     saveConversationsToStorage,

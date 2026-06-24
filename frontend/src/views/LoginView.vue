@@ -1,15 +1,24 @@
 <script setup lang="ts">
 import { ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
-import { User, Lock, Mail, ArrowRight, Sparkles, Shield } from 'lucide-vue-next'
+import {
+  ArrowRight,
+  FileText,
+  Lock,
+  Mail,
+  MessageSquare,
+  Search,
+  User,
+} from 'lucide-vue-next'
 import { useUserStore } from '@/stores/user'
+import { PRODUCT_NAME } from '@/ui/pagechatContracts'
 
 const router = useRouter()
 const userStore = useUserStore()
 const isLogin = ref(true)
 const error = ref('')
+const showPreviewEntry = import.meta.env.DEV
 
-// 切换登录/注册时清除错误
 watch(isLogin, () => {
   error.value = ''
 })
@@ -17,30 +26,27 @@ watch(isLogin, () => {
 const loginForm = ref({
   email: '',
   password: '',
-  remember: false
+  remember: false,
 })
 
 const registerForm = ref({
   username: '',
   email: '',
   password: '',
-  confirmPassword: ''
+  confirmPassword: '',
 })
 
-const handleLogin = async () => {
+async function handleLogin() {
   error.value = ''
   try {
-    console.log('Attempting login...')
     await userStore.login(loginForm.value.email, loginForm.value.password)
-    console.log('Login successful, redirecting...')
     router.push('/')
   } catch (err: any) {
-    console.error('Login error:', err)
     error.value = err.message || '登录失败'
   }
 }
 
-const handleRegister = async () => {
+async function handleRegister() {
   if (registerForm.value.password !== registerForm.value.confirmPassword) {
     error.value = '两次输入的密码不一致'
     return
@@ -51,7 +57,7 @@ const handleRegister = async () => {
     await userStore.register(
       registerForm.value.username,
       registerForm.value.email,
-      registerForm.value.password
+      registerForm.value.password,
     )
     isLogin.value = true
     loginForm.value.email = registerForm.value.email
@@ -59,240 +65,564 @@ const handleRegister = async () => {
     error.value = err.message || '注册失败'
   }
 }
+
+function enterPreview() {
+  localStorage.setItem('token', 'dev-preview-token')
+  localStorage.setItem('user', JSON.stringify({ username: 'Preview' }))
+  router.push('/')
+}
 </script>
 
 <template>
-  <div class="min-h-screen flex">
-    <!-- 左侧品牌区域 -->
-    <div class="hidden lg:flex lg:w-1/2 relative overflow-hidden">
-      <!-- 渐变背景 -->
-      <div class="absolute inset-0 bg-gradient-to-br from-indigo-900 via-purple-900 to-slate-900"></div>
-      
-      <!-- 动态光效 -->
-      <div class="absolute inset-0">
-        <div class="absolute top-1/4 left-1/4 w-96 h-96 bg-indigo-500/30 rounded-full blur-3xl animate-pulse"></div>
-        <div class="absolute bottom-1/4 right-1/4 w-80 h-80 bg-purple-500/20 rounded-full blur-3xl animate-pulse" style="animation-delay: 1s;"></div>
-        <div class="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-64 h-64 bg-blue-500/20 rounded-full blur-3xl animate-pulse" style="animation-delay: 2s;"></div>
-      </div>
-      
-      <!-- 装饰网格 -->
-      <div class="absolute inset-0 opacity-10" style="background-image: radial-gradient(circle at 1px 1px, white 1px, transparent 0); background-size: 40px 40px;"></div>
-      
-      <!-- 品牌内容 -->
-      <div class="relative z-10 flex flex-col justify-center px-16">
-        <div class="flex items-center gap-3 mb-8">
-          <div class="w-14 h-14 rounded-2xl bg-gradient-to-br from-indigo-400 to-purple-500 flex items-center justify-center shadow-2xl shadow-indigo-500/30">
-            <Sparkles class="w-7 h-7 text-white" />
+  <main class="login-page">
+    <section class="product-preview">
+      <div class="preview-shell">
+        <aside class="preview-sidebar">
+          <div class="preview-brand">
+            <span>P</span>
+            <strong>{{ PRODUCT_NAME }}</strong>
           </div>
-          <h1 class="text-4xl font-bold text-white tracking-tight">KnowClaw</h1>
-        </div>
-        
-        <h2 class="text-5xl font-bold text-white mb-6 leading-tight">
-          智能知识<br/>
-          <span class="text-transparent bg-clip-text bg-gradient-to-r from-indigo-300 to-purple-300">问答平台</span>
-        </h2>
-        
-        <p class="text-indigo-100/80 text-lg mb-12 max-w-md leading-relaxed">
-          基于先进 AI 技术，让知识检索更智能、更高效。支持文档管理、智能问答、知识库构建。
-        </p>
-        
-        <!-- 特性展示 -->
-        <div class="space-y-4">
-          <div class="flex items-center gap-4 text-indigo-100/90">
-            <div class="w-10 h-10 rounded-xl bg-white/10 backdrop-blur-sm flex items-center justify-center">
-              <Shield class="w-5 h-5" />
-            </div>
-            <span>数据安全隔离，隐私保护</span>
+          <div class="preview-nav active">
+            <MessageSquare />
+            Chat
           </div>
-          <div class="flex items-center gap-4 text-indigo-100/90">
-            <div class="w-10 h-10 rounded-xl bg-white/10 backdrop-blur-sm flex items-center justify-center">
-              <Sparkles class="w-5 h-5" />
+          <div class="preview-nav">
+            <FileText />
+            Documents
+          </div>
+        </aside>
+
+        <div class="preview-main">
+          <header>
+            <strong>Chat</strong>
+            <span>TT</span>
+          </header>
+          <div class="preview-conversation">
+            <div class="preview-step">
+              <Search />
+              <span>Browsed documents · 3 documents</span>
             </div>
-            <span>AI 驱动的智能问答</span>
+            <div class="preview-answer">
+              <p>根据目录结构，核心风险集中在现金流、续约条款和附件证明三处。</p>
+              <div>
+                <span>Q2 Report p.12</span>
+                <span>Contract p.4</span>
+              </div>
+            </div>
+          </div>
+          <div class="preview-composer">
+            <span>Ask PageChat about your documents...</span>
+            <button type="button">
+              <ArrowRight />
+            </button>
           </div>
         </div>
       </div>
-    </div>
-    
-    <!-- 右侧表单区域 -->
-    <div class="w-full lg:w-1/2 flex items-center justify-center p-8 relative">
-      <!-- 背景 -->
-      <div class="absolute inset-0 bg-slate-50 dark:bg-slate-950"></div>
-      <div class="absolute inset-0 bg-gradient-to-br from-indigo-50/50 to-purple-50/50 dark:from-indigo-950/20 dark:to-purple-950/20"></div>
-      
-      <!-- 登录/注册卡片 -->
-      <div class="relative w-full max-w-md">
-        <!-- 移动端 Logo -->
-        <div class="lg:hidden flex items-center justify-center gap-3 mb-8">
-          <div class="w-12 h-12 rounded-xl bg-gradient-to-br from-indigo-500 to-purple-600 flex items-center justify-center">
-            <Sparkles class="w-6 h-6 text-white" />
-          </div>
-          <h1 class="text-2xl font-bold text-slate-900 dark:text-white">KnowClaw</h1>
+    </section>
+
+    <section class="auth-panel">
+      <div class="auth-card">
+        <div class="mobile-brand">
+          <span>P</span>
+          <strong>{{ PRODUCT_NAME }}</strong>
         </div>
-        
-        <div class="bg-white/80 dark:bg-slate-900/80 backdrop-blur-xl rounded-3xl shadow-2xl shadow-indigo-500/10 border border-white/20 dark:border-slate-800 p-8">
-          <!-- 切换标签 -->
-          <div class="flex p-1 bg-slate-100 dark:bg-slate-800 rounded-2xl mb-8">
-            <button
-              @click="isLogin = true"
-              :class="[
-                'flex-1 py-3 px-4 rounded-xl text-sm font-medium transition-all duration-300',
-                isLogin 
-                  ? 'bg-white dark:bg-slate-700 text-indigo-600 dark:text-indigo-400 shadow-lg shadow-indigo-500/10' 
-                  : 'text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-300'
-              ]"
-            >
+
+        <div class="auth-heading">
+          <h1>{{ isLogin ? '欢迎回来' : '创建账号' }}</h1>
+          <p>{{ isLogin ? '登录后继续管理文档和对话。' : '创建 PageChat 账号，开始构建可追溯的文档问答工作区。' }}</p>
+        </div>
+
+        <div class="auth-tabs">
+          <button :class="{ active: isLogin }" type="button" @click="isLogin = true">登录</button>
+          <button :class="{ active: !isLogin }" type="button" @click="isLogin = false">注册</button>
+        </div>
+
+        <p v-if="error" class="auth-error">{{ error }}</p>
+
+        <form v-if="isLogin" class="auth-form" @submit.prevent="handleLogin">
+          <label>
+            电子邮箱
+            <span>
+              <Mail />
+              <input v-model="loginForm.email" type="email" autocomplete="email" placeholder="you@example.com" />
+            </span>
+          </label>
+
+          <label>
+            密码
+            <span>
+              <Lock />
+              <input v-model="loginForm.password" type="password" autocomplete="current-password" placeholder="••••••••" />
+            </span>
+          </label>
+
+          <div class="form-row">
+            <label class="remember">
+              <input v-model="loginForm.remember" type="checkbox" />
+              记住我
+            </label>
+            <button class="link-button" type="button">忘记密码？</button>
+          </div>
+
+          <button class="submit-button" type="submit" :disabled="userStore.isLoading">
+            <span v-if="userStore.isLoading" class="spinner" />
+            <template v-else>
               登录
-            </button>
-            <button
-              @click="isLogin = false"
-              :class="[
-                'flex-1 py-3 px-4 rounded-xl text-sm font-medium transition-all duration-300',
-                !isLogin 
-                  ? 'bg-white dark:bg-slate-700 text-indigo-600 dark:text-indigo-400 shadow-lg shadow-indigo-500/10' 
-                  : 'text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-300'
-              ]"
-            >
-              注册
-            </button>
-          </div>
-          
-          <!-- 错误提示 -->
-          <div v-if="error" class="mb-4 p-3 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-xl text-red-600 dark:text-red-400 text-sm text-center">
-            {{ error }}
-          </div>
-          
-          <!-- 登录表单 -->
-          <form v-if="isLogin" @submit.prevent="handleLogin" class="space-y-5">
-            <div class="text-center mb-8">
-              <h2 class="text-2xl font-bold text-slate-900 dark:text-white mb-2">欢迎回来</h2>
-              <p class="text-slate-500 dark:text-slate-400 text-sm">请输入您的账号信息继续</p>
-            </div>
-            
-            <div class="space-y-4">
-              <div class="relative group">
-                <Mail class="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 text-slate-400 group-focus-within:text-indigo-500 transition-colors" />
-                <input
-                  v-model="loginForm.email"
-                  type="email"
-                  placeholder="电子邮箱"
-                  class="w-full pl-12 pr-4 py-4 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 transition-all text-slate-900 dark:text-white placeholder:text-slate-400"
-                />
-              </div>
-              
-              <div class="relative group">
-                <Lock class="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 text-slate-400 group-focus-within:text-indigo-500 transition-colors" />
-                <input
-                  v-model="loginForm.password"
-                  type="password"
-                  placeholder="密码"
-                  class="w-full pl-12 pr-4 py-4 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 transition-all text-slate-900 dark:text-white placeholder:text-slate-400"
-                />
-              </div>
-            </div>
-            
-            <div class="flex items-center justify-between text-sm">
-              <label class="flex items-center gap-2 cursor-pointer group">
-                <input 
-                  v-model="loginForm.remember"
-                  type="checkbox" 
-                  class="w-4 h-4 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500 cursor-pointer"
-                />
-                <span class="text-slate-600 dark:text-slate-400 group-hover:text-slate-800 dark:group-hover:text-slate-200 transition-colors">记住我</span>
-              </label>
-              <a href="#" class="text-indigo-600 dark:text-indigo-400 hover:text-indigo-700 dark:hover:text-indigo-300 font-medium transition-colors">
-                忘记密码？
-              </a>
-            </div>
-            
-            <button
-              type="submit"
-              :disabled="userStore.isLoading"
-              class="w-full py-4 bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-700 hover:to-purple-700 text-white font-semibold rounded-xl shadow-lg shadow-indigo-500/30 hover:shadow-indigo-500/40 transition-all duration-300 flex items-center justify-center gap-2 disabled:opacity-70 disabled:cursor-not-allowed group"
-            >
-              <span v-if="userStore.isLoading" class="w-5 h-5 border-2 border-white/30 border-t-white rounded-full animate-spin"></span>
-              <span v-else>
-                登录
-                <ArrowRight class="inline-block w-4 h-4 ml-1 group-hover:translate-x-1 transition-transform" />
-              </span>
-            </button>
-          </form>
-          
-          <!-- 注册表单 -->
-          <form v-else @submit.prevent="handleRegister" class="space-y-5">
-            <div class="text-center mb-8">
-              <h2 class="text-2xl font-bold text-slate-900 dark:text-white mb-2">创建账号</h2>
-              <p class="text-slate-500 dark:text-slate-400 text-sm">开始您的智能知识之旅</p>
-            </div>
-            
-            <div class="space-y-4">
-              <div class="relative group">
-                <User class="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 text-slate-400 group-focus-within:text-indigo-500 transition-colors" />
-                <input
-                  v-model="registerForm.username"
-                  type="text"
-                  placeholder="用户名"
-                  class="w-full pl-12 pr-4 py-4 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 transition-all text-slate-900 dark:text-white placeholder:text-slate-400"
-                />
-              </div>
-              
-              <div class="relative group">
-                <Mail class="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 text-slate-400 group-focus-within:text-indigo-500 transition-colors" />
-                <input
-                  v-model="registerForm.email"
-                  type="email"
-                  placeholder="电子邮箱"
-                  class="w-full pl-12 pr-4 py-4 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 transition-all text-slate-900 dark:text-white placeholder:text-slate-400"
-                />
-              </div>
-              
-              <div class="relative group">
-                <Lock class="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 text-slate-400 group-focus-within:text-indigo-500 transition-colors" />
-                <input
-                  v-model="registerForm.password"
-                  type="password"
-                  placeholder="密码"
-                  class="w-full pl-12 pr-4 py-4 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 transition-all text-slate-900 dark:text-white placeholder:text-slate-400"
-                />
-              </div>
-              
-              <div class="relative group">
-                <Lock class="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 text-slate-400 group-focus-within:text-indigo-500 transition-colors" />
-                <input
-                  v-model="registerForm.confirmPassword"
-                  type="password"
-                  placeholder="确认密码"
-                  class="w-full pl-12 pr-4 py-4 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 transition-all text-slate-900 dark:text-white placeholder:text-slate-400"
-                />
-              </div>
-            </div>
-            
-            <div class="text-xs text-slate-500 dark:text-slate-400 text-center">
-              注册即表示您同意我们的
-              <a href="#" class="text-indigo-600 dark:text-indigo-400 hover:underline">服务条款</a>
-              和
-              <a href="#" class="text-indigo-600 dark:text-indigo-400 hover:underline">隐私政策</a>
-            </div>
-            
-            <button
-              type="submit"
-              :disabled="userStore.isLoading"
-              class="w-full py-4 bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-700 hover:to-purple-700 text-white font-semibold rounded-xl shadow-lg shadow-indigo-500/30 hover:shadow-indigo-500/40 transition-all duration-300 flex items-center justify-center gap-2 disabled:opacity-70 disabled:cursor-not-allowed group"
-            >
-              <span v-if="userStore.isLoading" class="w-5 h-5 border-2 border-white/30 border-t-white rounded-full animate-spin"></span>
-              <span v-else>
-                创建账号
-                <ArrowRight class="inline-block w-4 h-4 ml-1 group-hover:translate-x-1 transition-transform" />
-              </span>
-            </button>
-          </form>
-        </div>
-        
-        <!-- 底部版权 -->
-        <p class="text-center text-slate-400 dark:text-slate-600 text-sm mt-8">
-          © 2025 KnowClaw. All rights reserved.
-        </p>
+              <ArrowRight />
+            </template>
+          </button>
+
+          <button v-if="showPreviewEntry" class="preview-button" type="button" @click="enterPreview">
+            进入预览
+          </button>
+        </form>
+
+        <form v-else class="auth-form" @submit.prevent="handleRegister">
+          <label>
+            用户名
+            <span>
+              <User />
+              <input v-model="registerForm.username" type="text" autocomplete="username" placeholder="TT" />
+            </span>
+          </label>
+
+          <label>
+            电子邮箱
+            <span>
+              <Mail />
+              <input v-model="registerForm.email" type="email" autocomplete="email" placeholder="you@example.com" />
+            </span>
+          </label>
+
+          <label>
+            密码
+            <span>
+              <Lock />
+              <input v-model="registerForm.password" type="password" autocomplete="new-password" placeholder="至少 8 位" />
+            </span>
+          </label>
+
+          <label>
+            确认密码
+            <span>
+              <Lock />
+              <input v-model="registerForm.confirmPassword" type="password" autocomplete="new-password" placeholder="再次输入密码" />
+            </span>
+          </label>
+
+          <button class="submit-button" type="submit" :disabled="userStore.isLoading">
+            <span v-if="userStore.isLoading" class="spinner" />
+            <template v-else>
+              创建账号
+              <ArrowRight />
+            </template>
+          </button>
+
+          <button v-if="showPreviewEntry" class="preview-button" type="button" @click="enterPreview">
+            进入预览
+          </button>
+        </form>
+
+        <p class="auth-footnote">© 2026 {{ PRODUCT_NAME }}</p>
       </div>
-    </div>
-  </div>
+    </section>
+  </main>
 </template>
+
+<style scoped>
+.login-page {
+  display: grid;
+  width: 100vw;
+  height: 100vh;
+  grid-template-columns: minmax(0, 1.08fr) minmax(430px, 0.92fr);
+  overflow: hidden;
+  background: var(--kc-bg);
+  color: var(--kc-text);
+}
+
+.product-preview {
+  display: grid;
+  min-width: 0;
+  place-items: center;
+  padding: 48px;
+}
+
+.preview-shell {
+  display: grid;
+  width: min(820px, 100%);
+  height: min(620px, calc(100vh - 96px));
+  min-height: 0;
+  grid-template-columns: 220px minmax(0, 1fr);
+  overflow: hidden;
+  border: 1px solid rgba(255, 255, 255, 0.78);
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.86);
+  box-shadow: 0 28px 90px rgba(15, 23, 42, 0.13);
+}
+
+.preview-sidebar {
+  border-right: 1px solid var(--kc-border);
+  background: #f8fafc;
+  padding: 18px 14px;
+}
+
+.preview-brand,
+.mobile-brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.preview-brand span,
+.mobile-brand span {
+  display: grid;
+  width: 30px;
+  height: 30px;
+  place-items: center;
+  border: 1px solid rgba(47, 128, 237, 0.22);
+  border-radius: 9px;
+  background: #eaf3ff;
+  color: var(--kc-accent);
+  font-size: 13px;
+  font-weight: 750;
+}
+
+.preview-brand strong,
+.mobile-brand strong {
+  font-size: 15px;
+}
+
+.preview-nav {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  height: 34px;
+  margin-top: 8px;
+  border-radius: var(--kc-radius-md);
+  padding: 0 10px;
+  color: var(--kc-text-secondary);
+  font-size: 13px;
+}
+
+.preview-nav:first-of-type {
+  margin-top: 28px;
+}
+
+.preview-nav.active {
+  background: #eaf3ff;
+  color: #145eb8;
+}
+
+.preview-nav svg,
+.preview-step svg,
+.preview-composer svg,
+.auth-form svg,
+.submit-button svg {
+  width: 16px;
+  height: 16px;
+  stroke-width: 1.85;
+}
+
+.preview-main {
+  display: grid;
+  min-height: 0;
+  grid-template-rows: 54px minmax(0, 1fr) auto;
+}
+
+.preview-main header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  border-bottom: 1px solid var(--kc-border);
+  padding: 0 20px;
+}
+
+.preview-main header span {
+  display: grid;
+  width: 30px;
+  height: 30px;
+  place-items: center;
+  border: 1px solid var(--kc-border);
+  border-radius: 999px;
+  color: var(--kc-text-secondary);
+  font-size: 12px;
+}
+
+.preview-conversation {
+  display: grid;
+  align-content: center;
+  gap: 12px;
+  padding: 42px;
+}
+
+.preview-step {
+  display: inline-flex;
+  width: fit-content;
+  align-items: center;
+  gap: 8px;
+  color: var(--kc-text-tertiary);
+  font-size: 12.5px;
+}
+
+.preview-answer {
+  max-width: 460px;
+  border: 1px solid var(--kc-border-soft);
+  border-radius: var(--kc-radius-lg);
+  background: #fff;
+  padding: 16px;
+}
+
+.preview-answer p {
+  margin: 0;
+  font-size: 13.5px;
+  line-height: 22px;
+}
+
+.preview-answer div {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 12px;
+}
+
+.preview-answer span {
+  border: 1px solid var(--kc-border);
+  border-radius: 999px;
+  padding: 4px 8px;
+  color: var(--kc-text-tertiary);
+  font-size: 11px;
+}
+
+.preview-composer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin: 0 24px 24px;
+  border: 1px solid var(--kc-border);
+  border-radius: 16px;
+  background: #fff;
+  padding: 10px 10px 10px 16px;
+  box-shadow: 0 14px 38px rgba(15, 23, 42, 0.08);
+}
+
+.preview-composer span {
+  color: var(--kc-text-tertiary);
+  font-size: 12.5px;
+}
+
+.preview-composer button {
+  display: grid;
+  width: 32px;
+  height: 32px;
+  place-items: center;
+  border: 0;
+  border-radius: 999px;
+  background: var(--kc-text);
+  color: #fff;
+}
+
+.auth-panel {
+  display: grid;
+  min-width: 0;
+  place-items: center;
+  border-left: 1px solid var(--kc-border);
+  background: rgba(255, 255, 255, 0.72);
+  padding: 48px;
+}
+
+.auth-card {
+  width: min(420px, 100%);
+}
+
+.mobile-brand {
+  display: none;
+  margin-bottom: 24px;
+}
+
+.auth-heading h1 {
+  margin: 0;
+  font-size: 28px;
+  font-weight: 680;
+  line-height: 36px;
+}
+
+.auth-heading p {
+  margin: 6px 0 0;
+  color: var(--kc-text-secondary);
+  font-size: 13px;
+  line-height: 21px;
+}
+
+.auth-tabs {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 4px;
+  margin: 24px 0;
+  border: 1px solid var(--kc-border);
+  border-radius: var(--kc-radius-lg);
+  background: var(--kc-surface-muted);
+  padding: 4px;
+}
+
+.auth-tabs button {
+  height: 34px;
+  border: 0;
+  border-radius: var(--kc-radius-md);
+  background: transparent;
+  color: var(--kc-text-secondary);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.auth-tabs button.active {
+  background: #fff;
+  color: var(--kc-text);
+  box-shadow: 0 4px 12px rgba(15, 23, 42, 0.08);
+}
+
+.auth-form {
+  display: grid;
+  gap: 14px;
+}
+
+.auth-form label {
+  display: grid;
+  gap: 7px;
+  color: var(--kc-text-secondary);
+  font-size: 12px;
+  font-weight: 560;
+}
+
+.auth-form label > span {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 42px;
+  border: 1px solid var(--kc-border);
+  border-radius: var(--kc-radius-md);
+  background: #fff;
+  padding: 0 12px;
+}
+
+.auth-form input {
+  min-width: 0;
+  flex: 1;
+  border: 0;
+  background: transparent;
+  color: var(--kc-text);
+  font-size: 13px;
+  outline: none;
+}
+
+.form-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.remember {
+  display: flex !important;
+  grid-template-columns: unset !important;
+  align-items: center;
+  gap: 8px !important;
+}
+
+.remember input {
+  width: 14px;
+  height: 14px;
+  flex: 0 0 14px;
+}
+
+.link-button {
+  border: 0;
+  background: transparent;
+  color: var(--kc-accent);
+  font-size: 12.5px;
+  font-weight: 600;
+}
+
+.submit-button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  height: 42px;
+  border: 0;
+  border-radius: var(--kc-radius-md);
+  background: var(--kc-text);
+  color: #fff;
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.submit-button:disabled {
+  opacity: 0.55;
+}
+
+.preview-button {
+  height: 38px;
+  border: 1px solid var(--kc-border);
+  border-radius: var(--kc-radius-md);
+  background: #fff;
+  color: var(--kc-text-secondary);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.preview-button:hover {
+  background: var(--kc-surface-muted);
+  color: var(--kc-text);
+}
+
+.auth-error {
+  border: 1px solid #fecaca;
+  border-radius: var(--kc-radius-md);
+  background: #fef2f2;
+  padding: 10px 12px;
+  color: #b91c1c;
+  font-size: 12.5px;
+}
+
+.auth-footnote {
+  margin: 22px 0 0;
+  color: var(--kc-text-tertiary);
+  font-size: 12px;
+}
+
+.spinner {
+  width: 16px;
+  height: 16px;
+  border: 2px solid rgba(255, 255, 255, 0.32);
+  border-top-color: #fff;
+  border-radius: 999px;
+  animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (max-width: 980px) {
+  .login-page {
+    grid-template-columns: 1fr;
+    overflow-y: auto;
+  }
+
+  .product-preview {
+    display: none;
+  }
+
+  .auth-panel {
+    min-height: 100vh;
+    border-left: 0;
+    padding: 32px 22px;
+  }
+
+  .mobile-brand {
+    display: flex;
+  }
+}
+</style>
