@@ -28,8 +28,17 @@ _CONVERSATION_CACHES: Dict[str, Dict[str, Any]] = {}
 # 每个会话的完整消息历史（包含工具调用记录，用于多轮对话记忆）
 _CONVERSATION_MESSAGES: Dict[str, List[Dict[str, Any]]] = {}
 
-# 不缓存的工具列表（需要实时数据的工具）
-_NON_CACHEABLE_TOOLS = {"list_documents", "find_related_documents"}
+# 不缓存的工具列表（需要实时数据或可能携带大 payload 的工具）
+_NON_CACHEABLE_TOOLS = {
+    "list_documents",
+    "list_folder_tree",
+    "list_folder_contents",
+    "view_folder_structure",
+    "browse_documents",
+    "find_related_documents",
+    "get_document_image",
+    "get_page_image",
+}
 
 
 def clear_conversation_cache(conversation_id: Optional[str] = None):
@@ -291,7 +300,9 @@ class AgentService:
             strict_scope=strict_scope,
         )
         for evidence in initial_evidence:
-            tool_results_for_answer.append(evidence)
+            tool_results_for_answer.append(
+                self._sanitize_tool_result_for_client(evidence)
+            )
             messages.append(self._planner_evidence_message(evidence))
 
         # Agent 循环
@@ -469,12 +480,14 @@ class AgentService:
                 if isinstance(result, dict):
                     result.setdefault("elapsed_ms", elapsed_ms)
 
+                client_result = self._sanitize_tool_result_for_client(result)
+
                 # 发送工具结果事件
                 yield self._format_sse(
                     "tool_result",
                     {
                         "tool_name": tool_name,
-                        "result": result,
+                        "result": client_result,
                         "step": step_num,
                         "elapsed_ms": elapsed_ms,
                         "status": "completed",
@@ -491,39 +504,21 @@ class AgentService:
                 }
                 messages.append(tool_message)
 
-                # get_document_image 返回 data.image_base64，需要显式注入多模态消息
-                if tool_name == "get_document_image":
-                    data = result.get("data", {}) if isinstance(result, dict) else {}
-                    image_base64 = data.get("image_base64", "")
-                    if image_base64:
-                        page_num_val = data.get("page_num", "?")
-                        doc_name_val = data.get("doc_name", "文档")
-                        messages.append(
-                            {
-                                "role": "user",
-                                "content": [
-                                    {
-                                        "type": "image_url",
-                                        "image_url": {
-                                            "url": f"data:image/jpeg;base64,{image_base64}"
-                                        },
-                                    },
-                                    {
-                                        "type": "text",
-                                        "text": f"这是{doc_name_val}第{page_num_val}页的完整页面截图。请先逐项识别图中可读文字与列表项，再基于识别结果回答。若只能识别到部分信息，请明确指出不确定项，不要猜测。",
-                                    },
-                                ],
-                            }
-                        )
-                        print(
-                            f"[VISION] Injected image_url for {doc_name_val} p.{page_num_val}, size={len(image_base64)}"
-                        )
+                vision_message = self._vision_message_for_tool_result(
+                    tool_name, result
+                )
+                if vision_message:
+                    messages.append(vision_message)
+                    image_url = vision_message["content"][0]["image_url"]["url"]
+                    print(
+                        f"[VISION] Injected image_url for {tool_name}, size={len(image_url)}"
+                    )
 
                 # 收集工具结果用于最终答案生成
                 tool_results_for_answer.append(
                     {
                         "tool_name": tool_name,
-                        "result": result,
+                        "result": client_result,
                     }
                 )
 
@@ -577,7 +572,9 @@ class AgentService:
             "done",
             {
                 "conversation_id": conversation_id,
-                "tool_results": tool_results_for_answer,
+                "tool_results": self._sanitize_tool_result_for_client(
+                    tool_results_for_answer
+                ),
             },
         )
 
@@ -663,6 +660,10 @@ class AgentService:
     def _sanitize_tool_result_for_history(result: Any) -> Any:
         """移除工具结果中的大体积 base64 字段，避免上下文膨胀。"""
         if isinstance(result, dict):
+            if result.get("type") == "image" and isinstance(result.get("data"), str):
+                cleaned = dict(result)
+                cleaned["data"] = "[omitted-base64-image]"
+                return cleaned
             cleaned = {}
             for k, v in result.items():
                 if k in {"page_image_base64", "image_base64"}:
@@ -672,6 +673,70 @@ class AgentService:
         if isinstance(result, list):
             return [AgentService._sanitize_tool_result_for_history(v) for v in result]
         return result
+
+    @staticmethod
+    def _sanitize_tool_result_for_client(result: Any) -> Any:
+        """移除 SSE 和持久化 UI 状态中的大体积图片字段。"""
+        return AgentService._sanitize_tool_result_for_history(result)
+
+    @staticmethod
+    def _vision_message_for_tool_result(
+        tool_name: str, result: Dict[str, Any]
+    ) -> Optional[Dict[str, Any]]:
+        """Build a multimodal message for visual tools without storing base64 in tool history."""
+        if tool_name not in {"get_document_image", "get_page_image"}:
+            return None
+        if not isinstance(result, dict):
+            return None
+
+        image_base64 = ""
+        mime_type = result.get("mimeType") or "image/jpeg"
+        doc_name = result.get("doc_name") or "文档"
+        page_num = result.get("page") or result.get("page_num")
+        image_path = result.get("image_path")
+
+        data = result.get("data")
+        if isinstance(data, str):
+            image_base64 = data
+        elif isinstance(data, dict):
+            image_base64 = data.get("image_base64") or data.get("data") or ""
+            mime_type = data.get("mimeType") or data.get("image_format") or mime_type
+            if mime_type and "/" not in str(mime_type):
+                mime_type = f"image/{mime_type}"
+            doc_name = data.get("doc_name") or doc_name
+            page_num = data.get("page_num") or data.get("page") or page_num
+            image_path = data.get("image_path") or image_path
+
+        if not image_base64:
+            return None
+
+        if image_path:
+            location = f"{doc_name} 中的图片 {image_path}"
+            if page_num:
+                location += f"（第{page_num}页）"
+        elif page_num:
+            location = f"{doc_name}第{page_num}页的完整页面截图"
+        else:
+            location = f"{doc_name}中的图片"
+
+        return {
+            "role": "user",
+            "content": [
+                {
+                    "type": "image_url",
+                    "image_url": {
+                        "url": f"data:{mime_type};base64,{image_base64}"
+                    },
+                },
+                {
+                    "type": "text",
+                    "text": (
+                        f"这是{location}。请用视觉能力识别图中内容，再基于识别结果回答。"
+                        "若只能识别到部分信息，请明确指出不确定项，不要猜测。"
+                    ),
+                },
+            ],
+        }
 
     async def _simple_chat_stream(
         self,
@@ -790,13 +855,44 @@ class AgentService:
         strict_scope: Optional[bool] = None,
     ) -> Dict[str, Any]:
         patched = dict(tool_args)
+        preferred_scope_ids = list(preferred_document_ids or [])
+        request_scope_ids = list(document_ids or [])
+        strict_or_unspecified = strict_scope is not False
+        single_doc_id = None
+        if len(preferred_scope_ids) == 1:
+            single_doc_id = preferred_scope_ids[0]
+        elif len(request_scope_ids) == 1:
+            single_doc_id = request_scope_ids[0]
 
         if tool_name in {
             "get_document_structure",
             "get_page_content",
+            "get_page_image",
+            "search_within_document",
         }:
-            if document_ids and len(document_ids) == 1 and not patched.get("doc_id"):
-                patched["doc_id"] = document_ids[0]
+            if single_doc_id and not patched.get("doc_id"):
+                patched["doc_id"] = single_doc_id
+            return patched
+
+        if tool_name == "get_document_image":
+            if (
+                single_doc_id
+                and not patched.get("doc_id")
+                and not patched.get("image_path")
+            ):
+                patched["doc_id"] = single_doc_id
+            return patched
+
+        if tool_name == "browse_documents":
+            scope_ids = preferred_scope_ids or (
+                request_scope_ids if len(request_scope_ids) == 1 else []
+            )
+            if scope_ids and strict_or_unspecified and not patched.get("document_ids"):
+                patched["document_ids"] = scope_ids
+            if folder_id and not patched.get("folder_id"):
+                patched["folder_id"] = folder_id
+            if include_subfolders and "recursive" not in patched:
+                patched["recursive"] = include_subfolders
             return patched
 
         if tool_name == "find_related_documents":

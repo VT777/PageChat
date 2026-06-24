@@ -186,6 +186,7 @@ def test_list_folder_contents_tool_returns_compact_documents_and_pagination(
                 "updated_at": "2026-06-10T00:00:00",
             }
         ]
+        assert result["next_steps"]["suggested_tool"] == "browse_documents"
 
     asyncio.run(run())
 

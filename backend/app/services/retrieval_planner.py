@@ -64,20 +64,15 @@ class RetrievalPlanner:
         )
 
         if self._is_table_query(question):
+            arguments = self._browse_arguments(question, scope)
             return RetrievalPlan(
                 route=RetrievalRoute.TABLE_AGGREGATION,
                 scope=scope,
                 steps=[
                     RetrievalStep(
-                        tool_name="find_related_documents",
-                        arguments={
-                            "query": question,
-                            "document_ids": selected_docs or None,
-                            "folder_id": folder_id,
-                            "include_subfolders": include_subfolders,
-                            "strict_scope": bool(effective_strict),
-                        },
-                        reason="Identify scoped table documents before aggregation.",
+                        tool_name="browse_documents",
+                        arguments=arguments,
+                        reason="Identify scoped table documents before aggregation without exposing retrieval internals.",
                     )
                 ],
             )
@@ -110,18 +105,26 @@ class RetrievalPlanner:
             scope=scope,
             steps=[
                 RetrievalStep(
-                    tool_name="find_related_documents",
-                    arguments={
-                        "query": question,
-                        "document_ids": scope.document_ids or None,
-                        "folder_id": scope.folder_id,
-                        "include_subfolders": scope.include_subfolders,
-                        "strict_scope": scope.strict_scope,
-                    },
-                    reason="Find candidate documents within the resolved scope.",
+                    tool_name="browse_documents",
+                    arguments=self._browse_arguments(question, scope),
+                    reason="Find candidate documents within the resolved scope without exposing retrieval internals.",
                 )
             ],
         )
+
+    @staticmethod
+    def _browse_arguments(question: str, scope: RetrievalPlanScope) -> Dict[str, Any]:
+        arguments: Dict[str, Any] = {
+            "query": question,
+            "sort": "relevance",
+        }
+        if scope.folder_id:
+            arguments["folder_id"] = scope.folder_id
+        if scope.include_subfolders:
+            arguments["recursive"] = True
+        if scope.document_ids and scope.strict_scope:
+            arguments["document_ids"] = scope.document_ids
+        return arguments
 
     @staticmethod
     def _is_table_query(question: str) -> bool:

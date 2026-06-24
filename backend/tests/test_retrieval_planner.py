@@ -26,18 +26,20 @@ def test_selected_folder_question_uses_folder_scoped_search() -> None:
     )
 
     assert plan.route == RetrievalRoute.SELECTED_FOLDER
-    assert plan.steps[0].tool_name == "find_related_documents"
+    assert plan.steps[0].tool_name == "browse_documents"
+    assert plan.steps[0].arguments["query"] == "what changed in this folder"
     assert plan.steps[0].arguments["folder_id"] == "folder-a"
-    assert plan.steps[0].arguments["include_subfolders"] is True
-    assert plan.steps[0].arguments["strict_scope"] is True
+    assert plan.steps[0].arguments["recursive"] is True
+    assert plan.steps[0].arguments["sort"] == "relevance"
 
 
 def test_global_question_searches_current_user_library() -> None:
     plan = RetrievalPlanner().plan(question="find alpha")
 
     assert plan.route == RetrievalRoute.USER_LIBRARY
-    assert plan.steps[0].tool_name == "find_related_documents"
-    assert plan.steps[0].arguments["strict_scope"] is False
+    assert plan.steps[0].tool_name == "browse_documents"
+    assert plan.steps[0].arguments["query"] == "find alpha"
+    assert "strict_scope" not in plan.steps[0].arguments
 
 
 def test_table_query_uses_table_aggregation_route() -> None:
@@ -47,7 +49,7 @@ def test_table_query_uses_table_aggregation_route() -> None:
     )
 
     assert plan.route == RetrievalRoute.TABLE_AGGREGATION
-    assert plan.steps[0].tool_name == "find_related_documents"
+    assert plan.steps[0].tool_name == "browse_documents"
     assert plan.steps[0].arguments["document_ids"] == ["doc-a", "doc-b"]
 
 
@@ -67,4 +69,5 @@ def test_strict_scope_false_records_current_user_expansion() -> None:
 
     assert plan.route == RetrievalRoute.USER_LIBRARY
     assert plan.scope.expanded_to_user_library is True
-    assert plan.steps[0].arguments["strict_scope"] is False
+    assert plan.steps[0].tool_name == "browse_documents"
+    assert "document_ids" not in plan.steps[0].arguments

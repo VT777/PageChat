@@ -22,6 +22,7 @@ def test_agent_prompt_states_tree_first_and_source_before_answer() -> None:
 
     assert "tree-first retrieval policy" in prompt
     assert "get_document_structure before get_page_content" in prompt
+    assert "view_folder_structure or browse_documents" in prompt
     assert "fetch source content before final answer" in prompt
 
 

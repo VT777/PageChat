@@ -38,6 +38,39 @@ def test_agent_injects_folder_scope_into_find_related_documents() -> None:
     assert patched["strict_scope"] is True
 
 
+def test_agent_injects_folder_scope_into_browse_documents() -> None:
+    patched = AgentService._inject_default_doc_id(
+        "browse_documents",
+        {"query": "alpha"},
+        document_ids=["doc-a", "doc-b"],
+        preferred_document_ids=["doc-a"],
+        folder_id="folder-a",
+        include_subfolders=True,
+        strict_scope=True,
+    )
+
+    assert patched["document_ids"] == ["doc-a"]
+    assert patched["folder_id"] == "folder-a"
+    assert patched["recursive"] is True
+
+
+def test_agent_injects_selected_doc_into_document_navigation_tools() -> None:
+    for tool_name, args in [
+        ("get_document_structure", {}),
+        ("get_page_content", {"pages": "2"}),
+        ("get_page_image", {"page": 2}),
+        ("search_within_document", {"query": "alpha"}),
+    ]:
+        patched = AgentService._inject_default_doc_id(
+            tool_name,
+            args,
+            document_ids=["doc-a"],
+            preferred_document_ids=None,
+        )
+
+        assert patched["doc_id"] == "doc-a"
+
+
 def test_agent_scope_cache_key_differs_by_folder_scope() -> None:
     doc_scope = AgentService._conversation_state_key(
         "conv-1", user_id="user-a", document_ids=["doc-a"]

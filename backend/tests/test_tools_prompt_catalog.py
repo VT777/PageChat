@@ -15,5 +15,15 @@ def test_tool_catalog_contains_aggregate_tables() -> None:
 def test_agent_prompt_injects_latest_tool_catalog() -> None:
     prompt = build_agent_system_prompt(AGENT_TOOLS)
     assert "## Tool list" in prompt
-    assert "find_related_documents" in prompt
+    assert "browse_documents" in prompt
+    assert "view_folder_structure" in prompt
     assert "aggregate_tables" in prompt
+
+
+def test_agent_prompt_prefers_navigation_tools_over_raw_retrieval() -> None:
+    prompt = build_agent_system_prompt(AGENT_TOOLS)
+
+    assert "browse_documents -> inspect each structure" in prompt
+    assert "find_related_documents only to identify candidate documents" not in prompt
+    assert "call this first" not in prompt
+    assert "visual pages intentionally omit OCR text" in prompt
