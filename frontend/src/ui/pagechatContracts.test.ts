@@ -274,6 +274,12 @@ describe('PageChat UI contracts', () => {
         result: { toc: [{ id: 'intro' }] },
         status: 'done',
       }),
+      summarizeToolStep({
+        toolName: 'web_search',
+        arguments: { query: 'PageChat' },
+        result: { results: [{ title: 'A' }, { title: 'B' }] },
+        status: 'done',
+      }),
     ]
 
     expect(summaries[0]).toMatchObject({
@@ -295,6 +301,11 @@ describe('PageChat UI contracts', () => {
       action: 'Read the document structure',
       detail: '"2025年度销售复盘.pdf"',
       icon: 'ListTree',
+    })
+    expect(summaries[4]).toMatchObject({
+      action: 'Searched the web',
+      detail: '2 results',
+      icon: 'Globe',
     })
     expect(summaries.every((summary) => !summary.action.startsWith('Ran '))).toBe(true)
   })

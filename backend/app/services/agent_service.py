@@ -17,6 +17,11 @@ agent_logger = logging.getLogger("agent")
 from app.services.pageindex_service import PageIndexService
 from app.services.document_service import DocumentService
 from app.services.tool_executor import ToolExecutor, AGENT_TOOLS
+from app.services.web_search_settings_service import (
+    DEFAULT_WEB_SEARCH_SETTINGS,
+    WebSearchSettingsService,
+)
+from app.services.web_search_tool import WEB_SEARCH_TOOL, execute_web_search_tool
 from app.services.retrieval_planner import RetrievalPlanner
 from app.core.llm import chat_by_scenario, async_chat_completion
 from app.models.retrieval import RetrievalScope
@@ -34,6 +39,7 @@ _NON_CACHEABLE_TOOLS = {
     "browse_documents",
     "get_document_image",
     "get_page_image",
+    "web_search",
 }
 
 
@@ -95,6 +101,31 @@ class AgentService:
         import json as _json
 
         return f"event: {event}\ndata: {_json.dumps(data, ensure_ascii=False)}\n\n"
+
+    @staticmethod
+    def _tools_for_request(web_search_enabled: bool = False) -> List[Dict[str, Any]]:
+        tools = list(AGENT_TOOLS)
+        if web_search_enabled:
+            tools.append(WEB_SEARCH_TOOL)
+        return tools
+
+    async def _web_search_settings_for_request(
+        self, user_id: str, requested: bool
+    ) -> Dict[str, Any]:
+        if self.db is None:
+            settings = dict(DEFAULT_WEB_SEARCH_SETTINGS)
+            settings.update(
+                {
+                    "api_key": None,
+                    "enabled": bool(requested),
+                    "requested": bool(requested),
+                }
+            )
+            return settings
+        return await WebSearchSettingsService(self.db).resolve_for_request(
+            user_id=user_id,
+            requested=requested,
+        )
 
     @staticmethod
     def _scope_cache_key(
@@ -179,6 +210,7 @@ class AgentService:
         user_id: str = None,
         max_steps: int = 8,
         history_messages: Optional[List[Dict[str, Any]]] = None,
+        web_search_requested: bool = False,
     ) -> AsyncGenerator[str, None]:
         """
         Agent 流式执行 - 基于 PageIndex 官方流程
@@ -227,9 +259,20 @@ class AgentService:
 
         # 检测用户语言，注入 prompt
         user_lang = detect_language(question)
+        web_search_settings = await self._web_search_settings_for_request(
+            user_id=user_id,
+            requested=web_search_requested,
+        )
+        runtime_tools = self._tools_for_request(
+            web_search_enabled=bool(web_search_settings.get("enabled"))
+        )
 
         # 如果没有文档库且没有显式检索范围，直接走简单聊天模式（不调用工具）
-        if doc_count == 0 and not has_explicit_scope:
+        if (
+            doc_count == 0
+            and not has_explicit_scope
+            and not web_search_settings.get("enabled")
+        ):
             print(
                 f"[Agent] No documents or no document_ids specified, using simple chat mode"
             )
@@ -248,7 +291,7 @@ class AgentService:
             messages = _CONVERSATION_MESSAGES[conversation_state_key].copy()
 
             # 更新/补充主系统提示
-            system_prompt = build_agent_system_prompt(AGENT_TOOLS, lang=user_lang)
+            system_prompt = build_agent_system_prompt(runtime_tools, lang=user_lang)
             if messages and messages[0].get("role") == "system":
                 messages[0] = {"role": "system", "content": system_prompt}
             else:
@@ -273,7 +316,7 @@ class AgentService:
             messages.append({"role": "user", "content": question})
         else:
             # 新建消息历史 - 动态获取文档数量并注入提示词
-            system_prompt = build_agent_system_prompt(AGENT_TOOLS, lang=user_lang)
+            system_prompt = build_agent_system_prompt(runtime_tools, lang=user_lang)
             messages = [{"role": "system", "content": system_prompt}]
 
             # 添加历史消息（来自数据库）
@@ -287,13 +330,17 @@ class AgentService:
         tool_results_for_answer = []
         assistant_content = ""
 
-        initial_evidence = await self._execute_initial_retrieval_plan(
-            question=question,
-            tool_executor=tool_executor,
-            preferred_document_ids=preferred_document_ids,
-            folder_id=folder_id,
-            include_subfolders=include_subfolders,
-            strict_scope=strict_scope,
+        initial_evidence = (
+            []
+            if doc_count == 0 and not has_explicit_scope
+            else await self._execute_initial_retrieval_plan(
+                question=question,
+                tool_executor=tool_executor,
+                preferred_document_ids=preferred_document_ids,
+                folder_id=folder_id,
+                include_subfolders=include_subfolders,
+                strict_scope=strict_scope,
+            )
         )
         for evidence in initial_evidence:
             tool_results_for_answer.append(
@@ -305,12 +352,12 @@ class AgentService:
         for step_num in range(max_steps):
             # 流式调用模型（带工具）
             tool_logger.info(
-                f"Sending {len(AGENT_TOOLS)} tools: {[t['function']['name'] for t in AGENT_TOOLS]}"
+                f"Sending {len(runtime_tools)} tools: {[t['function']['name'] for t in runtime_tools]}"
             )
             response = await chat_by_scenario(
                 scenario="qa",
                 messages=messages,
-                tools=AGENT_TOOLS,
+                tools=runtime_tools,
                 stream=True,
                 user_id=user_id,
             )
@@ -461,7 +508,13 @@ class AgentService:
                         tool_logger.info(f"{tool_name} completed in {elapsed_ms}ms")
                 else:
                     # 不缓存的工具：直接执行
-                    result = await tool_executor.execute(tool_name, tool_args)
+                    if tool_name == "web_search":
+                        result = await execute_web_search_tool(
+                            arguments=tool_args,
+                            settings=web_search_settings,
+                        )
+                    else:
+                        result = await tool_executor.execute(tool_name, tool_args)
                     elapsed_ms = int((time.perf_counter() - started_at) * 1000)
                     tool_logger.info(
                         f"{tool_name} completed in {elapsed_ms}ms (no cache)"

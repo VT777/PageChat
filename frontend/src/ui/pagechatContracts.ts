@@ -533,6 +533,13 @@ export function summarizeToolStep(step: ToolStepLike): ToolStepSummary {
         icon: 'FileSpreadsheet',
         tone,
       }
+    case 'web_search':
+      return {
+        action: step.status === 'calling' ? 'Searching the web' : 'Searched the web',
+        detail: pluralize(resultCount(step, ['results']), 'result'),
+        icon: 'Globe',
+        tone,
+      }
     default:
       return {
         action: step.status === 'calling' ? `Using ${step.toolName}` : `Used ${step.toolName}`,
