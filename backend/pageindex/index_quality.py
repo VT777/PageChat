@@ -445,6 +445,7 @@ def _toc_page_leakage_stats(
     nodes: List[Dict[str, Any]],
     *,
     toc_pages: List[int],
+    allow_first_body_overlap: bool = False,
 ) -> Dict[str, Any]:
     content_nodes = _content_quality_nodes(nodes)
     toc_page_set = set(toc_pages)
@@ -456,6 +457,7 @@ def _toc_page_leakage_stats(
         }
 
     leaked: List[Dict[str, Any]] = []
+    first_body_overlap_allowed = bool(allow_first_body_overlap)
     for node in content_nodes:
         page_range = _node_page_range(node)
         if page_range is None:
@@ -463,6 +465,15 @@ def _toc_page_leakage_stats(
         start, end = page_range
         overlapping_pages = [page for page in toc_page_set if start <= page <= end]
         if overlapping_pages:
+            if _toc_page_overlap_allowed(
+                node,
+                start=start,
+                overlapping_pages=overlapping_pages,
+                allow_first_body_overlap=first_body_overlap_allowed,
+            ):
+                if not _is_front_matter_or_catalog_title(node.get("title")):
+                    first_body_overlap_allowed = False
+                continue
             leaked.append(
                 {
                     "title": str(node.get("title") or "").strip(),
@@ -476,6 +487,43 @@ def _toc_page_leakage_stats(
         "toc_page_leakage_count": len(leaked),
         "toc_page_leakage_ratio": round(len(leaked) / len(content_nodes), 4),
         "toc_page_leakage_sample": leaked[:5],
+    }
+
+
+def _toc_page_overlap_allowed(
+    node: Dict[str, Any],
+    *,
+    start: int,
+    overlapping_pages: List[int],
+    allow_first_body_overlap: bool,
+) -> bool:
+    title = node.get("title")
+    if _is_front_matter_or_catalog_title(title):
+        return True
+    node_type = str(node.get("node_type") or "").strip().lower()
+    if node_type in {"catalog_group", "auxiliary_catalog"}:
+        return True
+    if allow_first_body_overlap and start in overlapping_pages:
+        return True
+    return False
+
+
+def _is_front_matter_or_catalog_title(title: Any) -> bool:
+    normalized = re.sub(r"[\s\W_]+", "", str(title or "").strip().casefold(), flags=re.UNICODE)
+    return normalized in {
+        "contents",
+        "tableofcontents",
+        "toc",
+        "catalog",
+        "preface",
+        "foreword",
+        "cover",
+        "frontmatter",
+        "目录",
+        "目次",
+        "前言",
+        "序言",
+        "封面",
     }
 
 
@@ -908,7 +956,14 @@ def build_toc_fidelity_digest(
     mapping_reasons = [str(reason) for reason in (mapping.get("reasons") or []) if str(reason).strip()]
     page_range_failures = _page_range_failure_stats(nodes, page_total=page_total)
     toc_pages = _extract_toc_pages(index_payload, mapping)
-    toc_page_leakage = _toc_page_leakage_stats(nodes, toc_pages=toc_pages)
+    toc_page_leakage = _toc_page_leakage_stats(
+        nodes,
+        toc_pages=toc_pages,
+        allow_first_body_overlap=(
+            selected_path == "embedded_toc"
+            or str(route_decision.get("toc_source") or index_payload.get("toc_source") or "") == "code_toc"
+        ),
+    )
     node_content = _node_content_stats(index_payload, nodes)
     balanced_gate = _resolve_balanced_quality_gate(index_payload)
     auxiliary_isolation = _auxiliary_catalog_isolation_stats(structure)

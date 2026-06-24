@@ -104,6 +104,12 @@ def _title_has_own_number(title: Any) -> bool:
     return bool(re.match(r"^\s*\d{1,3}(?:\.\d{1,3})*[.)]?\s+\S", value))
 
 
+def _title_without_explicit_number_key(title: Any) -> str:
+    value = _coerce_text(title).replace(chr(0xFF0E), ".")
+    value = re.sub(r"^\s*\d{1,3}(?:\.\d{1,3})*[.)]?\s+", "", value)
+    return _normalize_title_key(value)
+
+
 def _content_outline_sort_key(item: Dict[str, Any]) -> Tuple[int, Tuple[Any, ...], int]:
     page = _physical_index_to_int(item.get("physical_index")) or 10**9
     structure = _content_outline_structure_key(item.get("structure"))
@@ -184,10 +190,15 @@ def _merge_text_heading_facts(
                 item["physical_index"] = _physical_index_to_int(front.get("physical_index"))
 
     by_structure: Dict[str, Dict[str, Any]] = {}
+    by_title_page: Dict[Tuple[str, int], Dict[str, Any]] = {}
     for item in merged:
         structure = _content_outline_structure_key(item.get("structure"))
         if structure and structure not in by_structure:
             by_structure[structure] = item
+        page = _physical_index_to_int(item.get("physical_index"))
+        title_key = _title_without_explicit_number_key(item.get("title"))
+        if title_key and page > 0 and (title_key, page) not in by_title_page:
+            by_title_page[(title_key, page)] = item
 
     next_order = len(merged)
     changed = 0
@@ -203,6 +214,23 @@ def _merge_text_heading_facts(
                 existing["source"] = str(existing.get("source") or "llm_content_outline")
                 existing["heading_fact_verified"] = True
                 changed += 1
+            continue
+
+        title_key = _title_without_explicit_number_key(heading.get("title"))
+        existing = by_title_page.get((title_key, page)) if title_key else None
+        if existing is not None:
+            old_structure = _content_outline_structure_key(existing.get("structure"))
+            existing["structure"] = heading.get("structure")
+            existing["title"] = heading.get("title")
+            existing["level"] = heading.get("level")
+            existing["physical_index"] = page
+            existing["source"] = str(existing.get("source") or "llm_content_outline")
+            existing["heading_fact_verified"] = True
+            if old_structure and by_structure.get(old_structure) is existing:
+                by_structure.pop(old_structure, None)
+            by_structure[structure] = existing
+            by_title_page[(title_key, page)] = existing
+            changed += 1
             continue
 
         added = dict(heading)

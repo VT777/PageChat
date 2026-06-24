@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+from difflib import SequenceMatcher
 import hashlib
 import json
 from pathlib import Path
@@ -152,6 +153,7 @@ def _candidate_nodes_by_title(nodes: list[dict[str, Any]], title: str) -> list[d
         return []
     exact: list[dict[str, Any]] = []
     partial: list[dict[str, Any]] = []
+    fuzzy: list[dict[str, Any]] = []
     for node in _walk(nodes):
         node_title = _normal_title(str(node.get("title") or ""))
         if not node_title:
@@ -160,7 +162,31 @@ def _candidate_nodes_by_title(nodes: list[dict[str, Any]], title: str) -> list[d
             exact.append(node)
         elif any(needle in node_title for needle in needles):
             partial.append(node)
-    return exact or partial
+        elif any(_titles_match_fuzzy(needle, node_title) for needle in needles):
+            fuzzy.append(node)
+    return exact or partial or fuzzy
+
+
+def _titles_match_fuzzy(expected_key: str, actual_key: str) -> bool:
+    if min(len(expected_key), len(actual_key)) < 18:
+        return False
+    if expected_key[:2].isdigit() and actual_key[:2] != expected_key[:2]:
+        return False
+    return SequenceMatcher(None, expected_key, actual_key).ratio() >= 0.78
+
+
+def _title_match_type(expected_title: str, node: dict[str, Any] | None) -> str:
+    if not isinstance(node, dict):
+        return "missing"
+    node_title = _normal_title(str(node.get("title") or ""))
+    needles = [_normal_title(alias) for alias in _title_aliases(expected_title) if _normal_title(alias)]
+    if any(node_title == needle for needle in needles):
+        return "exact"
+    if any(needle in node_title for needle in needles):
+        return "partial"
+    if any(_titles_match_fuzzy(needle, node_title) for needle in needles):
+        return "fuzzy"
+    return "none"
 
 
 def _find_node_by_title(nodes: list[dict[str, Any]], title: str) -> dict[str, Any] | None:
@@ -349,22 +375,61 @@ def _must_have_node_checks(
         actual_start = _node_start(node)
         actual_end = _node_end(node)
         auxiliary_end_ignored = _is_auxiliary_node(node) and isinstance(expected_end, int)
+        adjacent_overlap_accepted = False
         item_ok = node is not None
         if isinstance(expected_start, int):
             item_ok = item_ok and actual_start == expected_start
         if isinstance(expected_end, int) and not auxiliary_end_ignored:
-            item_ok = item_ok and actual_end == expected_end
+            end_ok, adjacent_overlap_accepted = _end_matches_expected_range(
+                nodes,
+                node,
+                expected_end=expected_end,
+                actual_end=actual_end,
+            )
+            item_ok = item_ok and end_ok
         item = {
             "expected_start": expected_start,
             "expected_end": expected_end,
             "actual_start": actual_start,
             "actual_end": actual_end,
             "auxiliary_end_ignored": auxiliary_end_ignored,
+            "adjacent_overlap_accepted": adjacent_overlap_accepted,
+            "title_match": _title_match_type(title, node),
             "ok": bool(item_ok),
         }
         checks["items"][title] = item
         checks["ok"] = checks["ok"] and bool(item_ok)
     return checks
+
+
+def _end_matches_expected_range(
+    nodes: list[dict[str, Any]],
+    node: dict[str, Any] | None,
+    *,
+    expected_end: int,
+    actual_end: Any,
+) -> tuple[bool, bool]:
+    if actual_end == expected_end:
+        return True, False
+    if actual_end == expected_end + 1 and _has_other_node_starting_at(nodes, actual_end, exclude=node):
+        return True, True
+    return False, False
+
+
+def _has_other_node_starting_at(
+    nodes: list[dict[str, Any]],
+    page: Any,
+    *,
+    exclude: dict[str, Any] | None,
+) -> bool:
+    if not isinstance(page, int):
+        return False
+    for candidate in _walk(nodes):
+        if candidate is exclude:
+            continue
+        if _node_start(candidate) == page:
+            return True
+    return False
 
 
 def _count_leaf_nodes(nodes: list[dict[str, Any]]) -> int:

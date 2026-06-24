@@ -266,6 +266,70 @@ def test_build_report_enforces_must_have_node_start_and_end_ranges(tmp_path: Pat
     assert report["acceptance"]["ok"] is False
 
 
+def test_must_have_node_allows_adjacent_boundary_overlap(tmp_path: Path) -> None:
+    module = _load_e2e_module()
+    report = module.build_report_from_index_payload(
+        file_path=tmp_path / "range-overlap.pdf",
+        doc_id="range-overlap",
+        elapsed_ms=10,
+        expected={
+            "file": "range-overlap.pdf",
+            "expected_route": {"content_type": "text", "selected_path": "visible_toc_with_pages"},
+            "must_have_nodes": [
+                {"title": "Part 1 Market", "start_index": 3, "end_index": 5},
+            ],
+        },
+        index_payload={
+            "doc_name": "range-overlap.pdf",
+            "page_count": 12,
+            "route_decision": {"content_type": "text", "selected_path": "visible_toc_with_pages"},
+            "structure": [
+                {"title": "Part 1 Market", "start_index": 3, "end_index": 6, "nodes": []},
+                {"title": "Part 2 Growth", "start_index": 6, "end_index": 12, "nodes": []},
+            ],
+            "quality_report": {"status": "completed", "hard_fail_reasons": []},
+        },
+    )
+
+    item = report["key_checks"]["must_have_nodes"]["items"]["Part 1 Market"]
+    assert item["adjacent_overlap_accepted"] is True
+    assert item["ok"] is True
+    assert report["acceptance"]["must_have_nodes"] is True
+
+
+def test_must_have_node_matches_long_ocr_variant_title(tmp_path: Path) -> None:
+    module = _load_e2e_module()
+    expected_title = "41 “师道汉韵”——面向陆海新通道产教融合的跨语言技能教学空间"
+    actual_title = '41 "*师道汉韵"——面向陆海新通道产教融合的路语言技能教学空间'
+
+    report = module.build_report_from_index_payload(
+        file_path=tmp_path / "ocr-title.pdf",
+        doc_id="ocr-title",
+        elapsed_ms=10,
+        expected={
+            "file": "ocr-title.pdf",
+            "expected_route": {"content_type": "ocr", "selected_path": "visible_toc_with_pages"},
+            "must_have_nodes": [
+                {"title": expected_title, "start_index": 43, "end_index": 43},
+            ],
+        },
+        index_payload={
+            "doc_name": "ocr-title.pdf",
+            "page_count": 44,
+            "route_decision": {"content_type": "ocr", "selected_path": "visible_toc_with_pages"},
+            "structure": [
+                {"title": actual_title, "start_index": 43, "end_index": 43, "nodes": []},
+            ],
+            "quality_report": {"status": "completed", "hard_fail_reasons": []},
+        },
+    )
+
+    item = report["key_checks"]["must_have_nodes"]["items"][expected_title]
+    assert item["title_match"] == "fuzzy"
+    assert item["ok"] is True
+    assert report["acceptance"]["must_have_nodes"] is True
+
+
 def test_must_have_node_uses_expected_range_when_titles_repeat(tmp_path: Path) -> None:
     module = _load_e2e_module()
     report = module.build_report_from_index_payload(
@@ -583,3 +647,14 @@ def test_known_page_checks_match_chapter_aliases(tmp_path: Path) -> None:
     assert report["key_checks"]["known_pages"]["Chapter 1"]["ok"] is True
     assert report["key_checks"]["known_pages"]["Chapter 2"]["ok"] is True
     assert report["acceptance"]["ok"] is True
+
+
+def test_ai_knowledge_fixture_tracks_t03_final_case_to_document_end() -> None:
+    fixture_path = ROOT / "backend" / "tests" / "fixtures" / "toc" / "ai_knowledge_expected_toc_reference.json"
+    fixture = json.loads(fixture_path.read_text(encoding="utf-8"))
+    t03 = next(doc for doc in fixture["documents"] if doc["id"] == "T03")
+    final_case = next(node for node in t03["must_have_nodes"] if node["title"].startswith("41 "))
+
+    assert t03["page_count"] == 44
+    assert final_case["start_index"] == 43
+    assert final_case["end_index"] == 44

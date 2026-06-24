@@ -3105,7 +3105,7 @@ class PageIndexService:
                 for item in result.get("attempt_chain") or []
             ]
             print(f"[TOC-ROUTE] status=failed attempts={compact_attempts}")
-        return result if result.get("items") else None
+        return result
 
     @staticmethod
     def _build_embedded_toc_draft(analysis: Dict[str, Any]) -> Optional[Dict[str, Any]]:
@@ -3258,7 +3258,16 @@ class PageIndexService:
             )
             if raw_page not in (None, ""):
                 draft_item["raw_page_label"] = raw_page
-            for key in ("structure", "source_page", "confidence", "metadata"):
+            metadata = dict(raw.get("metadata") or {})
+            raw_source = str(raw.get("source") or "").strip()
+            if raw_source:
+                metadata.setdefault("page_source", raw_source)
+            if raw_source in {"bookmarks", "links", "pdf_outline", "outline"}:
+                metadata.setdefault("page_label_kind", "physical")
+                metadata.setdefault("trusted_page_source", True)
+            if metadata:
+                draft_item["metadata"] = metadata
+            for key in ("structure", "source_page", "confidence"):
                 if key in raw:
                     draft_item[key] = deepcopy(raw[key])
             children = raw.get("children") or raw.get("nodes")
@@ -4929,6 +4938,126 @@ class PageIndexService:
         return selected_path == "embedded_toc"
 
     @staticmethod
+    def _should_disable_code_toc_for_balanced_retry(
+        route_decision: Dict[str, Any],
+        *,
+        retry_reason: str,
+    ) -> bool:
+        """Disable embedded TOC only when that attempt itself produced no candidate."""
+        selected_path = str(
+            (route_decision or {}).get("selected_path")
+            or (route_decision or {}).get("path")
+            or ""
+        )
+        if selected_path != "embedded_toc":
+            return False
+        return str(retry_reason or "") == "no_candidate"
+
+    @staticmethod
+    def _unique_reason_list(values: List[Any]) -> List[str]:
+        seen: set[str] = set()
+        result: List[str] = []
+        for value in values or []:
+            reason = str(value or "").strip()
+            if not reason or reason in seen:
+                continue
+            seen.add(reason)
+            result.append(reason)
+        return result
+
+    @staticmethod
+    def _build_no_candidate_index_payload(
+        *,
+        file_name: str,
+        page_count: int,
+        analysis: Dict[str, Any],
+        route_decision: Dict[str, Any],
+        requested_mode: str,
+        execution_mode: str,
+        initial_execution_mode: str,
+        failure_reasons: List[Any],
+    ) -> Dict[str, Any]:
+        page_total = max(1, int(page_count or 0))
+        reasons = PageIndexService._unique_reason_list(failure_reasons) or ["no_toc_candidate"]
+        attempt_chain = list(
+            (analysis or {}).get("toc_attempt_chain")
+            or (route_decision or {}).get("attempt_chain")
+            or (route_decision or {}).get("attempts")
+            or []
+        )
+        route = {
+            **dict(route_decision or {}),
+            "requested_mode": requested_mode,
+            "execution_mode": execution_mode,
+            "initial_execution_mode": initial_execution_mode,
+            "final_execution_mode": execution_mode,
+            "attempt_chain": attempt_chain,
+            "status": "failed",
+            "failure_reasons": reasons,
+            "text_coverage": (analysis or {}).get("text_coverage"),
+            "is_image_only_pdf": bool((analysis or {}).get("is_image_only_pdf", False)),
+            "fallback_reason": (analysis or {}).get("code_toc_reject_reason"),
+            "fallback_from": (analysis or {}).get("quality_fallback_from"),
+            "code_toc_disabled": bool((analysis or {}).get("disable_code_toc_fast_path")),
+        }
+        diagnostics = PageIndexService._index_diagnostics_from_analysis(analysis or {})
+        diagnostics["toc_pipeline_failure"] = {
+            "status": "failed",
+            "reason": "no_toc_candidate",
+            "failure_reasons": reasons,
+        }
+        payload = {
+            "doc_name": file_name,
+            "doc_description": "",
+            "page_count": page_total,
+            "structure": [
+                {
+                    "title": "Document Content",
+                    "level": 1,
+                    "start_index": 1,
+                    "end_index": page_total,
+                    "physical_index": 1,
+                    "source": "no_toc_candidate_fallback",
+                }
+            ],
+            "route_decision": route,
+            "completeness": {
+                "status": "failed",
+                "needs_repair": True,
+                "coverage": 1.0,
+                "failure_reasons": reasons,
+            },
+            "diagnostics": diagnostics,
+            "quality_report": {
+                "status": "failed:toc_pipeline",
+                "hard_fail_reasons": ["no_toc_candidate"],
+                "failure_reasons": reasons,
+            },
+            "ocr_used": bool((analysis or {}).get("page_text_map_ocr_completed")),
+            "llm_quality_check": None,
+            "enrichment_status": "failed",
+        }
+        return payload
+
+    @staticmethod
+    def _mark_toc_quality_failure_payload(
+        payload: Dict[str, Any],
+        reasons: List[Any],
+    ) -> None:
+        unique_reasons = PageIndexService._unique_reason_list(reasons)
+        if not unique_reasons:
+            return
+        route = payload.setdefault("route_decision", {})
+        if isinstance(route, dict):
+            route["status"] = "failed"
+            route["quality_failure_reasons"] = unique_reasons
+        quality_report = payload.setdefault("quality_report", {})
+        if isinstance(quality_report, dict):
+            quality_report["status"] = "failed:toc_quality"
+            quality_report["hard_fail_reasons"] = unique_reasons
+        payload["enrichment_status"] = "failed"
+
+    @staticmethod
     def _can_retain_best_candidate_after_retry_failure(
         result: Dict[str, Any],
         reasons: List[str],
@@ -5368,18 +5497,18 @@ class PageIndexService:
             anchors=anchors,
         )
         if not new_architecture_result or not new_architecture_result.get("items"):
+            failure_reasons = []
+            if isinstance(new_architecture_result, dict):
+                failure_reasons = [
+                    str(reason)
+                    for reason in (new_architecture_result.get("failure_reasons") or [])
+                    if str(reason).strip()
+                ]
             if self._should_retry_toc_attempt_with_balanced(
                 route_decision,
                 requested_mode=requested_mode,
                 initial_execution_mode=initial_execution_mode,
             ):
-                failure_reasons = []
-                if isinstance(new_architecture_result, dict):
-                    failure_reasons = [
-                        str(reason)
-                        for reason in (new_architecture_result.get("failure_reasons") or [])
-                        if str(reason).strip()
-                    ]
                 print(
                     "[TOC-PIPELINE] stage=route action=retry_balanced "
                     f"reason={';'.join(failure_reasons) or 'fast_attempt_failed'}"
@@ -5389,7 +5518,10 @@ class PageIndexService:
                     doc_id,
                     "balanced",
                     _quality_retry=False,
-                    _disable_code_toc=True,
+                    _disable_code_toc=self._should_disable_code_toc_for_balanced_retry(
+                        route_decision,
+                        retry_reason="no_candidate",
+                    ),
                     _fallback_from={
                         "requested_mode": requested_mode,
                         "execution_mode": execution_mode,
@@ -5397,7 +5529,24 @@ class PageIndexService:
                         "reasons": failure_reasons or ["fast_attempt_failed"],
                     },
                 )
-            raise ValueError("TOC_PIPELINE_NO_CANDIDATE: no unified TOC attempt returned items")
+            result = self._build_no_candidate_index_payload(
+                file_name=file_path.name,
+                page_count=page_count,
+                analysis=analysis,
+                route_decision=route_decision,
+                requested_mode=requested_mode,
+                execution_mode=execution_mode,
+                initial_execution_mode=initial_execution_mode,
+                failure_reasons=failure_reasons or ["no_toc_candidate"],
+            )
+            fill_node_text(result["structure"], page_text_map)
+            write_node_ids(result["structure"])
+            model_routes = await self._model_route_metadata()
+            if model_routes:
+                result["model_routes"] = model_routes
+            index_path = self._save_index_payload(doc_id, result)
+            print(f"[TOC-PIPELINE] stage=save status=failed_index_saved index={index_path}")
+            return {"index_path": str(index_path), "structure": result}
 
         toc_items = new_architecture_result["items"]
         toc_source = (
@@ -5611,7 +5760,10 @@ class PageIndexService:
                     doc_id,
                     "balanced",
                     _quality_retry=False,
-                    _disable_code_toc=True,
+                    _disable_code_toc=self._should_disable_code_toc_for_balanced_retry(
+                        route_decision,
+                        retry_reason="quality_failure",
+                    ),
                     _fallback_from={
                         "requested_mode": requested_mode,
                         "execution_mode": execution_mode,
@@ -5638,9 +5790,13 @@ class PageIndexService:
                 else:
                     raise
         if quality_failure_reasons:
-            raise RuntimeError(
-                "TOC quality gate failed: " + ", ".join(quality_failure_reasons)
+            self._mark_toc_quality_failure_payload(result, quality_failure_reasons)
+            index_path = self._save_index_payload(doc_id, result)
+            print(
+                "[TOC-PIPELINE] stage=save status=failed_index_saved "
+                f"reason={';'.join(quality_failure_reasons)} index={index_path}"
             )
+            return {"index_path": str(index_path), "structure": result}
 
         # Save a usable base index before slower enrichment calls.
         index_path = self._save_index_payload(doc_id, result)

@@ -280,12 +280,19 @@ def _page_list_text(page_list: List[Any], physical_page: int) -> str:
 
 
 def _supplement_ocr_text_with_text_layer_heading(original: str, ocr_text: str) -> tuple[str, bool]:
-    heading = _recover_text_layer_leading_numbered_heading(original)
+    heading = _recover_text_layer_leading_heading(original)
     if not heading:
         return ocr_text, False
     if _compact_text_key(heading) in _compact_text_key(ocr_text):
         return ocr_text, False
     return f"{heading}\n{ocr_text}", True
+
+
+def _recover_text_layer_leading_heading(text: str) -> Optional[str]:
+    return (
+        _recover_text_layer_leading_numbered_heading(text)
+        or _recover_text_layer_leading_appendix_heading(text)
+    )
 
 
 def _recover_text_layer_leading_numbered_heading(text: str) -> Optional[str]:
@@ -294,27 +301,110 @@ def _recover_text_layer_leading_numbered_heading(text: str) -> Optional[str]:
     for index, line in enumerate(lines[:16]):
         if not re.fullmatch(r"[1-9]\d{0,2}(?:\.\d{1,2})*", line):
             continue
+        if "." not in line and int(line) > 12:
+            continue
         title_words = _collect_heading_words_after_number(lines, index + 1)
-        if len(title_words) < 2:
+        if not title_words:
             continue
         title = " ".join(title_words[:12]).strip()
-        if _looks_like_recovered_heading_title(title):
+        if _looks_like_recovered_heading_title(title, number=line):
             return f"{line} {title}"
+    return None
+
+
+def _recover_text_layer_leading_appendix_heading(text: str) -> Optional[str]:
+    lines = [_normalize_text_layer_line(line) for line in str(text or "").splitlines()[:40]]
+    lines = [line for line in lines if line]
+    tokens = _merge_fragmented_text_layer_tokens(lines[:24])
+    if not tokens:
+        return None
+    for index, token in enumerate(tokens[:8]):
+        if token.lower() != "appendix":
+            continue
+        if index + 2 >= len(tokens):
+            continue
+        label = tokens[index + 1].strip()
+        if not re.fullmatch(r"[A-Za-z0-9]{1,4}:?", label):
+            continue
+        words: List[str] = []
+        for word_index, word in enumerate(tokens[index + 2 : index + 10], start=index + 2):
+            if words and _looks_like_body_sentence_start(tokens, word_index, len(words) + 2):
+                break
+            if _token_is_heading_word(word):
+                words.append(word)
+                continue
+            if words:
+                break
+        if not words:
+            continue
+        title = " ".join(words[:8]).strip()
+        if not _looks_like_recovered_appendix_title(title):
+            continue
+        label_text = label if label.endswith(":") else f"{label}:"
+        return f"Appendix {label_text} {title}"
     return None
 
 
 def _collect_heading_words_after_number(lines: List[str], start: int) -> List[str]:
     tokens = _merge_fragmented_text_layer_tokens(lines[start : start + 18])
     words: List[str] = []
-    for index, token in enumerate(tokens):
-        if words and _looks_like_body_sentence_start(tokens, index, len(words)):
+    index = 0
+    while index < len(tokens):
+        token = tokens[index]
+        consumed = 1
+        if index + 1 < len(tokens) and _should_join_heading_fragment(token, tokens[index + 1], words):
+            token = f"{token}{tokens[index + 1]}"
+            consumed = 2
+        remaining = [token] + tokens[index + consumed :]
+        if words and str(token or "").strip().startswith("("):
             break
-        if _token_is_heading_word(token):
+        if (
+            words
+            and _looks_like_body_sentence_start(remaining, 0, len(words))
+            and not _is_version_heading_continuation(words, token)
+        ):
+            break
+        if _token_allowed_in_recovered_heading(remaining, 0, words):
             words.append(token)
+            index += consumed
             continue
         if words:
             break
+        index += consumed
     return words
+
+
+_FRAGMENT_START_STOPWORDS = {
+    "as",
+    "if",
+    "in",
+    "it",
+    "the",
+    "these",
+    "this",
+    "we",
+    "when",
+    "while",
+}
+
+_FRAGMENT_PIECE_STOPWORDS = {
+    "a",
+    "an",
+    "and",
+    "are",
+    "as",
+    "be",
+    "by",
+    "for",
+    "in",
+    "is",
+    "of",
+    "on",
+    "or",
+    "the",
+    "to",
+    "we",
+}
 
 
 def _merge_fragmented_text_layer_tokens(lines: List[str]) -> List[str]:
@@ -322,44 +412,133 @@ def _merge_fragmented_text_layer_tokens(lines: List[str]) -> List[str]:
     index = 0
     while index < len(lines):
         token = lines[index].strip()
-        next_token = lines[index + 1].strip() if index + 1 < len(lines) else ""
-        if (
-            re.fullmatch(r"[A-Z][a-z]{1,7}", token)
-            and re.fullmatch(r"[a-z]{2,8}", next_token)
-            and token.lower() not in {"the", "this", "these"}
-        ):
-            tokens.append(token + next_token)
-            index += 2
-            continue
+        if _can_start_fragmented_word(token):
+            pieces = [token]
+            next_index = index + 1
+            while next_index < len(lines):
+                next_token = lines[next_index].strip()
+                if not _is_fragment_piece(next_token):
+                    break
+                pieces.append(next_token)
+                next_index += 1
+            if len(pieces) > 1:
+                merged = "".join(pieces)
+                if len(merged) <= 32:
+                    tokens.append(merged)
+                    index = next_index
+                    continue
         tokens.append(token)
         index += 1
     return tokens
 
 
-def _looks_like_body_sentence_start(tokens: List[str], index: int, collected_count: int) -> bool:
-    if collected_count < 3 or index + 1 >= len(tokens):
-        return False
-    token = tokens[index]
-    next_token = tokens[index + 1]
-    if token.lower() in {"the", "this", "these", "suppose", "consider", "notice"}:
-        return next_token[:1].islower()
-    return bool(token[:1].isupper() and next_token[:1].islower() and next_token.lower() not in {"of", "and"})
+def _can_start_fragmented_word(token: str) -> bool:
+    return bool(
+        re.fullmatch(r"[A-Z][a-z]{0,7}", token or "")
+        and token.lower() not in _FRAGMENT_START_STOPWORDS
+    )
 
 
-def _token_is_heading_word(token: str) -> bool:
-    if not token or len(token) > 32:
+def _is_fragment_piece(token: str) -> bool:
+    normalized = str(token or "").strip()
+    if not re.fullmatch(r"[a-z]{1,5}", normalized):
         return False
-    if re.fullmatch(r"[A-Za-z][A-Za-z'-]*", token):
+    if normalized.lower() in _FRAGMENT_PIECE_STOPWORDS:
+        return False
+    return True
+
+
+_RECOVERED_HEADING_STOPWORDS = {
+    "a",
+    "an",
+    "and",
+    "at",
+    "between",
+    "for",
+    "in",
+    "of",
+    "on",
+    "the",
+    "to",
+    "with",
+}
+
+
+def _token_allowed_in_recovered_heading(tokens: List[str], index: int, words: List[str]) -> bool:
+    token = str(tokens[index] or "").strip()
+    if not token:
+        return False
+    if re.fullmatch(r"\d{1,3}:?", token):
+        return bool(words and words[-1].casefold() == "version")
+    bare = token.strip("()[]{}")
+    if not re.fullmatch(r"[A-Za-z][A-Za-z'-]*:?", bare):
+        return token in {"&", "/", "-"}
+    lowered = bare.rstrip(":").casefold()
+    if lowered in _RECOVERED_HEADING_STOPWORDS:
         return True
-    return token in {"&", "/", "-"}
+    if bare[:1].isupper() or bare.isupper():
+        return True
+    previous = words[-1].strip("()[]{}").casefold() if words else ""
+    next_token = str(tokens[index + 1] or "").strip("()[]{}") if index + 1 < len(tokens) else ""
+    if previous in {"a", "an", "the"} and next_token[:1].isupper():
+        return True
+    return False
 
 
-def _looks_like_recovered_heading_title(title: str) -> bool:
+def _should_join_heading_fragment(token: str, next_token: str, words: List[str]) -> bool:
+    token = str(token or "").strip()
+    next_token = str(next_token or "").strip()
+    if not re.fullmatch(r"[a-z]{4,12}", next_token):
+        return False
+    if re.fullmatch(r"[A-Z]", token):
+        return True
+    if token == "In" and words and words[-1].casefold() in {"a", "an", "the"}:
+        return True
+    return False
+
+
+def _is_version_heading_continuation(words: List[str], token: str) -> bool:
+    if str(token or "").strip().casefold() not in {"the", "a", "an"}:
+        return False
+    for index, word in enumerate(words[:-1]):
+        if word.casefold() == "version" and re.fullmatch(r"\d{1,3}:?", words[index + 1]):
+            return True
+    return False
+
+
+def _looks_like_single_word_numbered_heading(title: str, number: str) -> bool:
+    if "." not in str(number or ""):
+        return False
+    word = str(title or "").strip()
+    if not re.fullmatch(r"[A-Za-z][A-Za-z'-]{2,24}:?", word):
+        return False
+    return word[:1].isupper() and word.casefold().rstrip(":") not in _FRAGMENT_START_STOPWORDS
+
+
+def _looks_like_recovered_heading_title(title: str, *, number: str = "") -> bool:
     words = [word for word in title.split() if word]
+    if len(words) == 1:
+        return _looks_like_single_word_numbered_heading(words[0], number)
     if not 2 <= len(words) <= 12:
         return False
     alpha_words = [word for word in words if re.search(r"[A-Za-z]", word)]
     if len(alpha_words) < 2:
+        return False
+    titleish = sum(
+        1
+        for word in alpha_words
+        if word.strip("()[]{}")[:1].isupper()
+        or word.strip("()[]{}").lower().rstrip(":") in _RECOVERED_HEADING_STOPWORDS
+    )
+    return titleish / len(alpha_words) >= 0.75
+
+
+def _looks_like_recovered_appendix_title(title: str) -> bool:
+    words = [word for word in title.split() if word]
+    if not 1 <= len(words) <= 8:
+        return False
+    alpha_words = [word for word in words if re.search(r"[A-Za-z]", word)]
+    if not alpha_words:
         return False
     titleish = sum(
         1
@@ -389,3 +568,25 @@ def _page_info(analysis: Mapping[str, Any], index: int) -> Dict[str, Any]:
     if 0 <= index < len(pages) and isinstance(pages[index], dict):
         return pages[index]
     return {}
+
+
+def _looks_like_body_sentence_start(tokens: List[str], index: int, collected_count: int) -> bool:
+    if collected_count < 2 or index + 1 >= len(tokens):
+        return False
+    token = tokens[index]
+    next_token = tokens[index + 1]
+    if token.lower() in {"it", "the", "this", "these", "suppose", "consider", "notice"}:
+        return next_token[:1].islower()
+    return bool(
+        token[:1].isupper()
+        and next_token[:1].islower()
+        and next_token.lower() not in _RECOVERED_HEADING_STOPWORDS
+    )
+
+
+def _token_is_heading_word(token: str) -> bool:
+    if not token or len(token) > 32:
+        return False
+    if re.fullmatch(r"[A-Za-z][A-Za-z'-]*", token):
+        return True
+    return token in {"&", "/", "-"}

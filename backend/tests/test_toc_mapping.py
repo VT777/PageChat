@@ -6,6 +6,159 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from pageindex.toc_mapping import derive_toc_ranges, map_toc_draft_to_physical
 
 
+def test_embedded_code_toc_uses_physical_labels_even_when_contents_is_on_toc_page() -> None:
+    page_texts = [""] * 12
+    page_texts[2] = "Contents\nAbout the Federal Reserve\n1 Overview"
+    page_texts[4] = "About the Federal Reserve\nBody"
+    page_texts[6] = "1 Overview\nBody"
+    page_texts[8] = "2 Monetary Policy and Economic Developments\nBody"
+    draft = {
+        "type": "toc_draft",
+        "source": "code_toc",
+        "section_kind": "main_toc",
+        "items": [
+            {
+                "title": "Contents",
+                "level": 1,
+                "raw_page_label": 3,
+                "metadata": {"page_label_kind": "physical", "trusted_page_source": True},
+            },
+            {
+                "title": "About the Federal Reserve",
+                "level": 1,
+                "raw_page_label": 5,
+                "metadata": {"page_label_kind": "physical", "trusted_page_source": True},
+            },
+            {
+                "title": "1 Overview",
+                "level": 1,
+                "raw_page_label": 7,
+                "metadata": {"page_label_kind": "physical", "trusted_page_source": True},
+            },
+            {
+                "title": "2 Monetary Policy and Economic Developments",
+                "level": 1,
+                "raw_page_label": 9,
+                "metadata": {"page_label_kind": "physical", "trusted_page_source": True},
+            },
+        ],
+    }
+
+    mapped, report = map_toc_draft_to_physical(
+        draft,
+        page_texts=page_texts,
+        page_count=len(page_texts),
+        toc_pages=[3],
+        selected_path="embedded_toc",
+    )
+
+    assert [item["physical_index"] for item in mapped] == [3, 5, 7, 9]
+    assert {item["mapping_source"] for item in mapped} == {"physical_identity"}
+    assert report["status"] == "ok"
+    assert report["strategy"] == "physical_identity"
+    assert report["toc_page_leakage_count"] == 0
+
+
+def test_embedded_code_toc_does_not_remap_physical_bookmarks_with_repeated_titles() -> None:
+    page_texts = ["Body"] * 80
+    page_texts[0] = "Cover"
+    page_texts[6] = "Preface\nBody"
+    page_texts[10] = "Mathematical notation\nBody"
+    page_texts[12] = "Contents\nPreface\nMathematical notation\n1 Introduction"
+    page_texts[20] = "1 Introduction\nBody"
+    page_texts[23] = "1.1 Example Polynomial Curve Fitting\nBody"
+    page_texts[49] = "Mathematical notation appears again in an index-like paragraph"
+    page_texts[74] = "1 Introduction appears again in a bibliography context"
+    draft = {
+        "type": "toc_draft",
+        "source": "code_toc",
+        "section_kind": "main_toc",
+        "items": [
+            {"title": "Cover", "level": 1, "raw_page_label": 1, "metadata": {"page_label_kind": "physical", "trusted_page_source": True}},
+            {"title": "Preface", "level": 1, "raw_page_label": 7, "metadata": {"page_label_kind": "physical", "trusted_page_source": True}},
+            {"title": "Mathematical notation", "level": 1, "raw_page_label": 11, "metadata": {"page_label_kind": "physical", "trusted_page_source": True}},
+            {"title": "Contents", "level": 1, "raw_page_label": 13, "metadata": {"page_label_kind": "physical", "trusted_page_source": True}},
+            {"title": "1 Introduction", "level": 1, "raw_page_label": 21, "metadata": {"page_label_kind": "physical", "trusted_page_source": True}},
+            {"title": "1.1 Example Polynomial Curve Fitting", "level": 2, "raw_page_label": 24, "metadata": {"page_label_kind": "physical", "trusted_page_source": True}},
+        ],
+    }
+
+    mapped, report = map_toc_draft_to_physical(
+        draft,
+        page_texts=page_texts,
+        page_count=len(page_texts),
+        toc_pages=[13],
+        selected_path="embedded_toc",
+    )
+
+    assert [item["physical_index"] for item in mapped] == [1, 7, 11, 13, 21, 24]
+    assert report["status"] == "ok"
+    assert report["strategy"] == "physical_identity"
+    assert report["mapping_monotonic"] is True
+
+
+def test_map_toc_draft_maps_nested_content_outline_children() -> None:
+    page_texts = [
+        "Cover",
+        "Chapter 1 Overview\nBody",
+        "1.1 Problem statement\nBody",
+        "1.2 Method\nBody",
+        "Chapter 2 Results\nBody",
+    ]
+    draft = {
+        "type": "toc_draft",
+        "source": "content_outline",
+        "section_kind": "main_toc",
+        "items": [
+            {
+                "title": "Chapter 1 Overview",
+                "level": 1,
+                "raw_page_label": 2,
+                "structure": "1",
+                "children": [
+                    {
+                        "title": "1.1 Problem statement",
+                        "level": 2,
+                        "raw_page_label": 3,
+                        "structure": "1.1",
+                    },
+                    {
+                        "title": "1.2 Method",
+                        "level": 2,
+                        "raw_page_label": 4,
+                        "structure": "1.2",
+                    },
+                ],
+            },
+            {
+                "title": "Chapter 2 Results",
+                "level": 1,
+                "raw_page_label": 5,
+                "structure": "2",
+            },
+        ],
+    }
+
+    mapped, report = map_toc_draft_to_physical(
+        draft,
+        page_texts=page_texts,
+        page_count=len(page_texts),
+        toc_pages=[],
+        selected_path="content_outline",
+    )
+
+    assert [item["title"] for item in mapped] == [
+        "Chapter 1 Overview",
+        "1.1 Problem statement",
+        "1.2 Method",
+        "Chapter 2 Results",
+    ]
+    assert [item["physical_index"] for item in mapped] == [2, 3, 4, 5]
+    assert [item["structure"] for item in mapped] == ["1", "1.1", "1.2", "2"]
+    assert report["status"] == "ok"
+    assert report["item_count"] == 4
+
+
 def test_map_toc_draft_keeps_physical_page_labels_when_titles_match() -> None:
     page_texts = [
         "Cover",

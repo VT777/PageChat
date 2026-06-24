@@ -56,6 +56,7 @@ def map_toc_draft_to_physical(
             toc_pages=toc_pages or [],
             selected_path=selected_path,
             allowed_page_range=allowed_page_range,
+            draft_source=str(draft.get("source") or ""),
         )
         for item in mapped_items:
             item["section_kind"] = section_kind
@@ -78,6 +79,8 @@ def map_toc_draft_to_physical(
                 "boundary_anchor_count": report.get("boundary_anchor_count"),
                 "evidence_mode": report.get("evidence_mode"),
                 "page_mapping_score": report.get("page_mapping_score"),
+                "mapping_monotonic": report.get("mapping_monotonic"),
+                "toc_page_leakage_count": report.get("toc_page_leakage_count"),
                 "toc_pages": list(report.get("toc_pages") or []),
                 "excluded_pages": list(report.get("excluded_pages") or []),
                 "section_divider_pages": list(report.get("section_divider_pages") or []),
@@ -189,7 +192,10 @@ def _draft_sections(draft: Dict[str, Any]) -> List[Dict[str, Any]]:
         return [
             {
                 "kind": section.get("kind") or section.get("section_kind") or draft.get("section_kind"),
-                "items": list(section.get("items") or []),
+                "items": _flatten_draft_items(
+                    section.get("items") or [],
+                    section.get("kind") or section.get("section_kind") or draft.get("section_kind"),
+                ),
             }
             for section in draft["toc_sections"]
             if isinstance(section, dict)
@@ -197,9 +203,34 @@ def _draft_sections(draft: Dict[str, Any]) -> List[Dict[str, Any]]:
     return [
         {
             "kind": draft.get("section_kind") or "main_toc",
-            "items": list(draft.get("items") or []),
+            "items": _flatten_draft_items(
+                draft.get("items") or [],
+                draft.get("section_kind") or "main_toc",
+            ),
         }
     ]
+
+
+def _flatten_draft_items(items: Any, section_kind: Any) -> List[Dict[str, Any]]:
+    flattened: List[Dict[str, Any]] = []
+    default_kind = normalize_section_kind(section_kind)
+
+    def walk(raw_items: Any, parent_level: Optional[int] = None) -> None:
+        for raw in raw_items or []:
+            if not isinstance(raw, dict) or not str(raw.get("title") or "").strip():
+                continue
+            item = deepcopy(raw)
+            item.setdefault("section_kind", raw.get("toc_section_kind") or default_kind)
+            if parent_level is not None and not _positive_int(item.get("level")):
+                item["level"] = parent_level + 1
+            children = item.pop("children", None)
+            node_children = item.pop("nodes", None)
+            flattened.append(item)
+            level = _positive_int(item.get("level")) or parent_level or 1
+            walk(children or node_children or [], level)
+
+    walk(items)
+    return flattened
 
 
 def _prepare_mapper_item(raw: Dict[str, Any], section_kind: str) -> Dict[str, Any]:
@@ -231,6 +262,7 @@ def _map_section_items(
     toc_pages: List[int],
     selected_path: str,
     allowed_page_range: Optional[Tuple[int, int]] = None,
+    draft_source: str = "",
 ) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
     if not items:
         return [], _with_explicit_toc_pages({
@@ -248,6 +280,11 @@ def _map_section_items(
         page_count=page_count,
         toc_pages=toc_pages,
         allowed_page_range=allowed_page_range,
+        trusted_physical_labels=_has_trusted_physical_labels(
+            items,
+            selected_path=selected_path,
+            draft_source=draft_source,
+        ),
     )
     if identity is not None:
         mapped, report = identity
@@ -491,6 +528,7 @@ def _map_by_physical_identity(
     page_count: int,
     toc_pages: Iterable[int],
     allowed_page_range: Optional[Tuple[int, int]] = None,
+    trusted_physical_labels: bool = False,
 ) -> Optional[Tuple[List[Dict[str, Any]], Dict[str, Any]]]:
     indexed_pages = [
         (index, _positive_int(item.get("raw_page_label")))
@@ -510,7 +548,7 @@ def _map_by_physical_identity(
         return None
 
     toc_page_set = {page for page in (_positive_int(value) for value in (toc_pages or [])) if page is not None}
-    if any(page in toc_page_set for _, page in indexed_pages):
+    if any(page in toc_page_set for _, page in indexed_pages) and not trusted_physical_labels:
         return None
 
     page_text_map = page_texts_to_map(page_texts, page_count=page_count)
@@ -524,7 +562,12 @@ def _map_by_physical_identity(
     required_anchors = min(2, len(indexed_pages))
     if len(anchors) < required_anchors:
         return None
-    if len(anchors) / max(1, len(indexed_pages)) < 0.5:
+    if not trusted_physical_labels and len(anchors) / max(1, len(indexed_pages)) < 0.5:
+        return None
+
+    raw_pages = [page for _, page in indexed_pages]
+    mapping_monotonic = _pages_monotonic(raw_pages)
+    if not mapping_monotonic:
         return None
 
     mapped = [dict(item) for item in deepcopy(items)]
@@ -548,12 +591,36 @@ def _map_by_physical_identity(
         "item_count": len(items),
         "title_match_rate": round(len(anchors) / max(1, len(indexed_pages)), 4),
         "sample_match_rate": round(len(anchors) / max(1, len(indexed_pages)), 4),
-        "mapping_monotonic": _pages_monotonic([page for _, page in indexed_pages]),
+        "mapping_monotonic": mapping_monotonic,
         "estimated_ratio": round(1.0 - len(indexed_pages) / max(1, len(items)), 4),
         "toc_page_leakage_count": 0,
         "page_mapping_score": 0.95,
         "reasons": [],
     }
+
+
+def _has_trusted_physical_labels(
+    items: List[Dict[str, Any]],
+    *,
+    selected_path: str,
+    draft_source: str,
+) -> bool:
+    if selected_path != "embedded_toc":
+        return False
+    source = str(draft_source or "").strip()
+    if source == "code_toc":
+        return True
+    for item in items:
+        metadata = item.get("metadata")
+        if not isinstance(metadata, dict):
+            continue
+        if metadata.get("trusted_page_source") is True:
+            return True
+        if str(metadata.get("page_label_kind") or "").strip().lower() == "physical":
+            return True
+        if str(metadata.get("page_source") or "").strip() in {"bookmarks", "links", "pdf_outline", "outline"}:
+            return True
+    return False
 
 
 def _merge_section_reports(
@@ -596,6 +663,8 @@ def _merge_section_reports(
         ),
         "title_match_rate": _weighted_title_match_rate(section_reports),
         "page_mapping_score": _weighted_page_mapping_score(section_reports),
+        "mapping_monotonic": all(report.get("mapping_monotonic") is not False for report in section_reports),
+        "toc_page_leakage_count": sum(int(report.get("toc_page_leakage_count") or 0) for report in section_reports),
         "main_title_match_rate": _main_title_match_rate(section_reports),
         "main_sample_checked_count": _main_sample_checked_count(section_reports),
         "main_strong_anchor_count": _main_strong_anchor_count(section_reports),

@@ -76,8 +76,29 @@ def test_quality_gate_hard_fails_body_ranges_overlapping_toc_pages() -> None:
 
     assert report["status"] == "failed:toc_quality"
     assert "toc_page_leakage" in report["hard_fail_reasons"]
-    assert report["toc_page_leakage_count"] == 3
+    assert report["toc_page_leakage_count"] == 2
     assert report["toc_page_leakage_sample"][0]["page"] == 5
+
+
+def test_quality_gate_allows_legal_front_matter_and_contents_overlap_with_toc_page() -> None:
+    report = build_index_quality_report(
+        {
+            "structure": [
+                _node("Preface", 1, 4),
+                _node("Contents", 3, 3),
+                _node("Introduction", 3, 6),
+                _node("Interpretation and Application", 6, 10),
+            ],
+            "diagnostics": {
+                "toc_page_detection": {"pages": [3]},
+            },
+            "route_decision": {"selected_path": "embedded_toc", "toc_source": "code_toc"},
+        },
+        page_count=10,
+    )
+
+    assert "toc_page_leakage" not in report["hard_fail_reasons"]
+    assert report["toc_page_leakage_count"] == 0
 
 
 def test_quality_gate_hard_fails_failed_mapping_report() -> None:

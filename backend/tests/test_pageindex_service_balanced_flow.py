@@ -625,3 +625,76 @@ def test_fast_embedded_attempt_failure_can_retry_balanced() -> None:
         requested_mode="smart",
         initial_execution_mode="balanced",
     )
+
+
+def test_quality_retry_keeps_embedded_code_toc_available() -> None:
+    route_decision = {"selected_path": "embedded_toc", "toc_source": "code_toc"}
+
+    assert not PageIndexService._should_disable_code_toc_for_balanced_retry(
+        route_decision,
+        retry_reason="quality_failure",
+    )
+    assert PageIndexService._should_disable_code_toc_for_balanced_retry(
+        route_decision,
+        retry_reason="no_candidate",
+    )
+
+
+def test_no_candidate_payload_is_failed_report_not_exception_shape() -> None:
+    payload = PageIndexService._build_no_candidate_index_payload(
+        file_name="sample.pdf",
+        page_count=12,
+        analysis={
+            "text_coverage": 1.0,
+            "toc_attempt_chain": [
+                {
+                    "path": "content_outline",
+                    "status": "rejected",
+                    "failure_reasons": ["draft_empty"],
+                }
+            ],
+        },
+        route_decision={
+            "selected_path": "content_outline",
+            "execution_mode": "balanced",
+            "attempts": [{"path": "content_outline"}],
+        },
+        requested_mode="smart",
+        execution_mode="balanced",
+        initial_execution_mode="balanced",
+        failure_reasons=["draft_empty"],
+    )
+
+    assert payload["doc_name"] == "sample.pdf"
+    assert payload["structure"][0]["start_index"] == 1
+    assert payload["structure"][0]["end_index"] == 12
+    assert payload["route_decision"]["attempt_chain"][0]["failure_reasons"] == ["draft_empty"]
+    assert payload["quality_report"]["status"] == "failed:toc_pipeline"
+    assert payload["quality_report"]["hard_fail_reasons"] == ["no_toc_candidate"]
+
+
+def test_quality_failure_payload_is_failed_report_not_exception_shape() -> None:
+    payload = {
+        "doc_name": "sample.pdf",
+        "page_count": 12,
+        "structure": [{"title": "Chapter", "start_index": 1, "end_index": 12}],
+        "route_decision": {"selected_path": "content_outline"},
+        "quality_report": {"status": "needs_review", "hard_fail_reasons": []},
+        "enrichment_status": "pending",
+    }
+
+    PageIndexService._mark_toc_quality_failure_payload(
+        payload,
+        ["content_mapping:mapping_non_monotonic", "quality_report:toc_content_mapping_failed"],
+    )
+
+    assert payload["enrichment_status"] == "failed"
+    assert payload["quality_report"]["status"] == "failed:toc_quality"
+    assert payload["quality_report"]["hard_fail_reasons"] == [
+        "content_mapping:mapping_non_monotonic",
+        "quality_report:toc_content_mapping_failed",
+    ]
+    assert payload["route_decision"]["quality_failure_reasons"] == [
+        "content_mapping:mapping_non_monotonic",
+        "quality_report:toc_content_mapping_failed",
+    ]

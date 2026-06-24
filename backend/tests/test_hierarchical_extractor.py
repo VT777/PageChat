@@ -144,6 +144,59 @@ def test_page_labeled_outline_repairs_llm_with_text_heading_facts(monkeypatch):
     assert experimental["nodes"][2]["physical_index"] == 11
 
 
+def test_page_labeled_outline_merges_numbered_text_fact_with_same_page_llm_title(monkeypatch):
+    async def fake_llm_acompletion(_model, _prompt):
+        return json.dumps(
+            {
+                "items": [
+                    {
+                        "structure": "2",
+                        "title": "Programming with ML Modules",
+                        "physical_index": "<physical_index_10>",
+                    },
+                    {
+                        "structure": "2.8",
+                        "title": "Good Style",
+                        "physical_index": "<physical_index_18>",
+                    },
+                    {
+                        "structure": "2.10",
+                        "title": "Bad Style",
+                        "physical_index": "<physical_index_19>",
+                    },
+                ]
+            }
+        )
+
+    monkeypatch.setattr(hierarchical_extractor, "llm_acompletion", fake_llm_acompletion)
+
+    page_texts = [""] * 10
+    page_texts[0] = "2 Programming with ML Modules\nBody"
+    page_texts[8] = "2.9 Good Style\nIt is good practice to keep signatures small."
+    page_texts[9] = "2.10 Bad Style\nBad style examples."
+
+    result = asyncio.run(
+        hierarchical_extractor.extract_page_labeled_content_outline(
+            page_texts,
+            model="test-model",
+            physical_start_page=10,
+        )
+    )
+
+    titles = []
+
+    def collect(nodes):
+        for node in nodes:
+            titles.append(node["title"])
+            collect(node.get("nodes") or [])
+
+    collect(result["items"])
+
+    assert titles.count("Good Style") == 0
+    assert titles.count("2.9 Good Style") == 1
+    assert titles.count("Bad Style") == 1
+
+
 def test_page_labeled_full_tree_continues_grouped_text(monkeypatch):
     prompts = []
 

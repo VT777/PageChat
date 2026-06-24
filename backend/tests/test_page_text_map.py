@@ -267,3 +267,269 @@ def test_preprocess_ocr_document_prepends_recoverable_text_layer_heading() -> No
     assert text.startswith("3 The Static Semantics of Modules\n")
     assert "sig\n\ntype table" in text
     assert page_map.entries[0].diagnostics["text_layer_heading_supplemented"] is True
+
+
+def test_preprocess_ocr_document_prepends_fragmented_appendix_heading() -> None:
+    from pageindex.preprocess_page_text import preprocess_page_text_map
+
+    async def fake_ocr(_file_path, page_indices, *, prompt, analysis):
+        assert list(page_indices) == [0]
+        return {
+            1: "The following files are available in the directory /usr/cheops/mads/course"
+        }
+
+    analysis = {
+        "page_count": 1,
+        "page_list": [
+            (
+                "App\nendix\nB:\nFiles\n"
+                "The\nfollo\nwing\nfiles\nare\navailable\n",
+                2,
+            )
+        ],
+        "text_coverage": 1.0,
+        "image_coverage": 0.2,
+        "image_only_pages": [],
+        "garbled_pages": [0],
+        "is_image_only_pdf": False,
+        "is_garbled_pdf": True,
+        "text_layer_quality": "garbled",
+    }
+
+    page_map = asyncio.run(
+        preprocess_page_text_map(
+            "garbled.pdf",
+            analysis,
+            ocr_pages_fn=fake_ocr,
+        )
+    )
+
+    text = page_map.page_texts()[0]
+    assert text.startswith("Appendix B: Files\n")
+    assert "The following files are available" in text
+    assert page_map.entries[0].diagnostics["text_layer_heading_supplemented"] is True
+
+
+def test_preprocess_ocr_document_recovers_fragmented_numbered_heading_words() -> None:
+    from pageindex.preprocess_page_text import preprocess_page_text_map
+
+    async def fake_ocr(_file_path, page_indices, *, prompt, analysis):
+        assert list(page_indices) == [0]
+        return {1: "It is good practice to keep signatures as small as possible."}
+
+    analysis = {
+        "page_count": 1,
+        "page_list": [
+            (
+                "\x02.\x09\nGo\no\nd\nSt\nyle\n"
+                "It\nis\ngo\no\nd\npractice\nto\nkeep\nsignatures\n",
+                2,
+            )
+        ],
+        "text_coverage": 1.0,
+        "image_coverage": 0.2,
+        "image_only_pages": [],
+        "garbled_pages": [0],
+        "is_image_only_pdf": False,
+        "is_garbled_pdf": True,
+        "text_layer_quality": "garbled",
+    }
+
+    page_map = asyncio.run(
+        preprocess_page_text_map(
+            "garbled.pdf",
+            analysis,
+            ocr_pages_fn=fake_ocr,
+        )
+    )
+
+    text = page_map.page_texts()[0]
+    assert text.startswith("2.9 Good Style\n")
+    assert page_map.entries[0].diagnostics["text_layer_heading_supplemented"] is True
+
+
+def test_preprocess_ocr_document_recovers_short_numbered_heading() -> None:
+    from pageindex.preprocess_page_text import preprocess_page_text_map
+
+    async def fake_ocr(_file_path, page_indices, *, prompt, analysis):
+        assert list(page_indices) == [0]
+        return {1: "structure Stack = struct\nbody"}
+
+    analysis = {
+        "page_count": 1,
+        "page_list": [
+            (
+                "\x03.\x02\nNames\n"
+                "structure\nStack\n=\nstruct\ntype\nelt\n=\nint\n",
+                2,
+            )
+        ],
+        "text_coverage": 1.0,
+        "image_coverage": 0.2,
+        "image_only_pages": [],
+        "garbled_pages": [0],
+        "is_image_only_pdf": False,
+        "is_garbled_pdf": True,
+        "text_layer_quality": "garbled",
+    }
+
+    page_map = asyncio.run(
+        preprocess_page_text_map(
+            "garbled.pdf",
+            analysis,
+            ocr_pages_fn=fake_ocr,
+        )
+    )
+
+    text = page_map.page_texts()[0]
+    assert text.startswith("3.2 Names\n")
+    assert page_map.entries[0].diagnostics["text_layer_heading_supplemented"] is True
+
+
+def test_preprocess_ocr_document_recovers_version_heading_without_body_text() -> None:
+    from pageindex.preprocess_page_text import preprocess_page_text_map
+
+    async def fake_ocr(_file_path, page_indices, *, prompt, analysis):
+        assert list(page_indices) == [0]
+        return {1: "The first version is just able to type check integer constants."}
+
+    analysis = {
+        "page_count": 1,
+        "page_list": [
+            (
+                "\x04.\x01\nVERSION\n1:\nThe\nbare\nT\nyp\nec\nhec\nk\ner\n"
+                "(App\nendix\nA)\nThe\nfirst\nversion\nis\njust\nable\n",
+                2,
+            )
+        ],
+        "text_coverage": 1.0,
+        "image_coverage": 0.2,
+        "image_only_pages": [],
+        "garbled_pages": [0],
+        "is_image_only_pdf": False,
+        "is_garbled_pdf": True,
+        "text_layer_quality": "garbled",
+    }
+
+    page_map = asyncio.run(
+        preprocess_page_text_map(
+            "garbled.pdf",
+            analysis,
+            ocr_pages_fn=fake_ocr,
+        )
+    )
+
+    text = page_map.page_texts()[0]
+    assert text.startswith("4.1 VERSION 1: The bare Typechecker\n")
+    assert "The first version is just able" in text
+
+
+def test_preprocess_ocr_document_recovers_heading_with_split_inner_word() -> None:
+    from pageindex.preprocess_page_text import preprocess_page_text_map
+
+    async def fake_ocr(_file_path, page_indices, *, prompt, analysis):
+        assert list(page_indices) == [0]
+        return {1: "The purpose of this lecture is to show a worked example."}
+
+    analysis = {
+        "page_count": 1,
+        "page_list": [
+            (
+                "\x04\nImplemen\nting\nan\nIn\nterpreter\nin\nML\n"
+                "The\npurp\nose\nof\nthis\nlecture\nis\n",
+                2,
+            )
+        ],
+        "text_coverage": 1.0,
+        "image_coverage": 0.2,
+        "image_only_pages": [],
+        "garbled_pages": [0],
+        "is_image_only_pdf": False,
+        "is_garbled_pdf": True,
+        "text_layer_quality": "garbled",
+    }
+
+    page_map = asyncio.run(
+        preprocess_page_text_map(
+            "garbled.pdf",
+            analysis,
+            ocr_pages_fn=fake_ocr,
+        )
+    )
+
+    text = page_map.page_texts()[0]
+    assert text.startswith("4 Implementing an Interpreter in ML\n")
+
+
+def test_preprocess_ocr_document_recovers_heading_with_single_letter_fragment() -> None:
+    from pageindex.preprocess_page_text import preprocess_page_text_map
+
+    async def fake_ocr(_file_path, page_indices, *, prompt, analysis):
+        assert list(page_indices) == [0]
+        return {1: "Dynamically, the body of a functor is not evaluated."}
+
+    analysis = {
+        "page_count": 1,
+        "page_list": [
+            (
+                "\x03.\x08\nDecorating\nF\nunctors\nDynamically\n,\n"
+                "the\nb\no\ndy\nof\na\nfunctor\n",
+                2,
+            )
+        ],
+        "text_coverage": 1.0,
+        "image_coverage": 0.2,
+        "image_only_pages": [],
+        "garbled_pages": [0],
+        "is_image_only_pdf": False,
+        "is_garbled_pdf": True,
+        "text_layer_quality": "garbled",
+    }
+
+    page_map = asyncio.run(
+        preprocess_page_text_map(
+            "garbled.pdf",
+            analysis,
+            ocr_pages_fn=fake_ocr,
+        )
+    )
+
+    text = page_map.page_texts()[0]
+    assert text.startswith("3.8 Decorating Functors Dynamically\n")
+
+
+def test_preprocess_ocr_document_ignores_large_integer_body_fragments() -> None:
+    from pageindex.preprocess_page_text import preprocess_page_text_map
+
+    async def fake_ocr(_file_path, page_indices, *, prompt, analysis):
+        assert list(page_indices) == [0]
+        return {1: "Let my type be a sample expression."}
+
+    analysis = {
+        "page_count": 1,
+        "page_list": [
+            (
+                "\x12\nLet\nmy\ntype\nbe\na\nsample\nexpression\n",
+                2,
+            )
+        ],
+        "text_coverage": 1.0,
+        "image_coverage": 0.2,
+        "image_only_pages": [],
+        "garbled_pages": [0],
+        "is_image_only_pdf": False,
+        "is_garbled_pdf": True,
+        "text_layer_quality": "garbled",
+    }
+
+    page_map = asyncio.run(
+        preprocess_page_text_map(
+            "garbled.pdf",
+            analysis,
+            ocr_pages_fn=fake_ocr,
+        )
+    )
+
+    text = page_map.page_texts()[0]
+    assert text == "Let my type be a sample expression."
+    assert "text_layer_heading_supplemented" not in page_map.entries[0].diagnostics

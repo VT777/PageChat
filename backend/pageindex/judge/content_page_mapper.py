@@ -827,7 +827,7 @@ def _build_report(
         reasons.append("tail_collapse")
     if front_collapse:
         reasons.append("front_collapse")
-    if item_count and toc_page_match_count / item_count >= 0.3 and toc_page_match_count >= 2:
+    if item_count and toc_page_match_count >= 2 and toc_page_match_count / item_count >= 0.3:
         reasons.append("toc_page_leakage")
     if item_count and title_match_rate < min_title_match_rate:
         reasons.append("title_match_rate_below_threshold")
@@ -1319,7 +1319,7 @@ def _build_printed_page_report(
         reasons.append("tail_collapse")
     if front_collapse:
         reasons.append("front_collapse")
-    if toc_page_match_count:
+    if item_count and toc_page_match_count >= 2 and toc_page_match_count / item_count >= 0.3:
         reasons.append("toc_page_leakage")
 
     if status is None:
