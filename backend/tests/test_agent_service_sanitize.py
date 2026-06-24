@@ -48,6 +48,32 @@ def test_sanitize_tool_result_omits_top_level_image_payload() -> None:
     assert client["image_path"] == "report.pdf/img-1.jpeg"
 
 
+def test_sanitize_tool_result_omits_anysearch_raw_content() -> None:
+    raw = {
+        "success": True,
+        "query": "PageChat",
+        "results": [
+            {
+                "title": "Result",
+                "url": "https://example.test",
+                "snippet": "Short",
+                "content": "A" * 5000,
+                "content_preview": "A" * 700,
+                "source": "anysearch",
+            }
+        ],
+    }
+
+    history = AgentService._sanitize_tool_result_for_history(raw)
+    client = AgentService._sanitize_tool_result_for_client(raw)
+
+    assert "content" not in history["results"][0]
+    assert "content" not in client["results"][0]
+    assert history["results"][0]["content_preview"] == "A" * 700
+    assert "A" * 701 not in str(history)
+    assert "A" * 701 not in str(client)
+
+
 def test_vision_message_supports_embedded_and_full_page_image_shapes() -> None:
     embedded = AgentService._vision_message_for_tool_result(
         "get_document_image",

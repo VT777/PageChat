@@ -709,9 +709,15 @@ class AgentService:
                 cleaned = dict(result)
                 cleaned["data"] = "[omitted-base64-image]"
                 return cleaned
+            is_anysearch_result = (
+                result.get("source") == "anysearch"
+                or "content_preview" in result
+            )
             cleaned = {}
             for k, v in result.items():
                 if k in {"page_image_base64", "image_base64"}:
+                    continue
+                if is_anysearch_result and k == "content":
                     continue
                 cleaned[k] = AgentService._sanitize_tool_result_for_history(v)
             return cleaned
