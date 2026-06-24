@@ -1,6 +1,14 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { readFileSync } from 'node:fs'
 import { createPinia, setActivePinia } from 'pinia'
+import { chatApi } from '@/api'
 import { useChatStore, type Message } from './chat'
+
+vi.mock('@/api', () => ({
+  chatApi: {
+    stream: vi.fn(),
+  },
+}))
 
 function message(id: string, role: Message['role'], content: string): Message {
   return {
@@ -23,10 +31,24 @@ function installLocalStorage() {
   })
 }
 
+function streamResponse(events = 'event: done\ndata: {}\n\n') {
+  const encoder = new TextEncoder()
+  return {
+    body: new ReadableStream({
+      start(controller) {
+        controller.enqueue(encoder.encode(events))
+        controller.close()
+      },
+    }),
+  } as Response
+}
+
 describe('chat rollback', () => {
   beforeEach(() => {
     installLocalStorage()
     setActivePinia(createPinia())
+    vi.mocked(chatApi.stream).mockReset()
+    vi.mocked(chatApi.stream).mockResolvedValue(streamResponse())
   })
 
   it('keeps a rollback snapshot that can restore removed messages', () => {
@@ -422,5 +444,24 @@ describe('chat rollback', () => {
       firstMessage: '现在有哪些文件夹',
       messageCount: 2,
     })
+  })
+
+  it('sends web search as structured chat state', async () => {
+    const store = useChatStore()
+
+    await store.sendMessage('查一下最新资料', { web_search: true })
+
+    const payload = vi.mocked(chatApi.stream).mock.calls[0][0]
+    expect(payload).toMatchObject({
+      question: '查一下最新资料',
+      web_search: true,
+    })
+    expect(payload.question).not.toContain('[Context:')
+  })
+
+  it('does not encode web search as a prompt hint in ChatView', () => {
+    const source = readFileSync(new URL('../views/ChatView.vue', import.meta.url), 'utf8')
+
+    expect(source).not.toContain('Web Search enabled')
   })
 })

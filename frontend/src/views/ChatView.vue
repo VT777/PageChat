@@ -107,15 +107,10 @@ function buildScope(payload: ComposerPayload): ChatScopeRequest | undefined {
 async function handleSubmit(payload: ComposerPayload) {
   pendingRollback.value = null
   chatStore.clearRollbackHistory()
-  const contextHints = [
-    payload.webSearch ? 'Web Search enabled' : '',
-    payload.images.length > 0 ? `${payload.images.length} image${payload.images.length > 1 ? 's' : ''} attached` : '',
-  ].filter(Boolean)
-  const question = contextHints.length > 0
-    ? `${payload.text}\n\n[Context: ${contextHints.join(', ')}]`
-    : payload.text
-
-  await chatStore.sendMessage(question, buildScope(payload))
+  await chatStore.sendMessage(payload.text, {
+    ...buildScope(payload),
+    web_search: payload.webSearch,
+  })
   await nextTick()
   scrollToBottom()
 }

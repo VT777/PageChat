@@ -24,4 +24,5 @@ export interface ChatScopeRequest {
   include_subfolders?: boolean
   document_ids?: string[]
   strict_scope?: boolean
+  web_search?: boolean
 }
