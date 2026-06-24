@@ -17,8 +17,8 @@ def test_expected_toc_reference_fixture_covers_all_ai_knowledge_documents() -> N
     fixture = _load_fixture()
     documents = fixture.get("documents")
 
-    assert fixture["source_markdown"] == str(REFERENCE_MD)
-    assert fixture["current_e2e_baseline"] == str(CURRENT_BASELINE_MD)
+    assert fixture["source_markdown"] == REFERENCE_MD.relative_to(ROOT).as_posix()
+    assert fixture["current_e2e_baseline"] == CURRENT_BASELINE_MD.relative_to(ROOT).as_posix()
     assert isinstance(documents, list)
     assert [doc["id"] for doc in documents] == [f"T{idx:02d}" for idx in range(1, 14)]
 
