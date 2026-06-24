@@ -1,6 +1,6 @@
 import aiosqlite
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from app.api.auth import require_auth
 from app.models.database import get_db
@@ -10,6 +10,7 @@ from app.services.ocr_engines.openai_compatible_adapter import OpenAICompatibleO
 from app.services.ocr_engines.paddleocr_job_adapter import PaddleOCRJobAdapter
 from app.services.ocr_settings_service import OCRSettingsService
 from app.services.runtime_settings_service import runtime_settings_service
+from app.services.web_search_settings_service import WebSearchSettingsService
 
 router = APIRouter(prefix="/api/settings", tags=["settings"])
 
@@ -79,12 +80,26 @@ class OCRRoutesUpdate(BaseModel):
     routes: dict[str, str | None]
 
 
+class WebSearchSettingsUpdate(BaseModel):
+    provider: str = "anysearch"
+    mode: str = "on-demand"
+    api_key: str | None = None
+    zone: str = "cn"
+    language: str = "zh-CN"
+    max_results: int = 5
+    content_types: list[str] = Field(default_factory=lambda: ["web", "news"])
+
+
 def _model_settings_service(db: aiosqlite.Connection) -> ModelSettingsService:
     return ModelSettingsService(db)
 
 
 def _ocr_settings_service(db: aiosqlite.Connection) -> OCRSettingsService:
     return OCRSettingsService(db)
+
+
+def _web_search_settings_service(db: aiosqlite.Connection) -> WebSearchSettingsService:
+    return WebSearchSettingsService(db)
 
 
 @router.get("/pageindex")
@@ -101,6 +116,37 @@ async def update_pageindex_settings(
         return runtime_settings_service.update_pageindex_mode(payload.pageindex_mode)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.get("/web-search")
+async def get_web_search_settings(
+    db: aiosqlite.Connection = Depends(get_db),
+    current_user: dict = Depends(require_auth),
+):
+    service = _web_search_settings_service(db)
+    return await service.get_settings(current_user["id"])
+
+
+@router.put("/web-search")
+async def update_web_search_settings(
+    payload: WebSearchSettingsUpdate,
+    db: aiosqlite.Connection = Depends(get_db),
+    current_user: dict = Depends(require_auth),
+):
+    service = _web_search_settings_service(db)
+    try:
+        return await service.save_settings(
+            user_id=current_user["id"],
+            provider=payload.provider,
+            mode=payload.mode,
+            api_key=payload.api_key,
+            zone=payload.zone,
+            language=payload.language,
+            max_results=payload.max_results,
+            content_types=payload.content_types,
+        )
+    except (RuntimeError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
 
 
 @router.get("/model-providers/presets")
