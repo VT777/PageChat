@@ -24,23 +24,6 @@ def test_chat_request_accepts_folder_scope_fields() -> None:
     assert request.strict_scope is False
 
 
-def test_agent_injects_folder_scope_into_find_related_documents() -> None:
-    patched = AgentService._inject_default_doc_id(
-        "find_related_documents",
-        {"query": "alpha"},
-        document_ids=["doc-a", "doc-b"],
-        preferred_document_ids=["doc-a"],
-        folder_id="folder-a",
-        include_subfolders=True,
-        strict_scope=True,
-    )
-
-    assert patched["document_ids"] == ["doc-a"]
-    assert patched["folder_id"] == "folder-a"
-    assert patched["include_subfolders"] is True
-    assert patched["strict_scope"] is True
-
-
 def test_agent_injects_folder_scope_into_browse_documents() -> None:
     patched = AgentService._inject_default_doc_id(
         "browse_documents",

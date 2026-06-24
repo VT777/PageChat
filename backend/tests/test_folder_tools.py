@@ -36,7 +36,8 @@ class FakePageIndexService:
 
 
 class FakeDocumentService:
-    pass
+    async def get_indexed_documents(self, user_id: str | None = None):
+        return [_doc("doc-a", "a.pdf", folder_id="folder-a")]
 
 
 class FakeFolderService:
@@ -125,16 +126,16 @@ def _tool_schema(name: str) -> dict:
 
 
 def test_folder_tool_descriptions_are_readable() -> None:
-    tree = _tool_schema("list_folder_tree")
-    contents = _tool_schema("list_folder_contents")
+    tree = _tool_schema("view_folder_structure")
+    contents = _tool_schema("browse_documents")
 
-    assert "current user's folder tree" in tree["description"]
-    assert "compact child folders and documents" in contents["description"]
+    assert "folder structure" in tree["description"]
+    assert "Browse or search documents" in contents["description"]
     assert "鑾" not in tree["description"]
     assert "鑾" not in contents["description"]
 
 
-def test_list_folder_tree_tool_returns_current_user_tree(monkeypatch) -> None:
+def test_view_folder_structure_tool_returns_current_user_tree(monkeypatch) -> None:
     async def run() -> None:
         fake = FakeFolderService()
         monkeypatch.setattr(
@@ -144,17 +145,17 @@ def test_list_folder_tree_tool_returns_current_user_tree(monkeypatch) -> None:
             FakePageIndexService(), FakeDocumentService(), user_id="user-a"
         )
 
-        result = await executor.execute("list_folder_tree", {})
+        result = await executor.execute("view_folder_structure", {})
 
-        assert result["status"] == "success"
+        assert result["success"] is True
         assert fake.tree_calls == ["user-a"]
-        assert result["data"]["folders"][0]["id"] == "folder-a"
-        assert result["data"]["folders"][0]["children"][0]["id"] == "folder-child"
+        assert result["tree"]["children"][0]["id"] == "folder-a"
+        assert result["tree"]["children"][0]["children"][0]["id"] == "folder-child"
 
     asyncio.run(run())
 
 
-def test_list_folder_contents_tool_returns_compact_documents_and_pagination(
+def test_browse_documents_returns_compact_documents_and_pagination(
     monkeypatch,
 ) -> None:
     async def run() -> None:
@@ -166,32 +167,32 @@ def test_list_folder_contents_tool_returns_compact_documents_and_pagination(
             FakePageIndexService(), FakeDocumentService(), user_id="user-a"
         )
 
-        result = await executor.execute(
-            "list_folder_contents",
-            {"folder_id": "folder-a", "page": 2, "page_size": 1},
-        )
+        result = await executor.execute("browse_documents", {"folder_id": "folder-a"})
 
-        assert result["status"] == "success"
-        assert fake.contents_calls == [("folder-a", 2, 1, "user-a")]
-        assert result["data"]["page"] == 2
-        assert result["data"]["documents"] == [
+        assert result["success"] is True
+        assert fake.contents_calls == [("folder-a", 1, 20, "user-a")]
+        assert result["documents"] == [
             {
                 "doc_id": "doc-a",
-                "doc_name": "a.pdf",
-                "file_type": ".pdf",
+                "name": "a.pdf",
+                "path": "Projects",
+                "folder_id": "folder-a",
                 "status": "completed",
-                "page_count": 3,
-                "folder_path": "Projects",
+                "created_at": None,
                 "description": "brief",
-                "updated_at": "2026-06-10T00:00:00",
+                "page_count": 3,
             }
         ]
-        assert result["next_steps"]["suggested_tool"] == "browse_documents"
+        assert result["folders"][0]["id"] == "folder-child"
+        assert result["next_steps"]["options"] == [
+            "Use get_document_structure() before reading pages",
+            "If results do not match the user's intent, retry with recursive=true or a refined query",
+        ]
 
     asyncio.run(run())
 
 
-def test_list_folder_contents_returns_clear_error_for_invalid_scope(
+def test_browse_documents_returns_clear_error_for_invalid_scope(
     monkeypatch,
 ) -> None:
     async def run() -> None:
@@ -203,13 +204,10 @@ def test_list_folder_contents_returns_clear_error_for_invalid_scope(
             FakePageIndexService(), FakeDocumentService(), user_id="user-a"
         )
 
-        result = await executor.execute(
-            "list_folder_contents",
-            {"folder_id": "missing-folder"},
-        )
+        result = await executor.execute("browse_documents", {"folder_id": "missing-folder"})
 
         assert result == {
-            "error": "工具 list_folder_contents 执行失败: Folder not found or access denied"
+            "error": "工具 browse_documents 执行失败: Folder not found or access denied"
         }
 
     asyncio.run(run())

@@ -95,8 +95,30 @@ def test_navigation_tool_catalog_exposes_official_style_tools() -> None:
         "get_page_image",
         "search_within_document",
     }.issubset(names)
+    assert {
+        "find_related_documents",
+        "list_folder_tree",
+        "list_folder_contents",
+        "list_documents",
+    }.isdisjoint(names)
     assert _tool_schema("get_document_image")["parameters"]["required"] == ["image_path"]
     assert _tool_schema("get_page_image")["parameters"]["required"] == ["page"]
+
+
+def test_legacy_document_tools_are_not_executable() -> None:
+    async def run() -> None:
+        executor = _executor({})
+
+        for tool_name, args in [
+            ("find_related_documents", {"query": "alpha"}),
+            ("list_folder_tree", {}),
+            ("list_folder_contents", {"folder_id": "folder-a"}),
+            ("list_documents", {}),
+        ]:
+            result = await executor.execute(tool_name, args)
+            assert result == {"error": f"未知工具: {tool_name}"}
+
+    asyncio.run(run())
 
 
 def test_visual_page_content_returns_image_refs_without_ocr_text() -> None:

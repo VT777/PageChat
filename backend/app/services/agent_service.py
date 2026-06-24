@@ -1,5 +1,5 @@
 """
-Agent 核心服务 - KnowClaw
+Agent 核心服务 - PageChat
 基于 PageIndex 官方流程的 Function Calling Agent
 支持 thinking 流式展示和多模态 PDF 页面
 """
@@ -30,12 +30,8 @@ _CONVERSATION_MESSAGES: Dict[str, List[Dict[str, Any]]] = {}
 
 # 不缓存的工具列表（需要实时数据或可能携带大 payload 的工具）
 _NON_CACHEABLE_TOOLS = {
-    "list_documents",
-    "list_folder_tree",
-    "list_folder_contents",
     "view_folder_structure",
     "browse_documents",
-    "find_related_documents",
     "get_document_image",
     "get_page_image",
 }
@@ -403,12 +399,6 @@ class AgentService:
                     tool_args = json.loads(tc["function"]["arguments"])
                 except json.JSONDecodeError:
                     tool_args = {}
-
-                # find_related_documents 只接受 query 参数
-                if tool_name == "find_related_documents" and "query" not in tool_args:
-                    # 当 LLM 遗漏 query 时，使用用户问题作为 fallback
-                    fallback_query = tool_args.get("query") or question or ""
-                    tool_args = {"query": fallback_query}
 
                 tool_args = self._inject_default_doc_id(
                     tool_name,
@@ -917,21 +907,6 @@ class AgentService:
                 patched["folder_id"] = folder_id
             if include_subfolders and "recursive" not in patched:
                 patched["recursive"] = include_subfolders
-            return patched
-
-        if tool_name == "find_related_documents":
-            if preferred_document_ids and not patched.get("user_selected_document_ids"):
-                patched["user_selected_document_ids"] = preferred_document_ids
-            if preferred_document_ids and not patched.get("document_ids"):
-                patched["document_ids"] = preferred_document_ids
-            if folder_id and not patched.get("folder_id"):
-                patched["folder_id"] = folder_id
-            if include_subfolders and "include_subfolders" not in patched:
-                patched["include_subfolders"] = include_subfolders
-            if strict_scope is not None and "strict_scope" not in patched:
-                patched["strict_scope"] = strict_scope
-            if "allow_global_expansion" not in patched:
-                patched["allow_global_expansion"] = True
             return patched
 
         return tool_args
