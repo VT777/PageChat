@@ -106,6 +106,7 @@ def test_migrations_create_history_and_are_idempotent() -> None:
                 "20260610_002_add_core_indexes",
                 "20260611_003_add_model_settings_tables",
                 "20260615_004_add_ocr_settings_tables",
+                "20260625_005_add_web_search_settings_table",
             ]
 
     asyncio.run(run())
@@ -133,6 +134,30 @@ def test_migrations_add_ocr_settings_tables() -> None:
                 "is_default",
             }.issubset(profile_columns)
             assert {"user_id", "task", "profile_id"}.issubset(override_columns)
+
+    asyncio.run(run())
+
+
+def test_migrations_add_web_search_settings_table() -> None:
+    async def run() -> None:
+        async with aiosqlite.connect(":memory:") as db:
+            await _create_bootstrap_schema(db)
+
+            await run_migrations(db)
+
+            columns = await _column_names(db, "web_search_settings")
+
+            assert {
+                "user_id",
+                "provider",
+                "mode",
+                "api_key_ciphertext",
+                "api_key_mask",
+                "zone",
+                "language",
+                "max_results",
+                "content_types_json",
+            }.issubset(columns)
 
     asyncio.run(run())
 
