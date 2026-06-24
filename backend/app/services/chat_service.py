@@ -14,6 +14,8 @@ from app.services.document_service import DocumentService
 from app.core.llm import chat_by_scenario
 from app.prompts import CHAT_SYSTEM_PROMPT, build_tool_catalog
 from app.services.tool_executor import AGENT_TOOLS
+from app.services.web_search_settings_service import WebSearchSettingsService
+from app.services.web_search_tool import WEB_SEARCH_TOOL
 
 
 class ChatService:
@@ -33,6 +35,21 @@ class ChatService:
 
     def _history_message_limit(self) -> int:
         return max(1, config.MULTITURN_MAX_USER_ROUNDS * 2)
+
+    async def _runtime_tools_for_request(
+        self, *, user_id: str | None, web_search: bool
+    ) -> list[dict]:
+        enabled = bool(web_search)
+        if not enabled and self.db is not None and user_id:
+            settings = await WebSearchSettingsService(self.db).resolve_for_request(
+                user_id=user_id,
+                requested=False,
+            )
+            enabled = bool(settings.get("enabled"))
+        tools = list(AGENT_TOOLS)
+        if enabled:
+            tools.append(WEB_SEARCH_TOOL)
+        return tools
 
     async def get_history_messages(
         self, conversation_id: str, limit: int = 20
@@ -146,6 +163,7 @@ class ChatService:
         folder_id: Optional[str] = None,
         include_subfolders: bool = False,
         strict_scope: Optional[bool] = None,
+        web_search: bool = False,
         user_id: str = None,
     ) -> AsyncGenerator[str, None]:
         """
@@ -175,7 +193,11 @@ class ChatService:
             question,
             re.IGNORECASE,
         ):
-            content = "当前可用工具如下：\n" + build_tool_catalog(AGENT_TOOLS)
+            runtime_tools = await self._runtime_tools_for_request(
+                user_id=user_id,
+                web_search=web_search,
+            )
+            content = "当前可用工具如下：\n" + build_tool_catalog(runtime_tools)
             yield f"event: content\ndata: {json.dumps({'content': content}, ensure_ascii=False)}\n\n"
             yield f"event: done\ndata: {json.dumps({'conversation_id': conversation_id}, ensure_ascii=False)}\n\n"
             await self.save_message(
@@ -234,6 +256,7 @@ class ChatService:
             folder_id=folder_id,
             include_subfolders=include_subfolders,
             strict_scope=strict_scope,
+            web_search_requested=web_search,
             user_id=user_id,
             history_messages=history,
         ):

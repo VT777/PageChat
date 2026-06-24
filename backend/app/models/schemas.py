@@ -142,6 +142,7 @@ class ChatRequest(BaseModel):
     include_subfolders: bool = False
     strict_scope: Optional[bool] = None
     conversation_id: Optional[str] = None
+    web_search: bool = False
 
 
 class SourceInfo(BaseModel):

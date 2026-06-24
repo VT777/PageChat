@@ -24,6 +24,18 @@ def test_chat_request_accepts_folder_scope_fields() -> None:
     assert request.strict_scope is False
 
 
+def test_chat_request_accepts_structured_web_search_flag() -> None:
+    request = ChatRequest(question="查一下最新政策", web_search=True)
+
+    assert request.web_search is True
+
+
+def test_chat_request_defaults_web_search_to_false() -> None:
+    request = ChatRequest(question="普通文档问题")
+
+    assert request.web_search is False
+
+
 def test_agent_injects_folder_scope_into_browse_documents() -> None:
     patched = AgentService._inject_default_doc_id(
         "browse_documents",
@@ -153,5 +165,46 @@ def test_chat_service_expands_to_user_library_only_when_strict_scope_false() -> 
         assert events
         assert agent.calls[0]["document_ids"] == ["doc-a", "doc-b"]
         assert agent.calls[0]["preferred_document_ids"] == ["doc-a"]
+
+    asyncio.run(run())
+
+
+def test_chat_service_passes_web_search_flag_to_agent() -> None:
+    async def run() -> None:
+        agent = CapturingAgent()
+        service = _chat_service_with_agent(agent)
+
+        events = [
+            event
+            async for event in service.stream_chat(
+                question="联网查一下最新资料",
+                document_ids=["doc-a"],
+                strict_scope=True,
+                web_search=True,
+                user_id="user-a",
+            )
+        ]
+
+        assert events
+        assert agent.calls[0]["document_ids"] == ["doc-a"]
+        assert agent.calls[0]["web_search_requested"] is True
+
+    asyncio.run(run())
+
+
+def test_tool_catalog_response_includes_web_search_when_requested() -> None:
+    async def run() -> None:
+        service = _chat_service_with_agent(CapturingAgent())
+
+        events = [
+            event
+            async for event in service.stream_chat(
+                question="现在有哪些工具",
+                web_search=True,
+                user_id="user-a",
+            )
+        ]
+
+        assert "web_search" in "".join(events)
 
     asyncio.run(run())

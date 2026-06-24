@@ -37,6 +37,7 @@ async def chat_stream(
                     include_subfolders=request.include_subfolders,
                     strict_scope=request.strict_scope,
                     conversation_id=request.conversation_id,
+                    web_search=request.web_search,
                     user_id=current_user["id"],
                 ):
                     if stream_state["active"]:
