@@ -88,7 +88,6 @@ def test_defaults_without_saved_settings() -> None:
 
     asyncio.run(run())
 
-
 def test_save_masks_optional_api_key() -> None:
     async def run() -> None:
         db, service = await _service()
@@ -172,4 +171,3 @@ def test_save_rejects_invalid_values() -> None:
             await db.close()
 
     asyncio.run(run())
-
