@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { readFileSync } from 'node:fs'
 import { createPinia, setActivePinia } from 'pinia'
 import { chatApi } from '@/api'
+import chatViewSource from '@/views/ChatView.vue?raw'
 import { useChatStore, type Message } from './chat'
 
 vi.mock('@/api', () => ({
@@ -460,8 +460,6 @@ describe('chat rollback', () => {
   })
 
   it('does not encode web search as a prompt hint in ChatView', () => {
-    const source = readFileSync(new URL('../views/ChatView.vue', import.meta.url), 'utf8')
-
-    expect(source).not.toContain('Web Search enabled')
+    expect(chatViewSource).not.toContain('Web Search enabled')
   })
 })
