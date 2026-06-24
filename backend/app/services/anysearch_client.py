@@ -209,4 +209,3 @@ class AnySearchClient:
         if retry_after is not None:
             result["retry_after"] = str(retry_after)
         return result
-
