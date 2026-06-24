@@ -14,6 +14,6 @@ def test_tool_catalog_contains_aggregate_tables() -> None:
 
 def test_agent_prompt_injects_latest_tool_catalog() -> None:
     prompt = build_agent_system_prompt(AGENT_TOOLS)
-    assert "【工具列表】" in prompt
+    assert "## Tool list" in prompt
     assert "find_related_documents" in prompt
     assert "aggregate_tables" in prompt

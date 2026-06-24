@@ -213,12 +213,19 @@ def test_quality_diagnostic_reports_quality_gate(monkeypatch, tmp_path: Path) ->
             "content_type": "text",
             "route_decision": {"selected_path": "visible_toc_with_pages"},
             "toc_page_detection": {"pages": [2]},
-            "mapping_report": {"status": "ok", "page_mapping_score": 1.0},
+            "mapping_report": {
+                "status": "ok",
+                "page_mapping_score": 1.0,
+                "title_match_rate": 1.0,
+                "main_title_match_rate": 1.0,
+                "main_sample_checked_count": 2,
+                "item_count": 2,
+            },
             "items": [
                 {
                     "title": "Preface",
                     "start_index": 1,
-                    "end_index": 2,
+                    "end_index": 1,
                     "summary": "summary",
                     "text": "preface",
                     "nodes": [],

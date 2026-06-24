@@ -96,7 +96,7 @@ def _profile_payload(api_key: str = "dash-secret-123456") -> dict:
         "endpoint": "https://dashscope.aliyuncs.com/compatible-mode/v1",
         "model": "qwen-vl-ocr-2025-11-20",
         "api_key": api_key,
-        "capabilities": ["toc_page", "page_text"],
+        "capabilities": ["page_text"],
         "options": {"temperature": 0},
         "is_default": True,
     }
@@ -132,11 +132,11 @@ def test_ocr_routes_get_and_save(tmp_path: Path) -> None:
 
     response = client.put(
         "/api/settings/ocr-routes",
-        json={"routes": {"toc_page": profile["profile_id"]}},
+        json={"routes": {"page_text": profile["profile_id"]}},
     )
 
     assert response.status_code == 200
-    assert response.json()[0]["task"] == "toc_page"
+    assert response.json()[0]["task"] == "page_text"
     routes = client.get("/api/settings/ocr-routes")
     assert routes.status_code == 200
     assert routes.json()[0]["profile_id"] == profile["profile_id"]

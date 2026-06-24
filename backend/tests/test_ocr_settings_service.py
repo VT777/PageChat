@@ -81,7 +81,7 @@ def test_save_list_update_and_delete_profile_masks_secret() -> None:
                 endpoint="https://dashscope.aliyuncs.com/compatible-mode/v1",
                 model="qwen-vl-ocr-2025-11-20",
                 api_key="dash-secret-123456",
-                capabilities=["toc_page", "page_text"],
+                capabilities=["page_text"],
                 options={"temperature": 0},
                 is_default=True,
             )
@@ -95,7 +95,7 @@ def test_save_list_update_and_delete_profile_masks_secret() -> None:
                 provider="dashscope",
                 endpoint="https://dashscope.aliyuncs.com/compatible-mode/v1",
                 model="qwen-vl-ocr-2025-11-20",
-                capabilities=["toc_page"],
+                capabilities=["page_text"],
                 options={"temperature": 0},
                 is_default=False,
             )
@@ -104,7 +104,7 @@ def test_save_list_update_and_delete_profile_masks_secret() -> None:
             assert "api_key" not in listed[0]
             assert "dash-secret-123456" not in str(listed[0])
             assert updated["name"] == "Updated OCR"
-            assert updated["capabilities"] == ["toc_page"]
+            assert updated["capabilities"] == ["page_text"]
             assert await service.delete_profile("user-a", saved["profile_id"]) is True
             assert await service.list_profiles("user-a") == []
         finally:
@@ -125,7 +125,7 @@ def test_profiles_are_user_scoped() -> None:
                 endpoint="https://paddleocr.aistudio-app.com/api/v2/ocr/jobs",
                 model="PP-OCRv6",
                 api_key="paddle-secret",
-                capabilities=["toc_page", "page_text"],
+                capabilities=["page_text"],
             )
 
             assert await service.list_profiles("user-b") == []
@@ -139,7 +139,7 @@ def test_profiles_are_user_scoped() -> None:
                     endpoint="https://evil.test/jobs",
                     model="PP-OCRv6",
                     api_key="evil-secret",
-                    capabilities=["toc_page"],
+                    capabilities=["page_text"],
                     profile_id=saved["profile_id"],
                 )
                 assert False, "Expected cross-user overwrite to fail"
@@ -163,30 +163,31 @@ def test_task_override_resolution_prefers_override_then_default() -> None:
                 endpoint="https://paddleocr.aistudio-app.com/api/v2/ocr/jobs",
                 model="PP-OCRv6",
                 api_key="paddle-secret",
-                capabilities=["toc_page", "page_text"],
+                capabilities=["page_text"],
                 is_default=True,
             )
-            toc = await service.save_profile(
+            override = await service.save_profile(
                 user_id="user-a",
-                name="TOC",
+                name="Override",
                 engine_type="openai_compatible_ocr",
                 provider="dashscope",
                 endpoint="https://dashscope.aliyuncs.com/compatible-mode/v1",
                 model="qwen-vl-ocr-2025-11-20",
                 api_key="dash-secret",
-                capabilities=["toc_page"],
+                capabilities=["page_text"],
             )
 
-            await service.save_task_overrides("user-a", {"toc_page": toc["profile_id"]})
+            await service.save_task_overrides("user-a", {"page_text": override["profile_id"]})
 
-            toc_route = await service.resolve_task("user-a", "toc_page")
-            text_route = await service.resolve_task("user-a", "page_text")
+            override_route = await service.resolve_task("user-a", "page_text")
+            await service.save_task_overrides("user-a", {"page_text": None})
+            fallback_route = await service.resolve_task("user-a", "page_text")
 
-            assert toc_route["profile_id"] == toc["profile_id"]
-            assert toc_route["source"] == "task_override"
-            assert text_route["profile_id"] == default["profile_id"]
-            assert text_route["source"] == "default_profile"
-            assert toc_route["api_key"] == "dash-secret"
+            assert override_route["profile_id"] == override["profile_id"]
+            assert override_route["source"] == "task_override"
+            assert fallback_route["profile_id"] == default["profile_id"]
+            assert fallback_route["source"] == "default_profile"
+            assert override_route["api_key"] == "dash-secret"
         finally:
             await db.close()
 

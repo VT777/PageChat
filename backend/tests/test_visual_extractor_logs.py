@@ -1,7 +1,14 @@
 from pathlib import Path
 import sys
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+pytest.skip(
+    "legacy visual_extractor v1 module was removed by the unified TOC state machine",
+    allow_module_level=True,
+)
 
 
 def test_long_visual_doc_log_uses_anchored_pipeline_terms(monkeypatch, capsys):

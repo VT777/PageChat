@@ -1,8 +1,14 @@
 from pathlib import Path
 import sys
+import pytest
 
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+pytest.skip(
+    "legacy TOCTextMarkdownExtractor removed in unified TOC architecture",
+    allow_module_level=True,
+)
 
 from pageindex.candidates.toc_text_markdown_extractor import (  # noqa: E402
     TOCTextMarkdownExtractor,

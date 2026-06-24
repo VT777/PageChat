@@ -9,7 +9,7 @@ from app.services.pageindex_service import PageIndexService
 import app.services.pageindex_service as pageindex_service_module
 
 
-def test_build_toc_outline_text_limits_titles() -> None:
+def test_build_toc_outline_text_limits_nodes_before_noise_filtering() -> None:
     structure = [
         {"node_id": "1", "title": "第一章"},
         {"node_id": "1.1", "title": "背景"},
@@ -17,7 +17,7 @@ def test_build_toc_outline_text_limits_titles() -> None:
     ]
 
     outline = PageIndexService._build_toc_outline_text(structure, max_titles=2)
-    assert "第一章" in outline
+    assert "第一章" not in outline
     assert "背景" in outline
     assert "第二章" not in outline
 

@@ -34,7 +34,7 @@ def _route(**overrides):
         "endpoint": "https://paddleocr.aistudio-app.com/api/v2/ocr/jobs",
         "model": "PP-OCRv6",
         "api_key": "paddle-secret",
-        "capabilities": ["toc_page", "page_text"],
+        "capabilities": ["page_text"],
         "options": {"useTextlineOrientation": False},
         "profile_version": "v1",
     }
@@ -47,7 +47,7 @@ def test_explicit_profile_resolution_instantiates_paddleocr_adapter() -> None:
         service = FakeSettingsService(_route(source="explicit_profile"))
         resolver = OCREngineResolver(settings_service=service)
 
-        resolved = await resolver.resolve("user-a", "toc_page", profile_id="profile-a")
+        resolved = await resolver.resolve("user-a", "page_text", profile_id="profile-a")
 
         assert isinstance(resolved.adapter, PaddleOCRJobAdapter)
         assert resolved.route["source"] == "explicit_profile"
@@ -67,16 +67,16 @@ def test_task_override_resolution_instantiates_openai_adapter() -> None:
                 endpoint="https://dashscope.aliyuncs.com/compatible-mode/v1",
                 model="qwen-vl-ocr-2025-11-20",
                 api_key="dash-secret",
-                capabilities=["toc_page"],
+                capabilities=["page_text"],
             )
         )
         resolver = OCREngineResolver(settings_service=service)
 
-        resolved = await resolver.resolve("user-a", "toc_page")
+        resolved = await resolver.resolve("user-a", "page_text")
 
         assert isinstance(resolved.adapter, OpenAICompatibleOCRAdapter)
         assert resolved.route["source"] == "task_override"
-        assert service.calls == [("user-a", "toc_page")]
+        assert service.calls == [("user-a", "page_text")]
 
     asyncio.run(run())
 
@@ -132,11 +132,11 @@ def test_environment_fallback_resolution(monkeypatch) -> None:
 
 def test_resolution_rejects_engine_without_task_capability() -> None:
     async def run() -> None:
-        service = FakeSettingsService(_route(capabilities=["page_text"]))
+        service = FakeSettingsService(_route(capabilities=[]))
         resolver = OCREngineResolver(settings_service=service)
 
         try:
-            await resolver.resolve("user-a", "toc_page")
+            await resolver.resolve("user-a", "page_text")
             assert False, "Expected capability check to fail"
         except ValueError as exc:
             assert "capability" in str(exc).lower()
