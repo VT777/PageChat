@@ -2,7 +2,6 @@ import asyncio
 from pathlib import Path
 import sys
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
 
 import numpy as np
 
@@ -10,8 +9,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from app.services.pageindex_service import PageIndexService
 from app.services.search_service import DocumentSearchService
-from app.services.tool_executor import ToolExecutor
-from app.services.search_service import search_service
 
 
 class FakeBM25:
@@ -74,80 +71,6 @@ def test_document_search_results_include_retrieval_trace_metadata() -> None:
         assert segment["display_label"] == "report.pdf p.12-15"
 
     asyncio.run(run())
-
-
-def test_tool_executor_propagates_retrieval_trace_metadata() -> None:
-    docs = [SimpleNamespace(id="doc-a", original_name="report.pdf")]
-    document_service = SimpleNamespace(
-        get_indexed_documents=AsyncMock(return_value=docs)
-    )
-    executor = ToolExecutor(
-        SimpleNamespace(load_index=AsyncMock(return_value={})),
-        document_service,
-        user_id="user-a",
-    )
-
-    async def fake_search(**kwargs):
-        return SimpleNamespace(
-            status="success",
-            documents=[
-                SimpleNamespace(
-                    doc_id="doc-a",
-                    doc_name="report.pdf",
-                    score=0.82,
-                    reason="matched",
-                    retrieval_source="document_search",
-                    confidence=0.82,
-                    why_selected="Matched document search index.",
-                    source_anchor={
-                        "format": "pdf",
-                        "unit_type": "page",
-                        "start_page": 12,
-                        "end_page": 15,
-                    },
-                    display_label="report.pdf p.12-15",
-                    matched_segments=[
-                        {
-                            "node_id": "n1",
-                            "retrieval_source": "document_search",
-                            "confidence": 0.82,
-                            "why_selected": "Matched document search index.",
-                            "source_anchor": {
-                                "format": "pdf",
-                                "unit_type": "page",
-                                "start_page": 12,
-                                "end_page": 15,
-                            },
-                            "display_label": "report.pdf p.12-15",
-                        }
-                    ],
-                )
-            ],
-            confidence="high",
-            total_candidates=1,
-            search_method="bm25",
-        )
-
-    original_search = search_service.search
-    search_service.search = fake_search  # type: ignore
-    search_service.doc_corpus = ["alpha"]
-
-    async def run() -> None:
-        result = await executor._find_related_documents(query="alpha")
-        related = result["related_documents"][0]
-        assert related["retrieval_source"] == "document_search"
-        assert related["confidence"] == 0.82
-        assert related["why_selected"] == "Matched document search index."
-        assert related["source_anchor"]["start_page"] == 12
-        assert related["display_label"] == "report.pdf p.12-15"
-        assert result["data"]["matched_segments"]["doc-a"][0]["display_label"] == (
-            "report.pdf p.12-15"
-        )
-
-    try:
-        asyncio.run(run())
-    finally:
-        search_service.search = original_search  # type: ignore
 
 
 def test_keyword_fallback_results_include_retrieval_trace_metadata() -> None:

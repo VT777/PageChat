@@ -99,14 +99,16 @@ def test_get_document_structure_rejects_other_users_document() -> None:
     asyncio.run(run())
 
 
-def test_list_documents_returns_current_users_documents_only() -> None:
+def test_browse_documents_explicit_scope_returns_current_users_documents_only() -> None:
     async def run() -> None:
         docs = FakeDocumentService()
         executor = ToolExecutor(FakePageIndexService(), docs, user_id="user-a")
 
-        result = await executor.execute("list_documents", {})
+        result = await executor.execute(
+            "browse_documents", {"document_ids": ["doc-a", "doc-b"]}
+        )
 
-        assert [doc["id"] for doc in result["documents"]] == ["doc-a"]
+        assert [doc["doc_id"] for doc in result["documents"]] == ["doc-a"]
         assert docs.get_indexed_documents_calls == ["user-a"]
 
     asyncio.run(run())
@@ -126,7 +128,9 @@ def test_allowed_doc_ids_empty_allows_no_documents() -> None:
         structure = await executor.execute(
             "get_document_structure", {"doc_id": "doc-a"}
         )
-        listed = await executor.execute("list_documents", {})
+        listed = await executor.execute(
+            "browse_documents", {"document_ids": ["doc-a"]}
+        )
 
         assert "error" in structure
         assert listed["documents"] == []

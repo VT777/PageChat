@@ -91,16 +91,16 @@ def test_agent_executes_retrieval_planner_first_step_for_folder_scope() -> None:
 
         assert executor.calls == [
             (
-                "find_related_documents",
+                "browse_documents",
                 {
                     "query": "find renewal risk",
                     "folder_id": "folder-a",
-                    "include_subfolders": True,
-                    "strict_scope": True,
+                    "recursive": True,
+                    "sort": "relevance",
                 },
             )
         ]
-        assert evidence[0]["tool_name"] == "find_related_documents"
+        assert evidence[0]["tool_name"] == "browse_documents"
 
     asyncio.run(run())
 
@@ -192,7 +192,7 @@ def test_planner_evidence_history_does_not_add_orphan_tool_message(monkeypatch) 
         async def fake_execute_initial_retrieval_plan(**kwargs):
             return [
                 {
-                    "tool_name": "find_related_documents",
+                    "tool_name": "browse_documents",
                     "arguments": {"query": "alpha"},
                     "result": {"status": "success", "data": {"documents": []}},
                     "retrieval_plan_route": "user_library",
