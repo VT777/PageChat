@@ -298,6 +298,32 @@ git push origin codex/pagechat-integration-base
 - 前端调整 API client 和类型。
 - 不在前端分支临时绕过后端协议。
 
+### 5.3 AnySearch Web Search 集成状态（2026-06-25）
+
+当前 `codex/pagechat-product-behavior-closure` 分支已完成 API-only AnySearch 集成：
+
+- 后端新增 `GET/PUT /api/settings/web-search`，按用户隔离保存 Web Search 配置，API Key 加密存储且只返回脱敏值。
+- 后端新增 AnySearch REST client，调用 `POST https://api.anysearch.com/v1/search`，只保留紧凑结果和 `content_preview`，不保存原始网页全文。
+- agent 侧新增 gated `web_search` tool：`on-demand` 模式只有用户请求时可用，`auto` 模式允许自动调用。
+- Chat 请求已改为结构化 `web_search: true`，不再把 “Web Search enabled” 拼进 prompt。
+- 设置弹窗的问答设置页已接入 Web Search provider、mode、zone、language、max results、content types 和可选 API Key 保存。
+- 工具 trace 使用内联 `Searched the web` 摘要，不引入底部引用堆。
+
+已验证：
+
+```powershell
+py -m pytest backend/tests
+cd frontend
+npm.cmd test
+npm.cmd run build
+```
+
+已知边界：
+
+- 本阶段不实现 MCP。
+- 截图上传仍是 UI 能力，后端多模态请求与持久化策略需要单独设计。
+- OCR/解析/问答模型路由的完整持久化仍是后续计划，不要和 Web Search 配置混为一个提交。
+
 ## 冲突处理规则
 
 | 冲突位置 | 处理原则 |
