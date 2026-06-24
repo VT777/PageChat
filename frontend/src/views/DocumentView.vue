@@ -2,41 +2,40 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import {
-  AlertCircle,
-  ArrowLeft,
-  BarChart3,
-  BookOpen,
+  Check,
   Download,
-  Eye,
   File,
   FileCode,
+  FileImage,
   FileSpreadsheet,
   FileText,
   FileType,
   Folder,
-  FolderInput,
   FolderOpen,
-  Grid2X2,
-  List,
+  ListTree,
   Loader2,
+  MessageSquare,
+  MoreHorizontal,
   Move,
   Plus,
   Presentation,
   RefreshCw,
   Search,
-  SlidersHorizontal,
-  Square,
   Trash2,
   Upload,
   X,
 } from 'lucide-vue-next'
+import AppShell from '@/components/layout/AppShell.vue'
+import PdfReferenceViewer from '@/components/PdfReferenceViewer.vue'
+import UniversalPreview from '@/components/preview/UniversalPreview.vue'
+import TocTree from '@/components/document/TocTree.vue'
+import CreateFolderDialog from '@/components/folder/CreateFolderDialog.vue'
 import { documentApi } from '@/api'
-import type { ProcessingStep } from '@/api'
 import type { Document } from '@/stores/document'
 import { useDocumentStore } from '@/stores/document'
 import { useFolderStore } from '@/stores/folder'
-import type { QualityReport } from '@/types/retrieval'
 import {
+  DOCUMENT_WORKBENCH_PAGE_SIZE,
   documentProgress,
   formatDocumentDate,
   formatDocumentDuration,
@@ -46,1851 +45,2212 @@ import {
   isProcessingStatus,
   localizedStatusLabel,
   metadataValue,
-  documentDetailMetrics,
-  DOCUMENT_WORKBENCH_PAGE_SIZE,
   qualityDisplay,
   workbenchIncludeSubfolders,
 } from '@/utils/documentWorkbench'
-import DocumentContextMenu from '@/components/document/DocumentContextMenu.vue'
-import PdfReferenceViewer from '@/components/PdfReferenceViewer.vue'
-import ProcessingStepsDialog from '@/components/document/ProcessingStepsDialog.vue'
-import TocTree from '@/components/document/TocTree.vue'
-import UniversalPreview from '@/components/preview/UniversalPreview.vue'
-import CreateFolderDialog from '@/components/folder/CreateFolderDialog.vue'
+import {
+  buildDocumentBreadcrumb,
+  buildDocumentChatRoute,
+  buildFolderChatRoute,
+  DOCUMENT_SELECTION_ACTIONS,
+  documentPresentationForType,
+  hasSelectableLibraryItems,
+  selectableDocumentIds,
+} from '@/ui/pagechatContracts'
+import type { DocumentSelectionActionId } from '@/ui/pagechatContracts'
+import {
+  DEMO_DOCUMENT_ID,
+  DEMO_FOLDER_ID,
+  DEMO_LIBRARY_DOCUMENTS,
+  buildLibrarySelectionSummary,
+  demoBreadcrumbForFolder,
+  demoDocumentsForFolder,
+  demoFoldersForParent,
+  shouldShowDemoLibrary,
+} from '@/ui/demoLibrary'
+import { calculatePopoverPosition, type PopoverSize } from '@/ui/popoverPosition'
+import type { Folder as FolderModel, FolderTreeItem } from '@/api/folders'
 
 interface TocItem {
   node_id: string
   title: string
   level: number
-  summary: string
+  summary?: string
   start_page: number
   end_page: number
-  children: TocItem[]
+  children?: TocItem[]
 }
 
 interface PreviewData {
   id: string
   name: string
+  original_name?: string
   file_type: string
   file_size: number
   status: string
-  page_count: number
-  description?: string
+  page_count?: number
   processing_duration?: number
-  quality_report?: QualityReport | null
-  created_at: string
-  updated_at: string
-  toc: TocItem[]
-  index_meta: {
+  created_at?: string
+  updated_at?: string
+  toc?: TocItem[]
+  index_meta?: {
     route_decision?: { execution_mode?: string }
-    pre_analysis?: unknown
-    toc_quality?: unknown
-    visual_page_summaries_count: number
+    visual_page_summaries_count?: number
   }
-  stats: {
-    node_count: number
-    text_chars: number
-    has_summaries: number
-    summary_coverage: string
+  stats?: {
+    node_count?: number
+    text_chars?: number
+    summary_coverage?: string
   }
+  quality_report?: Record<string, unknown> | null
 }
 
-const router = useRouter()
+interface PreviewTocNode {
+  node_id: string
+  title: string
+  level: number
+  summary: string
+  start_page: number | null
+  end_page: number | null
+  children: PreviewTocNode[]
+}
+
 const documentStore = useDocumentStore()
 const folderStore = useFolderStore()
+const router = useRouter()
 
+const searchInput = ref('')
 const uploading = ref(false)
 const uploadError = ref('')
-const uploadProgress = ref({ current: 0, total: 0, currentFile: '' })
-const deleteConfirmId = ref<string | null>(null)
-const searchInput = ref('')
-const selectedDocumentId = ref<string | null>(null)
-
-const showPreview = ref(false)
-const previewDocId = ref('')
-const previewDocName = ref('')
-const previewDocType = ref('')
-const showPdfPreview = ref(false)
-const showUniversalPreview = ref(false)
-const previewData = ref<PreviewData | null>(null)
-const previewLoading = ref(false)
-const pdfViewerRef = ref<InstanceType<typeof PdfReferenceViewer> | null>(null)
-const activePreviewTab = ref<'toc' | 'meta'>('toc')
-
-const showMoveModal = ref(false)
-const moveDocId = ref<string | null>(null)
-const renamingDoc = ref<Document | null>(null)
-const renameValue = ref('')
+const fileInputRef = ref<HTMLInputElement | null>(null)
 const showCreateFolderDialog = ref(false)
-const createFolderParentId = ref<string | null>(null)
+const previewOpen = ref(false)
+const previewLoading = ref(false)
+const previewData = ref<PreviewData | null>(null)
+const previewDocument = ref<Document | null>(null)
+const activePreviewTab = ref<'toc' | 'info'>('toc')
+const pdfViewerRef = ref<InstanceType<typeof PdfReferenceViewer> | null>(null)
+const rowMenuDocumentId = ref<string | null>(null)
+const rowMenuFolderId = ref<string | null>(null)
+const rowMenuRef = ref<HTMLElement | null>(null)
+const rowMenuPosition = ref({ top: 0, left: 0, maxHeight: 320 })
+const selectionActionBusy = ref<DocumentSelectionActionId | null>(null)
+const moveDialogOpen = ref(false)
+const moveTargetFolderId = ref<string | null>(null)
+const selectedFolderIds = ref<Set<string>>(new Set())
+const operationNotice = ref('')
 
-const showStepsDialog = ref(false)
-const stepsDocName = ref('')
-const stepsData = ref<ProcessingStep[]>([])
-const stepsLoading = ref(false)
+const SAMPLE_DOCUMENT_ID = DEMO_DOCUMENT_ID
+const sampleDocument = DEMO_LIBRARY_DOCUMENTS[0]
 
-const contextMenuDoc = ref<Document | null>(null)
-const contextMenuRef = ref<InstanceType<typeof DocumentContextMenu> | null>(null)
+const samplePreviewData: PreviewData = {
+  id: SAMPLE_DOCUMENT_ID,
+  name: sampleDocument.name,
+  original_name: sampleDocument.original_name,
+  file_type: sampleDocument.file_type,
+  file_size: sampleDocument.file_size,
+  status: sampleDocument.status,
+  page_count: sampleDocument.page_count,
+  processing_duration: sampleDocument.processing_duration,
+  created_at: sampleDocument.created_at,
+  updated_at: sampleDocument.updated_at,
+  index_meta: {
+    route_decision: { execution_mode: 'smart' },
+    visual_page_summaries_count: 0,
+  },
+  stats: {
+    node_count: 6,
+    text_chars: 12842,
+    summary_coverage: '96%',
+  },
+  quality_report: { status: 'completed' },
+  toc: [
+    {
+      node_id: 'overview',
+      title: '销售表现总览',
+      level: 1,
+      summary: '按区域汇总订单数、销售额和同比变化。',
+      start_page: 1,
+      end_page: 1,
+      children: [],
+    },
+    {
+      node_id: 'region',
+      title: '各地区销售明细',
+      level: 1,
+      summary: '华东、华南、华北、西南四个区域的收入与客单价。',
+      start_page: 2,
+      end_page: 3,
+      children: [
+        {
+          node_id: 'region-east',
+          title: '华东区域',
+          level: 2,
+          summary: '销售额最高，复购率稳定。',
+          start_page: 2,
+          end_page: 2,
+          children: [],
+        },
+        {
+          node_id: 'region-southwest',
+          title: '西南区域',
+          level: 2,
+          summary: '增速最快，但客单价波动较大。',
+          start_page: 3,
+          end_page: 3,
+          children: [],
+        },
+      ],
+    },
+    {
+      node_id: 'recommendations',
+      title: '运营建议',
+      level: 1,
+      summary: '建议加大西南新品投放，并复盘华北渠道效率。',
+      start_page: 4,
+      end_page: 4,
+      children: [],
+    },
+  ],
+}
 
-const selectedDocument = computed(() => (
-  documentStore.documents.find((doc) => doc.id === selectedDocumentId.value)
-  || documentStore.documents[0]
-  || null
-))
+const samplePreviewRows = [
+  { region: '华东', orders: '1,284', revenue: '¥4,820,000', growth: '+18.6%', note: '收入最高，渠道结构稳定' },
+  { region: '华南', orders: '1,016', revenue: '¥3,640,000', growth: '+9.4%', note: '大客户订单占比提升' },
+  { region: '华北', orders: '742', revenue: '¥2,180,000', growth: '-2.1%', note: '渠道转化下降' },
+  { region: '西南', orders: '689', revenue: '¥1,960,000', growth: '+27.3%', note: '增长最快，适合追加投放' },
+]
 
-const currentFolderName = computed(() => folderStore.currentFolder?.name || 'All documents')
-
-const recentUpdate = computed(() => {
-  const latest = documentStore.documents
-    .map((doc) => new Date(doc.updated_at).getTime())
-    .filter((time) => Number.isFinite(time))
-    .sort((a, b) => b - a)[0]
-  return latest ? formatDocumentDate(new Date(latest).toISOString()) : 'Not available'
+const showingDemoLibrary = computed(() => shouldShowDemoLibrary({
+  loading: documentStore.loading || folderStore.loading,
+  folderCount: folderStore.folders.length,
+  documentCount: documentStore.documents.length,
+  searchQuery: searchInput.value,
+}))
+const breadcrumbs = computed(() =>
+  showingDemoLibrary.value
+    ? demoBreadcrumbForFolder(folderStore.currentFolderId)
+    : buildDocumentBreadcrumb(folderStore.currentFolderPath)
+)
+const currentFolders = computed<FolderModel[]>(() =>
+  showingDemoLibrary.value ? demoFoldersForParent(folderStore.currentFolderId) : folderStore.folders
+)
+const displayDocuments = computed(() =>
+  showingDemoLibrary.value ? demoDocumentsForFolder(folderStore.currentFolderId) : documentStore.documents
+)
+const displayTotal = computed(() => currentFolders.value.length + (showingDemoLibrary.value ? displayDocuments.value.length : documentStore.total))
+const rowMenuDocument = computed(() =>
+  displayDocuments.value.find((document) => document.id === rowMenuDocumentId.value) || null
+)
+const rowMenuFolder = computed(() =>
+  currentFolders.value.find((folder) => folder.id === rowMenuFolderId.value) || null
+)
+const selectableCurrentDocumentIds = computed(() =>
+  selectableDocumentIds(displayDocuments.value.map((document) => ({
+    id: document.id,
+    selectable: true,
+  })))
+)
+const selectableCurrentFolderIds = computed(() => currentFolders.value.map((folder) => folder.id))
+const selectedDocumentIds = computed(() =>
+  Array.from(documentStore.selectedIds)
+    .filter((id) => selectableCurrentDocumentIds.value.includes(id))
+)
+const selectedFolderIdList = computed(() =>
+  Array.from(selectedFolderIds.value)
+    .filter((id) => selectableCurrentFolderIds.value.includes(id))
+)
+const actionableSelectedDocumentIds = computed(() =>
+  selectedDocumentIds.value.filter((id) => {
+    const document = displayDocuments.value.find((item) => item.id === id)
+    return document ? !isSampleDocument(document) : false
+  })
+)
+const actionableSelectedFolderIds = computed(() =>
+  selectedFolderIdList.value.filter((id) => id !== DEMO_FOLDER_ID)
+)
+const allSelected = computed(() =>
+  (selectableCurrentDocumentIds.value.length + selectableCurrentFolderIds.value.length) > 0 &&
+  selectableCurrentDocumentIds.value.every((id) => documentStore.selectedIds.has(id)) &&
+  selectableCurrentFolderIds.value.every((id) => selectedFolderIds.value.has(id))
+)
+const selectedCount = computed(() => selectedDocumentIds.value.length + selectedFolderIdList.value.length)
+const selectionSummary = computed(() => buildLibrarySelectionSummary({
+  documentCount: selectedDocumentIds.value.length,
+  folderCount: selectedFolderIdList.value.length,
+}))
+const selectionActions = computed(() => DOCUMENT_SELECTION_ACTIONS)
+const selectedDocuments = computed(() =>
+  displayDocuments.value.filter((document) => selectedDocumentIds.value.includes(document.id))
+)
+const selectedFolders = computed(() =>
+  currentFolders.value.filter((folder) => selectedFolderIdList.value.includes(folder.id))
+)
+const selectedItemLabel = computed(() =>
+  selectedDocuments.value[0]?.original_name ||
+  selectedDocuments.value[0]?.name ||
+  selectedFolders.value[0]?.name ||
+  '所选项目'
+)
+const hasDemoSelection = computed(() =>
+  selectedDocuments.value.some(isSampleDocument) ||
+  selectedFolders.value.some(isSampleFolder)
+)
+const previewQuality = computed(() => qualityDisplay(previewData.value?.quality_report))
+const previewToc = computed(() => normalizeToc(previewData.value?.toc || []))
+const isSamplePreview = computed(() => previewDocument.value?.id === SAMPLE_DOCUMENT_ID)
+const previewRoute = computed(() => {
+  const mode = previewData.value?.index_meta?.route_decision?.execution_mode
+  if (mode) return mode
+  if (previewDocument.value?.parse_execution_mode) return previewDocument.value.parse_execution_mode
+  return 'smart'
 })
 
-const activeIndexingCount = computed(() =>
-  documentStore.documents.filter((doc) => isProcessingStatus(doc.status)).length
+const iconMap = {
+  File,
+  FileCode,
+  FileImage,
+  FileSpreadsheet,
+  FileText,
+  FileType,
+  Folder,
+  Presentation,
+}
+
+const selectionActionIconMap = {
+  Download,
+  MessageSquare,
+  Move,
+  RefreshCw,
+  Trash2,
+}
+
+function selectionActionIconFor(icon: string) {
+  return selectionActionIconMap[icon as keyof typeof selectionActionIconMap] || File
+}
+
+interface FolderPickerOption {
+  id: string | null
+  name: string
+  path: string
+  depth: number
+}
+
+function flattenFolderTree(nodes: FolderTreeItem[], depth = 0): FolderPickerOption[] {
+  return nodes.flatMap((folder) => [
+    {
+      id: folder.id,
+      name: folder.name,
+      path: folder.path || folder.name,
+      depth,
+    },
+    ...flattenFolderTree(folder.children || [], depth + 1),
+  ])
+}
+
+const moveFolderOptions = computed<FolderPickerOption[]>(() => [
+  { id: null, name: 'root', path: 'root', depth: 0 },
+  ...flattenFolderTree(folderStore.folderTree),
+])
+
+const moveTargetLabel = computed(() =>
+  moveFolderOptions.value.find((folder) => folder.id === moveTargetFolderId.value)?.name || 'root'
 )
 
-const totalPages = computed(() => Math.max(1, Math.ceil(documentStore.total / DOCUMENT_WORKBENCH_PAGE_SIZE)))
+function fileIconFor(fileType?: string) {
+  return iconMap[documentPresentationForType(fileType).icon as keyof typeof iconMap] || File
+}
 
-const pageNumbers = computed(() => {
-  const pages = new Set([1, totalPages.value, documentStore.currentPage, documentStore.currentPage - 1, documentStore.currentPage + 1])
-  return Array.from(pages)
-    .filter((page) => page >= 1 && page <= totalPages.value)
-    .sort((a, b) => a - b)
-})
+function fileToneFor(fileType?: string) {
+  return documentPresentationForType(fileType).tone
+}
 
-const activeFolderLabel = computed(() => {
-  if (!folderStore.currentFolderId) return '全部文档'
-  return folderStore.currentFolder?.name || currentFolderName.value
-})
+function isSampleDocument(document: Document) {
+  return document.id === SAMPLE_DOCUMENT_ID
+}
 
-const selectedDocumentType = computed(() => selectedDocument.value ? formatDocumentTypeLabel(selectedDocument.value.file_type) : 'FILE')
+function isSampleFolder(folder: FolderModel) {
+  return folder.id === DEMO_FOLDER_ID
+}
 
-onMounted(() => {
-  documentStore.viewMode = 'list'
-  documentStore.fetchDocuments(1, '', null, workbenchIncludeSubfolders(null), DOCUMENT_WORKBENCH_PAGE_SIZE)
-  folderStore.fetchFolderTree()
-  folderStore.fetchFolders()
-  document.addEventListener('keydown', handleKeydown)
-})
+function isRowMenuOpen(document: Document) {
+  return rowMenuDocumentId.value === document.id
+}
 
-onBeforeUnmount(() => {
-  document.removeEventListener('keydown', handleKeydown)
-})
+function isFolderMenuOpen(folder: FolderModel) {
+  return rowMenuFolderId.value === folder.id
+}
 
-watch(() => folderStore.currentFolderId, () => {
-  documentStore.currentFolderId = folderStore.currentFolderId
-  selectedDocumentId.value = null
-  documentStore.fetchDocuments(1, searchInput.value || undefined, folderStore.currentFolderId, workbenchIncludeSubfolders(folderStore.currentFolderId), DOCUMENT_WORKBENCH_PAGE_SIZE)
-})
+const DEFAULT_ROW_MENU_SIZE: PopoverSize = {
+  width: 176,
+  height: 216,
+}
 
-watch(() => documentStore.documents, (docs) => {
-  if (!docs.length) {
-    selectedDocumentId.value = null
+function menuPositionForButton(button: HTMLElement, popoverSize = DEFAULT_ROW_MENU_SIZE) {
+  const rect = button.getBoundingClientRect()
+  return calculatePopoverPosition({
+    anchorRect: {
+      top: rect.top,
+      right: rect.right,
+      bottom: rect.bottom,
+    },
+    popoverSize,
+    viewportSize: {
+      width: window.innerWidth,
+      height: window.innerHeight,
+    },
+  })
+}
+
+async function toggleRowMenu(document: Document, event: Event) {
+  const target = event.currentTarget as HTMLElement
+  if (isRowMenuOpen(document)) {
+    closeRowMenu()
     return
   }
-  if (!selectedDocumentId.value || !docs.some((doc) => doc.id === selectedDocumentId.value)) {
-    selectedDocumentId.value = docs[0].id
-  }
-})
+  rowMenuFolderId.value = null
+  rowMenuPosition.value = menuPositionForButton(target)
+  rowMenuDocumentId.value = document.id
+  await nextTick()
+  if (rowMenuDocumentId.value !== document.id || !rowMenuRef.value) return
 
-function navigateToFolder(folderId: string | null) {
+  const measuredRect = rowMenuRef.value.getBoundingClientRect()
+  rowMenuPosition.value = menuPositionForButton(target, {
+    width: measuredRect.width || DEFAULT_ROW_MENU_SIZE.width,
+    height: rowMenuRef.value.scrollHeight || measuredRect.height || DEFAULT_ROW_MENU_SIZE.height,
+  })
+}
+
+async function toggleFolderMenu(folder: FolderModel, event: Event) {
+  const target = event.currentTarget as HTMLElement
+  if (isFolderMenuOpen(folder)) {
+    closeRowMenu()
+    return
+  }
+  rowMenuDocumentId.value = null
+  rowMenuPosition.value = menuPositionForButton(target)
+  rowMenuFolderId.value = folder.id
+  await nextTick()
+  if (rowMenuFolderId.value !== folder.id || !rowMenuRef.value) return
+
+  const measuredRect = rowMenuRef.value.getBoundingClientRect()
+  rowMenuPosition.value = menuPositionForButton(target, {
+    width: measuredRect.width || DEFAULT_ROW_MENU_SIZE.width,
+    height: rowMenuRef.value.scrollHeight || measuredRect.height || DEFAULT_ROW_MENU_SIZE.height,
+  })
+}
+
+function closeRowMenu() {
+  rowMenuDocumentId.value = null
+  rowMenuFolderId.value = null
+}
+
+function chatWithDocument(document: Document) {
+  closeRowMenu()
+  router.push(buildDocumentChatRoute(document))
+}
+
+function chatWithFolder(folder: FolderModel) {
+  closeRowMenu()
+  router.push(buildFolderChatRoute(folder))
+}
+
+function chatWithSelection() {
+  if (selectedCount.value === 0) return
+  closeRowMenu()
+  if (selectedDocuments.value.length > 0) {
+    const documentRoute = buildDocumentChatRoute(selectedDocuments.value)
+    const folderRoute = selectedFolders.value.length > 0
+      ? buildFolderChatRoute(selectedFolders.value)
+      : { path: '/', query: {} }
+    const route = {
+      path: documentRoute.path,
+      query: Object.fromEntries(
+        Object.entries({ ...documentRoute.query, ...folderRoute.query }).filter((entry): entry is [string, string] =>
+          typeof entry[1] === 'string',
+        ),
+      ),
+    }
+    router.push(route)
+  } else if (selectedFolders.value[0]) {
+    router.push(buildFolderChatRoute(selectedFolders.value))
+  }
+  documentStore.deselectAll()
+  selectedFolderIds.value.clear()
+}
+
+function normalizeToc(nodes: TocItem[]): PreviewTocNode[] {
+  return nodes.map((node) => ({
+    node_id: node.node_id,
+    title: node.title,
+    level: node.level,
+    summary: node.summary || '',
+    start_page: node.start_page,
+    end_page: node.end_page,
+    children: normalizeToc(node.children || []),
+  }))
+}
+
+function goToFolder(folderId: string | null) {
+  closeRowMenu()
   folderStore.setCurrentFolder(folderId)
 }
 
-function openCreateFolder(parentId: string | null = folderStore.currentFolderId) {
-  createFolderParentId.value = parentId
-  showCreateFolderDialog.value = true
-}
-
-async function handleFolderCreated() {
-  await folderStore.fetchFolderTree()
-  await folderStore.fetchFolders()
-}
-
-function handleSearch() {
-  documentStore.fetchDocuments(1, searchInput.value || undefined, folderStore.currentFolderId, workbenchIncludeSubfolders(folderStore.currentFolderId), DOCUMENT_WORKBENCH_PAGE_SIZE)
+function refreshDocuments() {
+  operationNotice.value = ''
+  documentStore.fetchDocuments(
+    1,
+    searchInput.value || undefined,
+    folderStore.currentFolderId,
+    workbenchIncludeSubfolders(folderStore.currentFolderId),
+    DOCUMENT_WORKBENCH_PAGE_SIZE,
+  )
 }
 
 function clearSearch() {
   searchInput.value = ''
-  documentStore.fetchDocuments(1, undefined, folderStore.currentFolderId, workbenchIncludeSubfolders(folderStore.currentFolderId), DOCUMENT_WORKBENCH_PAGE_SIZE)
+  refreshDocuments()
 }
 
-async function changePage(page: number) {
-  if (page < 1 || page > totalPages.value) return
-  await documentStore.fetchDocuments(page, searchInput.value || undefined, folderStore.currentFolderId, workbenchIncludeSubfolders(folderStore.currentFolderId), DOCUMENT_WORKBENCH_PAGE_SIZE)
+function toggleAll() {
+  closeRowMenu()
+  if (allSelected.value) {
+    selectableCurrentDocumentIds.value.forEach((id) => documentStore.selectedIds.delete(id))
+    selectableCurrentFolderIds.value.forEach((id) => selectedFolderIds.value.delete(id))
+    return
+  }
+  selectableCurrentDocumentIds.value.forEach((id) => documentStore.selectedIds.add(id))
+  selectableCurrentFolderIds.value.forEach((id) => selectedFolderIds.value.add(id))
 }
 
-async function handleUpload(event: Event) {
+function toggleDocumentSelection(document: Document) {
+  closeRowMenu()
+  documentStore.toggleSelect(document.id)
+}
+
+function toggleFolderSelection(folder: FolderModel) {
+  closeRowMenu()
+  if (selectedFolderIds.value.has(folder.id)) {
+    selectedFolderIds.value.delete(folder.id)
+    return
+  }
+  selectedFolderIds.value.add(folder.id)
+}
+
+function clearSelectedDocuments() {
+  closeRowMenu()
+  documentStore.deselectAll()
+  selectedFolderIds.value.clear()
+}
+
+async function uploadFiles(event: Event) {
   const input = event.target as HTMLInputElement
   const files = Array.from(input.files || [])
-  if (!files.length) return
+  if (files.length === 0) return
 
   uploading.value = true
   uploadError.value = ''
-  uploadProgress.value = { current: 0, total: files.length, currentFile: '' }
-
   try {
-    await documentStore.uploadDocuments(files, folderStore.currentFolderId, undefined, (current, fileName) => {
-      uploadProgress.value = { current, total: files.length, currentFile: fileName }
-    })
+    await documentStore.uploadDocuments(files, folderStore.currentFolderId, 'smart')
+    refreshDocuments()
   } catch (error: any) {
-    uploadError.value = error.response?.data?.detail || 'Upload failed'
+    uploadError.value = error?.response?.data?.detail || 'Upload failed'
   } finally {
     uploading.value = false
     input.value = ''
-    uploadProgress.value = { current: 0, total: 0, currentFile: '' }
   }
 }
 
-async function openPreview(id: string) {
-  const doc = documentStore.documents.find((item) => item.id === id)
-  if (!doc || !isCompletedStatus(doc.status)) return
-  previewDocId.value = doc.id
-  previewDocName.value = doc.original_name
-  previewDocType.value = doc.file_type || ''
-  showPreview.value = true
-  previewLoading.value = true
-  previewData.value = null
+async function openPreview(document: Document) {
+  if (!isCompletedStatus(document.status)) return
+  closeRowMenu()
+  previewDocument.value = document
+  previewOpen.value = true
   activePreviewTab.value = 'toc'
+  previewData.value = null
+
+  if (isSampleDocument(document)) {
+    previewData.value = samplePreviewData
+    previewLoading.value = false
+    return
+  }
+
+  previewLoading.value = true
 
   try {
-    const { data } = await documentApi.preview(doc.id)
+    const { data } = await documentApi.preview(document.id)
     previewData.value = data
-    showPdfPreview.value = doc.file_type?.toLowerCase() === '.pdf'
-    showUniversalPreview.value = !showPdfPreview.value
-  } catch (error) {
-    console.error('Preview failed:', error)
-    uploadError.value = 'Preview failed'
+  } catch (error: any) {
+    uploadError.value = error?.response?.data?.detail || 'Preview failed'
   } finally {
     previewLoading.value = false
   }
 }
 
 function closePreview() {
-  showPreview.value = false
-  previewDocId.value = ''
-  previewDocName.value = ''
+  previewOpen.value = false
+  previewDocument.value = null
   previewData.value = null
-  showPdfPreview.value = false
-  showUniversalPreview.value = false
 }
 
 function jumpToPage(pageNum: number) {
-  if (!pdfViewerRef.value || !pageNum || pageNum < 1) return
-  let attempts = 0
-  const tryScroll = () => {
-    const el = document.getElementById(`pdf-page-${pageNum}`)
-    if (el) {
-      pdfViewerRef.value?.scrollToPage(pageNum)
-    } else if (attempts < 20) {
-      attempts += 1
-      setTimeout(tryScroll, 200)
-    }
+  pdfViewerRef.value?.scrollToPage(pageNum)
+}
+
+function showDemoOperationNotice(action: string) {
+  uploadError.value = ''
+  operationNotice.value = `示例${action}已在界面中展示，接入真实数据后会执行对应操作。`
+}
+
+function showFolderBackendNotice(action: string) {
+  uploadError.value = ''
+  operationNotice.value = `文件夹${action}需要后端接口支持，当前先保留入口和选择状态。`
+}
+
+async function deleteSelected() {
+  const documentIds = actionableSelectedDocumentIds.value
+  const folderIds = actionableSelectedFolderIds.value
+  if (documentIds.length === 0 && folderIds.length === 0) {
+    if (hasDemoSelection.value) showDemoOperationNotice('删除')
+    return
   }
-  tryScroll()
-}
-
-function handleReindex(id: string) {
-  documentStore.reindexDocument(id)
-}
-
-function confirmDelete(id: string) {
-  deleteConfirmId.value = id
-}
-
-async function doDelete() {
-  if (!deleteConfirmId.value) return
-  await documentStore.deleteDocument(deleteConfirmId.value)
-  deleteConfirmId.value = null
-}
-
-function handleMove(doc: Document) {
-  moveDocId.value = doc.id
-  showMoveModal.value = true
-}
-
-async function doMove(targetFolderId: string | null) {
-  if (!moveDocId.value) return
-  await documentStore.moveDocument(moveDocId.value, targetFolderId)
-  moveDocId.value = null
-  showMoveModal.value = false
-}
-
-function handleRename(doc: Document) {
-  renamingDoc.value = doc
-  renameValue.value = doc.original_name
-}
-
-async function doRename() {
-  if (!renamingDoc.value || !renameValue.value.trim()) return
-  await documentStore.renameDocument(renamingDoc.value.id, renameValue.value.trim())
-  renamingDoc.value = null
-  renameValue.value = ''
-}
-
-async function showProcessingSteps(id: string) {
-  const doc = documentStore.documents.find((item) => item.id === id)
-  stepsDocName.value = doc?.original_name || ''
-  showStepsDialog.value = true
-  stepsLoading.value = true
-  stepsData.value = []
+  selectionActionBusy.value = 'delete'
+  uploadError.value = ''
+  operationNotice.value = ''
   try {
-    stepsData.value = await documentStore.fetchDocumentSteps(id)
+    if (documentIds.length > 0) {
+      await documentStore.batchDelete(documentIds)
+    }
+    for (const folderId of folderIds) {
+      await folderStore.deleteFolder(folderId)
+    }
+    documentStore.deselectAll()
+    selectedFolderIds.value.clear()
+    refreshDocuments()
+  } catch (error: any) {
+    uploadError.value = error?.response?.data?.detail || 'Delete failed'
   } finally {
-    stepsLoading.value = false
+    selectionActionBusy.value = null
   }
 }
 
-function handleBatchMove() {
-  if (documentStore.selectedIds.size === 0) return
-  moveDocId.value = null
-  showMoveModal.value = true
+async function deleteOne(document: Document) {
+  if (isSampleDocument(document)) {
+    showDemoOperationNotice('删除')
+    return
+  }
+  closeRowMenu()
+  await documentStore.deleteDocument(document.id)
+  refreshDocuments()
 }
 
-async function handleBatchDelete() {
-  if (!window.confirm(`Delete ${documentStore.selectedIds.size} selected documents?`)) return
-  const ids = Array.from(documentStore.selectedIds)
-  await documentStore.batchDelete(ids)
-  documentStore.clearSelection()
+async function reindexOne(document: Document) {
+  if (isSampleDocument(document)) {
+    showDemoOperationNotice('重新解析')
+    return
+  }
+  closeRowMenu()
+  await documentStore.reindexDocument(document.id, 'smart')
 }
 
-async function handleBatchReindex() {
-  await documentStore.batchReindex(Array.from(documentStore.selectedIds))
+async function downloadOne(document: Document) {
+  if (isSampleDocument(document)) {
+    showDemoOperationNotice('下载')
+    return
+  }
+  closeRowMenu()
+  await documentStore.batchDownload([document.id])
 }
 
-async function handleBatchDownload() {
-  await documentStore.batchDownload(Array.from(documentStore.selectedIds))
+async function deleteOneFolder(folder: FolderModel) {
+  if (isSampleFolder(folder)) {
+    showDemoOperationNotice('删除')
+    return
+  }
+  closeRowMenu()
+  await folderStore.deleteFolder(folder.id)
+  await folderStore.fetchFolders(folderStore.currentFolderId)
 }
 
-async function doBatchMove(targetFolderId: string | null) {
-  await documentStore.batchMove(Array.from(documentStore.selectedIds), targetFolderId)
-  showMoveModal.value = false
-  documentStore.clearSelection()
+function reindexFolder(folder: FolderModel) {
+  closeRowMenu()
+  if (isSampleFolder(folder)) {
+    showDemoOperationNotice('重新解析')
+    return
+  }
+  showFolderBackendNotice('重新解析')
 }
 
-function handleDocumentContextMenu(e: MouseEvent, doc: Document) {
-  e.preventDefault()
-  contextMenuDoc.value = doc
-  nextTick(() => contextMenuRef.value?.open(e))
+function downloadFolder(folder: FolderModel) {
+  closeRowMenu()
+  if (isSampleFolder(folder)) {
+    showDemoOperationNotice('下载')
+    return
+  }
+  showFolderBackendNotice('下载')
 }
 
-function handleKeydown(e: KeyboardEvent) {
-  if (e.key !== 'Escape') return
-  if (showPreview.value) closePreview()
-  if (showStepsDialog.value) showStepsDialog.value = false
-  if (showMoveModal.value) showMoveModal.value = false
-  if (deleteConfirmId.value) deleteConfirmId.value = null
-  if (documentStore.isBatchMode) documentStore.toggleBatchMode()
+function moveOneFolder(folder: FolderModel) {
+  closeRowMenu()
+  documentStore.deselectAll()
+  selectedFolderIds.value = new Set([folder.id])
+  openMoveDialog()
 }
 
-function selectDocument(doc: Document) {
-  selectedDocumentId.value = doc.id
-}
-
-function rowSummary(doc: Document): string {
-  return doc.description || doc.error_message || 'No summary available yet.'
-}
-
-function qualityLabel(report?: QualityReport | null): string {
-  return qualityDisplay(report as Record<string, unknown> | null | undefined).label
-}
-
-function qualityTone(report?: QualityReport | null): string {
-  if (!report?.status) return 'border-border bg-muted/40 text-muted-foreground'
-  if (report.status === 'completed') return 'border-emerald-200 bg-emerald-50 text-emerald-700'
-  if (report.status === 'needs_review') return 'border-amber-200 bg-amber-50 text-amber-700'
-  if (String(report.status).startsWith('failed')) return 'border-red-200 bg-red-50 text-red-700'
-  return 'border-border bg-muted/40 text-muted-foreground'
-}
-
-function documentIcon(fileType?: string) {
-  const ext = (fileType || '').toLowerCase()
-  if (ext === '.docx' || ext === '.doc') return FileType
-  if (['.xlsx', '.xls', '.csv', '.tsv'].includes(ext)) return FileSpreadsheet
-  if (['.txt', '.md', '.markdown', '.json'].includes(ext)) return FileCode
-  if (ext === '.pptx' || ext === '.ppt') return Presentation
-  if (ext === '.pdf') return FileText
-  return File
-}
-
-function fileKindClass(fileType?: string) {
-  const ext = (fileType || '').toLowerCase()
-  if (ext === '.pdf') return 'pdf'
-  if (ext === '.docx' || ext === '.doc') return 'word'
-  if (['.xlsx', '.xls', '.csv', '.tsv'].includes(ext)) return 'sheet'
-  if (ext === '.pptx' || ext === '.ppt') return 'slide'
-  if (['.txt', '.md', '.markdown', '.json'].includes(ext)) return 'text'
-  return 'default'
-}
-
-function statusClass(status?: string) {
-  if (isCompletedStatus(status)) return 'done'
-  if (String(status || '').startsWith('failed')) return 'failed'
-  return 'running'
-}
-
-function updatedBy(doc: Document) {
-  return doc.folder_path?.split('/').filter(Boolean).slice(-1)[0] || 'admin'
-}
-
-function typeAndSize(doc: Document) {
-  return `${metadataValue(doc.folder_path || activeFolderLabel.value)} / ${formatDocumentTypeLabel(doc.file_type)} / ${formatDocumentSize(doc.file_size)}`
-}
-
-function basicDetailRows(doc: Document) {
-  const pageWordMetric = detailMetrics(doc).find((item) => item.label.includes('/'))
-  return [
-    ['上传人', '未提供'],
-    ['上传时间', formatDocumentDate(doc.created_at)],
-    ['更新时间', formatDocumentDate(doc.updated_at)],
-    ['页数 / 字数', pageWordMetric?.value || '打开预览后统计'],
-  ]
-}
-
-function previewStatsFor(doc: Document) {
-  if (previewData.value?.id !== doc.id) return null
-  const rawCoverage = previewData.value.stats?.summary_coverage
-  return {
-    tocNodes: previewData.value.stats?.node_count,
-    textChars: previewData.value.stats?.text_chars,
-    summaryCoverage: typeof rawCoverage === 'string'
-      ? Number.parseFloat(rawCoverage) / 100
-      : rawCoverage,
+async function copyDocumentName(document: Document) {
+  closeRowMenu()
+  try {
+    await navigator.clipboard.writeText(document.original_name || document.name)
+  } catch (error) {
+    console.error('Failed to copy document name:', error)
   }
 }
 
-function detailMetrics(doc: Document) {
-  return documentDetailMetrics({
-    doc: doc as unknown as Record<string, unknown>,
-    previewStats: previewStatsFor(doc),
-    qualityReport: doc.quality_report as Record<string, unknown> | null | undefined,
-  })
+async function reindexSelected() {
+  const ids = actionableSelectedDocumentIds.value
+  if (ids.length === 0) {
+    if (hasDemoSelection.value) showDemoOperationNotice('重新解析')
+    else if (selectedFolderIdList.value.length > 0) showFolderBackendNotice('重新解析')
+    return
+  }
+  selectionActionBusy.value = 'reindex'
+  uploadError.value = ''
+  operationNotice.value = ''
+  try {
+    await documentStore.batchReindex(ids)
+    documentStore.deselectAll()
+  } catch (error: any) {
+    uploadError.value = error?.response?.data?.detail || 'Reprocess failed'
+  } finally {
+    selectionActionBusy.value = null
+  }
 }
 
-function qualityItems(doc: Document) {
-  return detailMetrics(doc)
-    .filter((item) => !item.label.includes('/'))
-    .map((item) => [item.label, item.value])
+async function downloadSelected() {
+  const ids = actionableSelectedDocumentIds.value
+  if (ids.length === 0) {
+    if (hasDemoSelection.value) showDemoOperationNotice('下载')
+    else if (selectedFolderIdList.value.length > 0) showFolderBackendNotice('下载')
+    return
+  }
+  selectionActionBusy.value = 'download'
+  uploadError.value = ''
+  operationNotice.value = ''
+  try {
+    await documentStore.batchDownload(ids)
+    if (selectedFolderIdList.value.length > 0) showFolderBackendNotice('下载')
+  } catch (error: any) {
+    uploadError.value = error?.response?.data?.detail || 'Download failed'
+  } finally {
+    selectionActionBusy.value = null
+  }
 }
 
-function detailQuality(doc: Document) {
-  return qualityDisplay(doc.quality_report as Record<string, unknown> | null | undefined)
+function openMoveDialog() {
+  if (selectedCount.value === 0) return
+  closeRowMenu()
+  moveTargetFolderId.value = null
+  moveDialogOpen.value = true
 }
 
+function closeMoveDialog() {
+  if (selectionActionBusy.value === 'move') return
+  moveDialogOpen.value = false
+}
+
+async function moveSelected() {
+  const documentIds = actionableSelectedDocumentIds.value
+  const folderIds = actionableSelectedFolderIds.value
+  if (documentIds.length === 0 && folderIds.length === 0) {
+    if (hasDemoSelection.value) {
+      showDemoOperationNotice('移动')
+      moveDialogOpen.value = false
+    }
+    return
+  }
+  selectionActionBusy.value = 'move'
+  uploadError.value = ''
+  operationNotice.value = ''
+  try {
+    if (documentIds.length > 0) {
+      await documentStore.batchMove(documentIds, moveTargetFolderId.value)
+    }
+    for (const folderId of folderIds) {
+      if (folderId !== moveTargetFolderId.value) {
+        await folderStore.moveFolder(folderId, moveTargetFolderId.value)
+      }
+    }
+    documentStore.deselectAll()
+    selectedFolderIds.value.clear()
+    moveDialogOpen.value = false
+    await folderStore.fetchFolderTree()
+    await folderStore.fetchFolders(folderStore.currentFolderId)
+    refreshDocuments()
+  } catch (error: any) {
+    uploadError.value = error?.response?.data?.detail || 'Move failed'
+  } finally {
+    selectionActionBusy.value = null
+  }
+}
+
+function runSelectionAction(actionId: DocumentSelectionActionId) {
+  if (selectionActionBusy.value) return
+  if (actionId === 'chat') {
+    chatWithSelection()
+    return
+  }
+  if (actionId === 'download') {
+    downloadSelected()
+    return
+  }
+  if (actionId === 'reindex') {
+    reindexSelected()
+    return
+  }
+  if (actionId === 'move') {
+    openMoveDialog()
+    return
+  }
+  if (actionId === 'delete') {
+    deleteSelected()
+  }
+}
+
+function isSelectionActionDisabled(actionId: DocumentSelectionActionId) {
+  if (selectionActionBusy.value) return true
+  if (actionId === 'chat') return selectedCount.value === 0
+  return selectedCount.value === 0
+}
+
+async function handleFolderCreated() {
+  await folderStore.fetchFolderTree()
+  await folderStore.fetchFolders(folderStore.currentFolderId)
+}
+
+watch(() => folderStore.currentFolderId, (folderId) => {
+  documentStore.currentFolderId = folderId
+  documentStore.deselectAll()
+  selectedFolderIds.value.clear()
+  folderStore.fetchFolders(folderId)
+  refreshDocuments()
+})
+
+watch([searchInput, () => folderStore.currentFolderId], () => {
+  closeRowMenu()
+})
+
+onMounted(() => {
+  document.addEventListener('click', closeRowMenu)
+  window.addEventListener('resize', closeRowMenu)
+  documentStore.viewMode = 'list'
+  documentStore.clearSelection()
+  selectedFolderIds.value.clear()
+  folderStore.fetchFolderTree()
+  folderStore.fetchFolders(null)
+  refreshDocuments()
+})
+
+onBeforeUnmount(() => {
+  document.removeEventListener('click', closeRowMenu)
+  window.removeEventListener('resize', closeRowMenu)
+  documentStore.deselectAll()
+  selectedFolderIds.value.clear()
+})
 </script>
 
 <template>
-  <div class="documents-demo-page">
-    <main class="workbench">
-      <header class="topbar">
-        <div class="topbar-title">
-          <button class="icon-text" @click="router.push('/')">
-            <ArrowLeft class="h-4 w-4" />
-            <span>返回主界面</span>
+  <AppShell title="Documents">
+    <div class="documents-page">
+      <div class="documents-toolbar">
+        <div class="breadcrumb">
+          <button
+            v-for="(crumb, index) in breadcrumbs"
+            :key="crumb.id || 'root'"
+            :class="{ root: crumb.isRoot }"
+            type="button"
+            @click="goToFolder(crumb.id)"
+          >
+            {{ crumb.label }}
+            <span v-if="index < breadcrumbs.length - 1">/</span>
           </button>
-          <div>
-            <p>DOCUMENTS</p>
-            <h1>文档管理工作台</h1>
-          </div>
         </div>
 
-        <div class="topbar-actions">
-          <label class="search-box">
-            <Search class="h-4 w-4" />
+        <div class="toolbar-actions">
+          <div class="search-box">
+            <Search />
             <input
               v-model="searchInput"
-              placeholder="搜索文档、文件夹或标签"
-              type="text"
-              @keyup.enter="handleSearch"
+              placeholder="Search files"
+              @keyup.enter="refreshDocuments"
             />
-            <button v-if="searchInput" aria-label="清除搜索" @click.prevent="clearSearch">
-              <X class="h-4 w-4" />
+            <button v-if="searchInput" type="button" @click="clearSearch">
+              <X />
             </button>
-          </label>
-          <label class="primary-btn">
-            <Upload class="h-4 w-4" />
-            <span>上传文档</span>
-            <input class="hidden-input" type="file" accept=".pdf,.docx,.pptx,.xlsx,.txt,.md,.csv" multiple @change="handleUpload" />
-          </label>
+          </div>
+          <button class="toolbar-button" type="button" @click="showCreateFolderDialog = true">
+            <Plus />
+            <span>Folder</span>
+          </button>
+          <button class="toolbar-button primary" type="button" :disabled="uploading" @click="fileInputRef?.click()">
+            <Loader2 v-if="uploading" class="spin" />
+            <Upload v-else />
+            <span>Upload</span>
+          </button>
+          <input ref="fileInputRef" class="hidden-input" type="file" multiple @change="uploadFiles" />
         </div>
-      </header>
-
-      <div v-if="uploadError" class="notice error">
-        <AlertCircle class="h-4 w-4" />
-        <span>{{ uploadError }}</span>
-        <button aria-label="关闭" @click="uploadError = ''"><X class="h-4 w-4" /></button>
-      </div>
-      <div v-if="uploading" class="notice info">
-        <Loader2 class="h-4 w-4 animate-spin" />
-        <span v-if="uploadProgress.total > 1">正在上传 {{ uploadProgress.current }}/{{ uploadProgress.total }} {{ uploadProgress.currentFile }}</span>
-        <span v-else>正在上传文档...</span>
       </div>
 
-      <section class="documents-layout">
-        <aside class="surface folder-pane">
-          <div class="surface-head">
-            <div>
-              <p>文件夹</p>
-              <h2>资料库</h2>
-            </div>
-            <button class="icon-btn" aria-label="新建文件夹" title="新建文件夹" @click="openCreateFolder(folderStore.currentFolderId)">
-              <Plus class="h-4 w-4" />
+      <div v-if="uploadError" class="error-banner">
+        {{ uploadError }}
+      </div>
+      <div v-if="operationNotice" class="notice-banner">
+        {{ operationNotice }}
+      </div>
+
+      <div v-if="selectedCount > 0" class="selection-bar">
+        <div class="selection-summary">
+          <strong>{{ selectionSummary }}</strong>
+          <button type="button" @click="clearSelectedDocuments">取消选择</button>
+        </div>
+        <div class="selection-actions">
+          <button
+            v-for="action in selectionActions"
+            :key="action.id"
+            :class="{ danger: action.tone === 'danger' }"
+            type="button"
+            :disabled="isSelectionActionDisabled(action.id)"
+            @click="runSelectionAction(action.id)"
+          >
+            <Loader2 v-if="selectionActionBusy === action.id" class="spin" />
+            <component v-else :is="selectionActionIconFor(action.icon)" />
+            {{ action.label }}
+          </button>
+        </div>
+      </div>
+
+      <div class="documents-list" @scroll="closeRowMenu">
+        <div class="list-header">
+          <button
+            :class="['checkbox', { checked: allSelected }]"
+            type="button"
+            :disabled="!hasSelectableLibraryItems(selectableCurrentDocumentIds, selectableCurrentFolderIds)"
+            @click="toggleAll"
+          >
+            <Check v-if="allSelected" />
+          </button>
+          <span>All Files</span>
+          <span class="list-total">{{ displayTotal }} items</span>
+        </div>
+
+        <div
+          v-for="folder in currentFolders"
+          :key="folder.id"
+          :class="[
+            'file-row',
+            'folder-row',
+            {
+              selected: selectedFolderIds.has(folder.id),
+              'menu-open': isFolderMenuOpen(folder),
+            },
+          ]"
+          @click="goToFolder(folder.id)"
+        >
+          <button
+            :class="['checkbox', { checked: selectedFolderIds.has(folder.id) }]"
+            type="button"
+            @click.stop="toggleFolderSelection(folder)"
+          >
+            <Check v-if="selectedFolderIds.has(folder.id)" />
+          </button>
+          <span class="file-icon folder">
+            <FolderOpen />
+          </span>
+          <span class="file-main">
+            <strong>{{ folder.name }}</strong>
+            <small>{{ folder.path || 'Folder' }}</small>
+          </span>
+          <span class="file-meta">Folder</span>
+          <span class="file-meta">{{ formatDocumentDate(folder.updated_at) }}</span>
+          <div class="row-actions">
+            <button type="button" title="Chat" @click.stop="chatWithFolder(folder)">
+              <MessageSquare />
+            </button>
+            <button type="button" title="More" @click.stop="toggleFolderMenu(folder, $event)">
+              <MoreHorizontal />
             </button>
           </div>
+        </div>
 
-          <div class="folder-list">
-            <button :class="{ active: !folderStore.currentFolderId }" @click="navigateToFolder(null)">
-              <FolderOpen class="h-4 w-4" />
-              <span>全部文档</span>
-              <em>{{ documentStore.total }}</em>
+        <div
+          v-for="document in displayDocuments"
+          :key="document.id"
+          :class="[
+            'file-row',
+            {
+              sample: isSampleDocument(document),
+              selected: documentStore.selectedIds.has(document.id),
+              'menu-open': isRowMenuOpen(document),
+            },
+          ]"
+          @click="openPreview(document)"
+        >
+          <button
+            :class="['checkbox', { checked: documentStore.selectedIds.has(document.id) }]"
+            type="button"
+            @click.stop="toggleDocumentSelection(document)"
+          >
+            <Check v-if="documentStore.selectedIds.has(document.id)" />
+          </button>
+          <span :class="['file-icon', fileToneFor(document.file_type)]">
+            <component :is="fileIconFor(document.file_type)" />
+          </span>
+          <span class="file-main">
+            <strong>{{ document.original_name || document.name }}</strong>
+            <small>
+              {{ formatDocumentTypeLabel(document.file_type) }}
+              <template v-if="document.page_count"> · {{ document.page_count }} pages</template>
+              <template v-if="isProcessingStatus(document.status)"> · {{ documentProgress(document.status) }}%</template>
+            </small>
+          </span>
+          <span :class="['status-pill', document.status]">{{ localizedStatusLabel(document.status) }}</span>
+          <span class="file-meta">{{ formatDocumentDate(document.updated_at) }}</span>
+          <div class="row-actions">
+            <button type="button" title="Chat" @click.stop="chatWithDocument(document)">
+              <MessageSquare />
             </button>
-            <button
-              v-for="folder in folderStore.folders"
-              :key="folder.id"
-              :class="{ active: folderStore.currentFolderId === folder.id }"
-              @click="navigateToFolder(folder.id)"
-            >
-              <Folder class="h-4 w-4" />
-              <span>{{ folder.name }}</span>
-              <em>--</em>
+            <button type="button" title="More" @click.stop="toggleRowMenu(document, $event)">
+              <MoreHorizontal />
             </button>
           </div>
-        </aside>
+        </div>
 
-        <section class="surface doc-pane">
-          <div class="surface-head doc-head">
-            <div>
-              <p>当前位置 / {{ activeFolderLabel }}</p>
-              <h2>全部文档</h2>
-            </div>
-            <div class="doc-tools">
-              <button class="tool-btn" @click="handleSearch">
-                <SlidersHorizontal class="h-4 w-4" />
-                <span>更新时间</span>
-              </button>
-              <button :class="['tool-btn', { active: documentStore.isBatchMode }]" @click="documentStore.toggleBatchMode()">
-                <Square class="h-4 w-4" />
-                <span>批量</span>
-              </button>
-              <div class="view-toggle">
-                <button :class="{ active: documentStore.viewMode === 'list' }" aria-label="列表" @click="documentStore.viewMode = 'list'">
-                  <List class="h-4 w-4" />
-                </button>
-                <button :class="{ active: documentStore.viewMode === 'grid' }" aria-label="网格" @click="documentStore.viewMode = 'grid'">
-                  <Grid2X2 class="h-4 w-4" />
-                </button>
-              </div>
-            </div>
-          </div>
+        <div v-if="documentStore.loading" class="list-state">
+          <Loader2 class="spin" />
+          Loading documents...
+        </div>
+        <div v-else-if="currentFolders.length === 0 && displayDocuments.length === 0" class="list-state">
+          No documents in this folder
+        </div>
+      </div>
 
-          <div v-if="documentStore.isBatchMode" class="mode-strip batch-strip">
-            <span>已选择 {{ documentStore.selectedIds.size }} 项</span>
-            <button @click="documentStore.selectAll()">全选本页</button>
-            <button @click="documentStore.deselectAll()">取消选择</button>
-            <button @click="handleBatchDownload"><Download class="h-3.5 w-3.5" /> 下载</button>
-            <button @click="handleBatchMove"><Move class="h-3.5 w-3.5" /> 移动</button>
-            <button @click="handleBatchReindex"><RefreshCw class="h-3.5 w-3.5" /> 重新解析</button>
-            <button @click="handleBatchDelete"><Trash2 class="h-3.5 w-3.5" /> 删除</button>
-          </div>
-          <div v-else class="mode-strip list-insight">
-            <span>当前文件夹 {{ documentStore.documents.length }} 个文档</span>
-            <em>最近更新 {{ recentUpdate }}</em>
-            <em>{{ activeIndexingCount }} 个索引任务进行中</em>
-          </div>
+      <CreateFolderDialog
+        v-model:open="showCreateFolderDialog"
+        :parent-id="folderStore.currentFolderId"
+        @created="handleFolderCreated"
+      />
 
-          <div class="doc-scroll">
-            <div v-if="documentStore.loading" class="empty-state">
-              <Loader2 class="h-5 w-5 animate-spin" />
-              <span>正在加载文档...</span>
-            </div>
-            <div v-else-if="documentStore.documents.length === 0" class="empty-state">
-              <FileText class="h-9 w-9" />
-              <span>当前视图暂无文档</span>
-            </div>
-            <div v-else-if="documentStore.viewMode === 'list'" class="doc-list">
-              <div class="doc-list-header">
-                <span>文档</span>
-                <span>摘要</span>
-                <span>状态</span>
-                <span>更新</span>
-                <span>操作</span>
-              </div>
-              <button
-                v-for="doc in documentStore.documents"
-                :key="doc.id"
-                :class="{ active: selectedDocument?.id === doc.id, batch: documentStore.isBatchMode }"
-                @click="selectDocument(doc)"
-                @contextmenu="(e) => handleDocumentContextMenu(e, doc)"
-              >
-                <div class="doc-file-cell">
-                  <input
-                    class="row-check"
-                    type="checkbox"
-                    :checked="documentStore.selectedIds.has(doc.id)"
-                    :class="{ hidden: !documentStore.isBatchMode }"
-                    @click.stop
-                    @change="documentStore.toggleSelect(doc.id)"
-                  />
-                  <div :class="['doc-icon', fileKindClass(doc.file_type)]">
-                    <component :is="documentIcon(doc.file_type)" class="h-4 w-4" />
-                  </div>
-                  <div>
-                    <strong :title="doc.original_name">{{ doc.original_name }}</strong>
-                    <span>{{ typeAndSize(doc) }}</span>
-                  </div>
-                </div>
-                <p class="doc-summary-cell" :title="rowSummary(doc)">{{ rowSummary(doc) }}</p>
-                <div class="doc-status-cell">
-                  <span :class="['status', statusClass(doc.status)]">{{ localizedStatusLabel(doc.status) }}</span>
-                  <em>{{ metadataValue(doc.page_count) }} 页</em>
-                  <div v-if="isProcessingStatus(doc.status)" class="progress-track">
-                    <i :style="{ width: `${documentProgress(doc.status)}%` }" />
-                  </div>
-                </div>
-                <div class="doc-meta">
-                  <span>{{ formatDocumentDate(doc.updated_at) }}</span>
-                  <em>{{ updatedBy(doc) }}</em>
-                </div>
-                <div class="row-actions">
-                  <button v-if="isCompletedStatus(doc.status)" title="打开预览" @click.stop="openPreview(doc.id)">
-                    <Eye class="h-4 w-4" />
-                  </button>
-                  <button v-if="isProcessingStatus(doc.status)" title="处理步骤" @click.stop="showProcessingSteps(doc.id)">
-                    <BarChart3 class="h-4 w-4" />
-                  </button>
-                  <button v-if="!isProcessingStatus(doc.status)" title="重新解析" @click.stop="handleReindex(doc.id)">
-                    <RefreshCw class="h-4 w-4" />
-                  </button>
-                  <button title="移动" @click.stop="handleMove(doc)">
-                    <FolderInput class="h-4 w-4" />
-                  </button>
-                  <button title="删除" @click.stop="confirmDelete(doc.id)">
-                    <Trash2 class="h-4 w-4" />
-                  </button>
-                </div>
-              </button>
-            </div>
-            <div v-else class="doc-grid">
-              <button
-                v-for="doc in documentStore.documents"
-                :key="doc.id"
-                :class="{ active: selectedDocument?.id === doc.id }"
-                @click="selectDocument(doc)"
-              >
-                <div class="card-line">
-                  <div :class="['doc-icon', fileKindClass(doc.file_type)]">
-                    <component :is="documentIcon(doc.file_type)" class="h-4 w-4" />
-                  </div>
-                  <span :class="['status', statusClass(doc.status)]">{{ localizedStatusLabel(doc.status) }}</span>
-                </div>
-                <strong>{{ doc.original_name }}</strong>
-                <p>{{ rowSummary(doc) }}</p>
-              </button>
-            </div>
-          </div>
-
-          <footer class="pagination">
-            <div>
-              <strong>第 {{ documentStore.currentPage }} 页</strong>
-              <span>每页 {{ DOCUMENT_WORKBENCH_PAGE_SIZE }} 个 / 共 {{ documentStore.total }} 个文档 / {{ totalPages }} 页</span>
-            </div>
-            <div class="page-controls">
-              <button :disabled="documentStore.currentPage === 1" @click="changePage(documentStore.currentPage - 1)">上一页</button>
-              <button
-                v-for="page in pageNumbers"
-                :key="page"
-                :class="{ active: documentStore.currentPage === page }"
-                @click="changePage(page)"
-              >
-                {{ page }}
-              </button>
-              <button :disabled="documentStore.currentPage === totalPages" @click="changePage(documentStore.currentPage + 1)">下一页</button>
-            </div>
-          </footer>
-        </section>
-
-        <aside class="surface detail-pane">
-          <div class="surface-head">
-            <div>
-              <p>文档详情</p>
-            </div>
-          </div>
-
-          <div v-if="!selectedDocument" class="empty-state detail-empty">
-            <span>选择一个文档查看详情</span>
-          </div>
-
-          <template v-else>
-            <div class="detail-identity">
-              <div :class="['detail-icon', fileKindClass(selectedDocument.file_type)]">
-                <component :is="documentIcon(selectedDocument.file_type)" class="h-5 w-5" />
-              </div>
+      <Teleport to="body">
+        <div v-if="moveDialogOpen" class="move-overlay" @click="closeMoveDialog">
+          <section class="move-modal" @click.stop>
+            <header class="move-header">
               <div>
-                <h3 :title="selectedDocument.original_name">{{ selectedDocument.original_name }}</h3>
-                <span>{{ activeFolderLabel }} / {{ selectedDocumentType }} / {{ formatDocumentSize(selectedDocument.file_size) }}</span>
+                <h2>移动项目</h2>
+                <p>{{ selectionSummary }} · 目标位置 {{ moveTargetLabel }}</p>
               </div>
-            </div>
-
-            <div class="detail-section basic-detail">
-              <div class="section-title">
-                <FileText class="h-4 w-4" />
-                <h4>基础属性</h4>
-              </div>
-              <div class="property-list">
-                <div v-for="[label, value] in basicDetailRows(selectedDocument)" :key="label">
-                  <span>{{ label }}</span>
-                  <strong>{{ value }}</strong>
-                </div>
-              </div>
-            </div>
-
-            <div class="detail-section index-detail">
-              <div class="section-title">
-                <RefreshCw class="h-4 w-4" />
-                <h4>索引状态</h4>
-              </div>
-              <div class="status-panel">
-                <div class="status-line">
-                  <span :class="['status', statusClass(selectedDocument.status)]">{{ localizedStatusLabel(selectedDocument.status) }}</span>
-                  <em>{{ metadataValue(selectedDocument.parse_execution_mode || selectedDocument.parse_requested_mode, '智能') }} / {{ formatDocumentDuration(selectedDocument.processing_duration) }} / 最近 {{ formatDocumentDate(selectedDocument.last_reindex_at || selectedDocument.updated_at) }}</em>
-                </div>
-                <div class="progress-track"><i :style="{ width: `${documentProgress(selectedDocument.status)}%` }" /></div>
-              </div>
-              <div class="quality-grid">
-                <div v-for="[label, value] in qualityItems(selectedDocument)" :key="label">
-                  <span>{{ label }}</span>
-                  <strong>{{ value }}</strong>
-                </div>
-              </div>
-              <p :class="['quality-note', detailQuality(selectedDocument).tone]">
-                {{ detailQuality(selectedDocument).label }}，{{ detailQuality(selectedDocument).message }}
-              </p>
-            </div>
-
-            <div class="detail-section summary-detail">
-              <div class="section-title">
-                <BookOpen class="h-4 w-4" />
-                <h4>全文摘要</h4>
-              </div>
-              <p class="summary-scroll">{{ selectedDocument.description || '该文档暂无全文摘要。实际接入时，如果后端返回的全文摘要更长，这一区域内部滚动，不会挤压页面。' }}</p>
-            </div>
-
-            <div class="detail-actions">
-              <button class="preview-btn" :disabled="!isCompletedStatus(selectedDocument.status)" @click="openPreview(selectedDocument.id)">
-                <Eye class="h-4 w-4" />
-                <span>打开预览</span>
+              <button type="button" :disabled="selectionActionBusy === 'move'" @click="closeMoveDialog">
+                <X />
               </button>
-              <button :disabled="isProcessingStatus(selectedDocument.status)" @click="handleReindex(selectedDocument.id)">
-                <RefreshCw class="h-4 w-4" />
-                <span>重新解析</span>
-              </button>
-            </div>
-          </template>
-        </aside>
-      </section>
-    </main>
+            </header>
 
-    <div v-if="showPreview" class="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" @click.self="closePreview">
-      <div class="flex h-[90vh] w-full max-w-6xl flex-col overflow-hidden rounded-lg bg-background shadow-2xl">
-        <div class="flex items-center justify-between border-b px-4 py-3">
-          <div class="flex min-w-0 items-center gap-3">
-            <FileText class="h-5 w-5 shrink-0 text-muted-foreground" />
-            <h3 class="truncate font-medium">{{ previewDocName }}</h3>
-            <span v-if="previewData" class="rounded-full bg-muted px-2 py-0.5 text-xs text-muted-foreground">
-              {{ metadataValue(previewData.page_count) }} pages
-            </span>
-          </div>
-          <button class="rounded-md p-1.5 text-muted-foreground hover:bg-muted hover:text-foreground" title="Close" @click="closePreview">
-            <X class="h-5 w-5" />
+            <div class="move-body">
+              <div class="move-selected">
+                <span>将移动</span>
+                <strong>{{ selectedItemLabel }}</strong>
+                <small v-if="selectedCount > 1">另有 {{ selectedCount - 1 }} 个项目</small>
+              </div>
+
+              <div class="folder-picker" role="listbox" aria-label="选择目标文件夹">
+                <button
+                  v-for="folder in moveFolderOptions"
+                  :key="folder.id || 'root'"
+                  :class="{ active: moveTargetFolderId === folder.id }"
+                  type="button"
+                  role="option"
+                  :aria-selected="moveTargetFolderId === folder.id"
+                  :style="{ paddingLeft: `${12 + folder.depth * 18}px` }"
+                  @click="moveTargetFolderId = folder.id"
+                >
+                  <FolderOpen v-if="folder.id === null" />
+                  <Folder v-else />
+                  <span>{{ folder.name }}</span>
+                  <small>{{ folder.path }}</small>
+                  <Check v-if="moveTargetFolderId === folder.id" />
+                </button>
+              </div>
+            </div>
+
+            <footer class="move-footer">
+              <button type="button" :disabled="selectionActionBusy === 'move'" @click="closeMoveDialog">
+                取消
+              </button>
+              <button class="primary" type="button" :disabled="selectionActionBusy === 'move'" @click="moveSelected">
+                <Loader2 v-if="selectionActionBusy === 'move'" class="spin" />
+                <Move v-else />
+                移动到这里
+              </button>
+            </footer>
+          </section>
+        </div>
+      </Teleport>
+
+      <Teleport to="body">
+        <div
+          v-if="rowMenuDocument"
+          ref="rowMenuRef"
+          class="row-menu"
+          :style="{
+            top: `${rowMenuPosition.top}px`,
+            left: `${rowMenuPosition.left}px`,
+            maxHeight: `${rowMenuPosition.maxHeight}px`,
+          }"
+          @click.stop
+        >
+          <button type="button" @click="chatWithDocument(rowMenuDocument)">
+            <MessageSquare />
+            <span>在聊天中使用</span>
+          </button>
+          <button type="button" @click="openPreview(rowMenuDocument)">
+            <FileText />
+            <span>打开预览</span>
+          </button>
+          <button type="button" @click="copyDocumentName(rowMenuDocument)">
+            <File />
+            <span>复制文件名</span>
+          </button>
+          <button type="button" :disabled="isSampleDocument(rowMenuDocument)" @click="downloadOne(rowMenuDocument)">
+            <Download />
+            <span>下载</span>
+          </button>
+          <button type="button" :disabled="isSampleDocument(rowMenuDocument)" @click="reindexOne(rowMenuDocument)">
+            <RefreshCw />
+            <span>重新解析</span>
+          </button>
+          <button class="danger" type="button" :disabled="isSampleDocument(rowMenuDocument)" @click="deleteOne(rowMenuDocument)">
+            <Trash2 />
+            <span>删除</span>
           </button>
         </div>
+      </Teleport>
 
-        <div class="flex min-h-0 flex-1">
-          <div class="hidden w-72 flex-col overflow-hidden border-r bg-muted/30 lg:flex">
-            <div class="flex border-b">
-              <button
-                :class="['flex-1 py-2.5 text-sm font-medium', activePreviewTab === 'toc' ? 'border-b-2 border-primary text-primary' : 'text-muted-foreground hover:text-foreground']"
-                @click="activePreviewTab = 'toc'"
-              >
-                <BookOpen class="mr-1.5 inline h-4 w-4" />
-                TOC
-              </button>
-              <button
-                :class="['flex-1 py-2.5 text-sm font-medium', activePreviewTab === 'meta' ? 'border-b-2 border-primary text-primary' : 'text-muted-foreground hover:text-foreground']"
-                @click="activePreviewTab = 'meta'"
-              >
-                <BarChart3 class="mr-1.5 inline h-4 w-4" />
-                Meta
-              </button>
-            </div>
+      <Teleport to="body">
+        <div
+          v-if="rowMenuFolder"
+          ref="rowMenuRef"
+          class="row-menu"
+          :style="{
+            top: `${rowMenuPosition.top}px`,
+            left: `${rowMenuPosition.left}px`,
+            maxHeight: `${rowMenuPosition.maxHeight}px`,
+          }"
+          @click.stop
+        >
+          <button type="button" @click="chatWithFolder(rowMenuFolder)">
+            <MessageSquare />
+            <span>在聊天中使用</span>
+          </button>
+          <button type="button" @click="goToFolder(rowMenuFolder.id)">
+            <FolderOpen />
+            <span>打开文件夹</span>
+          </button>
+          <button type="button" @click="downloadFolder(rowMenuFolder)">
+            <Download />
+            <span>下载</span>
+          </button>
+          <button type="button" @click="reindexFolder(rowMenuFolder)">
+            <RefreshCw />
+            <span>重新解析</span>
+          </button>
+          <button type="button" @click="moveOneFolder(rowMenuFolder)">
+            <Move />
+            <span>移动</span>
+          </button>
+          <button class="danger" type="button" @click="deleteOneFolder(rowMenuFolder)">
+            <Trash2 />
+            <span>删除</span>
+          </button>
+        </div>
+      </Teleport>
 
-            <div v-if="activePreviewTab === 'toc'" class="min-h-0 flex-1 overflow-y-auto p-3">
-              <div v-if="previewLoading" class="flex justify-center py-8">
-                <Loader2 class="h-5 w-5 animate-spin text-primary" />
+      <Teleport to="body">
+        <div v-if="previewOpen" class="preview-overlay" @click="closePreview">
+          <section class="preview-modal" @click.stop>
+            <header class="preview-header">
+              <div>
+                <h2>{{ previewDocument?.original_name || previewDocument?.name }}</h2>
+                <p>{{ formatDocumentTypeLabel(previewDocument?.file_type) }} · {{ localizedStatusLabel(previewDocument?.status) }}</p>
               </div>
-              <TocTree v-else-if="previewData?.toc?.length" :nodes="previewData.toc" :default-expanded="true" @jump="jumpToPage" />
-              <div v-else class="py-8 text-center text-sm text-muted-foreground">No TOC available</div>
-            </div>
+              <button type="button" @click="closePreview">
+                <X />
+              </button>
+            </header>
 
-            <div v-else class="min-h-0 flex-1 overflow-y-auto p-3 text-sm">
-              <div v-if="previewLoading" class="flex justify-center py-8">
-                <Loader2 class="h-5 w-5 animate-spin text-primary" />
-              </div>
-              <template v-else-if="previewData">
-                <dl class="space-y-2">
-                  <div class="flex justify-between gap-3"><dt class="text-muted-foreground">Format</dt><dd>{{ previewData.file_type }}</dd></div>
-                  <div class="flex justify-between gap-3"><dt class="text-muted-foreground">Size</dt><dd>{{ formatDocumentSize(previewData.file_size) }}</dd></div>
-                  <div class="flex justify-between gap-3"><dt class="text-muted-foreground">Duration</dt><dd>{{ formatDocumentDuration(previewData.processing_duration) }}</dd></div>
-                  <div class="flex justify-between gap-3"><dt class="text-muted-foreground">Nodes</dt><dd>{{ metadataValue(previewData.stats?.node_count) }}</dd></div>
-                  <div class="flex justify-between gap-3"><dt class="text-muted-foreground">Coverage</dt><dd>{{ metadataValue(previewData.stats?.summary_coverage) }}</dd></div>
-                  <div class="flex justify-between gap-3"><dt class="text-muted-foreground">Text chars</dt><dd>{{ metadataValue(previewData.stats?.text_chars) }}</dd></div>
-                </dl>
-                <div :class="['mt-4 rounded-md border p-3 text-xs', qualityTone(previewData.quality_report)]">
-                  <div class="flex justify-between gap-2">
-                    <span class="font-medium">Quality</span>
-                    <span>{{ qualityLabel(previewData.quality_report) }}</span>
+            <div class="preview-body">
+              <aside class="preview-side">
+                <div class="preview-tabs">
+                  <button :class="{ active: activePreviewTab === 'toc' }" type="button" @click="activePreviewTab = 'toc'">
+                    <ListTree />
+                    TOC
+                  </button>
+                  <button :class="{ active: activePreviewTab === 'info' }" type="button" @click="activePreviewTab = 'info'">
+                    <FileText />
+                    信息
+                  </button>
+                </div>
+
+                <div class="preview-side-content">
+                  <div v-if="previewLoading" class="preview-loading">
+                    <Loader2 class="spin" />
+                    Loading preview...
+                  </div>
+                  <TocTree
+                    v-else-if="activePreviewTab === 'toc'"
+                    :nodes="previewToc"
+                    @jump="jumpToPage"
+                  />
+                  <div v-else class="info-panel">
+                    <dl>
+                      <div>
+                        <dt>原始文件名</dt>
+                        <dd>{{ previewDocument?.original_name || previewData?.original_name || previewData?.name }}</dd>
+                      </div>
+                      <div>
+                        <dt>文件类型</dt>
+                        <dd>{{ formatDocumentTypeLabel(previewDocument?.file_type || previewData?.file_type) }}</dd>
+                      </div>
+                      <div>
+                        <dt>文件大小</dt>
+                        <dd>{{ formatDocumentSize(previewDocument?.file_size || previewData?.file_size) }}</dd>
+                      </div>
+                      <div>
+                        <dt>所在路径</dt>
+                        <dd>{{ previewDocument?.folder_path || previewDocument?.file_path || 'root' }}</dd>
+                      </div>
+                      <div>
+                        <dt>页数</dt>
+                        <dd>{{ metadataValue(previewDocument?.page_count || previewData?.page_count) }}</dd>
+                      </div>
+                      <div>
+                        <dt>解析路径</dt>
+                        <dd>{{ previewRoute }}</dd>
+                      </div>
+                      <div>
+                        <dt>解析总用时</dt>
+                        <dd>{{ formatDocumentDuration(previewDocument?.processing_duration || previewData?.processing_duration) }}</dd>
+                      </div>
+                      <div>
+                        <dt>TOC 节点数</dt>
+                        <dd>{{ metadataValue(previewData?.stats?.node_count) }}</dd>
+                      </div>
+                      <div>
+                        <dt>文本字符数</dt>
+                        <dd>{{ metadataValue(previewData?.stats?.text_chars) }}</dd>
+                      </div>
+                      <div>
+                        <dt>摘要覆盖率</dt>
+                        <dd>{{ metadataValue(previewData?.stats?.summary_coverage) }}</dd>
+                      </div>
+                      <div>
+                        <dt>质量报告</dt>
+                        <dd>{{ previewQuality.label }} · {{ previewQuality.message }}</dd>
+                      </div>
+                    </dl>
                   </div>
                 </div>
-              </template>
+              </aside>
+
+              <main class="preview-document">
+                <div v-if="previewLoading" class="preview-loading">
+                  <Loader2 class="spin" />
+                  Loading preview...
+                </div>
+                <PdfReferenceViewer
+                  v-else-if="previewDocument?.file_type?.toLowerCase() === '.pdf'"
+                  ref="pdfViewerRef"
+                  :file-url="`/api/documents/${previewDocument.id}/file`"
+                  :file-name="previewDocument.original_name || previewDocument.name"
+                  :visible="previewOpen"
+                  embedded
+                  @close="closePreview"
+                />
+                <div v-else-if="isSamplePreview" class="sample-preview">
+                  <section class="sample-sheet">
+                    <header>
+                      <div>
+                        <span>Sheet 1</span>
+                        <h3>各地区销售表现</h3>
+                      </div>
+                      <strong>4 rows</strong>
+                    </header>
+                    <table>
+                      <thead>
+                        <tr>
+                          <th>地区</th>
+                          <th>订单数</th>
+                          <th>销售额</th>
+                          <th>同比</th>
+                          <th>结论</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        <tr v-for="row in samplePreviewRows" :key="row.region">
+                          <td>{{ row.region }}</td>
+                          <td>{{ row.orders }}</td>
+                          <td>{{ row.revenue }}</td>
+                          <td :class="{ positive: row.growth.startsWith('+'), negative: row.growth.startsWith('-') }">
+                            {{ row.growth }}
+                          </td>
+                          <td>{{ row.note }}</td>
+                        </tr>
+                      </tbody>
+                    </table>
+                  </section>
+                </div>
+                <UniversalPreview
+                  v-else-if="previewDocument"
+                  :doc-id="previewDocument.id"
+                  :doc-name="previewDocument.original_name || previewDocument.name"
+                  :file-type="previewDocument.file_type || ''"
+                  raw-only
+                />
+              </main>
             </div>
-          </div>
-
-          <div class="min-w-0 flex-1 overflow-hidden bg-muted/20">
-            <div v-if="previewLoading" class="flex h-full items-center justify-center">
-              <Loader2 class="h-8 w-8 animate-spin text-primary" />
-            </div>
-            <PdfReferenceViewer
-              v-else-if="showPdfPreview"
-              ref="pdfViewerRef"
-              :file-url="`/api/documents/${previewDocId}/file`"
-              :file-name="previewDocName"
-              :visible="true"
-              :embedded="true"
-              class="h-full"
-            />
-            <UniversalPreview
-              v-else-if="showUniversalPreview"
-              :doc-id="previewDocId"
-              :doc-name="previewDocName"
-              :file-type="previewDocType"
-              :raw-only="true"
-              class="h-full"
-            />
-          </div>
+          </section>
         </div>
-      </div>
+      </Teleport>
     </div>
-
-    <ProcessingStepsDialog
-      :visible="showStepsDialog"
-      :document-name="stepsDocName"
-      :steps="stepsData"
-      :is-loading="stepsLoading"
-      @close="showStepsDialog = false"
-    />
-
-    <CreateFolderDialog
-      v-model:open="showCreateFolderDialog"
-      :parent-id="createFolderParentId"
-      @created="handleFolderCreated"
-    />
-
-    <div v-if="showMoveModal" class="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" @click.self="showMoveModal = false">
-      <div class="w-full max-w-sm rounded-lg bg-background p-4 shadow-2xl">
-        <h3 class="mb-3 font-semibold">Move to folder</h3>
-        <div class="max-h-64 space-y-1 overflow-y-auto">
-          <button class="w-full rounded-md px-3 py-2 text-left text-sm hover:bg-muted" @click="moveDocId ? doMove(null) : doBatchMove(null)">
-            Root
-          </button>
-          <button v-for="folder in folderStore.folders" :key="folder.id" class="w-full rounded-md px-3 py-2 text-left text-sm hover:bg-muted" @click="moveDocId ? doMove(folder.id) : doBatchMove(folder.id)">
-            {{ folder.name }}
-          </button>
-        </div>
-        <div class="mt-4 flex justify-end">
-          <button class="rounded-md border px-4 py-2 text-sm hover:bg-muted" @click="showMoveModal = false">Cancel</button>
-        </div>
-      </div>
-    </div>
-
-    <div v-if="deleteConfirmId" class="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" @click.self="deleteConfirmId = null">
-      <div class="w-full max-w-sm rounded-lg bg-background p-4 shadow-2xl">
-        <h3 class="mb-2 font-semibold">Confirm delete</h3>
-        <p class="mb-4 text-sm text-muted-foreground">This cannot be undone.</p>
-        <div class="flex justify-end gap-2">
-          <button class="rounded-md border px-4 py-2 text-sm hover:bg-muted" @click="deleteConfirmId = null">Cancel</button>
-          <button class="rounded-md bg-destructive px-4 py-2 text-sm text-destructive-foreground hover:bg-destructive/90" @click="doDelete">Delete</button>
-        </div>
-      </div>
-    </div>
-
-    <div v-if="renamingDoc" class="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" @click.self="renamingDoc = null">
-      <div class="w-full max-w-sm rounded-lg bg-background p-4 shadow-2xl">
-        <h3 class="mb-3 font-semibold">Rename</h3>
-        <input v-model="renameValue" class="mb-4 w-full rounded-md border bg-background px-3 py-2 focus:outline-none focus:ring-2 focus:ring-primary/20" type="text" @keyup.enter="doRename" />
-        <div class="flex justify-end gap-2">
-          <button class="rounded-md border px-4 py-2 text-sm hover:bg-muted" @click="renamingDoc = null">Cancel</button>
-          <button class="rounded-md bg-primary px-4 py-2 text-sm text-primary-foreground hover:bg-primary/90" @click="doRename">Save</button>
-        </div>
-      </div>
-    </div>
-
-    <DocumentContextMenu
-      v-if="contextMenuDoc"
-      ref="contextMenuRef"
-      :document="contextMenuDoc"
-      @preview="openPreview"
-      @reindex="handleReindex"
-      @delete="confirmDelete"
-      @move="handleMove"
-      @rename="handleRename"
-    />
-
-  </div>
+  </AppShell>
 </template>
 
 <style scoped>
-.documents-demo-page {
-  --ink: #101828;
-  --muted: #667085;
-  --line: rgba(16, 24, 40, 0.1);
-  --panel: rgba(255, 255, 255, 0.88);
-  --blue: #2563eb;
+.documents-page {
+  display: grid;
   height: 100%;
   min-height: 0;
+  grid-template-rows: auto auto minmax(0, 1fr);
+  gap: 12px;
   overflow: hidden;
-  background:
-    radial-gradient(circle at top left, rgba(37, 99, 235, 0.12), transparent 28rem),
-    linear-gradient(180deg, #f8fafc 0%, #eef2f7 100%);
-  color: var(--ink);
+  padding: 18px 24px 22px;
 }
 
-.workbench {
-  height: 100%;
-  min-height: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 16px;
-  padding: 8px 16px 18px;
-}
-
-.topbar,
-.surface {
-  border: 1px solid var(--line);
-  background: var(--panel);
-  box-shadow: 0 16px 44px rgba(16, 24, 40, 0.08);
-  backdrop-filter: blur(14px);
-}
-
-.topbar {
-  min-height: 86px;
-  padding: 16px 18px;
-  border-radius: 18px;
+.documents-toolbar {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 18px;
+  gap: 16px;
 }
 
-.topbar-title,
-.topbar-actions,
-.icon-text,
-.primary-btn,
-.tool-btn,
-.preview-btn,
-.folder-list button,
-.settings-nav button {
+.breadcrumb {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 6px;
+}
+
+.breadcrumb button {
   display: inline-flex;
   align-items: center;
-}
-
-.topbar-title {
-  gap: 22px;
-  min-width: 0;
-}
-
-.topbar-title p,
-.surface-head p {
-  color: var(--muted);
-  font-size: 12px;
-  font-weight: 750;
-  letter-spacing: 0.02em;
-  text-transform: uppercase;
-}
-
-.topbar-title h1 {
-  margin-top: 2px;
-  font-size: 28px;
-  font-weight: 800;
-  letter-spacing: 0;
-}
-
-button,
-.primary-btn {
+  gap: 6px;
   border: 0;
-  cursor: pointer;
-  font: inherit;
+  background: transparent;
+  color: var(--kc-text-secondary);
+  font-size: 13px;
 }
 
-button:disabled {
-  cursor: not-allowed;
+.breadcrumb button.root {
+  color: var(--kc-text);
+  font-weight: 750;
 }
 
-.icon-text,
-.primary-btn,
-.tool-btn,
-.icon-btn,
-.mode-strip button,
-.preview-btn {
-  border: 1px solid var(--line);
-  background: #fff;
-  color: #344054;
-  box-shadow: 0 1px 2px rgba(16, 24, 40, 0.05);
+.breadcrumb span {
+  color: var(--kc-text-tertiary);
+  font-weight: 400;
 }
 
-.icon-text {
-  gap: 9px;
-  padding: 11px 15px;
-  border-radius: 12px;
-  font-weight: 650;
-}
-
-.topbar-actions {
-  gap: 12px;
-  flex: 1;
+.toolbar-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
   justify-content: flex-end;
-  min-width: 300px;
+  gap: 8px;
 }
 
 .search-box {
-  width: min(430px, 42vw);
-  height: 48px;
-  padding: 0 14px;
-  border: 1px solid var(--line);
-  border-radius: 14px;
   display: flex;
   align-items: center;
-  gap: 10px;
-  background: rgba(255, 255, 255, 0.86);
-  color: #98a2b3;
+  gap: 7px;
+  width: 250px;
+  height: 34px;
+  border: 1px solid var(--kc-border);
+  border-radius: var(--kc-radius-md);
+  background: var(--kc-surface);
+  padding: 0 9px;
 }
 
 .search-box input {
   min-width: 0;
   flex: 1;
   border: 0;
-  outline: 0;
   background: transparent;
-  color: var(--ink);
-  font-size: 14px;
+  color: var(--kc-text);
+  font-size: 12.5px;
+  outline: none;
 }
 
-.search-box button {
-  color: #98a2b3;
+.search-box button,
+.toolbar-button,
+.selection-bar button,
+.row-actions button,
+.preview-header button,
+.move-header button,
+.move-footer button {
+  border: 0;
   background: transparent;
 }
 
-.primary-btn {
-  height: 48px;
+.search-box svg,
+.toolbar-button svg,
+.selection-bar svg,
+.file-icon svg,
+.row-actions svg,
+.preview-header svg,
+.preview-tabs svg,
+.checkbox svg,
+.list-state svg {
+  width: 16px;
+  height: 16px;
+  stroke-width: 1.85;
+}
+
+.toolbar-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  height: 34px;
+  border: 1px solid var(--kc-border);
+  border-radius: var(--kc-radius-md);
+  background: var(--kc-surface);
+  padding: 0 12px;
+  color: var(--kc-text-secondary);
+  font-size: 12.5px;
+  font-weight: 560;
+}
+
+.toolbar-button.primary {
+  border-color: var(--kc-text);
+  background: var(--kc-text);
+  color: #fff;
+}
+
+.toolbar-button:disabled {
+  opacity: 0.55;
+}
+
+.selection-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-height: 38px;
+  border: 1px solid rgba(47, 128, 237, 0.24);
+  border-radius: var(--kc-radius-md);
+  background: #eaf3ff;
+  padding: 0 12px;
+  color: #145eb8;
+  font-size: 12.5px;
+}
+
+.selection-summary,
+.selection-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.selection-summary strong {
+  color: #124f99;
+  font-weight: 650;
+}
+
+.selection-summary button {
+  color: #4d7bb7;
+}
+
+.selection-bar button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 28px;
+  border-radius: var(--kc-radius-sm);
+  padding: 0 8px;
+  color: inherit;
+  font-weight: 560;
+}
+
+.selection-bar button:hover {
+  background: rgba(47, 128, 237, 0.12);
+}
+
+.selection-bar button:disabled {
+  cursor: default;
+  opacity: 0.62;
+}
+
+.selection-bar button.danger {
+  color: var(--kc-danger);
+}
+
+.documents-list {
+  min-height: 0;
+  overflow-y: auto;
+  border-top: 1px solid var(--kc-border);
+  border-bottom: 1px solid var(--kc-border);
+  background: rgba(255, 255, 255, 0.58);
+}
+
+.list-header,
+.file-row {
+  display: grid;
+  grid-template-columns: 34px 42px minmax(220px, 1fr) minmax(100px, 140px) minmax(120px, 160px) 74px;
+  align-items: center;
+  gap: 10px;
+  min-height: 54px;
+  border-bottom: 1px solid var(--kc-border-soft);
+  padding: 0 14px;
+}
+
+.list-header {
+  position: sticky;
+  top: 0;
+  z-index: 5;
+  min-height: 42px;
+  background: rgba(246, 247, 249, 0.94);
+  color: var(--kc-text-secondary);
+  font-size: 12px;
+  font-weight: 650;
+  backdrop-filter: blur(18px);
+}
+
+.list-total {
+  grid-column: 4 / span 2;
+  justify-self: end;
+  color: var(--kc-text-tertiary);
+  font-weight: 500;
+}
+
+.list-header > span:not(.list-total) {
+  grid-column: 2 / span 2;
+  white-space: nowrap;
+}
+
+.file-row {
+  width: 100%;
+  border-right: 0;
+  border-left: 0;
+  background: transparent;
+  color: var(--kc-text);
+  text-align: left;
+}
+
+.file-row:hover {
+  background: #fff;
+}
+
+.file-row.selected {
+  background: #f7fbff;
+}
+
+.file-row.menu-open {
+  background: #fff;
+}
+
+.file-row.sample {
+  cursor: pointer;
+}
+
+.folder-row {
+  cursor: pointer;
+}
+
+.checkbox {
+  display: grid;
+  width: 18px;
+  height: 18px;
+  place-items: center;
+  border: 1px solid #cfd6df;
+  border-radius: var(--kc-radius-xs);
+  background: #fff;
+  color: #fff;
+}
+
+.checkbox.checked {
+  border-color: var(--kc-accent);
+  background: var(--kc-accent);
+}
+
+.checkbox:disabled {
+  border-color: #dce2ea;
+  background: rgba(255, 255, 255, 0.7);
+  cursor: default;
+  opacity: 0.55;
+}
+
+.checkbox.ghost {
+  border-color: transparent;
+  background: transparent;
+}
+
+.file-icon {
+  display: grid;
+  width: 34px;
+  height: 34px;
+  place-items: center;
+  border: 1px solid transparent;
+  border-radius: var(--kc-radius-md);
+  background: var(--kc-surface-muted);
+  color: var(--kc-text-secondary);
+}
+
+.file-icon.folder,
+.file-icon.word {
+  background: #eff6ff;
+  color: #2563eb;
+}
+
+.file-icon.pdf {
+  background: #fef2f2;
+  color: #dc2626;
+}
+
+.file-icon.sheet {
+  background: #ecfdf3;
+  color: #15803d;
+}
+
+.file-icon.deck {
+  background: #fff7ed;
+  color: #ea580c;
+}
+
+.file-icon.code {
+  background: #f8fafc;
+  color: #475569;
+}
+
+.file-icon.image {
+  background: #f0f9ff;
+  color: #0284c7;
+}
+
+.file-main {
+  min-width: 0;
+}
+
+.file-main strong,
+.file-main small {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.file-main strong {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.file-main small,
+.file-meta {
+  color: var(--kc-text-tertiary);
+  font-size: 12px;
+}
+
+.status-pill {
+  display: inline-flex;
+  width: fit-content;
+  max-width: 132px;
+  align-items: center;
+  border-radius: 999px;
+  background: var(--kc-surface-muted);
+  padding: 4px 8px;
+  color: var(--kc-text-secondary);
+  font-size: 11.5px;
+}
+
+.status-pill.completed {
+  background: #ecfdf3;
+  color: #15803d;
+}
+
+.status-pill.pending,
+.status-pill[class*="processing"] {
+  background: #eff6ff;
+  color: #1d4ed8;
+}
+
+.status-pill[class*="failed"] {
+  background: #fef2f2;
+  color: #dc2626;
+}
+
+.row-actions {
+  position: relative;
+  display: flex;
+  justify-content: flex-end;
+  gap: 4px;
+  opacity: 0;
+}
+
+.file-row:hover .row-actions,
+.file-row.menu-open .row-actions {
+  opacity: 1;
+}
+
+.row-actions button {
+  display: grid;
+  width: 28px;
+  height: 28px;
+  place-items: center;
+  border-radius: var(--kc-radius-sm);
+  color: var(--kc-text-tertiary);
+}
+
+.row-actions button:hover {
+  background: var(--kc-surface-muted);
+  color: var(--kc-text);
+}
+
+.row-menu {
+  position: fixed;
+  z-index: 80;
+  display: grid;
+  width: 176px;
+  box-sizing: border-box;
+  gap: 2px;
+  overflow-y: auto;
+  border: 1px solid var(--kc-border);
+  border-radius: var(--kc-radius-lg);
+  background: rgba(255, 255, 255, 0.98);
+  box-shadow: var(--kc-shadow-popover);
+  padding: 6px;
+  backdrop-filter: blur(18px);
+}
+
+.row-menu button {
+  display: flex;
+  width: 100%;
+  height: 32px;
+  align-items: center;
   gap: 9px;
-  padding: 0 16px;
-  border-radius: 14px;
-  font-weight: 750;
+  border: 0;
+  border-radius: var(--kc-radius-md);
+  background: transparent;
+  padding: 0 9px;
+  color: var(--kc-text-secondary);
+  font-size: 12.5px;
+  text-align: left;
+}
+
+.row-menu button:hover {
+  background: var(--kc-surface-muted);
+  color: var(--kc-text);
+}
+
+.row-menu button:disabled {
+  color: var(--kc-text-tertiary);
+  cursor: default;
+  opacity: 0.45;
+}
+
+.row-menu button:disabled:hover {
+  background: transparent;
+}
+
+.row-menu button.danger {
+  color: var(--kc-danger);
+}
+
+.row-menu svg {
+  width: 15px;
+  height: 15px;
+  flex: 0 0 auto;
+  stroke-width: 1.85;
+}
+
+.move-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 75;
+  display: grid;
+  place-items: center;
+  background: rgba(15, 23, 42, 0.22);
+  backdrop-filter: blur(6px);
+}
+
+.move-modal {
+  display: grid;
+  width: min(520px, calc(100vw - 48px));
+  max-height: min(620px, calc(100vh - 48px));
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  overflow: hidden;
+  border: 1px solid rgba(255, 255, 255, 0.72);
+  border-radius: var(--kc-radius-lg);
+  background: rgba(255, 255, 255, 0.98);
+  box-shadow: var(--kc-shadow-modal);
+}
+
+.move-header,
+.move-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  border-bottom: 1px solid var(--kc-border);
+  padding: 14px 16px;
+}
+
+.move-header h2,
+.move-header p {
+  margin: 0;
+}
+
+.move-header h2 {
+  font-size: 15px;
+  font-weight: 650;
+}
+
+.move-header p {
+  margin-top: 3px;
+  color: var(--kc-text-tertiary);
+  font-size: 12px;
+}
+
+.move-header button {
+  display: grid;
+  width: 30px;
+  height: 30px;
+  place-items: center;
+  border-radius: 999px;
+  color: var(--kc-text-secondary);
+}
+
+.move-header button:hover {
+  background: var(--kc-surface-muted);
+}
+
+.move-body {
+  display: grid;
+  min-height: 0;
+  gap: 12px;
+  padding: 14px 16px;
+}
+
+.move-selected {
+  display: grid;
+  gap: 3px;
+  border: 1px solid var(--kc-border-soft);
+  border-radius: var(--kc-radius-md);
+  background: var(--kc-surface-muted);
+  padding: 10px 12px;
+}
+
+.move-selected span,
+.move-selected small {
+  color: var(--kc-text-tertiary);
+  font-size: 11.5px;
+}
+
+.move-selected strong {
+  overflow: hidden;
+  color: var(--kc-text);
+  font-size: 12.5px;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.folder-picker {
+  display: grid;
+  max-height: 360px;
+  overflow-y: auto;
+  border: 1px solid var(--kc-border);
+  border-radius: var(--kc-radius-md);
+  background: #fff;
+}
+
+.folder-picker button {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr) auto 18px;
+  align-items: center;
+  gap: 8px;
+  min-height: 38px;
+  border: 0;
+  border-bottom: 1px solid var(--kc-border-soft);
+  background: transparent;
+  padding: 0 12px;
+  color: var(--kc-text-secondary);
+  text-align: left;
+}
+
+.folder-picker button:last-child {
+  border-bottom: 0;
+}
+
+.folder-picker button:hover,
+.folder-picker button.active {
+  background: #f7fbff;
+  color: var(--kc-text);
+}
+
+.folder-picker svg {
+  width: 16px;
+  height: 16px;
+  stroke-width: 1.85;
+}
+
+.folder-picker span {
+  min-width: 0;
+  overflow: hidden;
+  font-size: 12.5px;
+  font-weight: 560;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.folder-picker small {
+  color: var(--kc-text-tertiary);
+  font-size: 11.5px;
+}
+
+.folder-picker button > svg:last-child {
+  color: var(--kc-accent);
+}
+
+.move-footer {
+  justify-content: flex-end;
+  border-top: 1px solid var(--kc-border);
+  border-bottom: 0;
+  background: #fbfcfd;
+}
+
+.move-footer button {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  height: 32px;
+  border-radius: var(--kc-radius-md);
+  padding: 0 12px;
+  color: var(--kc-text-secondary);
+  font-size: 12.5px;
+  font-weight: 560;
+}
+
+.move-footer button:hover {
+  background: var(--kc-surface-muted);
+  color: var(--kc-text);
+}
+
+.move-footer button.primary {
+  background: var(--kc-text);
+  color: #fff;
+}
+
+.move-footer button:disabled {
+  cursor: default;
+  opacity: 0.62;
+}
+
+.row-more {
+  justify-self: end;
+  width: 16px;
+  height: 16px;
+  color: var(--kc-text-tertiary);
+}
+
+.list-state,
+.error-banner,
+.notice-banner,
+.preview-loading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  color: var(--kc-text-tertiary);
+  font-size: 13px;
+}
+
+.list-state {
+  min-height: 160px;
+}
+
+.error-banner {
+  justify-content: flex-start;
+  border: 1px solid #fecaca;
+  border-radius: var(--kc-radius-md);
+  background: #fef2f2;
+  padding: 10px 12px;
+  color: #b91c1c;
+}
+
+.notice-banner {
+  justify-content: flex-start;
+  border: 1px solid rgba(47, 128, 237, 0.22);
+  border-radius: var(--kc-radius-md);
+  background: #f3f8ff;
+  padding: 10px 12px;
+  color: #145eb8;
+}
+
+.preview-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 70;
+  display: grid;
+  place-items: center;
+  background: rgba(15, 23, 42, 0.24);
+  backdrop-filter: blur(6px);
+}
+
+.preview-modal {
+  display: grid;
+  width: min(1280px, calc(100vw - 72px));
+  height: calc(100vh - 72px);
+  min-height: 0;
+  grid-template-rows: 58px minmax(0, 1fr);
+  overflow: hidden;
+  border: 1px solid rgba(255, 255, 255, 0.72);
+  border-radius: var(--kc-radius-lg);
+  background: var(--kc-surface);
+  box-shadow: var(--kc-shadow-modal);
+}
+
+.preview-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  border-bottom: 1px solid var(--kc-border);
+  padding: 0 16px 0 20px;
+}
+
+.preview-header h2,
+.preview-header p {
+  margin: 0;
+}
+
+.preview-header h2 {
+  max-width: 840px;
+  overflow: hidden;
+  font-size: 15px;
+  font-weight: 650;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.preview-header p {
+  margin-top: 2px;
+  color: var(--kc-text-tertiary);
+  font-size: 12px;
+}
+
+.preview-header button {
+  display: grid;
+  width: 32px;
+  height: 32px;
+  place-items: center;
+  border-radius: 999px;
+  color: var(--kc-text-secondary);
+}
+
+.preview-header button:hover {
+  background: var(--kc-surface-muted);
+}
+
+.preview-body {
+  display: grid;
+  min-height: 0;
+  grid-template-columns: 330px minmax(0, 1fr);
+}
+
+.preview-side {
+  display: grid;
+  min-height: 0;
+  grid-template-columns: 72px minmax(0, 1fr);
+  border-right: 1px solid var(--kc-border);
+  background: #fbfcfd;
+}
+
+.preview-tabs {
+  display: grid;
+  align-content: start;
+  gap: 6px;
+  border-right: 1px solid var(--kc-border-soft);
+  padding: 12px 8px;
+}
+
+.preview-tabs button {
+  display: grid;
+  gap: 4px;
+  min-height: 52px;
+  place-items: center;
+  border: 0;
+  border-radius: var(--kc-radius-md);
+  background: transparent;
+  color: var(--kc-text-tertiary);
+  font-size: 11px;
+}
+
+.preview-tabs button.active {
+  background: #eaf3ff;
+  color: #145eb8;
+}
+
+.preview-side-content,
+.preview-document {
+  min-height: 0;
+  overflow: auto;
+}
+
+.preview-side-content {
+  padding: 14px;
+}
+
+.preview-document {
+  background: var(--kc-bg);
+}
+
+.info-panel dl {
+  display: grid;
+  gap: 12px;
+  margin: 0;
+}
+
+.info-panel div {
+  display: grid;
+  gap: 3px;
+}
+
+.info-panel dt {
+  color: var(--kc-text-tertiary);
+  font-size: 11px;
+}
+
+.info-panel dd {
+  min-width: 0;
+  margin: 0;
+  overflow-wrap: anywhere;
+  color: var(--kc-text);
+  font-size: 12.5px;
+  line-height: 18px;
+}
+
+.sample-preview {
+  display: grid;
+  align-content: start;
+  gap: 14px;
+  min-height: 100%;
+  padding: 28px;
+}
+
+.sample-sheet {
+  border: 1px solid var(--kc-border);
+  border-radius: var(--kc-radius-lg);
+  background: #fff;
+  box-shadow: 0 12px 28px rgba(15, 23, 42, 0.06);
+}
+
+.sample-sheet {
+  overflow: hidden;
+}
+
+.sample-sheet header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  border-bottom: 1px solid var(--kc-border-soft);
+  padding: 16px 18px;
+}
+
+.sample-sheet header span,
+.sample-sheet header strong {
+  color: var(--kc-text-tertiary);
+  font-size: 11.5px;
+  font-weight: 560;
+}
+
+.sample-sheet h3 {
+  margin: 0;
+}
+
+.sample-sheet h3 {
+  margin-top: 3px;
+  color: var(--kc-text);
+  font-size: 15px;
+  font-weight: 650;
+}
+
+.sample-sheet table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12.5px;
+}
+
+.sample-sheet th,
+.sample-sheet td {
+  border-bottom: 1px solid var(--kc-border-soft);
+  padding: 12px 14px;
+  text-align: left;
+}
+
+.sample-sheet th {
+  background: #f8fafc;
+  color: var(--kc-text-tertiary);
+  font-size: 11.5px;
+  font-weight: 650;
+}
+
+.sample-sheet td {
+  color: var(--kc-text-secondary);
+}
+
+.sample-sheet tr:last-child td {
+  border-bottom: 0;
+}
+
+.sample-sheet td.positive {
+  color: #15803d;
+  font-weight: 650;
+}
+
+.sample-sheet td.negative {
+  color: #dc2626;
+  font-weight: 650;
 }
 
 .hidden-input {
   display: none;
 }
 
-.notice {
-  margin-top: -6px;
-  padding: 9px 12px;
-  border-radius: 12px;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  font-size: 13px;
+.spin {
+  animation: spin 1s linear infinite;
 }
 
-.notice span {
-  flex: 1;
-  min-width: 0;
-}
-
-.notice.error {
-  border: 1px solid #fecaca;
-  background: #fff1f2;
-  color: #b42318;
-}
-
-.notice.info {
-  border: 1px solid #bfdbfe;
-  background: #eff6ff;
-  color: #1d4ed8;
-}
-
-.documents-layout {
-  flex: 1;
-  min-height: 0;
-  display: grid;
-  grid-template-columns: 220px minmax(0, 1fr) 300px;
-  gap: 12px;
-}
-
-.surface {
-  min-width: 0;
-  min-height: 0;
-  overflow: hidden;
-  border-radius: 16px;
-}
-
-.surface-head {
-  padding: 8px 12px;
-  border-bottom: 1px solid rgba(16, 24, 40, 0.06);
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-}
-
-.surface-head h2 {
-  margin-top: 2px;
-  font-size: 15px;
-  font-weight: 750;
-}
-
-.icon-btn {
-  width: 36px;
-  height: 36px;
-  border-radius: 12px;
-  display: grid;
-  place-items: center;
-}
-
-.folder-list {
-  padding: 8px;
-  display: grid;
-  gap: 4px;
-  overflow: auto;
-}
-
-.folder-list button {
-  min-width: 0;
-  gap: 9px;
-  padding: 8px 9px;
-  border-radius: 11px;
-  color: #344054;
-  background: transparent;
-  text-align: left;
-}
-
-.folder-list button.active,
-.folder-list button:hover {
-  background: #e9effc;
-}
-
-.folder-list span {
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-size: 13px;
-}
-
-.folder-list em {
-  color: #98a2b3;
-  font-size: 12px;
-  font-style: normal;
-}
-
-.doc-pane {
-  display: flex;
-  flex-direction: column;
-}
-
-.doc-head {
-  align-items: flex-start;
-}
-
-.doc-tools {
-  display: flex;
-  gap: 8px;
-}
-
-.tool-btn {
-  height: 38px;
-  gap: 8px;
-  padding: 0 12px;
-  border-radius: 12px;
-  font-size: 13px;
-  font-weight: 650;
-}
-
-.tool-btn.active {
-  color: #1d4ed8;
-  border-color: rgba(37, 99, 235, 0.24);
-  background: rgba(37, 99, 235, 0.08);
-}
-
-.view-toggle {
-  padding: 4px;
-  border: 1px solid var(--line);
-  border-radius: 13px;
-  display: flex;
-  background: rgba(248, 250, 252, 0.8);
-}
-
-.view-toggle button {
-  width: 30px;
-  height: 30px;
-  border-radius: 8px;
-  display: grid;
-  place-items: center;
-  color: var(--muted);
-  background: transparent;
-}
-
-.view-toggle button.active {
-  color: var(--ink);
-  background: #fff;
-  box-shadow: 0 6px 16px rgba(16, 24, 40, 0.08);
-}
-
-.mode-strip {
-  flex-shrink: 0;
-  margin: 6px 8px 0;
-  padding: 5px 7px;
-  border: 1px solid rgba(16, 24, 40, 0.08);
-  border-radius: 10px;
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  background: rgba(248, 250, 252, 0.78);
-  color: #64748b;
-  font-size: 12px;
-}
-
-.mode-strip span {
-  margin-right: auto;
-  color: #344054;
-  font-weight: 700;
-}
-
-.mode-strip button {
-  padding: 5px 8px;
-  border-radius: 8px;
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  color: #1d4ed8;
-  background: #fff;
-}
-
-.list-insight em {
-  color: #94a3b8;
-  font-style: normal;
-}
-
-.doc-scroll {
-  flex: 1;
-  min-height: 0;
-  overflow: auto;
-}
-
-.empty-state {
-  height: 220px;
-  display: grid;
-  place-items: center;
-  align-content: center;
-  gap: 10px;
-  color: var(--muted);
-  font-size: 13px;
-}
-
-.doc-list {
-  padding: 8px;
-  display: grid;
-  gap: 6px;
-}
-
-.doc-list-header,
-.doc-list > button {
-  display: grid;
-  grid-template-columns: minmax(260px, 1.05fr) minmax(230px, 1.15fr) 104px 88px 82px;
-  gap: 12px;
-}
-
-.doc-list-header {
-  padding: 0 10px 4px;
-  color: #98a2b3;
-  font-size: 11px;
-  font-weight: 750;
-}
-
-.doc-list > button,
-.doc-grid > button {
-  border: 1px solid transparent;
-  border-radius: 13px;
-  background: rgba(248, 250, 252, 0.86);
-  text-align: left;
-  transition: 160ms ease;
-}
-
-.doc-list > button {
-  min-width: 0;
-  padding: 10px 12px;
-  align-items: center;
-}
-
-.doc-list > button.active,
-.doc-list > button:hover,
-.doc-grid > button.active,
-.doc-grid > button:hover {
-  border-color: rgba(37, 99, 235, 0.18);
-  background: #fff;
-  box-shadow: 0 8px 24px rgba(16, 24, 40, 0.06);
-}
-
-.doc-file-cell {
-  min-width: 0;
-  display: flex;
-  align-items: center;
-  gap: 10px;
-}
-
-.row-check {
-  width: 16px;
-  height: 16px;
-  flex-shrink: 0;
-  accent-color: var(--blue);
-}
-
-.row-check.hidden {
-  opacity: 0;
-  pointer-events: none;
-}
-
-.doc-icon,
-.detail-icon {
-  width: 34px;
-  height: 34px;
-  border: 1px solid transparent;
-  border-radius: 10px;
-  display: grid;
-  place-items: center;
-  flex-shrink: 0;
-}
-
-.doc-icon.pdf,
-.detail-icon.pdf {
-  color: #ef4444;
-  background: #fef2f2;
-  border-color: #fecaca;
-}
-
-.doc-icon.word,
-.detail-icon.word {
-  color: #3b82f6;
-  background: #eff6ff;
-  border-color: #bfdbfe;
-}
-
-.doc-icon.sheet,
-.detail-icon.sheet {
-  color: #22c55e;
-  background: #f0fdf4;
-  border-color: #bbf7d0;
-}
-
-.doc-icon.slide,
-.detail-icon.slide {
-  color: #f97316;
-  background: #fff7ed;
-  border-color: #fed7aa;
-}
-
-.doc-icon.text,
-.detail-icon.text {
-  color: #6b7280;
-  background: #f9fafb;
-  border-color: #e5e7eb;
-}
-
-.doc-icon.default,
-.detail-icon.default {
-  color: #64748b;
-  background: #f1f5f9;
-  border-color: #e2e8f0;
-}
-
-.doc-file-cell > div:last-child {
-  min-width: 0;
-}
-
-.doc-file-cell strong,
-.doc-file-cell span,
-.doc-meta span,
-.doc-meta em {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.doc-file-cell strong {
-  display: block;
-  font-size: 13px;
-  line-height: 1.3;
-}
-
-.doc-file-cell span {
-  display: block;
-  margin-top: 3px;
-  color: var(--muted);
-  font-size: 11px;
-}
-
-.doc-summary-cell,
-.doc-grid p,
-.summary-scroll {
-  color: var(--muted);
-  font-size: 12px;
-  line-height: 1.45;
-}
-
-.doc-summary-cell {
-  display: -webkit-box;
-  overflow: hidden;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 2;
-}
-
-.status {
-  display: inline-flex;
-  width: fit-content;
-  align-items: center;
-  border-radius: 999px;
-  padding: 3px 8px;
-  font-size: 11px;
-  font-weight: 750;
-}
-
-.status.done {
-  color: #067647;
-  background: #dcfae6;
-}
-
-.status.running {
-  color: #b54708;
-  background: #fef0c7;
-}
-
-.status.failed {
-  color: #b42318;
-  background: #fee4e2;
-}
-
-.doc-status-cell {
-  display: grid;
-  gap: 4px;
-  justify-items: start;
-}
-
-.doc-status-cell em {
-  color: var(--muted);
-  font-size: 12px;
-}
-
-.doc-meta {
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 2px;
-  color: var(--muted);
-  font-size: 12px;
-}
-
-.doc-status-cell em,
-.doc-meta em {
-  color: #98a2b3;
-  font-size: 11px;
-  font-style: normal;
-}
-
-.progress-track {
-  width: 100%;
-  height: 5px;
-  border-radius: 999px;
-  overflow: hidden;
-  background: #e8eef7;
-}
-
-.progress-track i {
-  display: block;
-  height: 100%;
-  border-radius: inherit;
-  background: #3b82f6;
-}
-
-.row-actions {
-  display: flex;
-  justify-content: flex-end;
-  gap: 3px;
-  opacity: 0;
-  transition: opacity 140ms ease;
-}
-
-.doc-list > button:hover .row-actions,
-.doc-list > button.active .row-actions {
-  opacity: 1;
-}
-
-.row-actions button {
-  width: 26px;
-  height: 26px;
-  border-radius: 7px;
-  display: grid;
-  place-items: center;
-  color: #64748b;
-  background: transparent;
-}
-
-.row-actions button:hover {
-  color: #111827;
-  background: rgba(15, 23, 42, 0.06);
-}
-
-.doc-grid {
-  padding: 12px;
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 10px;
-}
-
-.doc-grid > button {
-  padding: 14px;
-}
-
-.card-line {
-  margin-bottom: 12px;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-}
-
-.doc-grid strong {
-  font-size: 14px;
-}
-
-.pagination {
-  flex-shrink: 0;
-  padding: 7px 10px;
-  border-top: 1px solid rgba(16, 24, 40, 0.07);
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  background: rgba(255, 255, 255, 0.68);
-}
-
-.pagination > div:first-child {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  font-size: 12px;
-}
-
-.pagination strong {
-  color: #344054;
-}
-
-.pagination span {
-  color: var(--muted);
-}
-
-.page-controls {
-  display: flex;
-  align-items: center;
-  gap: 5px;
-}
-
-.page-controls button {
-  min-width: 32px;
-  height: 30px;
-  padding: 0 9px;
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  background: #fff;
-  color: #344054;
-  font-size: 12px;
-}
-
-.page-controls button.active {
-  border-color: transparent;
-  background: var(--blue);
-  color: #fff;
-}
-
-.page-controls button:disabled {
-  opacity: 0.45;
-}
-
-.detail-pane {
-  padding-bottom: 0;
-  display: flex;
-  flex-direction: column;
-}
-
-.detail-empty {
-  height: auto;
-  flex: 1;
-}
-
-.detail-identity,
-.detail-section,
-.detail-actions {
-  margin: 8px 10px;
-}
-
-.detail-identity {
-  margin-top: 10px;
-  margin-bottom: 6px;
-  display: flex;
-  flex-shrink: 0;
-  gap: 12px;
-}
-
-.detail-identity h3 {
-  display: -webkit-box;
-  overflow: hidden;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 2;
-  font-size: 14px;
-  font-weight: 750;
-  line-height: 1.35;
-}
-
-.detail-identity span {
-  display: block;
-  margin-top: 2px;
-  color: var(--muted);
-  font-size: 12px;
-}
-
-.detail-section {
-  flex-shrink: 0;
-  padding: 8px 9px;
-  border: 1px solid rgba(16, 24, 40, 0.08);
-  border-radius: 13px;
-  background: rgba(248, 250, 252, 0.78);
-}
-
-.section-title {
-  margin-bottom: 6px;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  color: #344054;
-}
-
-.section-title h4 {
-  font-size: 12px;
-  font-weight: 750;
-}
-
-.property-list {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 6px 10px;
-}
-
-.property-list div,
-.quality-grid div {
-  display: grid;
-  gap: 2px;
-  min-width: 0;
-}
-
-.property-list span,
-.quality-grid span,
-.status-panel p {
-  color: var(--muted);
-  font-size: 10px;
-}
-
-.property-list strong,
-.quality-grid strong {
-  min-width: 0;
-  color: #344054;
-  font-size: 12px;
-  font-weight: 650;
-  word-break: break-word;
-}
-
-.status-panel {
-  display: grid;
-  gap: 4px;
-  margin-bottom: 6px;
-}
-
-.status-line {
-  min-width: 0;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.status-panel em {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  color: var(--muted);
-  font-size: 11px;
-  font-style: normal;
-}
-
-.quality-grid {
-  display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 4px;
-}
-
-.quality-grid div {
-  padding: 6px 5px;
-  border-radius: 8px;
-  background: #fff;
-}
-
-.quality-note {
-  margin-top: 5px;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  border-radius: 10px;
-  padding: 6px 7px;
-  font-size: 11px;
-  line-height: 1.35;
-}
-
-.quality-note.ok {
-  color: #067647;
-  background: #ecfdf3;
-}
-
-.quality-note.warning {
-  color: #b54708;
-  background: #fffaeb;
-}
-
-.quality-note.error {
-  color: #b42318;
-  background: #fff1f3;
-}
-
-.quality-note.muted {
-  color: #667085;
-  background: #f8fafc;
-}
-
-.summary-detail {
-  flex: 1 1 auto;
-  min-height: 0;
-  display: flex;
-  flex-direction: column;
-}
-
-.summary-scroll {
-  flex: 1;
-  min-height: 92px;
-  overflow-y: auto;
-}
-
-.detail-actions {
-  margin-top: auto;
-  margin-bottom: 10px;
-  flex-shrink: 0;
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 8px;
-}
-
-.detail-actions button {
-  min-width: 0;
-  height: 34px;
-  padding: 0 8px;
-  border: 1px solid var(--line);
-  border-radius: 10px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 8px;
-  background: #fff;
-  color: #344054;
-  font-size: 13px;
-  font-weight: 650;
-}
-
-.detail-actions button:disabled {
-  opacity: 0.48;
-}
-
-.detail-actions span {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-@media (max-width: 1280px) {
-  .documents-layout {
-    grid-template-columns: 230px minmax(0, 1fr);
-  }
-
-  .detail-pane {
-    grid-column: 1 / -1;
-    min-height: 360px;
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
   }
 }
 
 @media (max-width: 980px) {
-  .documents-layout,
-  .doc-grid {
-    grid-template-columns: 1fr;
+  .list-header,
+  .file-row {
+    grid-template-columns: 30px 38px minmax(160px, 1fr) 96px 66px;
   }
 
-  .topbar,
-  .topbar-title,
-  .topbar-actions {
-    align-items: stretch;
-    flex-direction: column;
-  }
-
-  .search-box {
-    width: 100%;
-  }
-}
-
-@media (max-width: 680px) {
-  .workbench {
-    padding: 12px;
-  }
-
-  .doc-list-header {
+  .file-meta {
     display: none;
   }
 
-  .doc-list > button {
-    grid-template-columns: 1fr;
-  }
-
-  .mode-strip,
-  .pagination {
-    flex-wrap: wrap;
+  .preview-body {
+    grid-template-columns: 290px minmax(0, 1fr);
   }
 }
 </style>
