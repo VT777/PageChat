@@ -138,6 +138,7 @@ class ProcessingStepsResponse(BaseModel):
 class ChatRequest(BaseModel):
     question: str
     document_ids: Optional[List[str]] = None
+    attachment_ids: Optional[List[str]] = None
     folder_id: Optional[str] = None
     include_subfolders: bool = False
     strict_scope: Optional[bool] = None

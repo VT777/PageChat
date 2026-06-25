@@ -1,5 +1,6 @@
 import asyncio
 import base64
+import json
 from pathlib import Path
 import sys
 
@@ -52,7 +53,12 @@ async def _create_bootstrap_schema(db: aiosqlite.Connection) -> None:
             conversation_id TEXT NOT NULL,
             role TEXT NOT NULL,
             content TEXT,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            sources TEXT,
+            agent_steps TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            thinking_content TEXT,
+            status TEXT DEFAULT 'completed',
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
         """
     )
@@ -151,3 +157,53 @@ def test_upload_rejects_invalid_mime_and_oversize(tmp_path: Path) -> None:
 
     assert invalid.status_code == 400
     assert huge.status_code == 400
+
+
+def test_conversation_messages_include_attachment_metadata(tmp_path: Path) -> None:
+    client = _client(tmp_path, user_id="user-a")
+    uploaded = client.post(
+        "/api/chat/attachments",
+        files={"file": ("screen.png", _tiny_png_bytes(), "image/png")},
+    ).json()
+
+    async def insert_message() -> None:
+        async with aiosqlite.connect(tmp_path / "chat-attachments.db") as db:
+            await db.execute(
+                "INSERT INTO conversations (id, title, user_id) VALUES (?, ?, ?)",
+                ("conv-a", "截图对话", "user-a"),
+            )
+            await db.execute(
+                """
+                INSERT INTO messages (
+                    id,
+                    conversation_id,
+                    role,
+                    content,
+                    sources,
+                    agent_steps,
+                    status,
+                    attachments_json
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    "msg-a",
+                    "conv-a",
+                    "user",
+                    "看这张截图",
+                    "[]",
+                    "[]",
+                    "completed",
+                    json.dumps([uploaded], ensure_ascii=False),
+                ),
+            )
+            await db.commit()
+
+    asyncio.run(insert_message())
+
+    response = client.get("/api/chat/conversations/conv-a/messages")
+
+    assert response.status_code == 200
+    assert response.json()[0]["attachments"][0]["attachment_id"] == uploaded[
+        "attachment_id"
+    ]

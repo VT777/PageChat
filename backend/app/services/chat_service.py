@@ -13,6 +13,7 @@ from app.core import config
 from app.services.document_service import DocumentService
 from app.core.llm import chat_by_scenario
 from app.prompts import CHAT_SYSTEM_PROMPT, build_tool_catalog
+from app.services.chat_attachment_service import ChatAttachmentService
 from app.services.tool_executor import AGENT_TOOLS
 from app.services.web_search_settings_service import WebSearchSettingsService
 from app.services.web_search_tool import WEB_SEARCH_TOOL
@@ -32,6 +33,9 @@ class ChatService:
 
             self.agent_service = AgentService(self.db)
         return self.agent_service
+
+    def _get_attachment_service(self) -> ChatAttachmentService:
+        return ChatAttachmentService(self.db)
 
     def _history_message_limit(self) -> int:
         return max(1, config.MULTITURN_MAX_USER_ROUNDS * 2)
@@ -101,13 +105,15 @@ class ChatService:
         thinking_content: str = "",
         agent_steps: str = "[]",
         status: str = "completed",
+        attachments: Optional[List[dict]] = None,
     ) -> str:
         """保存消息，返回消息 ID"""
         message_id = __import__("uuid").uuid4().hex[:16]
+        attachments_json = self._attachments_json(attachments)
         await self.db.execute(
             """INSERT INTO messages 
-               (id, conversation_id, role, content, thinking_content, agent_steps, status) 
-               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+               (id, conversation_id, role, content, thinking_content, agent_steps, status, attachments_json) 
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 message_id,
                 conversation_id,
@@ -116,10 +122,35 @@ class ChatService:
                 thinking_content,
                 agent_steps,
                 status,
+                attachments_json,
             ),
         )
         await self.db.commit()
         return message_id
+
+    @staticmethod
+    def _attachments_json(attachments: Optional[List[dict]]) -> Optional[str]:
+        if not attachments:
+            return None
+        metadata = []
+        for item in attachments:
+            attachment_id = item.get("attachment_id")
+            if not attachment_id:
+                continue
+            metadata.append(
+                {
+                    "attachment_id": attachment_id,
+                    "original_name": item.get("original_name") or "image",
+                    "mime_type": item.get("mime_type"),
+                    "size_bytes": item.get("size_bytes"),
+                    "width": item.get("width"),
+                    "height": item.get("height"),
+                    "content_url": f"/api/chat/attachments/{attachment_id}/content",
+                }
+            )
+        if not metadata:
+            return None
+        return json.dumps(metadata, ensure_ascii=False)
 
     async def update_message(
         self,
@@ -164,6 +195,7 @@ class ChatService:
         include_subfolders: bool = False,
         strict_scope: Optional[bool] = None,
         web_search: bool = False,
+        attachment_ids: Optional[List[str]] = None,
         user_id: str = None,
     ) -> AsyncGenerator[str, None]:
         """
@@ -184,8 +216,42 @@ class ChatService:
         # 尽早告知前端后端会话ID，避免页面切换时丢失映射
         yield f"event: conversation\ndata: {json.dumps({'conversation_id': conversation_id}, ensure_ascii=False)}\n\n"
 
+        request_attachments = []
+        attachment_ids = list(dict.fromkeys(attachment_ids or []))
+        if attachment_ids:
+            try:
+                request_attachments = await self._get_attachment_service().attachments_for_model(
+                    user_id, attachment_ids
+                )
+            except ValueError as exc:
+                content = f"图片附件不可用：{exc}"
+                yield f"event: content\ndata: {json.dumps({'content': content}, ensure_ascii=False)}\n\n"
+                yield f"event: done\ndata: {json.dumps({'conversation_id': conversation_id}, ensure_ascii=False)}\n\n"
+                await self.save_message(
+                    conversation_id, "assistant", content, status="completed"
+                )
+                return
+
         # 保存用户消息
-        await self.save_message(conversation_id, "user", question)
+        user_message_id = await self.save_message(
+            conversation_id, "user", question, attachments=request_attachments
+        )
+        if attachment_ids:
+            try:
+                await self._get_attachment_service().bind_to_message(
+                    user_id,
+                    attachment_ids,
+                    conversation_id=conversation_id,
+                    message_id=user_message_id,
+                )
+            except ValueError as exc:
+                content = f"图片附件不可用：{exc}"
+                yield f"event: content\ndata: {json.dumps({'content': content}, ensure_ascii=False)}\n\n"
+                yield f"event: done\ndata: {json.dumps({'conversation_id': conversation_id}, ensure_ascii=False)}\n\n"
+                await self.save_message(
+                    conversation_id, "assistant", content, status="completed"
+                )
+                return
 
         # 工具查询走确定性响应，避免模型漏报工具
         if re.search(
@@ -257,6 +323,7 @@ class ChatService:
             include_subfolders=include_subfolders,
             strict_scope=strict_scope,
             web_search_requested=web_search,
+            request_attachments=request_attachments,
             user_id=user_id,
             history_messages=history,
         ):

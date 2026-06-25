@@ -211,6 +211,7 @@ class AgentService:
         max_steps: int = 8,
         history_messages: Optional[List[Dict[str, Any]]] = None,
         web_search_requested: bool = False,
+        request_attachments: Optional[List[Dict[str, Any]]] = None,
     ) -> AsyncGenerator[str, None]:
         """
         Agent 流式执行 - 基于 PageIndex 官方流程

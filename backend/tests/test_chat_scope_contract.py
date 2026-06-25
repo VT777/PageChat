@@ -36,6 +36,12 @@ def test_chat_request_defaults_web_search_to_false() -> None:
     assert request.web_search is False
 
 
+def test_chat_request_accepts_attachment_ids() -> None:
+    request = ChatRequest(question="看这张截图", attachment_ids=["att-a"])
+
+    assert request.attachment_ids == ["att-a"]
+
+
 def test_agent_injects_folder_scope_into_browse_documents() -> None:
     patched = AgentService._inject_default_doc_id(
         "browse_documents",
@@ -100,6 +106,51 @@ class CapturingAgent:
         yield "event: done\ndata: {}\n\n"
 
 
+class CapturingAttachmentService:
+    def __init__(self):
+        self.model_calls = []
+        self.bind_calls = []
+        self.metadata = [
+            {
+                "attachment_id": "att-a",
+                "original_name": "screen.png",
+                "mime_type": "image/png",
+                "size_bytes": 70,
+                "width": 1,
+                "height": 1,
+            }
+        ]
+        self.model_payload = [
+            {
+                "attachment_id": "att-a",
+                "original_name": "screen.png",
+                "mime_type": "image/png",
+                "data_base64": "AAAA",
+                "width": 1,
+                "height": 1,
+            }
+        ]
+
+    async def attachments_for_model(self, user_id, attachment_ids):
+        self.model_calls.append(
+            {"user_id": user_id, "attachment_ids": list(attachment_ids or [])}
+        )
+        return self.model_payload
+
+    async def bind_to_message(
+        self, user_id, attachment_ids, conversation_id, message_id
+    ):
+        self.bind_calls.append(
+            {
+                "user_id": user_id,
+                "attachment_ids": list(attachment_ids or []),
+                "conversation_id": conversation_id,
+                "message_id": message_id,
+            }
+        )
+        return self.metadata
+
+
 def _chat_service_with_agent(agent: CapturingAgent) -> ChatService:
     service = ChatService.__new__(ChatService)
     service.db = None
@@ -122,6 +173,39 @@ def _chat_service_with_agent(agent: CapturingAgent) -> ChatService:
     service.save_message = save_message
     service.update_message = update_message
     service.get_history_messages = get_history_messages
+    return service
+
+
+def _chat_service_with_agent_and_attachments(
+    agent: CapturingAgent, attachment_service: CapturingAttachmentService
+) -> ChatService:
+    service = _chat_service_with_agent(agent)
+    saved_messages = []
+
+    async def save_message(
+        conversation_id,
+        role,
+        content,
+        thinking_content="",
+        agent_steps="[]",
+        status="completed",
+        attachments=None,
+    ):
+        message_id = f"{role}-message-{len(saved_messages) + 1}"
+        saved_messages.append(
+            {
+                "message_id": message_id,
+                "conversation_id": conversation_id,
+                "role": role,
+                "content": content,
+                "attachments": attachments or [],
+            }
+        )
+        return message_id
+
+    service.save_message = save_message
+    service.saved_messages = saved_messages
+    service._get_attachment_service = lambda: attachment_service
     return service
 
 
@@ -188,6 +272,39 @@ def test_chat_service_passes_web_search_flag_to_agent() -> None:
         assert events
         assert agent.calls[0]["document_ids"] == ["doc-a"]
         assert agent.calls[0]["web_search_requested"] is True
+
+    asyncio.run(run())
+
+
+def test_chat_service_binds_attachments_to_user_message() -> None:
+    async def run() -> None:
+        agent = CapturingAgent()
+        attachment_service = CapturingAttachmentService()
+        service = _chat_service_with_agent_and_attachments(agent, attachment_service)
+
+        events = [
+            event
+            async for event in service.stream_chat(
+                question="看这张截图",
+                attachment_ids=["att-a"],
+                user_id="user-a",
+            )
+        ]
+
+        assert events
+        assert attachment_service.model_calls == [
+            {"user_id": "user-a", "attachment_ids": ["att-a"]}
+        ]
+        assert attachment_service.bind_calls == [
+            {
+                "user_id": "user-a",
+                "attachment_ids": ["att-a"],
+                "conversation_id": "conv-1",
+                "message_id": "user-message-1",
+            }
+        ]
+        assert service.saved_messages[0]["attachments"][0]["attachment_id"] == "att-a"
+        assert agent.calls[0]["request_attachments"] == attachment_service.model_payload
 
     asyncio.run(run())
 

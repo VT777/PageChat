@@ -167,6 +167,7 @@ class ChatAttachmentService:
                     "attachment_id": row["attachment_id"],
                     "original_name": row["original_name"],
                     "mime_type": row["mime_type"],
+                    "size_bytes": row["size_bytes"],
                     "data_base64": base64.b64encode(data).decode("ascii"),
                     "width": row["width"],
                     "height": row["height"],

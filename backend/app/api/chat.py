@@ -95,6 +95,7 @@ async def chat_stream(
                     strict_scope=request.strict_scope,
                     conversation_id=request.conversation_id,
                     web_search=request.web_search,
+                    attachment_ids=request.attachment_ids,
                     user_id=current_user["id"],
                 ):
                     if stream_state["active"]:
@@ -164,7 +165,7 @@ async def get_conversation_messages(
         raise HTTPException(status_code=404, detail="会话不存在或无权访问")
 
     cursor = await db.execute(
-        "SELECT id, role, content, thinking_content, sources, agent_steps, status, created_at FROM messages WHERE conversation_id = ? ORDER BY created_at, id",
+        "SELECT id, role, content, thinking_content, sources, agent_steps, status, attachments_json, created_at FROM messages WHERE conversation_id = ? ORDER BY created_at, id",
         (conversation_id,),
     )
     rows = await cursor.fetchall()
@@ -182,7 +183,8 @@ async def get_conversation_messages(
                 "sources": json.loads(row[4]) if row[4] else [],
                 "agent_steps": json.loads(row[5]) if row[5] else [],
                 "status": row[6] or "completed",
-                "created_at": row[7],
+                "attachments": json.loads(row[7]) if row[7] else [],
+                "created_at": row[8],
             }
         )
 
