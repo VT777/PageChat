@@ -591,9 +591,7 @@ class ToolExecutor:
         if not isinstance(nodes, list):
             nodes = []
 
-        from pageindex.utils import structure_to_list
-
-        all_nodes = structure_to_list(nodes)
+        all_nodes = self._flatten_structure_nodes(nodes)
 
         # 批量获取页面
         content = []
@@ -666,22 +664,9 @@ class ToolExecutor:
         if doc.page_count and (page_num < 1 or page_num > doc.page_count):
             raise Exception(f"页码 {page_num} 超出范围（文档共 {doc.page_count} 页）")
 
-        # 找到包含该页码的节点
-        target_node = None
-        for node in all_nodes:
-            start = node.get("start_index", 0)
-            end = node.get("end_index", 0)
-            if start and end and start <= page_num <= end:
-                target_node = node
-                break
-
-        if not target_node:
-            for node in all_nodes:
-                if node.get("start_index") and node["start_index"] >= page_num:
-                    target_node = node
-                    break
-            if not target_node and all_nodes:
-                target_node = all_nodes[-1]
+        # Prefer the most specific section covering the page; root TOC nodes often
+        # span the whole document and would otherwise hide the real page section.
+        target_node = self._find_best_node_for_page(all_nodes, page_num)
 
         page_entry = self._page_entry(index_data, page_num)
         text_content = (
@@ -701,10 +686,13 @@ class ToolExecutor:
                 text_content = page_text
                 text_source = "pdf_page"
 
-        # 检查是否有视觉内容（从 node 的 has_visual_content 字段）
         images = self._images_for_page(index_data, target_node, page_num, doc)
-        has_visual = bool(images) or (
-            target_node.get("has_visual_content", False) if target_node else False
+        has_visual = self._is_visual_or_ocr_page(
+            index_data=index_data,
+            page_entry=page_entry,
+            target_node=target_node,
+            page_num=page_num,
+            images=images,
         )
 
         # 索引中未标注视觉内容时，回退到单页图片检测（PDF）
@@ -743,10 +731,58 @@ class ToolExecutor:
                 result["text_truncated"] = True
                 result["continuation_hint"] = "Read a narrower page range or section."
 
-        if target_node and target_node.get("summary"):
+        if not has_visual and target_node and target_node.get("summary"):
             result["node_summary"] = target_node.get("summary", "")[:300]
 
         return result
+
+    @staticmethod
+    def _flatten_structure_nodes(nodes: Any) -> List[Dict[str, Any]]:
+        flattened: List[Dict[str, Any]] = []
+        if isinstance(nodes, dict):
+            nodes = [nodes]
+        if not isinstance(nodes, list):
+            return flattened
+        for node in nodes:
+            if not isinstance(node, dict):
+                continue
+            flattened.append(node)
+            flattened.extend(ToolExecutor._flatten_structure_nodes(node.get("nodes") or []))
+            flattened.extend(ToolExecutor._flatten_structure_nodes(node.get("children") or []))
+        return flattened
+
+    @staticmethod
+    def _find_best_node_for_page(all_nodes: List[Dict[str, Any]], page_num: int) -> Optional[Dict[str, Any]]:
+        containing: List[tuple[tuple[int, int, int, int], Dict[str, Any]]] = []
+        for index, node in enumerate(all_nodes):
+            start, end = ToolExecutor._node_page_range(node)
+            if start and end and start <= page_num <= end:
+                title = str(node.get("title") or "").strip().lower()
+                toc_penalty = 1 if title in {"目录", "preface", "contents", "table of contents"} else 0
+                auxiliary_penalty = 1 if node.get("is_auxiliary") else 0
+                containing.append(((end - start, toc_penalty, auxiliary_penalty, index), node))
+        if containing:
+            return min(containing, key=lambda item: item[0])[1]
+
+        for node in all_nodes:
+            start, _ = ToolExecutor._node_page_range(node)
+            if start and start >= page_num:
+                return node
+        return all_nodes[-1] if all_nodes else None
+
+    @staticmethod
+    def _node_page_range(node: Dict[str, Any]) -> tuple[int, int]:
+        try:
+            start = int(node.get("start_index") or node.get("physical_index") or 0)
+        except (TypeError, ValueError):
+            start = 0
+        try:
+            end = int(node.get("end_index") or start or 0)
+        except (TypeError, ValueError):
+            end = start
+        if start and end and end < start:
+            end = start
+        return start, end
 
     @staticmethod
     def _page_entry(index_data: Any, page_num: int) -> Dict[str, Any]:
@@ -756,6 +792,47 @@ class ToolExecutor:
             if isinstance(page, dict) and int(page.get("page") or 0) == int(page_num):
                 return page
         return {}
+
+    @classmethod
+    def _is_visual_or_ocr_page(
+        cls,
+        *,
+        index_data: Any,
+        page_entry: Any,
+        target_node: Any,
+        page_num: int,
+        images: List[Dict[str, Any]],
+    ) -> bool:
+        if images:
+            return True
+        for record in (page_entry, target_node):
+            if not isinstance(record, dict):
+                continue
+            if record.get("ocr_used") or record.get("has_visual_content") or record.get("images"):
+                return True
+        if isinstance(index_data, dict):
+            for key in ("page_text_map_ocr_pages", "ocr_pages", "visual_pages"):
+                if cls._page_in_marker_list(index_data.get(key), page_num):
+                    return True
+        return False
+
+    @staticmethod
+    def _page_in_marker_list(values: Any, page_num: int) -> bool:
+        if not isinstance(values, list):
+            return False
+        for value in values:
+            try:
+                if int(value) == int(page_num):
+                    return True
+            except (TypeError, ValueError):
+                if isinstance(value, dict):
+                    for key in ("page", "page_num", "physical_index", "start_index"):
+                        try:
+                            if int(value.get(key) or 0) == int(page_num):
+                                return True
+                        except (TypeError, ValueError):
+                            continue
+        return False
 
     @classmethod
     def _images_for_page(cls, index_data: Any, target_node: Any, page_num: int, doc) -> List[Dict[str, Any]]:

@@ -83,12 +83,18 @@ def locate_keywords_in_index(
         matched_terms = [
             term for term in terms if _normalize_for_match(term) in text_for_match
         ]
-        if not phrase_hit and not matched_terms:
+        if not phrase_hit and not _has_sufficient_keyword_match(phrase_candidates, matched_terms):
             continue
 
         page = int(entry["page"])
+        is_toc_like = _is_toc_like_entry(entry)
         is_visual = _is_visual_or_ocr_entry(index_data, entry)
         match_type = _match_type(phrase_hit, matched_terms, is_visual)
+        title_exact_hit = bool(
+            phrase_hit
+            and _normalize_for_match(phrase_hit)
+            in _normalize_for_match(str(entry.get("title") or ""))
+        )
         match = {
             "page": page,
             "page_num": page,
@@ -102,6 +108,10 @@ def locate_keywords_in_index(
             match["node_id"] = entry["node_id"]
         if entry.get("title"):
             match["title"] = entry["title"]
+        if is_toc_like:
+            match["toc_like"] = True
+        if title_exact_hit:
+            match["title_exact_hit"] = True
 
         if is_visual:
             match["visual_evidence_required"] = True
@@ -124,11 +134,20 @@ def locate_keywords_in_index(
             }
         )
 
+    if any(not match.get("toc_like") for match in matches):
+        matches = [match for match in matches if not match.get("toc_like")]
+    if any(match.get("title_exact_hit") for match in matches):
+        matches = [match for match in matches if match.get("title_exact_hit")]
+    if any(match.get("match_type") == "exact_phrase" for match in matches):
+        matches = [match for match in matches if match.get("match_type") == "exact_phrase"]
+
     matches.sort(key=lambda item: item["_rank"])
     compact_matches = []
     for match in matches[: max(1, limit)]:
         compact = dict(match)
         compact.pop("_rank", None)
+        compact.pop("toc_like", None)
+        compact.pop("title_exact_hit", None)
         compact_matches.append(compact)
 
     return {
@@ -181,10 +200,11 @@ def _collect_page_entries(index_data: dict) -> List[Dict[str, Any]]:
     by_page: Dict[int, Dict[str, Any]] = {}
 
     if isinstance(index_data, dict):
+        page_count = _page_count(index_data)
         for page in index_data.get("pages") or []:
             if not isinstance(page, dict):
                 continue
-            page_num = _page_number(page)
+            page_num = _page_number(page, page_count=page_count)
             if page_num <= 0:
                 continue
             by_page[page_num] = {
@@ -197,17 +217,17 @@ def _collect_page_entries(index_data: dict) -> List[Dict[str, Any]]:
         if isinstance(nodes, dict):
             nodes = [nodes]
         for node in _walk_nodes(nodes):
-            page_num = _page_number(node)
+            page_num = _page_number(node, page_count=page_count, prefer_physical=True)
             if page_num <= 0:
                 continue
             entry = by_page.setdefault(page_num, {"page": page_num, "text": ""})
-            node_text = " ".join(
-                str(node.get(key) or "")
-                for key in ("title", "summary", "text", "content")
-            )
+            node_text = _node_text_for_entry(node)
             entry["text"] = " ".join([str(entry.get("text") or ""), node_text]).strip()
             entry.setdefault("title", node.get("title", ""))
             entry.setdefault("node_id", node.get("node_id", ""))
+            for key in ("logical_page", "raw_page_label", "physical_index", "start_index"):
+                if node.get(key) is not None:
+                    entry.setdefault(key, node.get(key))
             if node.get("images"):
                 entry.setdefault("images", [])
                 entry["images"].extend(node.get("images") or [])
@@ -227,20 +247,54 @@ def _walk_nodes(nodes: Any) -> Iterable[Dict[str, Any]]:
         yield from _walk_nodes(node.get("nodes") or node.get("children") or [])
 
 
-def _page_number(item: Dict[str, Any]) -> int:
+def _node_text_for_entry(node: Dict[str, Any]) -> str:
+    keys = ["title", "summary", "content"]
+    if not _has_child_nodes(node):
+        keys.append("text")
+    return " ".join(str(node.get(key) or "") for key in keys)
+
+
+def _has_child_nodes(node: Dict[str, Any]) -> bool:
+    for key in ("nodes", "children"):
+        children = node.get(key)
+        if isinstance(children, list) and children:
+            return True
+    return False
+
+
+def _page_count(index_data: Dict[str, Any]) -> int:
+    try:
+        value = int(index_data.get("page_count") or index_data.get("total_pages") or 0)
+        return value if value > 0 else 0
+    except (TypeError, ValueError):
+        return 0
+
+
+def _page_number(
+    item: Dict[str, Any],
+    *,
+    page_count: int = 0,
+    prefer_physical: bool = False,
+) -> int:
     source_anchor = item.get("source_anchor")
-    candidates = [
-        item.get("page"),
-        item.get("page_num"),
-        item.get("start_page"),
-        item.get("start_index"),
-    ]
+    mapping_evidence = item.get("mapping_evidence")
+    candidates: List[Any] = []
+    if prefer_physical:
+        candidates.extend(
+            [
+                item.get("physical_index"),
+                item.get("start_index"),
+                mapping_evidence.get("matched_page") if isinstance(mapping_evidence, dict) else None,
+            ]
+        )
     if isinstance(source_anchor, dict):
         candidates.extend([source_anchor.get("start_page"), source_anchor.get("page")])
+    if not prefer_physical:
+        candidates.extend([item.get("page"), item.get("page_num"), item.get("start_page"), item.get("start_index")])
     for candidate in candidates:
         try:
             value = int(candidate)
-            if value > 0:
+            if value > 0 and (page_count <= 0 or value <= page_count):
                 return value
         except (TypeError, ValueError):
             continue
@@ -307,6 +361,38 @@ def _match_type(phrase_hit: str, matched_terms: List[str], is_visual: bool) -> s
     return "keyword"
 
 
+def _is_toc_like_entry(entry: Dict[str, Any]) -> bool:
+    title = _normalize_for_match(str(entry.get("title") or ""))
+    if title in {"目录", "preface", "tableofcontents", "contents"}:
+        return True
+    text = str(entry.get("text") or "")
+    if _normalize_for_match(text).startswith("目录"):
+        return True
+    toc_line_count = 0
+    for line in text.splitlines():
+        compact = line.strip()
+        if not compact:
+            continue
+        if re.search(r"(?:^|\s|\|)\d{1,3}\s*(?:\||$)", compact) and (
+            "|" in compact or "…" in compact or "..." in compact
+        ):
+            toc_line_count += 1
+    return toc_line_count >= 3
+
+
+def _has_sufficient_keyword_match(phrase_candidates: List[str], matched_terms: List[str]) -> bool:
+    if not matched_terms:
+        return False
+    longest_phrase_len = max((len(_normalize_for_match(phrase)) for phrase in phrase_candidates), default=0)
+    if longest_phrase_len < 6:
+        return True
+    meaningful_terms = [
+        term for term in matched_terms
+        if len(_normalize_for_match(term)) >= 3 or re.search(r"[A-Za-z0-9]{4,}", term)
+    ]
+    return len(meaningful_terms) >= 2
+
+
 def _rank_tuple(
     *,
     page: int,
@@ -357,7 +443,7 @@ def _next_step_options(matches: List[Dict[str, Any]]) -> List[str]:
 
 
 def _normalize_for_match(value: str) -> str:
-    return re.sub(r"\s+", "", str(value or "")).lower()
+    return re.sub(r"[^0-9a-zA-Z\u4e00-\u9fff]+", "", str(value or "").lower())
 
 
 def _contains_cjk(value: str) -> bool:

@@ -179,6 +179,82 @@ def test_visual_page_content_returns_image_refs_without_ocr_text() -> None:
     asyncio.run(run())
 
 
+def test_ocr_page_metadata_returns_image_ref_without_text() -> None:
+    async def run() -> None:
+        index = {
+            "structure": [
+                {
+                    "node_id": "n1",
+                    "title": "OCR page",
+                    "start_index": 4,
+                    "end_index": 4,
+                    "summary": "OCR summary should not enter model context",
+                    "text": "node OCR text should not enter model context",
+                }
+            ],
+            "pages": [
+                {
+                    "page": 4,
+                    "text": "page OCR text should not enter model context",
+                    "ocr_used": True,
+                }
+            ],
+        }
+        result = await _executor(index, docs=[_doc(page_count=4)]).execute(
+            "get_page_content", {"doc_id": "doc-a", "pages": "4"}
+        )
+
+        assert result["status"] == "success"
+        page = result["data"]["content"][0]
+        assert page["page"] == 4
+        assert page["text"] == ""
+        assert page["text_omitted_reason"] == "visual_evidence_required"
+        assert page["visual_evidence_required"] is True
+        assert page["images"] == [
+            {
+                "image_path": "page://doc-a/4",
+                "alt": "report.pdf page 4",
+                "mimeType": "image/jpeg",
+                "page": 4,
+                "fallback_tool": "get_page_image",
+            }
+        ]
+        assert "text_content" not in page
+        assert "node_summary" not in page
+        assert "OCR text" not in str(result)
+
+    asyncio.run(run())
+
+
+def test_visual_page_content_does_not_return_node_summary() -> None:
+    async def run() -> None:
+        index = {
+            "structure": [
+                {
+                    "node_id": "n1",
+                    "title": "Figure page",
+                    "start_index": 1,
+                    "end_index": 1,
+                    "summary": "visual summary should not enter model context",
+                    "text": "visual text should not enter model context",
+                    "has_visual_content": True,
+                }
+            ],
+        }
+        result = await _executor(index).execute(
+            "get_page_content", {"doc_id": "doc-a", "pages": "1"}
+        )
+
+        assert result["status"] == "success"
+        page = result["data"]["content"][0]
+        assert page["visual_evidence_required"] is True
+        assert "node_summary" not in page
+        assert "visual summary" not in str(result)
+        assert "visual text" not in str(result)
+
+    asyncio.run(run())
+
+
 def test_get_document_image_reads_indexed_asset_by_image_path(
     tmp_path: Path, monkeypatch
 ) -> None:
@@ -554,6 +630,76 @@ def test_get_page_content_reports_truncated_page_ranges() -> None:
         assert result["data"]["returned_pages"] == "1-10"
         assert result["data"]["request_truncated"] is True
         assert "继续" in str(result["next_steps"])
+
+    asyncio.run(run())
+
+
+def test_get_page_content_uses_most_specific_node_for_page() -> None:
+    async def run() -> None:
+        result = await _executor(
+            {
+                "structure": [
+                    {
+                        "node_id": "root",
+                        "title": "目录",
+                        "start_index": 1,
+                        "end_index": 10,
+                        "text": "目录文本",
+                        "nodes": [
+                            {
+                                "node_id": "target",
+                                "title": "04 Target Case",
+                                "start_index": 4,
+                                "end_index": 4,
+                                "text": "target page text",
+                                "nodes": [],
+                            }
+                        ],
+                    }
+                ]
+            },
+            docs=[_doc(page_count=10)],
+        ).execute("get_page_content", {"doc_id": "doc-a", "pages": "4"})
+
+        assert result["status"] == "success"
+        page = result["data"]["content"][0]
+        assert page["node_id"] == "target"
+        assert page["node_title"] == "04 Target Case"
+
+    asyncio.run(run())
+
+
+def test_get_page_content_uses_most_specific_child_node_for_page() -> None:
+    async def run() -> None:
+        result = await _executor(
+            {
+                "structure": [
+                    {
+                        "node_id": "root",
+                        "title": "目录",
+                        "start_index": 1,
+                        "end_index": 10,
+                        "text": "目录文本",
+                        "children": [
+                            {
+                                "node_id": "target",
+                                "title": "04 Target Case",
+                                "start_index": 4,
+                                "end_index": 4,
+                                "text": "target page text",
+                                "children": [],
+                            }
+                        ],
+                    }
+                ]
+            },
+            docs=[_doc(page_count=10)],
+        ).execute("get_page_content", {"doc_id": "doc-a", "pages": "4"})
+
+        assert result["status"] == "success"
+        page = result["data"]["content"][0]
+        assert page["node_id"] == "target"
+        assert page["node_title"] == "04 Target Case"
 
     asyncio.run(run())
 
