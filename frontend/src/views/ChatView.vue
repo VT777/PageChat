@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { marked } from 'marked'
 import { Bot, Check, Copy, RefreshCw, RotateCcw, Sparkles, Undo2, User } from 'lucide-vue-next'
@@ -9,7 +9,9 @@ import InlineToolStep from '@/components/chat/InlineToolStep.vue'
 import { useChatStore } from '@/stores/chat'
 import { useDocumentStore } from '@/stores/document'
 import { useFolderStore } from '@/stores/folder'
+import { chatApi } from '@/api'
 import type { DocumentChatContext, Message } from '@/stores/chat'
+import type { ChatAttachmentMetadata, ChatAttachmentPreview } from '@/types/chatAttachments'
 import type { ChatScopeRequest } from '@/types/retrieval'
 import { describeScopeTrace } from '@/utils/retrievalScope'
 import { parseDocumentChatRouteQuery, parseFolderChatRouteContexts } from '@/ui/pagechatContracts'
@@ -19,7 +21,7 @@ interface ComposerPayload {
   webSearch: boolean
   documentIds: string[]
   folderIds: string[]
-  images: Array<{ name: string }>
+  attachments: ChatAttachmentMetadata[]
 }
 
 const chatStore = useChatStore()
@@ -34,6 +36,8 @@ const pendingRollback = ref<{
   deletedCount: number
   targetRole: 'user' | 'assistant'
 } | null>(null)
+const attachmentPreviews = ref<Record<string, ChatAttachmentPreview>>({})
+const previewObjectUrls = new Map<string, string>()
 
 const prompts = [
   '总结当前文件夹里的关键结论',
@@ -90,6 +94,7 @@ const messageSignature = computed(() =>
     message.content.length,
     message.thinking.length,
     message.toolSteps.length,
+    (message.attachments || []).map((item) => item.attachment_id).join(','),
     message.isLoading ? 1 : 0,
   ].join(':')).join('|')
 )
@@ -110,6 +115,8 @@ async function handleSubmit(payload: ComposerPayload) {
   await chatStore.sendMessage(payload.text, {
     ...buildScope(payload),
     web_search: payload.webSearch,
+    attachment_ids: payload.attachments.map((item) => item.attachment_id),
+    attachments: payload.attachments,
   })
   await nextTick()
   scrollToBottom()
@@ -146,8 +153,66 @@ function usePrompt(prompt: string) {
     webSearch: false,
     documentIds: [],
     folderIds: [],
-    images: [],
+    attachments: [],
   })
+}
+
+function attachmentPreviewFor(attachment: ChatAttachmentMetadata): ChatAttachmentPreview {
+  return attachmentPreviews.value[attachment.attachment_id] || {
+    ...attachment,
+    preview_status: attachment.content_url ? 'idle' : 'failed',
+  }
+}
+
+async function loadAttachmentPreview(attachment: ChatAttachmentMetadata) {
+  if (!attachment.content_url || attachmentPreviews.value[attachment.attachment_id]?.preview_status === 'loading') {
+    return
+  }
+  const existing = attachmentPreviews.value[attachment.attachment_id]
+  if (existing?.preview_status === 'ready' || existing?.preview_status === 'failed') {
+    return
+  }
+
+  attachmentPreviews.value = {
+    ...attachmentPreviews.value,
+    [attachment.attachment_id]: {
+      ...attachment,
+      preview_status: 'loading',
+    },
+  }
+
+  try {
+    const response = await chatApi.fetchAttachmentBlob(attachment.attachment_id)
+    const previewUrl = URL.createObjectURL(response.data as Blob)
+    const oldUrl = previewObjectUrls.get(attachment.attachment_id)
+    if (oldUrl) URL.revokeObjectURL(oldUrl)
+    previewObjectUrls.set(attachment.attachment_id, previewUrl)
+    attachmentPreviews.value = {
+      ...attachmentPreviews.value,
+      [attachment.attachment_id]: {
+        ...attachment,
+        preview_url: previewUrl,
+        preview_status: 'ready',
+      },
+    }
+  } catch (error) {
+    console.error('Failed to load attachment preview:', error)
+    attachmentPreviews.value = {
+      ...attachmentPreviews.value,
+      [attachment.attachment_id]: {
+        ...attachment,
+        preview_status: 'failed',
+      },
+    }
+  }
+}
+
+function ensureAttachmentPreviews() {
+  for (const message of chatStore.messages) {
+    for (const attachment of message.attachments || []) {
+      loadAttachmentPreview(attachment)
+    }
+  }
 }
 
 async function copyMessage(message: Message) {
@@ -200,6 +265,7 @@ async function regenerateAssistantMessage(message: Message) {
 }
 
 watch(messageSignature, async () => {
+  ensureAttachmentPreviews()
   await nextTick()
   scrollToBottom()
 })
@@ -227,6 +293,14 @@ onMounted(() => {
   documentStore.fetchDocuments(1, undefined, null, true, 20)
   folderStore.fetchFolders()
   nextTick(scrollToBottom)
+  ensureAttachmentPreviews()
+})
+
+onBeforeUnmount(() => {
+  for (const url of previewObjectUrls.values()) {
+    URL.revokeObjectURL(url)
+  }
+  previewObjectUrls.clear()
 })
 </script>
 
@@ -263,23 +337,43 @@ onMounted(() => {
                 <span v-if="scopeLabel(message)" class="scope-note">{{ scopeLabel(message) }}</span>
               </div>
 
-              <div v-if="message.role === 'user'" class="user-message-shell">
-                <div class="user-bubble">
-                  {{ message.content }}
+              <template v-if="message.role === 'user'">
+                <div class="user-message-shell">
+                  <div class="user-bubble">
+                    {{ message.content }}
+                  </div>
+                  <div class="bubble-actions" aria-label="Message actions">
+                    <button type="button" title="复制" aria-label="复制" @click="copyMessage(message)">
+                      <Check v-if="copiedMessageId === message.id" />
+                      <Copy v-else />
+                    </button>
+                    <button type="button" title="撤回" aria-label="撤回" @click="rollbackMessage(message)">
+                      <Undo2 />
+                    </button>
+                    <button type="button" title="重新生成" aria-label="重新生成" @click="regenerateUserMessage(message)">
+                      <RotateCcw />
+                    </button>
+                  </div>
                 </div>
-                <div class="bubble-actions" aria-label="Message actions">
-                  <button type="button" title="复制" aria-label="复制" @click="copyMessage(message)">
-                    <Check v-if="copiedMessageId === message.id" />
-                    <Copy v-else />
-                  </button>
-                  <button type="button" title="撤回" aria-label="撤回" @click="rollbackMessage(message)">
-                    <Undo2 />
-                  </button>
-                  <button type="button" title="重新生成" aria-label="重新生成" @click="regenerateUserMessage(message)">
-                    <RotateCcw />
-                  </button>
+                <div v-if="message.attachments?.length" class="sent-attachments">
+                  <div
+                    v-for="attachment in message.attachments"
+                    :key="attachment.attachment_id"
+                    class="sent-attachment"
+                    :title="attachment.original_name"
+                  >
+                    <img
+                      v-if="attachmentPreviewFor(attachment).preview_url"
+                      :src="attachmentPreviewFor(attachment).preview_url"
+                      :alt="attachment.original_name"
+                    />
+                    <span v-else class="sent-attachment-placeholder">
+                      {{ attachmentPreviewFor(attachment).preview_status === 'loading' ? '加载中' : '图片' }}
+                    </span>
+                    <span class="sent-attachment-name">{{ attachment.original_name }}</span>
+                  </div>
                 </div>
-              </div>
+              </template>
 
               <template v-else>
                 <div v-if="message.thinking" class="thinking-line">
@@ -563,6 +657,54 @@ onMounted(() => {
   opacity: 1;
   pointer-events: auto;
   transform: translateY(0) scale(1);
+}
+
+.sent-attachments {
+  display: flex;
+  max-width: min(680px, 82%);
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 7px;
+  margin-top: 7px;
+}
+
+.sent-attachment {
+  display: grid;
+  width: 118px;
+  overflow: hidden;
+  border: 1px solid rgba(209, 213, 219, 0.78);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.86);
+  box-shadow: 0 8px 22px rgba(15, 23, 42, 0.08);
+}
+
+.sent-attachment img,
+.sent-attachment-placeholder {
+  width: 100%;
+  height: 72px;
+}
+
+.sent-attachment img {
+  object-fit: cover;
+}
+
+.sent-attachment-placeholder {
+  display: grid;
+  place-items: center;
+  background: var(--kc-surface-muted);
+  color: var(--kc-text-tertiary);
+  font-size: 11px;
+}
+
+.sent-attachment-name {
+  min-width: 0;
+  overflow: hidden;
+  padding: 6px 7px 7px;
+  color: var(--kc-text-secondary);
+  font-size: 11px;
+  line-height: 14px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .bubble-actions button,

@@ -12,6 +12,7 @@ import type {
 } from '@/types/stream'
 import type { ChatScopeRequest, RetrievalScopeTrace } from '@/types/retrieval'
 import type { SourceAnchor } from '@/types/preview'
+import type { ChatAttachmentMetadata } from '@/types/chatAttachments'
 
 export interface DocumentChatContext {
   id: string
@@ -48,6 +49,7 @@ export interface Message {
   retrievalScope?: RetrievalScopeTrace | null
   retrievalFallbacks?: string[]
   evidenceItems?: EvidenceItem[]
+  attachments?: ChatAttachmentMetadata[]
 }
 
 export interface RollbackState {
@@ -75,6 +77,11 @@ interface StoredChatSessions {
   sessions: Record<string, StoredChatSession>
 }
 
+interface ChatSendOptions extends ChatScopeRequest {
+  attachment_ids?: string[]
+  attachments?: ChatAttachmentMetadata[]
+}
+
 const STORAGE_KEY = 'pagechat_chat_sessions'
 const SESSIONS_DATA_KEY = 'pagechat_sessions_data'
 const DOCUMENT_CONTEXTS_KEY = 'pagechat_document_contexts'
@@ -86,6 +93,21 @@ let _msgIDCounter = 0
 function _generateMsgID(): string {
   _msgIDCounter++
   return `${Date.now()}-${_msgIDCounter}`
+}
+
+function sanitizeAttachmentMetadata(attachments?: ChatAttachmentMetadata[]): ChatAttachmentMetadata[] {
+  if (!attachments || attachments.length === 0) return []
+  return attachments
+    .filter((item) => item && item.attachment_id)
+    .map((item) => ({
+      attachment_id: item.attachment_id,
+      original_name: item.original_name || 'image',
+      mime_type: item.mime_type,
+      size_bytes: item.size_bytes,
+      width: item.width ?? null,
+      height: item.height ?? null,
+      content_url: item.content_url,
+    }))
 }
 
 export const useChatStore = defineStore('chat', () => {
@@ -371,7 +393,8 @@ export const useChatStore = defineStore('chat', () => {
     }
   }
 
-  function addUserMessage(content: string) {
+  function addUserMessage(content: string, attachments?: ChatAttachmentMetadata[]) {
+    const safeAttachments = sanitizeAttachmentMetadata(attachments)
     messages.value.push({
       id: _generateMsgID(),
       role: 'user',
@@ -380,6 +403,7 @@ export const useChatStore = defineStore('chat', () => {
       toolSteps: [],
       isLoading: false,
       timestamp: Date.now(),
+      attachments: safeAttachments,
     })
     
     // 检查是否已有当前对话记录
@@ -524,7 +548,10 @@ export const useChatStore = defineStore('chat', () => {
     messages.value.splice(index)
     
     // 重新发送
-    await sendMessage(userMsg.content)
+    await sendMessage(userMsg.content, {
+      attachment_ids: userMsg.attachments?.map((item) => item.attachment_id),
+      attachments: userMsg.attachments,
+    })
   }
 
   function addAssistantMessage() {
@@ -957,17 +984,19 @@ export const useChatStore = defineStore('chat', () => {
     }
   }
 
-  async function sendMessage(question: string, scope?: ChatScopeRequest) {
+  async function sendMessage(question: string, scope?: ChatSendOptions) {
     if (isLoading.value) return
     
     isLoading.value = true
-    addUserMessage(question)
+    const safeAttachments = sanitizeAttachmentMetadata(scope?.attachments)
+    addUserMessage(question, safeAttachments)
     addAssistantMessage()
 
     try {
+      const { attachments, ...streamScope } = scope || {}
       const response = await chatApi.stream({
         question,
-        ...scope,
+        ...streamScope,
         conversation_id: conversationId.value || undefined,
       })
 

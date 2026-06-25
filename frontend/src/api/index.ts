@@ -129,6 +129,7 @@ export const chatApi = {
   stream: (data: {
     question: string
     document_ids?: string[]
+    attachment_ids?: string[]
     conversation_id?: string
   } & ChatScopeRequest) => {
     const token = localStorage.getItem('token')
@@ -147,6 +148,22 @@ export const chatApi = {
   
   getMessages: (conversationId: string) =>
     api.get(`/chat/conversations/${conversationId}/messages`),
+
+  uploadAttachment: (file: File) => {
+    const formData = new FormData()
+    formData.append('file', file)
+    return api.post('/chat/attachments', formData, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+    })
+  },
+
+  deleteAttachment: (attachmentId: string) =>
+    api.delete(`/chat/attachments/${attachmentId}`),
+
+  fetchAttachmentBlob: (attachmentId: string) =>
+    api.get(`/chat/attachments/${attachmentId}/content`, {
+      responseType: 'blob',
+    }),
 }
 
 // Auth API

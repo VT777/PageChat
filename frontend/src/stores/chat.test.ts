@@ -459,6 +459,49 @@ describe('chat rollback', () => {
     expect(payload.question).not.toContain('[Context:')
   })
 
+  it('sends attachment ids without persisting image payloads', async () => {
+    const store = useChatStore()
+
+    await store.sendMessage('看截图', {
+      attachment_ids: ['att-a'],
+      attachments: [
+        {
+          attachment_id: 'att-a',
+          original_name: 'screen.png',
+          mime_type: 'image/png',
+          size_bytes: 70,
+          width: 1,
+          height: 1,
+          content_url: '/api/chat/attachments/att-a/content',
+          preview_url: 'blob:http://local-preview',
+          data: 'data:image/png;base64,AAA',
+        },
+      ],
+    } as any)
+
+    const payload = vi.mocked(chatApi.stream).mock.calls[0][0] as unknown as Record<string, unknown>
+    expect(payload).toMatchObject({
+      question: '看截图',
+      attachment_ids: ['att-a'],
+    })
+    expect(payload).not.toHaveProperty('attachments')
+
+    expect(store.messages[0].attachments).toEqual([
+      {
+        attachment_id: 'att-a',
+        original_name: 'screen.png',
+        mime_type: 'image/png',
+        size_bytes: 70,
+        width: 1,
+        height: 1,
+        content_url: '/api/chat/attachments/att-a/content',
+      },
+    ])
+    const serializedStorage = JSON.stringify(localStorage)
+    expect(serializedStorage).not.toContain('data:image')
+    expect(serializedStorage).not.toContain('blob:')
+  })
+
   it('does not encode web search as a prompt hint in ChatView', () => {
     expect(chatViewSource).not.toContain('Web Search enabled')
   })

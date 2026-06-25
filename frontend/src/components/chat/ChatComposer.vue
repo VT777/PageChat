@@ -20,7 +20,9 @@ import { useDocumentStore } from '@/stores/document'
 import type { Document } from '@/stores/document'
 import { useFolderStore } from '@/stores/folder'
 import { useChatStore } from '@/stores/chat'
+import { chatApi } from '@/api'
 import type { Folder as FolderModel } from '@/api/folders'
+import type { ChatAttachmentMetadata, ComposerImageAttachment } from '@/types/chatAttachments'
 import {
   COMPOSER_ACTIONS,
   documentOnlyChatContexts,
@@ -35,19 +37,12 @@ import {
 } from '@/ui/demoLibrary'
 import { formatDocumentSize, formatDocumentTypeLabel } from '@/utils/documentWorkbench'
 
-interface ImageAttachment {
-  id: string
-  name: string
-  url: string
-  file: File
-}
-
 interface ComposerSubmitPayload {
   text: string
   webSearch: boolean
   documentIds: string[]
   folderIds: string[]
-  images: ImageAttachment[]
+  attachments: ChatAttachmentMetadata[]
 }
 
 interface InitialDocumentContext {
@@ -80,11 +75,12 @@ const pickerMode = ref<'file' | 'folder' | null>(null)
 const webSearch = ref(false)
 const selectedDocumentIds = ref<string[]>([])
 const selectedFolderIds = ref<string[]>([])
-const images = ref<ImageAttachment[]>([])
+const images = ref<ComposerImageAttachment[]>([])
 const imageInputRef = ref<HTMLInputElement | null>(null)
 const textareaRef = ref<HTMLTextAreaElement | null>(null)
 
-const canSend = computed(() => text.value.trim().length > 0 && !props.disabled)
+const isUploadingImages = computed(() => images.value.some((image) => image.status === 'uploading'))
+const canSend = computed(() => text.value.trim().length > 0 && !props.disabled && !isUploadingImages.value)
 const initialDocumentContexts = computed(() => {
   return documentOnlyChatContexts(toContextArray(props.initialDocumentContext))
 })
@@ -164,18 +160,28 @@ function addImages(files: File[]) {
   const next = files
     .filter((file) => file.type.startsWith('image/'))
     .map((file) => ({
-      id: `${file.name}-${file.lastModified}-${Math.random().toString(36).slice(2)}`,
+      localId: `${file.name}-${file.lastModified}-${Math.random().toString(36).slice(2)}`,
       name: file.name,
-      url: URL.createObjectURL(file),
+      previewUrl: URL.createObjectURL(file),
       file,
+      status: 'local' as const,
     }))
   images.value = [...images.value, ...next].slice(0, 6)
 }
 
-function removeImage(id: string) {
-  const image = images.value.find((item) => item.id === id)
-  if (image) URL.revokeObjectURL(image.url)
-  images.value = images.value.filter((item) => item.id !== id)
+async function removeImage(localId: string) {
+  const image = images.value.find((item) => item.localId === localId)
+  if (image) {
+    URL.revokeObjectURL(image.previewUrl)
+    if (image.remote?.attachment_id && image.status === 'uploaded') {
+      try {
+        await chatApi.deleteAttachment(image.remote.attachment_id)
+      } catch (error) {
+        console.error('Failed to delete draft attachment:', error)
+      }
+    }
+  }
+  images.value = images.value.filter((item) => item.localId !== localId)
 }
 
 function toggleDocument(id: string) {
@@ -222,17 +228,48 @@ function handleKeydown(event: KeyboardEvent) {
   }
 }
 
-function submit() {
+async function uploadImagesForSubmit(): Promise<ChatAttachmentMetadata[]> {
+  const uploaded: ChatAttachmentMetadata[] = []
+  for (const image of images.value) {
+    if (image.remote && image.status === 'uploaded') {
+      uploaded.push(image.remote)
+      continue
+    }
+    image.status = 'uploading'
+    image.error = undefined
+    try {
+      const response = await chatApi.uploadAttachment(image.file)
+      const metadata = response.data as ChatAttachmentMetadata
+      image.remote = metadata
+      image.status = 'uploaded'
+      uploaded.push(metadata)
+    } catch (error) {
+      image.status = 'failed'
+      image.error = '上传失败'
+      throw error
+    }
+  }
+  return uploaded
+}
+
+async function submit() {
   if (!canSend.value) return
+  let attachments: ChatAttachmentMetadata[] = []
+  try {
+    attachments = await uploadImagesForSubmit()
+  } catch (error) {
+    console.error('Failed to upload chat attachments:', error)
+    return
+  }
   emit('submit', {
     text: text.value.trim(),
     webSearch: webSearch.value,
     documentIds: selectedDocumentIds.value,
     folderIds: selectedFolderIds.value,
-    images: images.value,
+    attachments,
   })
   text.value = ''
-  images.value.forEach((image) => URL.revokeObjectURL(image.url))
+  images.value.forEach((image) => URL.revokeObjectURL(image.previewUrl))
   images.value = []
 }
 
@@ -331,7 +368,14 @@ onMounted(() => {
 })
 
 onBeforeUnmount(() => {
-  images.value.forEach((image) => URL.revokeObjectURL(image.url))
+  images.value.forEach((image) => {
+    URL.revokeObjectURL(image.previewUrl)
+    if (image.remote?.attachment_id && image.status === 'uploaded') {
+      chatApi.deleteAttachment(image.remote.attachment_id).catch((error) => {
+        console.error('Failed to delete draft attachment:', error)
+      })
+    }
+  })
 })
 </script>
 
@@ -399,9 +443,16 @@ onBeforeUnmount(() => {
 
     <div class="composer-card">
       <div v-if="images.length > 0" class="image-strip">
-        <div v-for="image in images" :key="image.id" class="image-chip">
-          <img :src="image.url" :alt="image.name" />
-          <button type="button" @click="removeImage(image.id)">
+        <div
+          v-for="image in images"
+          :key="image.localId"
+          :class="['image-chip', image.status]"
+          :title="image.error || image.name"
+        >
+          <img :src="image.previewUrl" :alt="image.name" />
+          <span v-if="image.status === 'uploading'" class="image-status">上传中</span>
+          <span v-else-if="image.status === 'failed'" class="image-status error">失败</span>
+          <button type="button" @click="removeImage(image.localId)">
             <X />
           </button>
         </div>
@@ -699,6 +750,27 @@ textarea:focus {
   width: 100%;
   height: 100%;
   object-fit: cover;
+}
+
+.image-chip.uploading img,
+.image-chip.failed img {
+  opacity: 0.58;
+}
+
+.image-status {
+  position: absolute;
+  left: 5px;
+  bottom: 5px;
+  border-radius: 999px;
+  background: rgba(17, 24, 39, 0.72);
+  padding: 2px 6px;
+  color: #fff;
+  font-size: 10px;
+  line-height: 14px;
+}
+
+.image-status.error {
+  background: rgba(190, 18, 60, 0.88);
 }
 
 .image-chip button {
