@@ -2,6 +2,7 @@
 import { ref, onMounted, onUnmounted, nextTick, watch } from 'vue'
 import * as pdfjsLib from 'pdfjs-dist/legacy/build/pdf.mjs'
 import { X, ZoomIn, ZoomOut } from 'lucide-vue-next'
+import { currentPdfRenderDimensions } from '@/utils/pdfRenderScale'
 
 // 设置 PDF.js worker
 import pdfWorker from 'pdfjs-dist/legacy/build/pdf.worker.min.mjs?url'
@@ -119,20 +120,24 @@ const renderPage = async (pageIndex: number) => {
     const baseScale = availableWidth / viewport1.width
     const finalScale = baseScale * (zoomPercent.value / 100)
     
-    const viewport = page.getViewport({ scale: finalScale })
+    const cssViewport = page.getViewport({ scale: finalScale })
+    const dimensions = currentPdfRenderDimensions(cssViewport.width, cssViewport.height)
+    const renderViewport = page.getViewport({ scale: finalScale * dimensions.outputScale })
     
-    pageInfo.width = viewport.width
-    pageInfo.height = viewport.height
+    pageInfo.width = dimensions.cssWidth
+    pageInfo.height = dimensions.cssHeight
     
     const canvas = document.createElement('canvas')
-    canvas.width = viewport.width
-    canvas.height = viewport.height
+    canvas.width = dimensions.backingWidth
+    canvas.height = dimensions.backingHeight
     canvas.style.display = 'block'
+    canvas.style.width = `${dimensions.cssWidth}px`
+    canvas.style.height = `${dimensions.cssHeight}px`
     
     const ctx = canvas.getContext('2d')
     if (ctx) {
       ctx.clearRect(0, 0, canvas.width, canvas.height)
-      await page.render({ canvasContext: ctx, viewport, canvas } as any).promise
+      await page.render({ canvasContext: ctx, viewport: renderViewport, canvas } as any).promise
       
       renderedCanvases.set(pageInfo.pageNum, canvas)
       pageInfo.rendered = true
