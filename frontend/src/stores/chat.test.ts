@@ -587,4 +587,37 @@ describe('chat rollback', () => {
   it('does not encode web search as a prompt hint in ChatView', () => {
     expect(chatViewSource).not.toContain('Web Search enabled')
   })
+
+  it('collects citation bindings from the done payload as preview evidence', () => {
+    const store = useChatStore()
+    store.addAssistantMessage()
+
+    store.handleEnvelope({
+      event: 'done',
+      data: {
+        citation_bindings: [
+          {
+            doc_id: 'doc-cq',
+            document_name: '重庆统计年鉴.pdf',
+            display_label: '重庆统计年鉴.pdf p.12',
+            source_anchor: {
+              format: 'pdf',
+              unit_type: 'page',
+              start_page: 12,
+              end_page: 12,
+            },
+          },
+        ],
+      },
+    } as any)
+
+    expect(store.messages[0].evidenceItems).toEqual([
+      expect.objectContaining({
+        docId: 'doc-cq',
+        documentName: '重庆统计年鉴.pdf',
+        displayLabel: '重庆统计年鉴.pdf p.12',
+        sourceAnchor: expect.objectContaining({ start_page: 12 }),
+      }),
+    ])
+  })
 })

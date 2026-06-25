@@ -641,9 +641,15 @@ export const useChatStore = defineStore('chat', () => {
             ? record.doc_id
             : typeof record.docId === 'string'
               ? record.docId
-              : undefined,
+              : typeof record.document_id === 'string'
+                ? record.document_id
+                : undefined,
           documentName: String(record.document_name || record.doc_name || record.documentName || record.name || ''),
-          displayLabel: typeof record.display_label === 'string' ? record.display_label : undefined,
+          displayLabel: typeof record.display_label === 'string'
+            ? record.display_label
+            : typeof record.displayLabel === 'string'
+              ? record.displayLabel
+              : undefined,
           sourceAnchor: (record.source_anchor || null) as SourceAnchor | null,
           retrievalSource: typeof record.retrieval_source === 'string' ? record.retrieval_source : undefined,
         })
@@ -797,7 +803,10 @@ export const useChatStore = defineStore('chat', () => {
         if (doneData.conversation_id) {
           syncBackendConversationId(doneData.conversation_id)
         }
-        const metadata = collectResultMetadata(doneData.tool_results || [])
+        const metadata = collectResultMetadata([
+          ...(doneData.tool_results || []),
+          ...(doneData.citation_bindings || []),
+        ])
         messages.value[lastIndex] = {
           ...last,
           isLoading: false,

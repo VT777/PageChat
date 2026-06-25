@@ -50,4 +50,5 @@ export interface DoneData {
     tool_name: string
     result: Record<string, unknown>
   }>
+  citation_bindings?: Array<Record<string, unknown>>
 }

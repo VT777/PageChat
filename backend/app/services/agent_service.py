@@ -23,6 +23,11 @@ from app.services.web_search_settings_service import (
 )
 from app.services.web_search_tool import WEB_SEARCH_TOOL, execute_web_search_tool
 from app.services.retrieval_planner import RetrievalPlanner
+from app.services.citation_binding_service import (
+    bind_answer_citations,
+    build_missing_citation_suffix,
+    has_document_citation,
+)
 from app.core.config import CHAT_ATTACHMENT_MAX_PER_MESSAGE
 from app.core.llm import chat_by_scenario, async_chat_completion
 from app.models.retrieval import RetrievalScope
@@ -607,10 +612,29 @@ class AgentService:
             yield self._format_sse("content", {"content": assistant_content})
             messages.append({"role": "assistant", "content": assistant_content})
 
+        # 轻量引用修复：有工具证据但模型漏掉文档引用时，追加最近证据的来源标记。
+        citation_suffix = build_missing_citation_suffix(
+            assistant_content,
+            tool_results_for_answer,
+        )
+        if citation_suffix:
+            assistant_content += citation_suffix
+            yield self._format_sse("content", {"content": citation_suffix})
+            for message in reversed(messages):
+                if message.get("role") == "assistant" and isinstance(
+                    message.get("content"), str
+                ):
+                    message["content"] = str(message["content"]) + citation_suffix
+                    break
+
+        citation_bindings = bind_answer_citations(
+            assistant_content,
+            tool_results_for_answer,
+        )
+
         # 静默日志：检查引用格式（不影响用户，仅用于数据驱动优化 prompt）
         if tool_results_for_answer and assistant_content:
-            has_citation = bool(re.search(r'\[\[.*?p\.\d+\]\]', assistant_content))
-            if not has_citation:
+            if not has_document_citation(assistant_content):
                 agent_logger.warning(
                     f"[CITATION_MISS] conv={conversation_id}, "
                     f"tools={[r['tool_name'] for r in tool_results_for_answer]}, "
@@ -625,6 +649,7 @@ class AgentService:
                 "tool_results": self._sanitize_tool_result_for_client(
                     tool_results_for_answer
                 ),
+                "citation_bindings": citation_bindings,
             },
         )
 
