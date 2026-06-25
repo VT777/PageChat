@@ -290,7 +290,7 @@ onMounted(() => {
     chatStore.openDraftChat()
   }
   syncRouteDocumentContexts()
-  documentStore.fetchDocuments(1, undefined, null, true, 20)
+  documentStore.fetchDocuments(1, undefined, null, false, 20)
   folderStore.fetchFolders()
   nextTick(scrollToBottom)
   ensureAttachmentPreviews()

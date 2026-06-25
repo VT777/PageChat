@@ -61,10 +61,8 @@ export function shouldShowDemoLibrary(input: {
   documentCount: number
   searchQuery: string
 }): boolean {
-  return !input.loading &&
-    input.folderCount === 0 &&
-    input.documentCount === 0 &&
-    input.searchQuery.trim().length === 0
+  void input
+  return false
 }
 
 export function buildLibrarySelectionSummary(input: {

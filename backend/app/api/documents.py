@@ -869,7 +869,7 @@ async def list_documents(
     page_size: int = Query(20, ge=1, le=100),
     search: Optional[str] = None,
     folder_id: Optional[str] = Query(None, description="文件夹ID，null表示根目录"),
-    include_subfolders: bool = Query(True, description="是否包含子文件夹"),
+    include_subfolders: bool = Query(False, description="是否包含子文件夹"),
     db: aiosqlite.Connection = Depends(get_db),
     current_user: dict = Depends(require_auth),
 ):

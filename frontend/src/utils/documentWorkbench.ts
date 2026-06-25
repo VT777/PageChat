@@ -142,8 +142,8 @@ export function buildDocumentListParams(state: DocumentListParamState) {
   }
 }
 
-export function workbenchIncludeSubfolders(folderId: string | null): boolean {
-  return folderId === null
+export function workbenchIncludeSubfolders(_folderId: string | null): boolean {
+  return false
 }
 
 export function normalizeExtension(fileType?: string): string {

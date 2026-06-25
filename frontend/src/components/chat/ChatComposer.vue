@@ -29,12 +29,6 @@ import {
   documentPresentationForType,
   resolveDocumentChatContext,
 } from '@/ui/pagechatContracts'
-import {
-  DEMO_LIBRARY_DOCUMENTS,
-  DEMO_LIBRARY_FOLDERS,
-  DEMO_FOLDER_ID,
-  shouldShowDemoLibrary,
-} from '@/ui/demoLibrary'
 import { formatDocumentSize, formatDocumentTypeLabel } from '@/utils/documentWorkbench'
 
 interface ComposerSubmitPayload {
@@ -88,17 +82,11 @@ const selectedDocumentChips = computed(() =>
   selectedDocumentIds.value.map(documentContextForId)
 )
 const isDraftChat = computed(() => !chatStore.currentSessionId)
-const useDemoPickerData = computed(() => shouldShowDemoLibrary({
-  loading: documentStore.loading || folderStore.loading,
-  folderCount: folderStore.folders.length,
-  documentCount: documentStore.documents.length,
-  searchQuery: '',
-}))
 const pickerDocuments = computed<Document[]>(() =>
-  useDemoPickerData.value ? DEMO_LIBRARY_DOCUMENTS : documentStore.documents
+  documentStore.documents
 )
 const pickerFolders = computed<FolderModel[]>(() =>
-  useDemoPickerData.value ? DEMO_LIBRARY_FOLDERS : folderStore.folders
+  folderStore.folders
 )
 const initialFolderContexts = computed(() => {
   return toFolderContexts(props.initialFolderContext)
@@ -290,9 +278,8 @@ function fileIconFor(fileType?: string) {
 }
 
 function folderDetail(folder: FolderModel) {
-  const documentCount = folder.id === DEMO_FOLDER_ID ? DEMO_LIBRARY_DOCUMENTS.length : null
   return [
-    documentCount ? `${documentCount} 个文件` : '文件夹',
+    '文件夹',
     folder.path || 'root',
   ].join(' · ')
 }
@@ -360,7 +347,7 @@ watch(text, (value) => {
 
 onMounted(() => {
   if (documentStore.documents.length === 0) {
-    documentStore.fetchDocuments(1, undefined, null, true, 20)
+    documentStore.fetchDocuments(1, undefined, null, false, 20)
   }
   if (folderStore.folders.length === 0) {
     folderStore.fetchFolders()

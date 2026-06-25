@@ -68,8 +68,8 @@ describe('document workbench helpers', () => {
     })
   })
 
-  it('includes subfolders only for the all-documents workbench view', () => {
-    expect(workbenchIncludeSubfolders(null)).toBe(true)
+  it('does not include subfolders for root workbench browsing by default', () => {
+    expect(workbenchIncludeSubfolders(null)).toBe(false)
     expect(workbenchIncludeSubfolders('folder-a')).toBe(false)
   })
 

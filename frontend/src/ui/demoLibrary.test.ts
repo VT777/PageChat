@@ -30,13 +30,13 @@ describe('PageChat demo library', () => {
     ])
   })
 
-  it('shows demo content only when the real library is empty and unfiltered', () => {
+  it('does not auto-populate production document views with demo library data', () => {
     expect(shouldShowDemoLibrary({
       loading: false,
       folderCount: 0,
       documentCount: 0,
       searchQuery: '',
-    })).toBe(true)
+    })).toBe(false)
     expect(shouldShowDemoLibrary({
       loading: false,
       folderCount: 1,

@@ -58,16 +58,6 @@ import {
   selectableDocumentIds,
 } from '@/ui/pagechatContracts'
 import type { DocumentSelectionActionId } from '@/ui/pagechatContracts'
-import {
-  DEMO_DOCUMENT_ID,
-  DEMO_FOLDER_ID,
-  DEMO_LIBRARY_DOCUMENTS,
-  buildLibrarySelectionSummary,
-  demoBreadcrumbForFolder,
-  demoDocumentsForFolder,
-  demoFoldersForParent,
-  shouldShowDemoLibrary,
-} from '@/ui/demoLibrary'
 import { calculatePopoverPosition, type PopoverSize } from '@/ui/popoverPosition'
 import type { Folder as FolderModel, FolderTreeItem } from '@/api/folders'
 
@@ -140,105 +130,14 @@ const moveTargetFolderId = ref<string | null>(null)
 const selectedFolderIds = ref<Set<string>>(new Set())
 const operationNotice = ref('')
 
-const SAMPLE_DOCUMENT_ID = DEMO_DOCUMENT_ID
-const sampleDocument = DEMO_LIBRARY_DOCUMENTS[0]
-
-const samplePreviewData: PreviewData = {
-  id: SAMPLE_DOCUMENT_ID,
-  name: sampleDocument.name,
-  original_name: sampleDocument.original_name,
-  file_type: sampleDocument.file_type,
-  file_size: sampleDocument.file_size,
-  status: sampleDocument.status,
-  page_count: sampleDocument.page_count,
-  processing_duration: sampleDocument.processing_duration,
-  created_at: sampleDocument.created_at,
-  updated_at: sampleDocument.updated_at,
-  index_meta: {
-    route_decision: { execution_mode: 'smart' },
-    visual_page_summaries_count: 0,
-  },
-  stats: {
-    node_count: 6,
-    text_chars: 12842,
-    summary_coverage: '96%',
-  },
-  quality_report: { status: 'completed' },
-  toc: [
-    {
-      node_id: 'overview',
-      title: '销售表现总览',
-      level: 1,
-      summary: '按区域汇总订单数、销售额和同比变化。',
-      start_page: 1,
-      end_page: 1,
-      children: [],
-    },
-    {
-      node_id: 'region',
-      title: '各地区销售明细',
-      level: 1,
-      summary: '华东、华南、华北、西南四个区域的收入与客单价。',
-      start_page: 2,
-      end_page: 3,
-      children: [
-        {
-          node_id: 'region-east',
-          title: '华东区域',
-          level: 2,
-          summary: '销售额最高，复购率稳定。',
-          start_page: 2,
-          end_page: 2,
-          children: [],
-        },
-        {
-          node_id: 'region-southwest',
-          title: '西南区域',
-          level: 2,
-          summary: '增速最快，但客单价波动较大。',
-          start_page: 3,
-          end_page: 3,
-          children: [],
-        },
-      ],
-    },
-    {
-      node_id: 'recommendations',
-      title: '运营建议',
-      level: 1,
-      summary: '建议加大西南新品投放，并复盘华北渠道效率。',
-      start_page: 4,
-      end_page: 4,
-      children: [],
-    },
-  ],
-}
-
-const samplePreviewRows = [
-  { region: '华东', orders: '1,284', revenue: '¥4,820,000', growth: '+18.6%', note: '收入最高，渠道结构稳定' },
-  { region: '华南', orders: '1,016', revenue: '¥3,640,000', growth: '+9.4%', note: '大客户订单占比提升' },
-  { region: '华北', orders: '742', revenue: '¥2,180,000', growth: '-2.1%', note: '渠道转化下降' },
-  { region: '西南', orders: '689', revenue: '¥1,960,000', growth: '+27.3%', note: '增长最快，适合追加投放' },
-]
-
-const showingDemoLibrary = computed(() => shouldShowDemoLibrary({
-  loading: documentStore.loading || folderStore.loading,
-  folderCount: folderStore.folders.length,
-  documentCount: documentStore.documents.length,
-  searchQuery: searchInput.value,
-}))
-const breadcrumbs = computed(() =>
-  showingDemoLibrary.value
-    ? demoBreadcrumbForFolder(folderStore.currentFolderId)
-    : buildDocumentBreadcrumb(folderStore.currentFolderPath)
-)
+const breadcrumbs = computed(() => buildDocumentBreadcrumb(folderStore.currentFolderPath))
 const currentFolders = computed<FolderModel[]>(() =>
-  showingDemoLibrary.value ? demoFoldersForParent(folderStore.currentFolderId) : folderStore.folders
+  folderStore.folders
 )
 const displayDocuments = computed(() =>
-  showingDemoLibrary.value ? demoDocumentsForFolder(folderStore.currentFolderId) : documentStore.documents
+  documentStore.documents
 )
-const displayTotal = computed(() => currentFolders.value.length + (showingDemoLibrary.value ? displayDocuments.value.length : documentStore.total))
+const displayTotal = computed(() => currentFolders.value.length + documentStore.total)
 const rowMenuDocument = computed(() =>
   displayDocuments.value.find((document) => document.id === rowMenuDocumentId.value) || null
 )
@@ -261,13 +160,10 @@ const selectedFolderIdList = computed(() =>
     .filter((id) => selectableCurrentFolderIds.value.includes(id))
 )
 const actionableSelectedDocumentIds = computed(() =>
-  selectedDocumentIds.value.filter((id) => {
-    const document = displayDocuments.value.find((item) => item.id === id)
-    return document ? !isSampleDocument(document) : false
-  })
+  selectedDocumentIds.value
 )
 const actionableSelectedFolderIds = computed(() =>
-  selectedFolderIdList.value.filter((id) => id !== DEMO_FOLDER_ID)
+  selectedFolderIdList.value
 )
 const allSelected = computed(() =>
   (selectableCurrentDocumentIds.value.length + selectableCurrentFolderIds.value.length) > 0 &&
@@ -275,7 +171,7 @@ const allSelected = computed(() =>
   selectableCurrentFolderIds.value.every((id) => selectedFolderIds.value.has(id))
 )
 const selectedCount = computed(() => selectedDocumentIds.value.length + selectedFolderIdList.value.length)
-const selectionSummary = computed(() => buildLibrarySelectionSummary({
+const selectionSummary = computed(() => buildSelectionSummary({
   documentCount: selectedDocumentIds.value.length,
   folderCount: selectedFolderIdList.value.length,
 }))
@@ -292,13 +188,8 @@ const selectedItemLabel = computed(() =>
   selectedFolders.value[0]?.name ||
   '所选项目'
 )
-const hasDemoSelection = computed(() =>
-  selectedDocuments.value.some(isSampleDocument) ||
-  selectedFolders.value.some(isSampleFolder)
-)
 const previewQuality = computed(() => qualityDisplay(previewData.value?.quality_report))
 const previewToc = computed(() => normalizeToc(previewData.value?.toc || []))
-const isSamplePreview = computed(() => previewDocument.value?.id === SAMPLE_DOCUMENT_ID)
 const previewRoute = computed(() => {
   const mode = previewData.value?.index_meta?.route_decision?.execution_mode
   if (mode) return mode
@@ -348,6 +239,13 @@ function flattenFolderTree(nodes: FolderTreeItem[], depth = 0): FolderPickerOpti
   ])
 }
 
+function buildSelectionSummary(input: { documentCount: number; folderCount: number }): string {
+  const parts: string[] = []
+  if (input.documentCount > 0) parts.push(`${input.documentCount} 个文件`)
+  if (input.folderCount > 0) parts.push(`${input.folderCount} 个文件夹`)
+  return `已选择 ${parts.join('、') || '0 个项目'}`
+}
+
 const moveFolderOptions = computed<FolderPickerOption[]>(() => [
   { id: null, name: 'root', path: 'root', depth: 0 },
   ...flattenFolderTree(folderStore.folderTree),
@@ -363,14 +261,6 @@ function fileIconFor(fileType?: string) {
 
 function fileToneFor(fileType?: string) {
   return documentPresentationForType(fileType).tone
-}
-
-function isSampleDocument(document: Document) {
-  return document.id === SAMPLE_DOCUMENT_ID
-}
-
-function isSampleFolder(folder: FolderModel) {
-  return folder.id === DEMO_FOLDER_ID
 }
 
 function isRowMenuOpen(document: Document) {
@@ -569,12 +459,6 @@ async function openPreview(document: Document) {
   activePreviewTab.value = 'toc'
   previewData.value = null
 
-  if (isSampleDocument(document)) {
-    previewData.value = samplePreviewData
-    previewLoading.value = false
-    return
-  }
-
   previewLoading.value = true
 
   try {
@@ -597,11 +481,6 @@ function jumpToPage(pageNum: number) {
   pdfViewerRef.value?.scrollToPage(pageNum)
 }
 
-function showDemoOperationNotice(action: string) {
-  uploadError.value = ''
-  operationNotice.value = `示例${action}已在界面中展示，接入真实数据后会执行对应操作。`
-}
-
 function showFolderBackendNotice(action: string) {
   uploadError.value = ''
   operationNotice.value = `文件夹${action}需要后端接口支持，当前先保留入口和选择状态。`
@@ -611,7 +490,6 @@ async function deleteSelected() {
   const documentIds = actionableSelectedDocumentIds.value
   const folderIds = actionableSelectedFolderIds.value
   if (documentIds.length === 0 && folderIds.length === 0) {
-    if (hasDemoSelection.value) showDemoOperationNotice('删除')
     return
   }
   selectionActionBusy.value = 'delete'
@@ -635,38 +513,22 @@ async function deleteSelected() {
 }
 
 async function deleteOne(document: Document) {
-  if (isSampleDocument(document)) {
-    showDemoOperationNotice('删除')
-    return
-  }
   closeRowMenu()
   await documentStore.deleteDocument(document.id)
   refreshDocuments()
 }
 
 async function reindexOne(document: Document) {
-  if (isSampleDocument(document)) {
-    showDemoOperationNotice('重新解析')
-    return
-  }
   closeRowMenu()
   await documentStore.reindexDocument(document.id, 'smart')
 }
 
 async function downloadOne(document: Document) {
-  if (isSampleDocument(document)) {
-    showDemoOperationNotice('下载')
-    return
-  }
   closeRowMenu()
   await documentStore.batchDownload([document.id])
 }
 
 async function deleteOneFolder(folder: FolderModel) {
-  if (isSampleFolder(folder)) {
-    showDemoOperationNotice('删除')
-    return
-  }
   closeRowMenu()
   await folderStore.deleteFolder(folder.id)
   await folderStore.fetchFolders(folderStore.currentFolderId)
@@ -674,19 +536,13 @@ async function deleteOneFolder(folder: FolderModel) {
 
 function reindexFolder(folder: FolderModel) {
   closeRowMenu()
-  if (isSampleFolder(folder)) {
-    showDemoOperationNotice('重新解析')
-    return
-  }
+  void folder
   showFolderBackendNotice('重新解析')
 }
 
 function downloadFolder(folder: FolderModel) {
   closeRowMenu()
-  if (isSampleFolder(folder)) {
-    showDemoOperationNotice('下载')
-    return
-  }
+  void folder
   showFolderBackendNotice('下载')
 }
 
@@ -709,8 +565,7 @@ async function copyDocumentName(document: Document) {
 async function reindexSelected() {
   const ids = actionableSelectedDocumentIds.value
   if (ids.length === 0) {
-    if (hasDemoSelection.value) showDemoOperationNotice('重新解析')
-    else if (selectedFolderIdList.value.length > 0) showFolderBackendNotice('重新解析')
+    if (selectedFolderIdList.value.length > 0) showFolderBackendNotice('重新解析')
     return
   }
   selectionActionBusy.value = 'reindex'
@@ -729,8 +584,7 @@ async function reindexSelected() {
 async function downloadSelected() {
   const ids = actionableSelectedDocumentIds.value
   if (ids.length === 0) {
-    if (hasDemoSelection.value) showDemoOperationNotice('下载')
-    else if (selectedFolderIdList.value.length > 0) showFolderBackendNotice('下载')
+    if (selectedFolderIdList.value.length > 0) showFolderBackendNotice('下载')
     return
   }
   selectionActionBusy.value = 'download'
@@ -762,10 +616,6 @@ async function moveSelected() {
   const documentIds = actionableSelectedDocumentIds.value
   const folderIds = actionableSelectedFolderIds.value
   if (documentIds.length === 0 && folderIds.length === 0) {
-    if (hasDemoSelection.value) {
-      showDemoOperationNotice('移动')
-      moveDialogOpen.value = false
-    }
     return
   }
   selectionActionBusy.value = 'move'
@@ -987,7 +837,6 @@ onBeforeUnmount(() => {
           :class="[
             'file-row',
             {
-              sample: isSampleDocument(document),
               selected: documentStore.selectedIds.has(document.id),
               'menu-open': isRowMenuOpen(document),
             },
@@ -1117,15 +966,15 @@ onBeforeUnmount(() => {
             <File />
             <span>复制文件名</span>
           </button>
-          <button type="button" :disabled="isSampleDocument(rowMenuDocument)" @click="downloadOne(rowMenuDocument)">
+          <button type="button" @click="downloadOne(rowMenuDocument)">
             <Download />
             <span>下载</span>
           </button>
-          <button type="button" :disabled="isSampleDocument(rowMenuDocument)" @click="reindexOne(rowMenuDocument)">
+          <button type="button" @click="reindexOne(rowMenuDocument)">
             <RefreshCw />
             <span>重新解析</span>
           </button>
-          <button class="danger" type="button" :disabled="isSampleDocument(rowMenuDocument)" @click="deleteOne(rowMenuDocument)">
+          <button class="danger" type="button" @click="deleteOne(rowMenuDocument)">
             <Trash2 />
             <span>删除</span>
           </button>
@@ -1272,39 +1121,6 @@ onBeforeUnmount(() => {
                   embedded
                   @close="closePreview"
                 />
-                <div v-else-if="isSamplePreview" class="sample-preview">
-                  <section class="sample-sheet">
-                    <header>
-                      <div>
-                        <span>Sheet 1</span>
-                        <h3>各地区销售表现</h3>
-                      </div>
-                      <strong>4 rows</strong>
-                    </header>
-                    <table>
-                      <thead>
-                        <tr>
-                          <th>地区</th>
-                          <th>订单数</th>
-                          <th>销售额</th>
-                          <th>同比</th>
-                          <th>结论</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        <tr v-for="row in samplePreviewRows" :key="row.region">
-                          <td>{{ row.region }}</td>
-                          <td>{{ row.orders }}</td>
-                          <td>{{ row.revenue }}</td>
-                          <td :class="{ positive: row.growth.startsWith('+'), negative: row.growth.startsWith('-') }">
-                            {{ row.growth }}
-                          </td>
-                          <td>{{ row.note }}</td>
-                        </tr>
-                      </tbody>
-                    </table>
-                  </section>
-                </div>
                 <UniversalPreview
                   v-else-if="previewDocument"
                   :doc-id="previewDocument.id"
