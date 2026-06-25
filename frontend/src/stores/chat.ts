@@ -118,6 +118,7 @@ export const useChatStore = defineStore('chat', () => {
   const rollbackHistory = ref<RollbackState[]>([])
   const documentContexts = ref<DocumentChatContext[]>([])
   const draftComposerText = ref('')
+  const activeStreamController = ref<AbortController | null>(null)
   
   // 对话历史记录列表
   const conversations = ref<Conversation[]>([])
@@ -301,6 +302,25 @@ export const useChatStore = defineStore('chat', () => {
     if (!sessionsData) return null
     const data = parseSessionsData(sessionsData)
     return data.sessions[sessionId] || null
+  }
+
+  function normalizeBackendMessage(raw: any): Message {
+    const role: Message['role'] = raw?.role === 'assistant' ? 'assistant' : 'user'
+    const rawAttachments = Array.isArray(raw?.attachments)
+      ? raw.attachments
+      : Array.isArray(raw?.attachments_json)
+        ? raw.attachments_json
+        : []
+    return {
+      id: String(raw?.id || _generateMsgID()),
+      role,
+      content: String(raw?.content || ''),
+      thinking: String(raw?.thinking || raw?.thinking_content || ''),
+      toolSteps: Array.isArray(raw?.agent_steps) ? raw.agent_steps : [],
+      isLoading: raw?.status === 'streaming',
+      timestamp: raw?.created_at ? new Date(raw.created_at).getTime() : Date.now(),
+      attachments: sanitizeAttachmentMetadata(rawAttachments),
+    }
   }
 
   function writeSessionsData(data: StoredChatSessions) {
@@ -881,7 +901,7 @@ export const useChatStore = defineStore('chat', () => {
     draftComposerText.value = loadDraftComposerText()
   }
 
-  function loadConversation(sessionId: string) {
+  async function loadConversation(sessionId: string): Promise<boolean> {
     const conversation = conversations.value.find(c => c.id === sessionId)
     if (!conversation) return false
 
@@ -909,7 +929,7 @@ export const useChatStore = defineStore('chat', () => {
     // 尝试从新的存储结构中恢复该对话的完整消息
     try {
       const session = loadStoredSession(sessionId)
-      if (session && session.messages) {
+      if (session && Array.isArray(session.messages) && session.messages.length > 0) {
           messages.value = session.messages
           conversationId.value = session.conversationId || null
           documentContexts.value = Array.isArray(session.documentContexts)
@@ -921,6 +941,23 @@ export const useChatStore = defineStore('chat', () => {
       }
     } catch (e) {
       console.error('Failed to load conversation:', e)
+    }
+
+    try {
+      const response = await chatApi.getMessages(sessionId)
+      const backendMessages = Array.isArray(response.data)
+        ? response.data.map(normalizeBackendMessage)
+        : []
+      if (backendMessages.length > 0) {
+        messages.value = backendMessages
+        conversationId.value = sessionId
+        documentContexts.value = []
+        saveCurrentSession()
+        console.log('Hydrated backend conversation:', sessionId, 'with', messages.value.length, 'messages')
+        return true
+      }
+    } catch (e) {
+      console.error('Failed to hydrate backend conversation:', e)
     }
 
     // 如果没有存储的完整消息，从第一条消息开始
@@ -988,6 +1025,8 @@ export const useChatStore = defineStore('chat', () => {
     if (isLoading.value) return
     
     isLoading.value = true
+    const controller = new AbortController()
+    activeStreamController.value = controller
     const safeAttachments = sanitizeAttachmentMetadata(scope?.attachments)
     addUserMessage(question, safeAttachments)
     addAssistantMessage()
@@ -998,6 +1037,8 @@ export const useChatStore = defineStore('chat', () => {
         question,
         ...streamScope,
         conversation_id: conversationId.value || undefined,
+      }, {
+        signal: controller.signal,
       })
 
       if (!response.body) throw new Error('No response body')
@@ -1047,15 +1088,30 @@ export const useChatStore = defineStore('chat', () => {
         currentConv.timestamp = Date.now()
         saveConversationsToStorage()
       }
-    } catch (error) {
-      console.error('Chat error:', error)
-      updateLastMessage({
-        content: '抱歉，发生了错误。请稍后重试。',
-        isLoading: false,
-      })
+    } catch (error: any) {
+      if (error?.name === 'AbortError') {
+        updateLastMessage({ isLoading: false })
+      } else {
+        console.error('Chat error:', error)
+        updateLastMessage({
+          content: '抱歉，发生了错误。请稍后重试。',
+          isLoading: false,
+        })
+      }
     } finally {
+      if (activeStreamController.value === controller) {
+        activeStreamController.value = null
+      }
       isLoading.value = false
     }
+  }
+
+  function stopGeneration() {
+    activeStreamController.value?.abort()
+    activeStreamController.value = null
+    isLoading.value = false
+    updateLastMessage({ isLoading: false })
+    saveCurrentSession()
   }
 
   return {
@@ -1071,6 +1127,7 @@ export const useChatStore = defineStore('chat', () => {
     addAssistantMessage,
     updateLastMessage,
     sendMessage,
+    stopGeneration,
     clearMessages,
     setDocumentContexts,
     setFolderContexts,

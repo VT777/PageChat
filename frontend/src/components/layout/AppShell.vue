@@ -47,9 +47,9 @@ function handleNav(id: string, itemRoute?: string) {
   if (itemRoute) router.push(itemRoute)
 }
 
-function openConversation(conversationId: string) {
+async function openConversation(conversationId: string) {
   openChatMenuId.value = null
-  chatStore.loadConversation(conversationId)
+  await chatStore.loadConversation(conversationId)
   router.push('/')
 }
 

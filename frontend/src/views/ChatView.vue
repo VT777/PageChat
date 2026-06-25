@@ -2,10 +2,11 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { marked } from 'marked'
-import { Bot, Check, Copy, RefreshCw, RotateCcw, Sparkles, Undo2, User } from 'lucide-vue-next'
+import { Bot, Check, Copy, RefreshCw, RotateCcw, Sparkles, Square, Undo2, User } from 'lucide-vue-next'
 import AppShell from '@/components/layout/AppShell.vue'
 import ChatComposer from '@/components/chat/ChatComposer.vue'
 import InlineToolStep from '@/components/chat/InlineToolStep.vue'
+import ThinkingBlock from '@/components/chat/ThinkingBlock.vue'
 import { useChatStore } from '@/stores/chat'
 import { useDocumentStore } from '@/stores/document'
 import { useFolderStore } from '@/stores/folder'
@@ -14,6 +15,7 @@ import type { DocumentChatContext, Message } from '@/stores/chat'
 import type { ChatAttachmentMetadata, ChatAttachmentPreview } from '@/types/chatAttachments'
 import type { ChatScopeRequest } from '@/types/retrieval'
 import { describeScopeTrace } from '@/utils/retrievalScope'
+import { answerStartScrollTop, isNearBottom } from '@/utils/chatScroll'
 import { parseDocumentChatRouteQuery, parseFolderChatRouteContexts } from '@/ui/pagechatContracts'
 
 interface ComposerPayload {
@@ -30,6 +32,8 @@ const folderStore = useFolderStore()
 const route = useRoute()
 const scrollRef = ref<HTMLDivElement | null>(null)
 const composerRef = ref<InstanceType<typeof ChatComposer> | null>(null)
+const shouldFollowStream = ref(true)
+const latestAnswerStartRef = ref<HTMLElement | null>(null)
 const copiedMessageId = ref<string | null>(null)
 const pendingRollback = ref<{
   prompt: string
@@ -140,6 +144,36 @@ function scrollToBottom() {
   const el = scrollRef.value
   if (!el) return
   el.scrollTop = el.scrollHeight
+}
+
+function handleChatScroll() {
+  const el = scrollRef.value
+  if (!el) return
+  shouldFollowStream.value = isNearBottom({
+    scrollTop: el.scrollTop,
+    scrollHeight: el.scrollHeight,
+    clientHeight: el.clientHeight,
+  })
+}
+
+function scrollToLatestAnswerStart() {
+  const el = scrollRef.value
+  const target = latestAnswerStartRef.value
+  if (!el || !target) return
+  el.scrollTop = answerStartScrollTop(
+    {
+      scrollTop: el.scrollTop,
+      scrollHeight: el.scrollHeight,
+      clientHeight: el.clientHeight,
+    },
+    target.offsetTop,
+  )
+}
+
+function setLatestAnswerStartRef(message: Message, element: unknown) {
+  if (message.role === 'assistant' && !message.isLoading && element instanceof HTMLElement) {
+    latestAnswerStartRef.value = element
+  }
 }
 
 function placePromptInComposer(prompt: string) {
@@ -267,7 +301,11 @@ async function regenerateAssistantMessage(message: Message) {
 watch(messageSignature, async () => {
   ensureAttachmentPreviews()
   await nextTick()
-  scrollToBottom()
+  if (chatStore.isLoading && shouldFollowStream.value) {
+    scrollToBottom()
+  } else if (!chatStore.isLoading) {
+    scrollToLatestAnswerStart()
+  }
 })
 
 watch(() => route.query, (query) => {
@@ -307,7 +345,7 @@ onBeforeUnmount(() => {
 <template>
   <AppShell title="Chat">
     <div class="chat-page">
-      <div ref="scrollRef" class="chat-scroll">
+      <div ref="scrollRef" class="chat-scroll" @scroll="handleChatScroll">
         <div class="chat-column">
           <section v-if="chatStore.messages.length === 0" class="empty-chat">
             <div class="empty-mark">
@@ -325,6 +363,7 @@ onBeforeUnmount(() => {
           <article
             v-for="message in chatStore.messages"
             :key="message.id"
+            :ref="(el) => setLatestAnswerStartRef(message, el)"
             :class="['message-row', message.role]"
           >
             <div v-if="message.role === 'assistant'" class="message-avatar assistant">
@@ -376,10 +415,11 @@ onBeforeUnmount(() => {
               </template>
 
               <template v-else>
-                <div v-if="message.thinking" class="thinking-line">
-                  <Sparkles />
-                  <span>Thought for a moment</span>
-                </div>
+                <ThinkingBlock
+                  v-if="message.thinking"
+                  :content="message.thinking"
+                  :active="message.isLoading && !message.content"
+                />
 
                 <div v-if="message.toolSteps.length > 0" class="inline-tools">
                   <InlineToolStep
@@ -434,6 +474,10 @@ onBeforeUnmount(() => {
             :initial-folder-context="routeFolderContext"
             @submit="handleSubmit"
           />
+          <button v-if="chatStore.isLoading" class="stop-button" type="button" @click="chatStore.stopGeneration">
+            <Square />
+            Stop generating
+          </button>
         </div>
       </div>
     </div>
@@ -828,6 +872,34 @@ onBeforeUnmount(() => {
   display: grid;
   width: min(860px, calc(100vw - 360px));
   gap: 8px;
+}
+
+.stop-button {
+  justify-self: center;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  height: 30px;
+  border: 1px solid rgba(209, 213, 219, 0.86);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.9);
+  box-shadow: 0 10px 24px rgba(15, 23, 42, 0.1);
+  padding: 0 12px;
+  color: var(--kc-text-secondary);
+  font-size: 12px;
+  font-weight: 600;
+  backdrop-filter: blur(18px);
+}
+
+.stop-button:hover {
+  border-color: rgba(239, 68, 68, 0.28);
+  color: var(--kc-danger);
+}
+
+.stop-button svg {
+  width: 13px;
+  height: 13px;
+  stroke-width: 2;
 }
 
 .rollback-toast {

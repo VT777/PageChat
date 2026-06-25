@@ -7,6 +7,7 @@ import { useChatStore, type Message } from './chat'
 vi.mock('@/api', () => ({
   chatApi: {
     stream: vi.fn(),
+    getMessages: vi.fn(),
   },
 }))
 
@@ -48,7 +49,9 @@ describe('chat rollback', () => {
     installLocalStorage()
     setActivePinia(createPinia())
     vi.mocked(chatApi.stream).mockReset()
+    vi.mocked(chatApi.getMessages).mockReset()
     vi.mocked(chatApi.stream).mockResolvedValue(streamResponse())
+    vi.mocked(chatApi.getMessages).mockResolvedValue({ data: [] } as any)
   })
 
   it('keeps a rollback snapshot that can restore removed messages', () => {
@@ -361,7 +364,7 @@ describe('chat rollback', () => {
     expect(markdown).toContain('Existing answer')
   })
 
-  it('restores the stored backend conversation id when switching conversations', () => {
+  it('restores the stored backend conversation id when switching conversations', async () => {
     localStorage.setItem('pagechat_chat_sessions', JSON.stringify([
       {
         id: 'session-a',
@@ -399,11 +402,90 @@ describe('chat rollback', () => {
     const store = useChatStore()
     store.loadConversationsFromStorage({ restoreLastActive: false, restoreDraft: false })
 
-    expect(store.loadConversation('session-a')).toBe(true)
+    await expect(store.loadConversation('session-a')).resolves.toBe(true)
     expect(store.conversationId).toBe('backend-a')
 
-    expect(store.loadConversation('session-b')).toBe(true)
+    await expect(store.loadConversation('session-b')).resolves.toBe(true)
     expect(store.conversationId).toBe('backend-b')
+  })
+
+  it('hydrates a backend conversation when local session data is missing', async () => {
+    localStorage.setItem('pagechat_chat_sessions', JSON.stringify([{
+      id: 'backend-a',
+      title: 'Backend chat',
+      firstMessage: 'original',
+      timestamp: 1,
+      messageCount: 2,
+    }]))
+    vi.mocked(chatApi.getMessages).mockResolvedValueOnce({
+      data: [
+        {
+          id: 'u1',
+          role: 'user',
+          content: 'question',
+          thinking_content: '',
+          agent_steps: [],
+          attachments: [],
+          created_at: '2026-06-25T00:00:00Z',
+        },
+        {
+          id: 'a1',
+          role: 'assistant',
+          content: 'answer',
+          thinking_content: 'thinking',
+          agent_steps: [],
+          attachments: [],
+          created_at: '2026-06-25T00:00:01Z',
+        },
+      ],
+    } as any)
+
+    const store = useChatStore()
+    store.loadConversationsFromStorage({ restoreLastActive: false, restoreDraft: false })
+
+    await expect(store.loadConversation('backend-a')).resolves.toBe(true)
+    expect(chatApi.getMessages).toHaveBeenCalledWith('backend-a')
+    expect(store.messages.map((item) => item.content)).toEqual(['question', 'answer'])
+    expect(store.messages[1].thinking).toBe('thinking')
+    expect(store.conversationId).toBe('backend-a')
+  })
+
+  it('saves migrated backend conversations under the backend id without dropping messages', async () => {
+    const store = useChatStore()
+    store.currentSessionId = 'session-temp'
+    store.messages.push(message('u1', 'user', 'question'), message('a1', 'assistant', 'answer'))
+    store.saveCurrentSession()
+
+    store.handleEnvelope({ event: 'conversation', data: { conversation_id: 'backend-a' } })
+
+    setActivePinia(createPinia())
+    const restored = useChatStore()
+    restored.loadConversationsFromStorage({ restoreLastActive: true, restoreDraft: false })
+
+    expect(restored.currentSessionId).toBe('backend-a')
+    expect(restored.messages.map((item) => item.content)).toEqual(['question', 'answer'])
+  })
+
+  it('can abort an in-flight chat stream', async () => {
+    let signal: AbortSignal | undefined
+    vi.mocked(chatApi.stream).mockImplementationOnce((_payload: any, options?: { signal?: AbortSignal }) => {
+      signal = options?.signal
+      return new Promise<Response>((_resolve, reject) => {
+        options?.signal?.addEventListener('abort', () => {
+          reject(new DOMException('Aborted', 'AbortError'))
+        })
+      })
+    })
+    const store = useChatStore()
+
+    const pending = store.sendMessage('stop me')
+    await Promise.resolve()
+    store.stopGeneration()
+
+    expect(signal?.aborted).toBe(true)
+    expect(store.isLoading).toBe(false)
+    expect(store.messages[store.messages.length - 1]?.isLoading).toBe(false)
+    await pending
   })
 
   it('deduplicates history rows when a backend conversation id already exists', () => {

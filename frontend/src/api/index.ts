@@ -131,7 +131,7 @@ export const chatApi = {
     document_ids?: string[]
     attachment_ids?: string[]
     conversation_id?: string
-  } & ChatScopeRequest) => {
+  } & ChatScopeRequest, options?: { signal?: AbortSignal }) => {
     const token = localStorage.getItem('token')
     const headers: Record<string, string> = { 'Content-Type': 'application/json' }
     if (token) {
@@ -141,6 +141,7 @@ export const chatApi = {
       method: 'POST',
       headers,
       body: JSON.stringify(data),
+      signal: options?.signal,
     })
   },
   
