@@ -1,17 +1,74 @@
-from fastapi import APIRouter, Depends, HTTPException
-from fastapi.responses import StreamingResponse
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
+from fastapi.responses import FileResponse, StreamingResponse
 import aiosqlite
 import asyncio
 import uuid
 
+from app.core.config import CHAT_ATTACHMENTS_DIR
 from app.models.database import get_db, DB_PATH
 from app.models.schemas import ChatRequest
+from app.services.chat_attachment_service import ChatAttachmentService
 from app.services.chat_service import ChatService
 from app.api.auth import require_auth
 
 router = APIRouter(prefix="/api/chat", tags=["chat"])
 
 _RUN_TASKS = set()
+
+
+@router.post("/attachments")
+async def upload_chat_attachment(
+    file: UploadFile = File(...),
+    db: aiosqlite.Connection = Depends(get_db),
+    current_user: dict = Depends(require_auth),
+):
+    """Upload an image attachment for a draft chat message."""
+    try:
+        data = await file.read()
+        service = ChatAttachmentService(db, storage_dir=CHAT_ATTACHMENTS_DIR)
+        return await service.save_upload(
+            user_id=current_user["id"],
+            filename=file.filename or "image",
+            content_type=file.content_type or "",
+            data=data,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.get("/attachments/{attachment_id}/content")
+async def get_chat_attachment_content(
+    attachment_id: str,
+    db: aiosqlite.Connection = Depends(get_db),
+    current_user: dict = Depends(require_auth),
+):
+    """Return image bytes for authenticated UI previews."""
+    service = ChatAttachmentService(db, storage_dir=CHAT_ATTACHMENTS_DIR)
+    try:
+        metadata = await service.get_attachment(current_user["id"], attachment_id)
+        path = await service.content_path_for_user(current_user["id"], attachment_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail="附件不存在或无权访问") from exc
+    return FileResponse(path, media_type=metadata["mime_type"])
+
+
+@router.delete("/attachments/{attachment_id}")
+async def delete_chat_attachment(
+    attachment_id: str,
+    db: aiosqlite.Connection = Depends(get_db),
+    current_user: dict = Depends(require_auth),
+):
+    """Delete an uploaded attachment before it is bound to a message."""
+    service = ChatAttachmentService(db, storage_dir=CHAT_ATTACHMENTS_DIR)
+    try:
+        deleted = await service.delete_unbound_attachment(
+            current_user["id"], attachment_id
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail="附件不存在或无权访问") from exc
+    if not deleted:
+        raise HTTPException(status_code=409, detail="附件已绑定到消息，不能删除")
+    return {"success": True}
 
 
 @router.post("/stream")
