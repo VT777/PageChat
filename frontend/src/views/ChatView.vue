@@ -5,17 +5,19 @@ import { marked } from 'marked'
 import { Bot, Check, Copy, RefreshCw, RotateCcw, Sparkles, Square, Undo2, User } from 'lucide-vue-next'
 import AppShell from '@/components/layout/AppShell.vue'
 import ChatComposer from '@/components/chat/ChatComposer.vue'
+import CitationPreviewDrawer from '@/components/chat/CitationPreviewDrawer.vue'
 import InlineToolStep from '@/components/chat/InlineToolStep.vue'
 import ThinkingBlock from '@/components/chat/ThinkingBlock.vue'
 import { useChatStore } from '@/stores/chat'
 import { useDocumentStore } from '@/stores/document'
 import { useFolderStore } from '@/stores/folder'
-import { chatApi } from '@/api'
+import { chatApi, documentApi } from '@/api'
 import type { DocumentChatContext, Message } from '@/stores/chat'
 import type { ChatAttachmentMetadata, ChatAttachmentPreview } from '@/types/chatAttachments'
 import type { ChatScopeRequest } from '@/types/retrieval'
 import { describeScopeTrace } from '@/utils/retrievalScope'
 import { answerStartScrollTop, isNearBottom } from '@/utils/chatScroll'
+import { bindInlineCitations, extractInlineCitations, type BoundInlineCitation } from '@/utils/citations'
 import { parseDocumentChatRouteQuery, parseFolderChatRouteContexts } from '@/ui/pagechatContracts'
 
 interface ComposerPayload {
@@ -35,6 +37,7 @@ const composerRef = ref<InstanceType<typeof ChatComposer> | null>(null)
 const shouldFollowStream = ref(true)
 const latestAnswerStartRef = ref<HTMLElement | null>(null)
 const copiedMessageId = ref<string | null>(null)
+const activeCitation = ref<BoundInlineCitation | null>(null)
 const pendingRollback = ref<{
   prompt: string
   deletedCount: number
@@ -133,6 +136,58 @@ function renderMarkdown(content: string): string {
   } catch {
     return content
   }
+}
+
+function escapeHtml(value: string): string {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;')
+}
+
+function citationBindingsForMessage(message: Message): BoundInlineCitation[] {
+  return bindInlineCitations(
+    message.content,
+    message.evidenceItems || [],
+    documentStore.documents,
+  )
+}
+
+function contentWithCitationPlaceholders(content: string): string {
+  const citations = extractInlineCitations(content)
+  if (citations.length === 0) return content
+
+  let cursor = 0
+  const parts: string[] = []
+  for (const citation of citations) {
+    parts.push(content.slice(cursor, citation.start))
+    parts.push(`PAGECHAT_CITATION_${citation.index}`)
+    cursor = citation.end
+  }
+  parts.push(content.slice(cursor))
+  return parts.join('')
+}
+
+function renderMessageMarkdown(message: Message): string {
+  const bindings = citationBindingsForMessage(message)
+  if (bindings.length === 0) return renderMarkdown(message.content)
+
+  let html = renderMarkdown(contentWithCitationPlaceholders(message.content))
+  for (const binding of bindings) {
+    const placeholder = `PAGECHAT_CITATION_${binding.index}`
+    const title = binding.resolved ? '打开来源预览' : '查找并打开来源预览'
+    const button = [
+      `<button type="button" class="inline-citation"`,
+      ` data-citation-index="${binding.index}"`,
+      ` title="${title}">`,
+      escapeHtml(binding.displayLabel),
+      '</button>',
+    ].join('')
+    html = html.replace(placeholder, button)
+  }
+  return html
 }
 
 function scopeLabel(message: Message): string {
@@ -239,6 +294,46 @@ async function loadAttachmentPreview(attachment: ChatAttachmentMetadata) {
       },
     }
   }
+}
+
+async function resolveCitationDocument(binding: BoundInlineCitation): Promise<BoundInlineCitation> {
+  if (binding.docId) return binding
+  try {
+    const documents = await documentApi.searchByName(binding.documentName)
+    const matched = Array.isArray(documents)
+      ? documents.find((item: any) => {
+        const name = String(item.original_name || item.name || '').toLowerCase()
+        return name === binding.documentName.toLowerCase()
+          || name.replace(/\.[^.]+$/, '') === binding.documentName.toLowerCase().replace(/\.[^.]+$/, '')
+      })
+      : null
+    if (!matched) return binding
+    return {
+      ...binding,
+      docId: String(matched.id),
+      documentName: String(matched.original_name || matched.name || binding.documentName),
+      fileType: String(matched.file_type || binding.fileType),
+      resolved: true,
+    }
+  } catch (error) {
+    console.error('Failed to resolve citation document:', error)
+    return binding
+  }
+}
+
+async function handleAssistantContentClick(event: MouseEvent, message: Message) {
+  const target = event.target instanceof HTMLElement
+    ? event.target.closest<HTMLButtonElement>('[data-citation-index]')
+    : null
+  if (!target) return
+  const citationIndex = Number(target.dataset.citationIndex)
+  const binding = citationBindingsForMessage(message).find((item) => item.index === citationIndex)
+  if (!binding) return
+  activeCitation.value = await resolveCitationDocument(binding)
+}
+
+function closeCitationPreview() {
+  activeCitation.value = null
 }
 
 function ensureAttachmentPreviews() {
@@ -429,7 +524,12 @@ onBeforeUnmount(() => {
                   />
                 </div>
 
-                <div v-if="message.content" class="assistant-content" v-html="renderMarkdown(message.content)" />
+                <div
+                  v-if="message.content"
+                  class="assistant-content"
+                  v-html="renderMessageMarkdown(message)"
+                  @click="handleAssistantContentClick($event, message)"
+                />
                 <div v-else-if="message.isLoading" class="assistant-loading">
                   <span />
                   <span />
@@ -480,6 +580,15 @@ onBeforeUnmount(() => {
           </button>
         </div>
       </div>
+      <CitationPreviewDrawer
+        :open="Boolean(activeCitation)"
+        :doc-id="activeCitation?.docId"
+        :document-name="activeCitation?.documentName || ''"
+        :display-label="activeCitation?.displayLabel || ''"
+        :file-type="activeCitation?.fileType || '.pdf'"
+        :source-anchor="activeCitation?.sourceAnchor || null"
+        @close="closeCitationPreview"
+      />
     </div>
   </AppShell>
 </template>
@@ -872,6 +981,27 @@ onBeforeUnmount(() => {
   display: grid;
   width: min(860px, calc(100vw - 360px));
   gap: 8px;
+}
+
+.assistant-content :deep(.inline-citation) {
+  display: inline-flex;
+  max-width: min(100%, 320px);
+  align-items: center;
+  vertical-align: baseline;
+  border: 1px solid rgba(47, 128, 237, 0.2);
+  border-radius: 999px;
+  background: #eef6ff;
+  padding: 1px 7px;
+  color: #145eb8;
+  font-size: 11.5px;
+  font-weight: 620;
+  line-height: 17px;
+  text-decoration: none;
+}
+
+.assistant-content :deep(.inline-citation:hover) {
+  border-color: rgba(47, 128, 237, 0.36);
+  background: #deefff;
 }
 
 .stop-button {
