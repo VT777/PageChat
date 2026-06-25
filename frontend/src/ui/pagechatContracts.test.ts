@@ -293,6 +293,12 @@ describe('PageChat UI contracts', () => {
         result: { results: [{ title: 'A' }, { title: 'B' }] },
         status: 'done',
       }),
+      summarizeToolStep({
+        toolName: 'search_within_document',
+        arguments: { query: '收入', document_name: '重庆.pdf' },
+        result: { matches: [{ page: 3 }, { page: 8 }] },
+        status: 'done',
+      }),
     ]
 
     expect(summaries[0]).toMatchObject({
@@ -319,6 +325,11 @@ describe('PageChat UI contracts', () => {
       action: 'Searched the web',
       detail: '2 results',
       icon: 'Globe',
+    })
+    expect(summaries[5]).toMatchObject({
+      action: 'Searched within document',
+      detail: '"重庆.pdf"',
+      icon: 'FileSearch',
     })
     expect(summaries.every((summary) => !summary.action.startsWith('Ran '))).toBe(true)
   })

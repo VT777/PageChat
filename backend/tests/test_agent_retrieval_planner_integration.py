@@ -76,6 +76,30 @@ def test_agent_executes_retrieval_planner_first_step_for_selected_document() -> 
     asyncio.run(run())
 
 
+def test_agent_executes_keyword_locator_first_for_selected_document_locating_query() -> None:
+    async def run() -> None:
+        executor = FakeToolExecutor()
+
+        evidence = await AgentService._execute_initial_retrieval_plan(
+            question="在哪一页提到了华东收入增长？",
+            tool_executor=executor,
+            preferred_document_ids=["doc-a"],
+            folder_id=None,
+            include_subfolders=False,
+            strict_scope=True,
+        )
+
+        assert executor.calls == [
+            (
+                "search_within_document",
+                {"doc_id": "doc-a", "query": "在哪一页提到了华东收入增长？"},
+            )
+        ]
+        assert evidence[0]["tool_name"] == "search_within_document"
+
+    asyncio.run(run())
+
+
 def test_agent_executes_retrieval_planner_first_step_for_folder_scope() -> None:
     async def run() -> None:
         executor = FakeToolExecutor()

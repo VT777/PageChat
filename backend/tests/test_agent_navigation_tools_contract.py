@@ -568,51 +568,53 @@ def test_search_within_document_requires_document_scope(monkeypatch) -> None:
         assert missing_scope["success"] is False
         assert "doc_id" in missing_scope["error"]
 
-        async def fake_search(**kwargs):
-            assert kwargs["document_ids"] == ["doc-a"]
-            return SimpleNamespace(
-                status="success",
-                documents=[
-                    SimpleNamespace(
-                        doc_id="doc-a",
-                        doc_name="report.pdf",
-                        score=0.88,
-                        reason="matched",
-                        matched_segments=[
-                            {
-                                "node_id": "n1",
-                                "title": "Alpha",
-                                "snippet": "alpha appears here",
-                                "start_index": 2,
-                                "end_index": 2,
-                            }
-                        ],
-                    )
-                ],
-                confidence="high",
-                total_candidates=1,
-                search_method="bm25",
-            )
+        async def fail_search(**_kwargs):
+            raise AssertionError("search_within_document must not call search_service.search")
 
-        original_search = search_service.search
-        search_service.search = fake_search  # type: ignore
+        monkeypatch.setattr(search_service, "search", fail_search)
         search_service.doc_corpus = ["x"]
-        try:
-            result = await executor.execute(
-                "search_within_document", {"doc_id": "doc-a", "query": "alpha"}
-            )
-        finally:
-            search_service.search = original_search  # type: ignore
+
+        executor = _executor({
+            "pages": [{"page": 2, "text": "alpha appears here"}],
+            "structure": [],
+        })
+        result = await executor.execute(
+            "search_within_document", {"doc_id": "doc-a", "query": "alpha"}
+        )
 
         assert result["success"] is True
         assert result["doc_id"] == "doc-a"
-        assert result["matches"] == [
-            {
-                "node_id": "n1",
-                "title": "Alpha",
-                "snippet": "alpha appears here",
-                "page_range": "2",
-            }
-        ]
+        assert result["search_method"] == "keyword_exact"
+        assert result["matches"][0]["page"] == 2
+
+    asyncio.run(run())
+
+
+def test_search_within_document_visual_match_omits_ocr_text(monkeypatch) -> None:
+    async def run() -> None:
+        async def fail_search(**_kwargs):
+            raise AssertionError("search_within_document must not call search_service.search")
+
+        monkeypatch.setattr(search_service, "search", fail_search)
+        search_service.doc_corpus = ["x"]
+
+        executor = _executor({
+            "pages": [{
+                "page": 4,
+                "text": "OCR text with alpha",
+                "images": [{"image_path": "page://doc-a/4", "page": 4}],
+                "ocr_used": True,
+            }],
+            "page_text_map_ocr_pages": [4],
+            "structure": [],
+        })
+        result = await executor.execute(
+            "search_within_document", {"doc_id": "doc-a", "query": "alpha"}
+        )
+
+        match = result["matches"][0]
+        assert match["visual_evidence_required"] is True
+        assert "OCR text" not in str(result)
+        assert match["next_tool"] == "get_page_image"
 
     asyncio.run(run())

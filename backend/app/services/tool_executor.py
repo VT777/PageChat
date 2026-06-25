@@ -14,6 +14,7 @@ from app.services.folder_service import FolderService
 from app.services.cache_service import cache_service
 from app.services.table_analysis_service import TableAnalysisService
 from app.services.source_anchor_resolver import resolve_source_anchor
+from app.services.document_keyword_locator import locate_keywords_in_index
 from app.core.config import DATA_DIR, INDEXES_DIR
 
 
@@ -196,7 +197,7 @@ AGENT_TOOLS = [
         "type": "function",
         "function": {
             "name": "search_within_document",
-            "description": "Search within one specified document only. Requires doc_id and returns compact page/section matches, not full document text.",
+            "description": "Deterministic keyword/phrase search within one specified document only. Requires doc_id and returns compact page/image matches, not full document text.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -1194,47 +1195,16 @@ class ToolExecutor:
         if error:
             return {"success": False, **error}
 
-        from app.services.search_service import search_service
+        structure = await self.pageindex_service.load_index(doc.id)
+        if not structure:
+            return {"success": False, "error": f"文档 {doc.id} 的索引不存在"}
 
-        response = await search_service.search(
+        return locate_keywords_in_index(
+            index_data=structure,
             query=query,
-            top_k=5,
-            recall_k=min(20, len(search_service.doc_corpus)),
-            user_id=self.user_id,
-            allowed_doc_ids=(
-                list(self.allowed_doc_ids)
-                if self.allowed_doc_ids is not None
-                else None
-            ),
-            document_ids=[doc.id],
-            auto_expand=False,
+            doc_id=doc.id,
+            doc_name=doc.original_name,
         )
-        matches: List[Dict[str, Any]] = []
-        for result in response.documents:
-            if result.doc_id != doc.id:
-                continue
-            for segment in getattr(result, "matched_segments", []) or []:
-                matches.append(
-                    {
-                        "node_id": segment.get("node_id"),
-                        "title": segment.get("title", ""),
-                        "snippet": segment.get("snippet", ""),
-                        "page_range": self._format_page_range(
-                            segment.get("start_index"), segment.get("end_index")
-                        ),
-                    }
-                )
-        return {
-            "success": True,
-            "doc_id": doc.id,
-            "doc_name": doc.original_name,
-            "query": query,
-            "matches": matches[:10],
-            "next_steps": {
-                "summary": f"Found {len(matches[:10])} in-document match(es)",
-                "options": ["Use get_page_content() on the cited pages before answering"],
-            },
-        }
 
     @classmethod
     def _count_folder_nodes(cls, folders: List[Dict[str, Any]]) -> int:

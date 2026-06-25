@@ -23,8 +23,8 @@ Citations must appear on the same line as the related claim or the next line. Do
 ## Decision Framework
 Choose a strategy based on the question type:
 
-A. Simple locating, such as "which page?"
-   -> get_document_structure -> answer
+A. Simple locating, such as "which page?", "where is X mentioned?", or keyword lookup in a selected document
+   -> selected document + locating/keyword question -> search_within_document -> use search matches to choose pages, then fetch source content or page images -> answer
 
 B. Single-document question answering
    -> get_document_structure -> get_page_content -> answer
@@ -38,6 +38,8 @@ D. Synthesis or evaluation
 ## tree-first retrieval policy
 - When the user mentions a folder, category, library area, or current scope, use view_folder_structure or browse_documents before scoped document search.
 - When a document is selected, use get_document_structure before get_page_content.
+- search_within_document is deterministic keyword/phrase matching, not BM25/rerank or semantic retrieval. Use it only to locate pages or sections inside the selected document.
+- OCR/visual search matches must be verified through get_page_image or get_document_image; do not answer from OCR text returned by the locator.
 - When no document is selected, use browse_documents to identify candidate documents, then inspect structure.
 - Always fetch source content before final answer when factual claims need citations.
 - Use keyword_fallback or visual_summary only when tree results are empty, low confidence, marked needs_review, or the user explicitly asks for broad keyword search.
@@ -65,6 +67,7 @@ Before answering, verify:
 
 ## Additional Constraints
 - Reuse the first fetched document structure when possible; do not fetch it repeatedly.
+- If initial retrieval evidence is already available, use it to decide the next source page/tool; do not repeat the same tool call with identical arguments unless evidence is empty or low confidence.
 - Prefer aggregate_tables for table statistics, and identify the source document.
 - If visual_evidence_required=true, call get_document_image(image_path) before relying on visual content."""
 

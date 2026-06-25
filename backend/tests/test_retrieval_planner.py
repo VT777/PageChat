@@ -18,6 +18,32 @@ def test_selected_document_question_inspects_structure_first() -> None:
     assert plan.scope.strict_scope is True
 
 
+def test_selected_document_locating_query_uses_search_within_document_first() -> None:
+    plan = RetrievalPlanner().plan(
+        question="在哪一页提到了华东收入增长？",
+        document_ids=["doc-a"],
+        strict_scope=True,
+    )
+
+    assert plan.route == RetrievalRoute.SELECTED_DOCUMENT
+    assert plan.steps[0].tool_name == "search_within_document"
+    assert plan.steps[0].arguments == {
+        "doc_id": "doc-a",
+        "query": "在哪一页提到了华东收入增长？",
+    }
+    assert plan.fallback_to_agent is True
+
+
+def test_selected_document_summary_still_inspects_structure_first() -> None:
+    plan = RetrievalPlanner().plan(
+        question="总结这份文档的主要内容",
+        document_ids=["doc-a"],
+        strict_scope=True,
+    )
+
+    assert plan.steps[0].tool_name == "get_document_structure"
+
+
 def test_selected_folder_question_uses_folder_scoped_search() -> None:
     plan = RetrievalPlanner().plan(
         question="what changed in this folder",

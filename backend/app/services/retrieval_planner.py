@@ -79,6 +79,18 @@ class RetrievalPlanner:
 
         if selected_docs and effective_strict:
             if len(selected_docs) == 1 and not folder_id:
+                if self._is_locating_query(question):
+                    return RetrievalPlan(
+                        route=RetrievalRoute.SELECTED_DOCUMENT,
+                        scope=scope,
+                        steps=[
+                            RetrievalStep(
+                                tool_name="search_within_document",
+                                arguments={"doc_id": selected_docs[0], "query": question},
+                                reason="Locate the most relevant pages or sections within the selected document before reading source pages.",
+                            )
+                        ],
+                    )
                 return RetrievalPlan(
                     route=RetrievalRoute.SELECTED_DOCUMENT,
                     scope=scope,
@@ -147,4 +159,31 @@ class RetrievalPlanner:
         ]
         return any(re.search(rf"\b{re.escape(k)}\b", q) for k in english_keywords) or any(
             k in q for k in chinese_keywords
+        )
+
+    @staticmethod
+    def _is_locating_query(question: str) -> bool:
+        q = question.lower()
+        english_patterns = [
+            "where",
+            "which page",
+            "find",
+            "locate",
+            "mentioned",
+            "contains",
+        ]
+        chinese_patterns = [
+            "在哪",
+            "哪一页",
+            "哪页",
+            "哪个章节",
+            "提到",
+            "出现",
+            "查找",
+            "搜索",
+            "定位",
+            "包含",
+        ]
+        return any(pattern in q for pattern in english_patterns) or any(
+            pattern in question for pattern in chinese_patterns
         )
