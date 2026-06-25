@@ -373,3 +373,57 @@ git merge origin/codex/pagechat-integration-base
 | 集成分支 | `codex/pagechat-integration-base` 包含所有稳定成果 |
 
 只有集成分支满足以上条件后，再考虑合入主开发分支或创建 PR。
+
+## 阶段 6：截图上传与多模态聊天完成状态（2026-06-25）
+
+当前 `codex/pagechat-product-behavior-closure` 分支已完成截图/图片作为聊天附件的真实后端与前端链路。
+
+已完成能力：
+
+- 前端 Chat Composer 支持选择/粘贴 PNG、JPEG、WebP 图片，发送前调用 `POST /api/chat/attachments` 上传。
+- `/api/chat/stream` 只接收 `attachment_ids`，不接收图片二进制、base64 或 `data:image`。
+- 后端新增 `chat_attachments` 表和 `messages.attachments_json`，图片文件存储在 `CHAT_ATTACHMENTS_DIR / user_id / attachment_id.ext`。
+- 后端只在当前模型请求中临时构造 OpenAI 兼容的 multimodal `image_url` data URL，数据库、SSE、前端 localStorage、可复用 agent history 都只保留元信息。
+- 前端发送后的图片缩略图通过带鉴权的 `chatApi.fetchAttachmentBlob()` 拉取 blob，再生成临时 object URL；不直接暴露未鉴权图片 URL。
+- 未发送的已上传附件可以删除；已绑定到消息的附件删除接口返回 conflict。
+
+接口与字段：
+
+- `POST /api/chat/attachments`：上传聊天图片附件，返回附件元信息。
+- `GET /api/chat/attachments/{attachment_id}/content`：获取当前用户拥有的附件内容，仅用于 UI 预览。
+- `DELETE /api/chat/attachments/{attachment_id}`：删除未绑定的草稿附件。
+- `ChatRequest.attachment_ids`：聊天流请求携带附件 ID 列表，当前限制最多 6 张图。
+- 消息返回中的 `attachments`：仅包含 `attachment_id`、`original_name`、`mime_type`、`size_bytes`、`width`、`height`、`content_url` 等元信息。
+
+已验证：
+
+```powershell
+py -m pytest backend/tests/test_chat_attachments_api.py backend/tests/test_agent_service_sanitize.py backend/tests/test_chat_scope_contract.py -v
+cd frontend
+npm.cmd test -- chat
+cd ..
+py -m pytest backend/tests
+cd frontend
+npm.cmd test
+npm.cmd run build
+```
+
+验证结果：
+
+- 后端全量：`660 passed, 19 skipped`
+- 前端全量：`75 passed`
+- 前端构建：通过
+
+已知限制：
+
+- 当前不支持 image-only message，仍要求用户提供文本问题。
+- 当前不做截图 OCR；模型需要依赖视觉能力直接看图。
+- 如果问答模型不支持 vision，后续应在模型配置/问答设置中做能力提示或路由校验。
+- 旧的孤儿附件清理只覆盖前端主动删除，尚未加入定时清理任务。
+- 大图只做类型和大小校验，暂未做服务端压缩/缩放。
+
+推荐下一步：
+
+1. 完成 OCR、解析、问答设置的后端持久化与前端真实接入。
+2. 补齐 Documents 后端动作：文件夹递归下载、重新解析、移动、删除。
+3. 清理真实用户流中的 demo fallback，并把当前产品闭环分支合入集成基线。

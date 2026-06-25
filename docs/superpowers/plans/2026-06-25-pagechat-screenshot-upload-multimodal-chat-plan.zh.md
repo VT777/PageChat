@@ -953,3 +953,54 @@ After screenshots are real, the next best plan is:
 - Scope control: Keeps screenshots as chat attachments, not documents; excludes OCR, document parsing, MCP, and image-only messages.
 - Testability: Each task starts with failing tests and has focused verification commands.
 - Safety: The no-base64 rule is enforced across backend service, SSE, agent history, DB messages, and frontend localStorage.
+
+## Completion Notes（2026-06-25）
+
+Implemented on branch `codex/pagechat-product-behavior-closure`.
+
+Key commits:
+
+- `8f43386 feat(chat): persist image attachments`
+- `41ef892 feat(api): expose chat image attachments`
+- `c20d469 feat(chat): bind image attachments to messages`
+- `c9c55f8 feat(agent): inject chat image attachments`
+- `8ae3559 feat(frontend): upload chat image attachments`
+- `739fda2 test(chat): cover image attachment payload safety`
+
+Implemented behavior:
+
+- `POST /api/chat/attachments` validates and stores PNG/JPEG/WebP chat images as metadata plus disk files.
+- `GET /api/chat/attachments/{attachment_id}/content` serves authenticated UI previews.
+- `DELETE /api/chat/attachments/{attachment_id}` deletes only unbound draft attachments and returns conflict for bound message attachments.
+- `/api/chat/stream` accepts `attachment_ids` and never receives or emits image bytes/base64.
+- `ChatService` binds attachments to the user message and persists only compact `attachments_json`.
+- `AgentService` injects current-turn image attachments into the live model call as temporary multimodal `image_url` parts.
+- Frontend uploads images before send, stores only metadata in Pinia/localStorage, and reloads previews through authenticated blob fetches.
+
+Verification run:
+
+```powershell
+py -m pytest backend/tests/test_chat_attachments_api.py backend/tests/test_agent_service_sanitize.py backend/tests/test_chat_scope_contract.py -v
+cd frontend
+npm.cmd test -- chat
+cd ..
+py -m pytest backend/tests
+cd frontend
+npm.cmd test
+npm.cmd run build
+```
+
+Verification results:
+
+- Backend focused safety: `27 passed`
+- Frontend focused chat/contracts: `42 passed`
+- Backend full suite: `660 passed, 19 skipped`
+- Frontend full suite: `75 passed`
+- Frontend production build: passed
+
+Known follow-ups:
+
+- Add model capability checks or clear configuration hints when the selected QA model does not support vision.
+- Add scheduled cleanup for abandoned unbound attachments.
+- Consider server-side image compression/resizing for very large screenshots.
+- Keep image-only messages out of scope until product explicitly wants them.
