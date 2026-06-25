@@ -283,3 +283,123 @@ def test_conversation_history_cache_omits_multimodal_base64(monkeypatch) -> None
     finally:
         agent_service_module._CONVERSATION_MESSAGES.clear()
         agent_service_module._CONVERSATION_CACHES.clear()
+
+
+def test_request_attachments_are_injected_as_multimodal_user_message(
+    monkeypatch,
+) -> None:
+    async def run() -> None:
+        agent = AgentService.__new__(AgentService)
+        agent.db = None
+        agent.pageindex_service = FakePageIndexService()
+        agent.document_service = FakeDocumentService()
+        seen_messages = []
+
+        async def fake_execute_initial_retrieval_plan(**kwargs):
+            return []
+
+        async def fake_chat_by_scenario(**kwargs):
+            seen_messages.append(kwargs["messages"])
+            return FakeStream([FakeContentChunk()])
+
+        monkeypatch.setattr("app.services.agent_service.ToolExecutor", FakeToolExecutor)
+        monkeypatch.setattr(
+            AgentService,
+            "_execute_initial_retrieval_plan",
+            staticmethod(fake_execute_initial_retrieval_plan),
+        )
+        monkeypatch.setattr(
+            "app.services.agent_service.chat_by_scenario", fake_chat_by_scenario
+        )
+
+        events = [
+            event
+            async for event in agent.run_agent_stream(
+                question="这张图里有什么？",
+                user_id="user-a",
+                max_steps=1,
+                request_attachments=[
+                    {
+                        "attachment_id": "att-a",
+                        "mime_type": "image/png",
+                        "data_base64": "REQBASE64",
+                        "original_name": "screen.png",
+                    }
+                ],
+            )
+        ]
+
+        assert events
+        user_message = [
+            message for message in seen_messages[0] if message["role"] == "user"
+        ][-1]
+        assert user_message["role"] == "user"
+        assert user_message["content"][0] == {
+            "type": "text",
+            "text": "这张图里有什么？",
+        }
+        assert user_message["content"][1]["image_url"]["url"] == (
+            "data:image/png;base64,REQBASE64"
+        )
+
+    asyncio.run(run())
+
+
+def test_conversation_history_cache_omits_request_attachment_base64(
+    monkeypatch,
+) -> None:
+    async def run() -> None:
+        agent_service_module._CONVERSATION_MESSAGES.clear()
+        agent_service_module._CONVERSATION_CACHES.clear()
+        agent = AgentService.__new__(AgentService)
+        agent.db = None
+        agent.pageindex_service = FakePageIndexService()
+        agent.document_service = FakeDocumentService()
+        seen_messages = []
+
+        async def fake_execute_initial_retrieval_plan(**kwargs):
+            return []
+
+        async def fake_chat_by_scenario(**kwargs):
+            seen_messages.append(kwargs["messages"])
+            return FakeStream([FakeContentChunk()])
+
+        monkeypatch.setattr("app.services.agent_service.ToolExecutor", FakeToolExecutor)
+        monkeypatch.setattr(
+            AgentService,
+            "_execute_initial_retrieval_plan",
+            staticmethod(fake_execute_initial_retrieval_plan),
+        )
+        monkeypatch.setattr(
+            "app.services.agent_service.chat_by_scenario", fake_chat_by_scenario
+        )
+
+        events = [
+            event
+            async for event in agent.run_agent_stream(
+                question="看截图",
+                conversation_id="conv-request-image",
+                user_id="user-a",
+                max_steps=1,
+                request_attachments=[
+                    {
+                        "attachment_id": "att-a",
+                        "mime_type": "image/png",
+                        "data_base64": "REQBASE64",
+                        "original_name": "screen.png",
+                    }
+                ],
+            )
+        ]
+
+        assert events
+        assert "data:image/png;base64,REQBASE64" in str(seen_messages[0])
+        cached = list(agent_service_module._CONVERSATION_MESSAGES.values())[0]
+        assert "REQBASE64" not in str(cached)
+        assert "data:image" not in str(cached)
+
+    try:
+        asyncio.run(run())
+    finally:
+        agent_service_module._CONVERSATION_MESSAGES.clear()
+        agent_service_module._CONVERSATION_CACHES.clear()

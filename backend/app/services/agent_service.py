@@ -23,6 +23,7 @@ from app.services.web_search_settings_service import (
 )
 from app.services.web_search_tool import WEB_SEARCH_TOOL, execute_web_search_tool
 from app.services.retrieval_planner import RetrievalPlanner
+from app.core.config import CHAT_ATTACHMENT_MAX_PER_MESSAGE
 from app.core.llm import chat_by_scenario, async_chat_completion
 from app.models.retrieval import RetrievalScope
 from app.prompts import build_agent_system_prompt, QA_SYSTEM_PROMPT
@@ -273,6 +274,7 @@ class AgentService:
             doc_count == 0
             and not has_explicit_scope
             and not web_search_settings.get("enabled")
+            and not request_attachments
         ):
             print(
                 f"[Agent] No documents or no document_ids specified, using simple chat mode"
@@ -314,7 +316,9 @@ class AgentService:
 
             messages = [m for m in messages if not _is_scope_system_message(m)]
 
-            messages.append({"role": "user", "content": question})
+            messages.append(
+                self._user_message_with_attachments(question, request_attachments)
+            )
         else:
             # 新建消息历史 - 动态获取文档数量并注入提示词
             system_prompt = build_agent_system_prompt(runtime_tools, lang=user_lang)
@@ -325,7 +329,9 @@ class AgentService:
                 trimmed = self._trim_history(history_messages, question)
                 messages.extend(trimmed)
 
-            messages.append({"role": "user", "content": question})
+            messages.append(
+                self._user_message_with_attachments(question, request_attachments)
+            )
 
         # 工具调用历史（用于传递给最终答案生成）
         tool_results_for_answer = []
@@ -730,6 +736,32 @@ class AgentService:
     def _sanitize_tool_result_for_client(result: Any) -> Any:
         """移除 SSE 和持久化 UI 状态中的大体积图片字段。"""
         return AgentService._sanitize_tool_result_for_history(result)
+
+    @staticmethod
+    def _user_message_with_attachments(
+        question: str, attachments: Optional[List[Dict[str, Any]]] = None
+    ) -> Dict[str, Any]:
+        if not attachments:
+            return {"role": "user", "content": question}
+
+        content: List[Dict[str, Any]] = [{"type": "text", "text": question}]
+        for item in attachments[:CHAT_ATTACHMENT_MAX_PER_MESSAGE]:
+            mime_type = item.get("mime_type")
+            data_base64 = item.get("data_base64")
+            if not mime_type or not data_base64:
+                continue
+            content.append(
+                {
+                    "type": "image_url",
+                    "image_url": {
+                        "url": f"data:{mime_type};base64,{data_base64}",
+                    },
+                }
+            )
+
+        if len(content) == 1:
+            return {"role": "user", "content": question}
+        return {"role": "user", "content": content}
 
     @staticmethod
     def _sanitize_messages_for_conversation_history(messages: Any) -> Any:
