@@ -29,9 +29,18 @@ async def _create_bootstrap_schema(db: aiosqlite.Connection) -> None:
             name TEXT NOT NULL,
             original_name TEXT NOT NULL,
             file_path TEXT NOT NULL,
+            index_path TEXT,
+            file_size INTEGER,
+            file_type TEXT,
             status TEXT DEFAULT 'uploaded',
+            page_count INTEGER,
+            error_message TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            processed_pages INTEGER DEFAULT 0,
             folder_id TEXT,
+            folder_path TEXT,
+            description TEXT,
             user_id TEXT
         )
         """
@@ -85,6 +94,7 @@ def _client(tmp_path: Path, user_id: str = "user-a") -> TestClient:
 
     asyncio.run(init())
 
+    chat.DB_PATH = db_path
     chat.CHAT_ATTACHMENTS_DIR = tmp_path / "attachments"
 
     app = FastAPI()
@@ -159,6 +169,49 @@ def test_upload_rejects_invalid_mime_and_oversize(tmp_path: Path) -> None:
     assert huge.status_code == 400
 
 
+def test_delete_unbound_attachment_removes_draft_file(tmp_path: Path) -> None:
+    client = _client(tmp_path, user_id="user-a")
+    uploaded = client.post(
+        "/api/chat/attachments",
+        files={"file": ("screen.png", _tiny_png_bytes(), "image/png")},
+    ).json()
+
+    deleted = client.delete(f"/api/chat/attachments/{uploaded['attachment_id']}")
+    content = client.get(f"/api/chat/attachments/{uploaded['attachment_id']}/content")
+
+    assert deleted.status_code == 200
+    assert deleted.json() == {"success": True}
+    assert content.status_code == 404
+
+
+def test_delete_bound_attachment_returns_conflict(tmp_path: Path) -> None:
+    client = _client(tmp_path, user_id="user-a")
+    uploaded = client.post(
+        "/api/chat/attachments",
+        files={"file": ("screen.png", _tiny_png_bytes(), "image/png")},
+    ).json()
+
+    async def bind_attachment() -> None:
+        async with aiosqlite.connect(tmp_path / "chat-attachments.db") as db:
+            await db.execute(
+                """
+                UPDATE chat_attachments
+                SET conversation_id = ?,
+                    message_id = ?,
+                    status = 'bound'
+                WHERE attachment_id = ?
+                """,
+                ("conv-a", "msg-a", uploaded["attachment_id"]),
+            )
+            await db.commit()
+
+    asyncio.run(bind_attachment())
+
+    deleted = client.delete(f"/api/chat/attachments/{uploaded['attachment_id']}")
+
+    assert deleted.status_code == 409
+
+
 def test_conversation_messages_include_attachment_metadata(tmp_path: Path) -> None:
     client = _client(tmp_path, user_id="user-a")
     uploaded = client.post(
@@ -207,3 +260,37 @@ def test_conversation_messages_include_attachment_metadata(tmp_path: Path) -> No
     assert response.json()[0]["attachments"][0]["attachment_id"] == uploaded[
         "attachment_id"
     ]
+
+
+def test_chat_stream_never_emits_base64_attachment_payload(
+    tmp_path: Path, monkeypatch
+) -> None:
+    class FakeAgentService:
+        def __init__(self, db):
+            self.db = db
+
+        async def run_agent_stream(self, **kwargs):
+            assert kwargs["request_attachments"][0]["data_base64"]
+            yield 'event: content\ndata: {"content":"我看到了截图。"}\n\n'
+            yield 'event: done\ndata: {"conversation_id":"conv-a","tool_results":[]}\n\n'
+
+    monkeypatch.setattr("app.services.agent_service.AgentService", FakeAgentService)
+    client = _client(tmp_path, user_id="user-a")
+    uploaded = client.post(
+        "/api/chat/attachments",
+        files={"file": ("screen.png", _tiny_png_bytes(), "image/png")},
+    ).json()
+    raw_base64 = base64.b64encode(_tiny_png_bytes()).decode("ascii")
+
+    response = client.post(
+        "/api/chat/stream",
+        json={
+            "question": "看这张截图",
+            "attachment_ids": [uploaded["attachment_id"]],
+        },
+    )
+
+    assert response.status_code == 200
+    assert "我看到了截图" in response.text
+    assert raw_base64 not in response.text
+    assert "data:image" not in response.text
