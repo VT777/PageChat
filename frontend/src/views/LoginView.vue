@@ -198,7 +198,7 @@ function enterPreview() {
             密码
             <span>
               <Lock />
-              <input v-model="registerForm.password" type="password" autocomplete="new-password" placeholder="至少 8 位" />
+              <input v-model="registerForm.password" type="password" autocomplete="new-password" placeholder="至少 8 位，含大小写、数字和符号" />
             </span>
           </label>
 

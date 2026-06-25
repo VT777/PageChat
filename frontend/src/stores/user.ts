@@ -6,6 +6,27 @@ interface User {
   username: string
 }
 
+function extractAuthError(data: any, fallback: string): string {
+  if (typeof data?.error === 'string' && data.error.trim()) {
+    return data.error
+  }
+
+  if (typeof data?.detail === 'string' && data.detail.trim()) {
+    return data.detail
+  }
+
+  if (Array.isArray(data?.detail)) {
+    const messages = data.detail
+      .map((item: any) => item?.msg || item?.message)
+      .filter((message: unknown): message is string => typeof message === 'string' && message.trim().length > 0)
+    if (messages.length > 0) {
+      return messages.join('；')
+    }
+  }
+
+  return fallback
+}
+
 export const useUserStore = defineStore('user', () => {
   // State
   const token = ref<string | null>(localStorage.getItem('token'))
@@ -68,8 +89,8 @@ export const useUserStore = defineStore('user', () => {
       const data = await response.json()
       
       // Handle wrapped response format
-      if (!data.success) {
-        throw new Error(data.error || '登录失败')
+      if (!response.ok || !data.success) {
+        throw new Error(extractAuthError(data, '登录失败'))
       }
 
       setToken(data.token)
@@ -99,8 +120,8 @@ export const useUserStore = defineStore('user', () => {
       const data = await response.json()
       
       // Handle wrapped response format
-      if (!data.success) {
-        throw new Error(data.error || '注册失败')
+      if (!response.ok || !data.success) {
+        throw new Error(extractAuthError(data, '注册失败'))
       }
 
       setToken(data.token)
