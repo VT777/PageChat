@@ -162,12 +162,43 @@ async def _add_web_search_settings_table(db: aiosqlite.Connection) -> None:
     )
 
 
+async def _add_chat_attachments(db: aiosqlite.Connection) -> None:
+    if not await _column_exists(db, "messages", "attachments_json"):
+        await db.execute("ALTER TABLE messages ADD COLUMN attachments_json TEXT")
+    await db.execute(
+        """
+        CREATE TABLE IF NOT EXISTS chat_attachments (
+            attachment_id TEXT PRIMARY KEY,
+            user_id TEXT NOT NULL,
+            conversation_id TEXT,
+            message_id TEXT,
+            original_name TEXT NOT NULL,
+            stored_path TEXT NOT NULL,
+            mime_type TEXT NOT NULL,
+            size_bytes INTEGER NOT NULL,
+            width INTEGER,
+            height INTEGER,
+            status TEXT NOT NULL DEFAULT 'uploaded',
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+        """
+    )
+    await db.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_chat_attachments_user_created
+        ON chat_attachments(user_id, created_at)
+        """
+    )
+
+
 MIGRATIONS: tuple[Migration, ...] = (
     ("20260610_001_add_documents_last_reindex_at", _add_documents_last_reindex_at),
     ("20260610_002_add_core_indexes", _add_core_indexes),
     ("20260611_003_add_model_settings_tables", _add_model_settings_tables),
     ("20260615_004_add_ocr_settings_tables", _add_ocr_settings_tables),
     ("20260625_005_add_web_search_settings_table", _add_web_search_settings_table),
+    ("20260625_006_add_chat_attachments", _add_chat_attachments),
 )
 
 

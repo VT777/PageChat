@@ -49,6 +49,12 @@ DATA_DIR = BASE_DIR / "data"
 DOCUMENTS_DIR = DATA_DIR / "documents"
 INDEXES_DIR = DATA_DIR / "indexes"
 PREVIEWS_DIR = DATA_DIR / "previews"
+CHAT_ATTACHMENTS_DIR = DATA_DIR / "chat_attachments"
+CHAT_ATTACHMENT_MAX_BYTES = int(
+    os.getenv("CHAT_ATTACHMENT_MAX_BYTES", str(10 * 1024 * 1024))
+)
+CHAT_ATTACHMENT_MAX_PER_MESSAGE = int(os.getenv("CHAT_ATTACHMENT_MAX_PER_MESSAGE", "6"))
+CHAT_ATTACHMENT_ALLOWED_MIME_TYPES = {"image/png", "image/jpeg", "image/webp"}
 
 # 鏁版嵁搴?DATABASE_URL = f"sqlite+aiosqlite:///{DATA_DIR}/knowclaw.db"
 

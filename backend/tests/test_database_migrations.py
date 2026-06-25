@@ -107,6 +107,7 @@ def test_migrations_create_history_and_are_idempotent() -> None:
                 "20260611_003_add_model_settings_tables",
                 "20260615_004_add_ocr_settings_tables",
                 "20260625_005_add_web_search_settings_table",
+                "20260625_006_add_chat_attachments",
             ]
 
     asyncio.run(run())
@@ -158,6 +159,37 @@ def test_migrations_add_web_search_settings_table() -> None:
                 "max_results",
                 "content_types_json",
             }.issubset(columns)
+
+    asyncio.run(run())
+
+
+def test_migrations_add_chat_attachments_table_and_message_metadata() -> None:
+    async def run() -> None:
+        async with aiosqlite.connect(":memory:") as db:
+            await _create_bootstrap_schema(db)
+
+            await run_migrations(db)
+
+            attachment_columns = await _column_names(db, "chat_attachments")
+            message_columns = await _column_names(db, "messages")
+
+            assert {
+                "attachment_id",
+                "user_id",
+                "conversation_id",
+                "message_id",
+                "original_name",
+                "stored_path",
+                "mime_type",
+                "size_bytes",
+                "width",
+                "height",
+                "status",
+            }.issubset(attachment_columns)
+            assert "attachments_json" in message_columns
+            assert "idx_chat_attachments_user_created" in await _index_names(
+                db, "chat_attachments"
+            )
 
     asyncio.run(run())
 
