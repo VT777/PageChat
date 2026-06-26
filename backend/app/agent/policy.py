@@ -59,6 +59,17 @@ class AgentPolicy:
             )
 
         patched = self._patch_scope_arguments(action, state)
+        invalid_reference = self._invalid_document_reference(patched, state)
+        if invalid_reference:
+            return self._reject(
+                (
+                    f"Document reference '{invalid_reference}' is not available in the "
+                    "current document registry."
+                ),
+                next_steps=[
+                    "Use browse_documents or choose a doc_id from the visible document registry."
+                ],
+            )
         signature = self._signature(patched.tool_name, patched.arguments)
         if signature in self._executed_signatures:
             return self._reject(
@@ -108,6 +119,15 @@ class AgentPolicy:
         if action.tool_name == "get_document_image" and single_doc_id and not args.get("doc_id") and not args.get("image_path"):
             args["doc_id"] = single_doc_id
 
+        if action.tool_name in self._document_reference_tools():
+            canonical_doc_id = self._resolve_document_reference(args.get("doc_id"), state)
+            if canonical_doc_id:
+                args["doc_id"] = canonical_doc_id
+            elif not args.get("doc_id") and args.get("doc_name"):
+                canonical_doc_id = self._resolve_document_reference(args.get("doc_name"), state)
+                if canonical_doc_id:
+                    args["doc_id"] = canonical_doc_id
+
         strict_scope = state.scope.get("strict_scope") is not False
         folder_id = state.scope.get("folder_id")
         if action.tool_name == "browse_documents" and strict_scope:
@@ -124,6 +144,93 @@ class AgentPolicy:
             action.tool_name,
             args,
             thought=action.thought,
+        )
+
+    def _document_reference_tools(self) -> set[str]:
+        return {
+            "get_document_structure",
+            "get_page_content",
+            "get_page_image",
+            "get_document_image",
+            "search_within_document",
+        }
+
+    def _invalid_document_reference(
+        self,
+        action: PlannerAction,
+        state: AgentRunState,
+    ) -> str:
+        if action.tool_name not in self._document_reference_tools():
+            return ""
+        reference = action.arguments.get("doc_id")
+        if reference in (None, ""):
+            return ""
+        if self._resolve_document_reference(reference, state):
+            return ""
+        if self._has_document_reference_context(state):
+            return str(reference)
+        return ""
+
+    def _resolve_document_reference(
+        self,
+        reference: Any,
+        state: AgentRunState,
+    ) -> str:
+        if reference in (None, ""):
+            return ""
+        text = str(reference).strip()
+        if not text:
+            return ""
+
+        allowed_ids = self._known_document_ids(state)
+        if text in allowed_ids:
+            return text
+
+        matches: list[str] = []
+        lowered = text.lower()
+        for item in self._document_registry(state):
+            doc_id = str(item.get("document_id") or item.get("doc_id") or item.get("id") or "")
+            if not doc_id:
+                continue
+            names = {
+                str(item.get("document_name") or ""),
+                str(item.get("doc_name") or ""),
+                str(item.get("name") or ""),
+                str(item.get("original_name") or ""),
+            }
+            if lowered in {name.lower() for name in names if name}:
+                matches.append(doc_id)
+        unique_matches = sorted(set(matches))
+        if len(unique_matches) == 1:
+            return unique_matches[0]
+        return ""
+
+    def _known_document_ids(self, state: AgentRunState) -> set[str]:
+        ids = {str(doc_id) for doc_id in state.scope.get("available_document_ids") or [] if doc_id}
+        for doc_id in state.scope.get("document_ids") or []:
+            if doc_id:
+                ids.add(str(doc_id))
+        for doc_id in state.scope.get("preferred_document_ids") or []:
+            if doc_id:
+                ids.add(str(doc_id))
+        for item in self._document_registry(state):
+            doc_id = item.get("document_id") or item.get("doc_id") or item.get("id")
+            if doc_id:
+                ids.add(str(doc_id))
+        return ids
+
+    def _document_registry(self, state: AgentRunState) -> list[dict[str, Any]]:
+        registry = state.scope.get("document_registry")
+        if not isinstance(registry, list):
+            return []
+        return [item for item in registry if isinstance(item, dict)]
+
+    def _has_document_reference_context(self, state: AgentRunState) -> bool:
+        return bool(
+            state.scope.get("available_document_ids")
+            or state.scope.get("document_ids")
+            or state.scope.get("preferred_document_ids")
+            or self._document_registry(state)
         )
 
     def _requires_document_evidence(self, state: AgentRunState) -> bool:
@@ -220,15 +327,20 @@ class AgentPolicy:
             hint in text for hint in en_inventory_hints
         )
 
-    def _reject(self, message: str) -> PolicyValidation:
-        return PolicyValidation(
-            False,
-            observation={
-                "kind": "guardrail",
-                "message": message,
-                "evidence_sufficient": False,
-            },
-        )
+    def _reject(
+        self,
+        message: str,
+        *,
+        next_steps: list[str] | None = None,
+    ) -> PolicyValidation:
+        observation: dict[str, Any] = {
+            "kind": "guardrail",
+            "message": message,
+            "evidence_sufficient": False,
+        }
+        if next_steps:
+            observation["next_steps"] = next_steps
+        return PolicyValidation(False, observation=observation)
 
     def _signature(self, tool_name: str, arguments: dict[str, Any]) -> str:
         return f"{tool_name}:{json.dumps(arguments or {}, ensure_ascii=False, sort_keys=True, default=str)}"

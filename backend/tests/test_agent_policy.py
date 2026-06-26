@@ -51,6 +51,52 @@ def test_policy_injects_single_selected_doc_id() -> None:
     assert result.action.arguments == {"compact": True, "doc_id": "doc-alpha"}
 
 
+def test_policy_repairs_filename_doc_id_from_document_registry() -> None:
+    policy = AgentPolicy(tools=_tools())
+    result = policy.validate(
+        PlannerAction.call_tool(
+            "search_within_document",
+            {"doc_id": "alpha.pdf", "query": "revenue"},
+        ),
+        _state(
+            document_registry=[
+                {"document_id": "doc-alpha", "document_name": "alpha.pdf"},
+                {"document_id": "doc-beta", "document_name": "beta.pdf"},
+            ],
+            available_document_ids=["doc-alpha", "doc-beta"],
+        ),
+    )
+
+    assert result.allowed is True
+    assert result.action is not None
+    assert result.action.arguments == {"doc_id": "doc-alpha", "query": "revenue"}
+
+
+def test_policy_rejects_unknown_doc_id_with_recoverable_next_steps() -> None:
+    policy = AgentPolicy(tools=_tools())
+    result = policy.validate(
+        PlannerAction.call_tool(
+            "get_page_content",
+            {"doc_id": "missing.pdf", "pages": "1"},
+        ),
+        _state(
+            document_registry=[
+                {"document_id": "doc-alpha", "document_name": "alpha.pdf"},
+                {"document_id": "doc-beta", "document_name": "beta.pdf"},
+            ],
+            available_document_ids=["doc-alpha", "doc-beta"],
+        ),
+    )
+
+    assert result.allowed is False
+    assert result.observation is not None
+    assert result.observation["kind"] == "guardrail"
+    assert "missing.pdf" in result.observation["message"]
+    assert result.observation["next_steps"] == [
+        "Use browse_documents or choose a doc_id from the visible document registry."
+    ]
+
+
 def test_policy_blocks_web_search_when_disabled() -> None:
     policy = AgentPolicy(tools=_tools())
     result = policy.validate(

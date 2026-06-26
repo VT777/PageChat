@@ -100,6 +100,9 @@ class StructuredLLMPlanner:
             "question": state.question,
             "history": self._compact_history(state.history),
             "scope": self._compact_scope(state.scope),
+            "document_registry": self._compact_document_registry(
+                state.scope.get("document_registry")
+            ),
             "available_tools": tools,
             "observations": list(state.scope.get("observations") or [])[-8:],
             "evidence_pack": list(state.scope.get("evidence_pack") or [])[-6:],
@@ -278,3 +281,30 @@ class StructuredLLMPlanner:
             "suppress_user_library_fallback",
         }
         return {key: value for key, value in scope.items() if key in allowed}
+
+    def _compact_document_registry(self, registry: Any) -> list[dict[str, Any]]:
+        if not isinstance(registry, list):
+            return []
+        compact: list[dict[str, Any]] = []
+        for item in registry[:80]:
+            if not isinstance(item, dict):
+                continue
+            document_id = item.get("document_id") or item.get("doc_id") or item.get("id")
+            document_name = (
+                item.get("document_name")
+                or item.get("doc_name")
+                or item.get("name")
+                or item.get("original_name")
+            )
+            if not document_id or not document_name:
+                continue
+            entry: dict[str, Any] = {
+                "document_id": str(document_id),
+                "document_name": str(document_name),
+            }
+            for key in ("folder_id", "path"):
+                value = item.get(key)
+                if value not in (None, ""):
+                    entry[key] = value
+            compact.append(entry)
+        return compact

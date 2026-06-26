@@ -473,6 +473,50 @@ class AgentService:
         )
         return f"{conversation_id}:{scope_key}"
 
+    @staticmethod
+    def _build_document_registry(
+        docs: List[Any],
+        visible_document_ids: Optional[List[str]] = None,
+    ) -> List[Dict[str, Any]]:
+        visible = set(visible_document_ids) if visible_document_ids is not None else None
+        registry: List[Dict[str, Any]] = []
+        for doc in docs:
+            doc_id = getattr(doc, "id", None) or getattr(doc, "doc_id", None)
+            if not doc_id:
+                continue
+            doc_id = str(doc_id)
+            if visible is not None and doc_id not in visible:
+                continue
+            doc_name = (
+                getattr(doc, "original_name", None)
+                or getattr(doc, "name", None)
+                or doc_id
+            )
+            doc_name = str(doc_name)
+            folder_path = getattr(doc, "folder_path", None)
+            registry.append(
+                {
+                    "document_id": doc_id,
+                    "document_name": doc_name,
+                    "folder_id": getattr(doc, "folder_id", None),
+                    "path": AgentService._document_registry_path(folder_path, doc_name),
+                }
+            )
+        return registry
+
+    @staticmethod
+    def _document_registry_path(folder_path: Any, doc_name: str) -> str:
+        folder = str(folder_path or "root").strip() or "root"
+        normalized = " / ".join(
+            part.strip()
+            for part in folder.replace("\\", "/").split("/")
+            if part.strip()
+        )
+        normalized = normalized or "root"
+        if normalized.lower().endswith(doc_name.lower()):
+            return normalized
+        return f"{normalized} / {doc_name}"
+
     async def run_agent_stream(
         self,
         question: str,
@@ -611,6 +655,10 @@ class AgentService:
             "web_search_enabled": bool(web_search_active),
             "suppress_user_library_fallback": bool(suppress_user_library_fallback),
             "available_document_ids": sorted(available_doc_ids),
+            "document_registry": self._build_document_registry(
+                docs,
+                visible_document_ids=executor_allowed_doc_ids,
+            ),
         }
         runtime = self.build_agent_loop_runtime(
             tool_executor=tool_executor,

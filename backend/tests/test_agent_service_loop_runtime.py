@@ -156,6 +156,14 @@ def test_agent_service_stream_uses_loop_runtime_not_initial_retrieval(monkeypatc
             "answer_delta",
         ]
         assert loop_runtime.states[0].scope["document_ids"] == ["doc-alpha"]
+        assert loop_runtime.states[0].scope["document_registry"] == [
+            {
+                "document_id": "doc-alpha",
+                "document_name": "alpha.pdf",
+                "folder_id": None,
+                "path": "root / alpha.pdf",
+            }
+        ]
         assert "retrieval_plan" not in loop_runtime.states[0].scope
 
     asyncio.run(run())

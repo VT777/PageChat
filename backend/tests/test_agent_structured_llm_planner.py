@@ -1,4 +1,5 @@
 import asyncio
+import json
 from pathlib import Path
 import sys
 from types import SimpleNamespace
@@ -130,6 +131,58 @@ def test_structured_planner_prompt_keeps_visible_notes_natural() -> None:
         assert "sound natural, calm, and helpful" in system_prompt
         assert "Do not narrate implementation details" in system_prompt
         assert "avoid robotic phrases" in system_prompt
+
+    asyncio.run(run())
+
+
+def test_structured_planner_payload_includes_compact_document_registry() -> None:
+    async def run() -> None:
+        calls = []
+
+        async def fake_completion(**kwargs):
+            calls.append(kwargs)
+            return _response(
+                """
+                {
+                  "thought": "I can use the selected report directly.",
+                  "action": {"type": "call_tool", "tool_name": "browse_documents", "arguments": {}}
+                }
+                """
+            )
+
+        planner = StructuredLLMPlanner(completion_fn=fake_completion, tools=_tools())
+        state = AgentRunState(
+            question="What does alpha.pdf say?",
+            conversation_id="conv-a",
+            run_id="run-a",
+            message_id="msg-a",
+            scope={
+                "document_registry": [
+                    {
+                        "document_id": "doc-alpha",
+                        "document_name": "alpha.pdf",
+                        "folder_id": "folder-a",
+                        "path": "root / reports / alpha.pdf",
+                        "local_file_path": "C:/private/alpha.pdf",
+                    }
+                ],
+                "available_document_ids": ["doc-alpha"],
+            },
+        )
+
+        await planner.next_action(state)
+
+        payload = json.loads(calls[0]["messages"][1]["content"])
+        assert payload["document_registry"] == [
+            {
+                "document_id": "doc-alpha",
+                "document_name": "alpha.pdf",
+                "folder_id": "folder-a",
+                "path": "root / reports / alpha.pdf",
+            }
+        ]
+        assert "available_document_ids" not in payload["scope"]
+        assert "local_file_path" not in json.dumps(payload, ensure_ascii=False)
 
     asyncio.run(run())
 

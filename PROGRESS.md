@@ -162,3 +162,13 @@ Keep hidden from the model unless explicitly needed: local file paths, index pat
 **Tests:** Passed `D:\projects\page_chat\backend\venv\Scripts\python.exe -m pytest backend/tests/test_agent_navigation_tools_contract.py backend/tests/test_web_search_tool_contract.py backend/tests/test_agent_citation_bindings.py -q` (`31 passed`).
 
 **Next step:** Start Phase 4 by adding planner document registry context and policy repair/reject behavior for invalid document references.
+
+### 2026-06-26 Phase 4: Planner and Policy Consumption
+
+**Current phase task:** Give the planner compact document registry context and make policy repair or reject invalid document references before tool execution.
+
+**Completed:** Added regression tests for planner registry payloads, AgentService registry injection, filename-in-`doc_id` repair, and unknown document guardrails. Updated `AgentService` to build a compact model-safe document registry, updated the planner payload to expose only compact registry fields, and updated policy to canonicalize file names/`doc_name` to real `doc_id` or return a visible recoverable `next_steps` guardrail.
+
+**Tests:** Passed `D:\projects\page_chat\backend\venv\Scripts\python.exe -m pytest backend/tests/test_agent_loop_runtime.py backend/tests/test_agent_run_event_protocol.py backend/tests/test_agent_navigation_tools_contract.py backend/tests/test_agent_policy.py backend/tests/test_agent_structured_llm_planner.py backend/tests/test_agent_service_loop_runtime.py -q` (`60 passed`).
+
+**Next step:** Start Phase 5 integration regression by running the backend contract suite plus frontend trace/build checks, then record any remaining gaps.
