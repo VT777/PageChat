@@ -319,32 +319,69 @@ class ToolExecutor:
         folder_id: Optional[str] = None,
     ):
         if doc_id:
-            if not self._is_doc_allowed(doc_id):
-                return None, {"error": "文档不存在或无访问权限"}
-            doc = await self.document_service.get_document(doc_id, user_id=self.user_id)
-            if not doc:
-                return None, {"error": f"文档 {doc_id} 不存在"}
-            return doc, None
+            if self._is_doc_allowed(doc_id):
+                doc = await self.document_service.get_document(doc_id, user_id=self.user_id)
+                if doc:
+                    return doc, None
+
+            doc, error = await self._resolve_document_by_name(
+                doc_id,
+                folder_id=folder_id,
+                original_input_kind="doc_id",
+            )
+            if doc:
+                return doc, None
+            return None, error
 
         if not doc_name:
-            return None, {"error": "doc_id or doc_name is required"}
+            return None, self._document_error(
+                "doc_id or doc_name is required",
+                "Use browse_documents() to find a document id before reading document content.",
+            )
 
+        return await self._resolve_document_by_name(doc_name, folder_id=folder_id)
+
+    async def _resolve_document_by_name(
+        self,
+        doc_name: str,
+        *,
+        folder_id: Optional[str] = None,
+        original_input_kind: str = "doc_name",
+    ):
         docs = await self.document_service.get_indexed_documents(user_id=self.user_id)
         if self.allowed_doc_ids is not None:
             docs = [doc for doc in docs if doc.id in self.allowed_doc_ids]
         candidates = [
             doc
             for doc in docs
-            if doc.original_name == doc_name
+            if (doc.original_name == doc_name or doc.name == doc_name)
             and (not folder_id or doc.folder_id == folder_id)
         ]
         if len(candidates) == 1:
             return candidates[0], None
         if not candidates:
-            return None, {"error": f"未找到文档: {doc_name}"}
+            return None, self._document_error(
+                f"Document {doc_name} was not found or is outside the current scope.",
+                f"Use browse_documents(query='{doc_name}') to find the correct document id.",
+            )
         return None, {
-            "error": "文档名称不唯一，请使用 doc_id",
+            "status": "error",
+            "error": (
+                f"{original_input_kind} '{doc_name}' matches multiple documents. "
+                "Use a specific doc_id."
+            ),
             "candidates": [self._compact_document_item(doc) for doc in candidates],
+            "next_steps": [
+                "Choose one candidate document id and retry the same tool call with doc_id."
+            ],
+        }
+
+    @staticmethod
+    def _document_error(message: str, *next_steps: str) -> Dict[str, Any]:
+        return {
+            "status": "error",
+            "error": message,
+            "next_steps": [step for step in next_steps if step],
         }
 
     @staticmethod
@@ -421,18 +458,10 @@ class ToolExecutor:
     async def execute(self, tool_name: str, arguments: dict) -> dict:
         """执行工具并返回结果"""
         try:
-            if tool_name in {
-                "get_document_structure",
-                "get_page_content",
-                "get_document_image",
-                "get_page_image",
-                "search_within_document",
-            }:
+            if tool_name == "get_document_image":
                 doc_id = arguments.get("doc_id")
                 if doc_id and not self._is_doc_allowed(doc_id):
-                    if tool_name == "get_document_image":
-                        return {"success": False, "error": "文档不存在或无访问权限"}
-                    return {"error": "文档不存在或无访问权限"}
+                    return {"success": False, "status": "error", "error": "文档不存在或无访问权限"}
 
             if tool_name == "view_folder_structure":
                 return await self._view_folder_structure(**arguments)

@@ -142,3 +142,13 @@ Keep hidden from the model unless explicitly needed: local file paths, index pat
 **Tests:** Passed `D:\projects\page_chat\backend\venv\Scripts\python.exe -m pytest backend/tests/test_agent_run_event_protocol.py backend/tests/test_agent_navigation_tools_contract.py -q` (`27 passed`).
 
 **Next step:** Start Phase 2 by normalizing document references across `doc_id`, `doc_name`, and accidental filename-in-`doc_id` inputs.
+
+### 2026-06-26 Phase 2: Canonical Document Reference Resolution
+
+**Current phase task:** Resolve canonical document ids when tools receive `doc_id`, `doc_name`, or a file name accidentally passed as `doc_id`.
+
+**Completed:** Added tests for filename-in-`doc_id` recovery and unknown-document recoverable errors. Updated document resolution so exact file names can resolve to the unique accessible document and missing/ambiguous references return visible `status=error` results with short `next_steps`.
+
+**Tests:** Passed `D:\projects\page_chat\backend\venv\Scripts\python.exe -m pytest backend/tests/test_tool_executor_scope.py backend/tests/test_agent_navigation_tools_contract.py -q` (`28 passed`).
+
+**Next step:** Start Phase 3 by standardizing compact model-visible results and concise string `next_steps` for each tool while keeping `get_document_structure` as a complete deep tree.

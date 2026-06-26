@@ -736,6 +736,45 @@ def test_search_within_document_requires_document_scope(monkeypatch) -> None:
     asyncio.run(run())
 
 
+def test_search_within_document_resolves_filename_passed_as_doc_id(monkeypatch) -> None:
+    async def run() -> None:
+        async def fail_search(**_kwargs):
+            raise AssertionError("search_within_document must not call search_service.search")
+
+        monkeypatch.setattr(search_service, "search", fail_search)
+        search_service.doc_corpus = ["x"]
+
+        executor = _executor({
+            "pages": [{"page": 2, "text": "alpha appears here"}],
+            "structure": [],
+        })
+        result = await executor.execute(
+            "search_within_document", {"doc_id": "report.pdf", "query": "alpha"}
+        )
+
+        assert result["success"] is True
+        assert result["doc_id"] == "doc-a"
+        assert result["doc_name"] == "report.pdf"
+        assert result["matches"][0]["page"] == 2
+
+    asyncio.run(run())
+
+
+def test_search_within_document_returns_recoverable_error_for_unknown_document() -> None:
+    async def run() -> None:
+        result = await _executor({}).execute(
+            "search_within_document", {"doc_id": "missing.pdf", "query": "alpha"}
+        )
+
+        assert result["success"] is False
+        assert result["status"] == "error"
+        assert "missing.pdf" in result["error"]
+        assert "next_steps" in result
+        assert any("browse_documents" in step for step in result["next_steps"])
+
+    asyncio.run(run())
+
+
 def test_search_within_document_visual_match_omits_ocr_text(monkeypatch) -> None:
     async def run() -> None:
         async def fail_search(**_kwargs):
