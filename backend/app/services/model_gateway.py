@@ -18,6 +18,7 @@ from typing import Any, Callable, Sequence
 
 from app.core import config
 from app.core.llm import async_chat_completion
+from app.agent.provider_adapter import ProviderCapabilityError, apply_provider_protocol
 
 
 CompletionFn = Callable[..., Any]
@@ -157,6 +158,7 @@ class ModelGateway:
                 stream=stream,
                 tools=tools,
                 temperature=temperature,
+                needs_vision=needs_vision,
             )
         except TIMEOUT_EXCEPTIONS:
             if route != "plus":
@@ -170,6 +172,7 @@ class ModelGateway:
                 stream=stream,
                 tools=tools,
                 temperature=temperature,
+                needs_vision=needs_vision,
             )
 
     async def _call_with_timeout_retry(
@@ -181,13 +184,30 @@ class ModelGateway:
         stream: bool,
         tools: list[dict] | None,
         temperature: float,
+        needs_vision: bool = False,
     ) -> Any:
         retries_left = config.MODEL_TIMEOUT_RETRIES
         timeout = self.timeout_for(route)
-        provider_config = await self._resolve_provider_config(task=task, route=route)
+        provider_config = await self._resolve_provider_config(
+            task=task,
+            route=route,
+            requires_streaming=stream,
+            requires_tool_calling=bool(tools),
+            requires_vision=needs_vision or task == "vision",
+        )
         model_name = (
             provider_config["model"] if provider_config else self._model_for(route)
         )
+        if (
+            tools
+            and provider_config
+            and provider_config.get("tool_strategy") == "pagechat_deterministic_tools"
+        ):
+            raise ProviderCapabilityError(
+                "Model "
+                f"'{model_name}' requires PageChat deterministic tool execution before "
+                "ModelGateway.plan_with_tools; provider tool calling is disabled."
+            )
 
         while True:
             try:
@@ -238,7 +258,14 @@ class ModelGateway:
         return "general_chat"
 
     async def _resolve_provider_config(
-        self, *, task: str, route: str
+        self,
+        *,
+        task: str,
+        route: str,
+        requires_streaming: bool = False,
+        requires_tool_calling: bool = False,
+        requires_vision: bool = False,
+        requires_structured_output: bool = False,
     ) -> dict[str, Any] | None:
         if not self._model_settings_service or not self._user_id:
             return None
@@ -246,6 +273,10 @@ class ModelGateway:
         provider_config = await self._model_settings_service.resolve_route(
             self._user_id, route_slot
         )
-        if route_slot == "vision" and not provider_config.get("supports_vision"):
-            raise ValueError("Configured vision route must use a vision-capable model")
-        return provider_config
+        return apply_provider_protocol(
+            provider_config,
+            requires_streaming=requires_streaming,
+            requires_tool_calling=requires_tool_calling,
+            requires_vision=requires_vision or route_slot == "vision",
+            requires_structured_output=requires_structured_output,
+        )

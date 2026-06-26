@@ -13,6 +13,8 @@ from app.core.config import (
 )
 from app.core.logging_config import silence_noisy_http_loggers
 from app.services.litellm_adapter import LiteLLMAdapter
+from app.agent.provider_adapter import ProviderCapabilityError, apply_provider_protocol
+from app.services.responses_adapter import response_provider_capabilities
 
 
 silence_noisy_http_loggers()
@@ -43,6 +45,7 @@ SCENARIO_ROUTE_SLOTS = {
 async def _resolve_user_route(user_id: str, route_slot: str) -> dict | None:
     if not user_id:
         return None
+
     try:
         import aiosqlite
 
@@ -61,6 +64,37 @@ async def _resolve_user_route(user_id: str, route_slot: str) -> dict | None:
             }
     except Exception:
         return None
+
+
+async def resolve_scenario_route(
+    scenario: str,
+    user_id: str | None = None,
+) -> dict:
+    config = MODEL_CONFIG.get(scenario, MODEL_CONFIG["qa"])
+    route_slot = SCENARIO_ROUTE_SLOTS.get(scenario)
+    if user_id and route_slot:
+        route = await _resolve_user_route(user_id, route_slot)
+        if route:
+            return {
+                "model": route["model"],
+                "temperature": config.get("temperature", 0),
+                "max_tokens": config.get("max_tokens"),
+                "provider_config": route["provider_config"],
+            }
+
+    model = config["model"]
+    return {
+        "model": model,
+        "temperature": config.get("temperature", 0),
+        "max_tokens": config.get("max_tokens"),
+        "provider_config": {
+            "provider": "environment",
+            "base_url": LLM_BASE_URL,
+            "api_key": LLM_API_KEY,
+            "model": model,
+            **response_provider_capabilities("environment", LLM_BASE_URL),
+        },
+    }
 
 
 def get_llm_client() -> OpenAI:
@@ -132,6 +166,17 @@ def build_vision_message(text: str, images_base64: list[str] = None) -> list:
     return [{"role": "user", "content": content}]
 
 
+def _messages_need_vision(messages: list) -> bool:
+    for message in messages or []:
+        content = message.get("content") if isinstance(message, dict) else None
+        if not isinstance(content, list):
+            continue
+        for item in content:
+            if isinstance(item, dict) and item.get("type") == "image_url":
+                return True
+    return False
+
+
 def chat_completion(
     messages: list,
     model: str = None,
@@ -146,13 +191,32 @@ def chat_completion(
         resolved_config = dict(provider_config)
         if model:
             resolved_config["model"] = model
+        extra = dict(kwargs)
+        allow_deterministic_tools = bool(extra.pop("allow_deterministic_tools", False))
+        resolved_config = apply_provider_protocol(
+            resolved_config,
+            requires_streaming=stream,
+            requires_tool_calling=bool(extra.get("tools")),
+            requires_vision=_messages_need_vision(messages),
+            requires_structured_output=bool(extra.get("response_format")),
+        )
+        if resolved_config.get("tool_strategy") == "pagechat_deterministic_tools":
+            if extra.get("tools") and not allow_deterministic_tools:
+                raise ProviderCapabilityError(
+                    "Model "
+                    f"'{resolved_config.get('model') or model or LLM_MODEL}' requires "
+                    "PageChat deterministic tool execution before LLM generation; "
+                    "provider tool calling is disabled."
+                )
+            extra.pop("tools", None)
+            extra.pop("tool_choice", None)
         return LiteLLMAdapter().completion(
             provider_config=resolved_config,
             messages=messages,
             temperature=temperature,
             stream=stream,
             timeout=timeout,
-            **kwargs,
+            **extra,
         )
     client = get_llm_client()
     resolved_model = model or LLM_MODEL
@@ -183,13 +247,32 @@ async def async_chat_completion(
         resolved_config = dict(provider_config)
         if model:
             resolved_config["model"] = model
+        extra = dict(kwargs)
+        allow_deterministic_tools = bool(extra.pop("allow_deterministic_tools", False))
+        resolved_config = apply_provider_protocol(
+            resolved_config,
+            requires_streaming=stream,
+            requires_tool_calling=bool(extra.get("tools")),
+            requires_vision=_messages_need_vision(messages),
+            requires_structured_output=bool(extra.get("response_format")),
+        )
+        if resolved_config.get("tool_strategy") == "pagechat_deterministic_tools":
+            if extra.get("tools") and not allow_deterministic_tools:
+                raise ProviderCapabilityError(
+                    "Model "
+                    f"'{resolved_config.get('model') or model or LLM_MODEL}' requires "
+                    "PageChat deterministic tool execution before LLM generation; "
+                    "provider tool calling is disabled."
+                )
+            extra.pop("tools", None)
+            extra.pop("tool_choice", None)
         return await LiteLLMAdapter().acompletion(
             provider_config=resolved_config,
             messages=messages,
             temperature=temperature,
             stream=stream,
             timeout=timeout,
-            **kwargs,
+            **extra,
         )
     client = get_async_llm_client()
     resolved_model = model or LLM_MODEL
@@ -220,6 +303,7 @@ async def chat_by_scenario(
     tools: list = None,
     timeout: float | None = None,
     user_id: str | None = None,
+    allow_deterministic_tools: bool = False,
     **kwargs,
 ):
     """
@@ -249,6 +333,7 @@ async def chat_by_scenario(
                 stream=stream,
                 timeout=timeout,
                 provider_config=route["provider_config"],
+                allow_deterministic_tools=allow_deterministic_tools,
                 **extra,
             )
     client = get_async_llm_client()

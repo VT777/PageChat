@@ -17,7 +17,6 @@ const router = useRouter()
 const userStore = useUserStore()
 const isLogin = ref(true)
 const error = ref('')
-const showPreviewEntry = import.meta.env.DEV
 
 watch(isLogin, () => {
   error.value = ''
@@ -64,12 +63,6 @@ async function handleRegister() {
   } catch (err: any) {
     error.value = err.message || '注册失败'
   }
-}
-
-function enterPreview() {
-  localStorage.setItem('token', 'dev-preview-token')
-  localStorage.setItem('user', JSON.stringify({ username: 'Preview' }))
-  router.push('/')
 }
 </script>
 
@@ -172,9 +165,6 @@ function enterPreview() {
             </template>
           </button>
 
-          <button v-if="showPreviewEntry" class="preview-button" type="button" @click="enterPreview">
-            进入预览
-          </button>
         </form>
 
         <form v-else class="auth-form" @submit.prevent="handleRegister">
@@ -218,9 +208,6 @@ function enterPreview() {
             </template>
           </button>
 
-          <button v-if="showPreviewEntry" class="preview-button" type="button" @click="enterPreview">
-            进入预览
-          </button>
         </form>
 
         <p class="auth-footnote">© 2026 {{ PRODUCT_NAME }}</p>
@@ -558,21 +545,6 @@ function enterPreview() {
 
 .submit-button:disabled {
   opacity: 0.55;
-}
-
-.preview-button {
-  height: 38px;
-  border: 1px solid var(--kc-border);
-  border-radius: var(--kc-radius-md);
-  background: #fff;
-  color: var(--kc-text-secondary);
-  font-size: 13px;
-  font-weight: 600;
-}
-
-.preview-button:hover {
-  background: var(--kc-surface-muted);
-  color: var(--kc-text);
 }
 
 .auth-error {

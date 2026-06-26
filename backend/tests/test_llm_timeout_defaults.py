@@ -107,3 +107,69 @@ def test_chat_by_scenario_resolves_user_model_settings(monkeypatch):
 
     assert result == {"ok": True}
     assert calls[0]["provider_config"]["model"] == "custom-qa"
+
+
+def test_resolve_scenario_route_prefers_user_route(monkeypatch):
+    async def fake_resolve(user_id, route_slot):
+        return {
+            "route_version": "qa-v1",
+            "provider_config": {
+                "provider": "openai_compatible",
+                "base_url": "https://example.test/v1",
+                "api_key": "sk-secret",
+                "model": "custom-qa",
+                "supports_responses_api": True,
+                "supports_reasoning_effort": True,
+                "supports_reasoning_summary": True,
+            },
+            "model": "custom-qa",
+        }
+
+    monkeypatch.setattr(llm, "_resolve_user_route", fake_resolve)
+
+    import asyncio
+
+    result = asyncio.run(llm.resolve_scenario_route("qa", user_id="user-a"))
+
+    assert result["model"] == "custom-qa"
+    assert result["provider_config"]["model"] == "custom-qa"
+
+
+def test_resolve_user_route_loads_user_model_settings(monkeypatch):
+    import asyncio
+    import aiosqlite
+    from app.services import model_settings_service
+
+    class FakeConnection:
+        row_factory = None
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, traceback):
+            return None
+
+    class FakeModelSettingsService:
+        def __init__(self, db):
+            self.db = db
+
+        async def resolve_route(self, user_id, route_slot):
+            return {
+                "source": "user",
+                "route_version": "qa-v1",
+                "provider": "openai_compatible",
+                "base_url": "https://example.test/v1",
+                "api_key": "sk-secret",
+                "model": "custom-qa",
+                "supports_responses_api": True,
+                "supports_reasoning_effort": True,
+                "supports_reasoning_summary": True,
+            }
+
+    monkeypatch.setattr(aiosqlite, "connect", lambda *_args, **_kwargs: FakeConnection())
+    monkeypatch.setattr(model_settings_service, "ModelSettingsService", FakeModelSettingsService)
+
+    result = asyncio.run(llm._resolve_user_route("user-a", "document_qa"))
+
+    assert result["model"] == "custom-qa"
+    assert result["provider_config"]["supports_responses_api"] is True

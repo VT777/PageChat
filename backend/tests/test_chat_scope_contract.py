@@ -17,28 +17,29 @@ def test_chat_request_accepts_folder_scope_fields() -> None:
         folder_id="folder-a",
         include_subfolders=True,
         strict_scope=False,
+        web_search_requested=True,
+        web_search_enabled=True,
     )
 
     assert request.folder_id == "folder-a"
     assert request.include_subfolders is True
     assert request.strict_scope is False
+    assert request.web_search_requested is True
+    assert request.web_search_enabled is True
 
 
 def test_chat_request_accepts_structured_web_search_flag() -> None:
-    request = ChatRequest(question="查一下最新政策", web_search=True)
-
+    request = ChatRequest(question="search latest policy", web_search=True)
     assert request.web_search is True
 
 
 def test_chat_request_defaults_web_search_to_false() -> None:
-    request = ChatRequest(question="普通文档问题")
-
+    request = ChatRequest(question="ordinary document question")
     assert request.web_search is False
 
 
 def test_chat_request_accepts_attachment_ids() -> None:
-    request = ChatRequest(question="看这张截图", attachment_ids=["att-a"])
-
+    request = ChatRequest(question="look at this screenshot", attachment_ids=["att-a"])
     assert request.attachment_ids == ["att-a"]
 
 
@@ -58,6 +59,22 @@ def test_agent_injects_folder_scope_into_browse_documents() -> None:
     assert patched["recursive"] is True
 
 
+def test_agent_does_not_inject_folder_filter_when_scope_is_non_strict() -> None:
+    patched = AgentService._inject_default_doc_id(
+        "browse_documents",
+        {"query": "alpha"},
+        document_ids=["doc-a", "doc-b"],
+        preferred_document_ids=["doc-a"],
+        folder_id="folder-a",
+        include_subfolders=True,
+        strict_scope=False,
+    )
+
+    assert "document_ids" not in patched
+    assert "folder_id" not in patched
+    assert "recursive" not in patched
+
+
 def test_agent_injects_selected_doc_into_document_navigation_tools() -> None:
     for tool_name, args in [
         ("get_document_structure", {}),
@@ -71,7 +88,6 @@ def test_agent_injects_selected_doc_into_document_navigation_tools() -> None:
             document_ids=["doc-a"],
             preferred_document_ids=None,
         )
-
         assert patched["doc_id"] == "doc-a"
 
 
@@ -96,14 +112,20 @@ class FakeChatDocumentService:
         return [SimpleNamespace(id="doc-a"), SimpleNamespace(id="doc-b")]
 
 
+class FakeChatFolderService:
+    async def get_folder(self, folder_id, user_id=None):
+        if folder_id == "folder-a":
+            return SimpleNamespace(id="folder-a")
+        return None
+
+
 class CapturingAgent:
     def __init__(self):
         self.calls = []
 
     async def run_agent_stream(self, **kwargs):
         self.calls.append(kwargs)
-        yield "event: content\ndata: {\"content\":\"ok\"}\n\n"
-        yield "event: done\ndata: {}\n\n"
+        yield 'event: answer_delta\ndata: {"content":"ok"}\n\n'
 
 
 class CapturingAttachmentService:
@@ -151,17 +173,41 @@ class CapturingAttachmentService:
         return self.metadata
 
 
+class FakeRunRepository:
+    def __init__(self):
+        self.events = []
+
+    async def create_run(self, **kwargs):
+        return None
+
+    async def append_run_event(self, run_id, event_type, payload):
+        self.events.append((run_id, event_type, payload))
+        return len(self.events)
+
+    async def complete_run(self, *args, **kwargs):
+        return None
+
+    async def fail_run(self, *args, **kwargs):
+        return None
+
+    async def cancel_run(self, *args, **kwargs):
+        return None
+
+
 def _chat_service_with_agent(agent: CapturingAgent) -> ChatService:
     service = ChatService.__new__(ChatService)
     service.db = None
     service.document_service = FakeChatDocumentService()
+    service.folder_service = FakeChatFolderService()
+    service.run_repository = FakeRunRepository()
     service._get_agent_service = lambda: agent
 
     async def ensure_conversation(conversation_id, user_id=None):
         return conversation_id or "conv-1"
 
     async def save_message(*args, **kwargs):
-        return "message-1"
+        role = args[1] if len(args) > 1 else kwargs.get("role", "message")
+        return f"{role}-message-1"
 
     async def update_message(*args, **kwargs):
         return None
@@ -190,6 +236,7 @@ def _chat_service_with_agent_and_attachments(
         agent_steps="[]",
         status="completed",
         attachments=None,
+        run_id=None,
     ):
         message_id = f"{role}-message-{len(saved_messages) + 1}"
         saved_messages.append(
@@ -199,6 +246,7 @@ def _chat_service_with_agent_and_attachments(
                 "role": role,
                 "content": content,
                 "attachments": attachments or [],
+                "run_id": run_id,
             }
         )
         return message_id
@@ -253,7 +301,25 @@ def test_chat_service_expands_to_user_library_only_when_strict_scope_false() -> 
     asyncio.run(run())
 
 
-def test_chat_service_passes_web_search_flag_to_agent() -> None:
+def test_chat_service_does_not_inject_user_library_without_explicit_scope() -> None:
+    async def run() -> None:
+        agent = CapturingAgent()
+        service = _chat_service_with_agent(agent)
+
+        events = [
+            event
+            async for event in service.stream_chat(question="hello", user_id="user-a")
+        ]
+
+        assert events
+        assert agent.calls[0]["document_ids"] is None
+        assert agent.calls[0]["preferred_document_ids"] is None
+        assert agent.calls[0]["strict_scope"] is None
+
+    asyncio.run(run())
+
+
+def test_chat_service_empty_document_scope_does_not_expand_to_user_library() -> None:
     async def run() -> None:
         agent = CapturingAgent()
         service = _chat_service_with_agent(agent)
@@ -261,7 +327,121 @@ def test_chat_service_passes_web_search_flag_to_agent() -> None:
         events = [
             event
             async for event in service.stream_chat(
-                question="联网查一下最新资料",
+                question="hello",
+                document_ids=[],
+                strict_scope=False,
+                user_id="user-a",
+            )
+        ]
+
+        assert events
+        assert agent.calls[0]["document_ids"] is None
+        assert agent.calls[0]["preferred_document_ids"] is None
+        assert agent.calls[0]["suppress_user_library_fallback"] is True
+
+    asyncio.run(run())
+
+
+def test_chat_service_invalid_document_scope_does_not_expand_to_user_library() -> None:
+    async def run() -> None:
+        agent = CapturingAgent()
+        service = _chat_service_with_agent(agent)
+
+        events = [
+            event
+            async for event in service.stream_chat(
+                question="summarize selected document",
+                document_ids=["missing-doc"],
+                strict_scope=False,
+                user_id="user-a",
+            )
+        ]
+
+        assert events
+        assert agent.calls[0]["document_ids"] is None
+        assert agent.calls[0]["preferred_document_ids"] == []
+        assert agent.calls[0]["suppress_user_library_fallback"] is True
+
+    asyncio.run(run())
+
+
+def test_chat_service_invalid_folder_scope_does_not_expand_to_user_library() -> None:
+    async def run() -> None:
+        agent = CapturingAgent()
+        service = _chat_service_with_agent(agent)
+
+        events = [
+            event
+            async for event in service.stream_chat(
+                question="summarize selected folder",
+                folder_id="missing-folder",
+                strict_scope=False,
+                user_id="user-a",
+            )
+        ]
+
+        assert events
+        assert agent.calls[0]["document_ids"] is None
+        assert agent.calls[0]["folder_id"] is None
+        assert agent.calls[0]["suppress_user_library_fallback"] is True
+
+    asyncio.run(run())
+
+
+def test_chat_service_empty_semantic_folder_scope_is_not_selected_scope() -> None:
+    async def run() -> None:
+        agent = CapturingAgent()
+        service = _chat_service_with_agent(agent)
+
+        events = [
+            event
+            async for event in service.stream_chat(
+                question="hello",
+                folder_id="root",
+                include_subfolders=True,
+                user_id="user-a",
+            )
+        ]
+
+        assert events
+        assert agent.calls[0]["folder_id"] is None
+        assert agent.calls[0]["suppress_user_library_fallback"] is False
+
+    asyncio.run(run())
+
+
+def test_chat_service_passes_web_search_flags_to_agent() -> None:
+    async def run() -> None:
+        agent = CapturingAgent()
+        service = _chat_service_with_agent(agent)
+
+        events = [
+            event
+            async for event in service.stream_chat(
+                question="web search Beijing weather",
+                web_search_requested=True,
+                web_search_enabled=True,
+                user_id="user-a",
+            )
+        ]
+
+        assert events
+        assert agent.calls[0]["web_search_requested"] is True
+        assert agent.calls[0]["web_search_enabled"] is True
+        assert agent.calls[0]["document_ids"] is None
+
+    asyncio.run(run())
+
+
+def test_chat_service_legacy_web_search_flag_maps_to_requested_flag() -> None:
+    async def run() -> None:
+        agent = CapturingAgent()
+        service = _chat_service_with_agent(agent)
+
+        events = [
+            event
+            async for event in service.stream_chat(
+                question="search latest material",
                 document_ids=["doc-a"],
                 strict_scope=True,
                 web_search=True,
@@ -285,7 +465,7 @@ def test_chat_service_binds_attachments_to_user_message() -> None:
         events = [
             event
             async for event in service.stream_chat(
-                question="看这张截图",
+                question="look at this screenshot",
                 attachment_ids=["att-a"],
                 user_id="user-a",
             )
@@ -316,7 +496,7 @@ def test_tool_catalog_response_includes_web_search_when_requested() -> None:
         events = [
             event
             async for event in service.stream_chat(
-                question="现在有哪些工具",
+                question="what tools are available",
                 web_search=True,
                 user_id="user-a",
             )

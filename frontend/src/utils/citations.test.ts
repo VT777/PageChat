@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
+  assignInlineSourceNumbers,
   bindInlineCitations,
   citationFileType,
   extractInlineCitations,
@@ -40,6 +41,36 @@ describe('inline citation helpers', () => {
       fileType: '.pdf',
       sourceAnchor: expect.objectContaining({ start_page: 12 }),
     }))
+  })
+
+  it('assigns compact source numbers for inline citation chips', () => {
+    const [binding] = bindInlineCitations(
+      'Answer with a compact source chip [[report.pdf p.3]]',
+      [
+        {
+          docId: 'doc-report',
+          documentName: 'report.pdf',
+          displayLabel: 'report.pdf p.3',
+          sourceAnchor: { format: 'pdf', unit_type: 'page', start_page: 3, end_page: 3 },
+        },
+      ],
+      [],
+    )
+
+    expect(binding).toEqual(expect.objectContaining({
+      sourceNumber: 1,
+      compactLabel: '[1]',
+    }))
+  })
+
+  it('numbers document and web citations by their appearance in the answer', () => {
+    const numbers = assignInlineSourceNumbers(
+      'Live source [Weather](https://weather.example/beijing) and report [[report.pdf p.3]].',
+      ['https://weather.example/beijing'],
+    )
+
+    expect(numbers.webNumbers.get(0)).toBe(1)
+    expect(numbers.documentNumbers.get(0)).toBe(2)
   })
 
   it('falls back to document metadata when direct tool evidence is unavailable', () => {

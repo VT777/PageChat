@@ -92,6 +92,51 @@ def test_save_and_read_provider_config_masks_api_key() -> None:
     asyncio.run(run())
 
 
+def test_provider_config_exposes_responses_capabilities_for_known_providers() -> None:
+    async def run() -> None:
+        db, service = await _service()
+        try:
+            dashscope = await service.save_provider_config(
+                user_id="user-a",
+                provider="dashscope",
+                base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
+                api_key="sk-secret-123456",
+            )
+            custom = await service.save_provider_config(
+                user_id="user-a",
+                provider="openai_compatible",
+                base_url="https://example.test/v1",
+                api_key="sk-secret-abcdef",
+            )
+
+            assert dashscope["supports_responses_api"] is True
+            assert dashscope["supports_reasoning_effort"] is True
+            assert dashscope["supports_reasoning_summary"] is False
+            assert custom["supports_responses_api"] is False
+
+            provider = await service.save_provider_config(
+                user_id="user-b",
+                provider="openai_compatible",
+                base_url="https://api.openai.com/v1",
+                api_key="sk-secret-openai",
+            )
+            route = await service.save_route_mapping(
+                user_id="user-b",
+                route_slot="document_qa",
+                provider_id=provider["provider_id"],
+                model="gpt-5-mini",
+            )
+            resolved = await service.resolve_route("user-b", "document_qa")
+
+            assert route["route_slot"] == "document_qa"
+            assert resolved["supports_responses_api"] is True
+            assert resolved["supports_reasoning_summary"] is True
+        finally:
+            await db.close()
+
+    asyncio.run(run())
+
+
 def test_delete_provider_config_is_user_scoped() -> None:
     async def run() -> None:
         db, service = await _service()
@@ -204,6 +249,43 @@ def test_save_route_mapping_rejects_missing_provider_or_model() -> None:
                 assert False, "Expected missing model to fail"
             except ValueError as exc:
                 assert "model" in str(exc).lower()
+        finally:
+            await db.close()
+
+    asyncio.run(run())
+
+
+def test_save_route_mapping_persists_provider_capabilities() -> None:
+    async def run() -> None:
+        db, service = await _service()
+        try:
+            provider = await service.save_provider_config(
+                user_id="user-a",
+                provider="openai_compatible",
+                base_url="https://example.test/v1",
+                api_key="sk-secret-123456",
+            )
+
+            saved = await service.save_route_mapping(
+                user_id="user-a",
+                route_slot="general_chat",
+                provider_id=provider["provider_id"],
+                model="custom-chat",
+                supports_streaming=True,
+                supports_tool_calling=False,
+                supports_vision=False,
+                supports_structured_output=True,
+                supports_responses_api=False,
+            )
+            listed = await service.list_route_mappings("user-a")
+            resolved = await service.resolve_route("user-a", "general_chat")
+
+            for payload in (saved, listed[0], resolved):
+                assert payload["supports_streaming"] is True
+                assert payload["supports_tool_calling"] is False
+                assert payload["supports_vision"] is False
+                assert payload["supports_structured_output"] is True
+                assert payload["supports_responses_api"] is False
         finally:
             await db.close()
 

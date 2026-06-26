@@ -11,6 +11,7 @@ from typing import Dict, Any, List, Optional
 from app.services.pageindex_service import PageIndexService
 from app.services.document_service import DocumentService
 from app.services.folder_service import FolderService
+from app.services.retrieval_policy import normalize_folder_id
 from app.services.cache_service import cache_service
 from app.services.table_analysis_service import TableAnalysisService
 from app.services.source_anchor_resolver import resolve_source_anchor
@@ -218,7 +219,7 @@ AGENT_TOOLS = [
         "type": "function",
         "function": {
             "name": "aggregate_tables",
-            "description": "Run aggregate analysis across table documents (csv/tsv/xlsx). Supports sum, avg, count, groupby, and concat. Cite source documents with [[document_name p.x]].",
+            "description": "Run aggregate analysis across table documents (csv/tsv/xlsx). Supports sum, avg, count, groupby, and concat. Returns structured source citations for PageChat to render.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -348,7 +349,7 @@ class ToolExecutor:
 
     @staticmethod
     def _normalize_root_folder_id(folder_id: Optional[str]) -> Optional[str]:
-        return None if folder_id in {None, "", "root", "null", "undefined"} else folder_id
+        return normalize_folder_id(folder_id)
 
     @staticmethod
     def _parse_page_request(
@@ -437,6 +438,8 @@ class ToolExecutor:
                 return await self._view_folder_structure(**arguments)
             elif tool_name == "browse_documents":
                 return await self._browse_documents(**arguments)
+            elif tool_name == "web_search":
+                return await self._web_search(**arguments)
             elif tool_name == "get_document_structure":
                 return await self._get_document_structure(**arguments)
             elif tool_name == "get_page_content":
@@ -1259,6 +1262,29 @@ class ToolExecutor:
             },
         }
 
+    async def _web_search(self, query: str, **_kwargs) -> dict:
+        query = (query or "").strip()
+        if not query:
+            return {
+                "success": False,
+                "status": "error",
+                "tool_name": "web_search",
+                "query": query,
+                "results": [],
+                "error": "Web Search query is required.",
+            }
+        return {
+            "success": False,
+            "status": "error",
+            "tool_name": "web_search",
+            "query": query,
+            "results": [],
+            "error": (
+                "Web Search is not configured. Configure a search provider before "
+                "enabling Web Search."
+            ),
+        }
+
     async def _search_within_document(
         self,
         query: str,
@@ -1282,7 +1308,6 @@ class ToolExecutor:
             doc_id=doc.id,
             doc_name=doc.original_name,
         )
-
     @classmethod
     def _count_folder_nodes(cls, folders: List[Dict[str, Any]]) -> int:
         total = 0

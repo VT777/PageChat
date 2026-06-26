@@ -39,7 +39,11 @@ class ModelRouteIn(BaseModel):
     route_slot: str
     provider_id: str
     model: str
+    supports_streaming: bool = True
+    supports_tool_calling: bool = True
     supports_vision: bool = False
+    supports_structured_output: bool = False
+    supports_responses_api: bool = False
 
 
 class ModelRoutesUpdate(BaseModel):
@@ -271,7 +275,11 @@ async def save_model_routes(
                     route_slot=route.route_slot,
                     provider_id=route.provider_id,
                     model=route.model,
+                    supports_streaming=route.supports_streaming,
+                    supports_tool_calling=route.supports_tool_calling,
                     supports_vision=route.supports_vision,
+                    supports_structured_output=route.supports_structured_output,
+                    supports_responses_api=route.supports_responses_api,
                 )
             )
     except ValueError as exc:

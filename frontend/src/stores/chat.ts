@@ -2,13 +2,18 @@ import { defineStore } from 'pinia'
 import { ref } from 'vue'
 import { chatApi } from '@/api'
 import { buildConversationExportMarkdown } from '@/ui/pagechatContracts'
+import { createBufferedStreamText, type BufferedStreamText } from '@/composables/useBufferedStreamText'
 import type {
+  AnswerDelta,
+  Citation,
+  CitationAdded,
+  ProgressEvent,
+  RunCompleted,
+  RunFailed,
+  RunStarted,
   StreamEnvelope,
-  ThinkingData,
-  ContentData,
-  ToolCallData,
-  ToolResultData,
-  DoneData,
+  ToolCompleted,
+  ToolStarted,
 } from '@/types/stream'
 import type { ChatScopeRequest, RetrievalScopeTrace } from '@/types/retrieval'
 import type { SourceAnchor } from '@/types/preview'
@@ -21,11 +26,19 @@ export interface DocumentChatContext {
 }
 
 export interface EvidenceItem {
+  type?: 'document' | 'web'
   docId?: string
   documentName?: string
   displayLabel?: string
   sourceAnchor?: SourceAnchor | null
   retrievalSource?: string
+  sourceId?: string
+  title?: string
+  url?: string
+  domain?: string
+  snippet?: string
+  contentPreview?: string
+  provider?: string
 }
 
 export interface ToolStep {
@@ -33,15 +46,29 @@ export interface ToolStep {
   arguments: Record<string, unknown>
   result: Record<string, unknown> | null
   status: 'calling' | 'done'
+  seq?: number
+  ts?: string
   elapsedMs?: number
   searchMethod?: string
   resultsCount?: number
+}
+
+export interface ProgressStep {
+  message: string
+  seq?: number
+  ts?: string
+}
+
+interface DisplayBufferEntry {
+  messageId: string
+  buffer: BufferedStreamText
 }
 
 export interface Message {
   id: string
   role: 'user' | 'assistant'
   content: string
+  displayContent?: string
   thinking: string
   toolSteps: ToolStep[]
   isLoading: boolean
@@ -50,6 +77,8 @@ export interface Message {
   retrievalFallbacks?: string[]
   evidenceItems?: EvidenceItem[]
   attachments?: ChatAttachmentMetadata[]
+  citations?: Citation[]
+  progressSteps?: ProgressStep[]
 }
 
 export interface RollbackState {
@@ -119,6 +148,7 @@ export const useChatStore = defineStore('chat', () => {
   const documentContexts = ref<DocumentChatContext[]>([])
   const draftComposerText = ref('')
   const activeStreamController = ref<AbortController | null>(null)
+  const displayBuffers = new Map<string, DisplayBufferEntry>()
   
   // 对话历史记录列表
   const conversations = ref<Conversation[]>([])
@@ -315,11 +345,14 @@ export const useChatStore = defineStore('chat', () => {
       id: String(raw?.id || _generateMsgID()),
       role,
       content: String(raw?.content || ''),
+      displayContent: role === 'assistant' ? String(raw?.content || '') : undefined,
       thinking: String(raw?.thinking || raw?.thinking_content || ''),
       toolSteps: Array.isArray(raw?.agent_steps) ? raw.agent_steps : [],
       isLoading: raw?.status === 'streaming',
       timestamp: raw?.created_at ? new Date(raw.created_at).getTime() : Date.now(),
       attachments: sanitizeAttachmentMetadata(rawAttachments),
+      citations: Array.isArray(raw?.citations) ? raw.citations : [],
+      progressSteps: Array.isArray(raw?.progressSteps) ? raw.progressSteps : [],
     }
   }
 
@@ -474,6 +507,7 @@ export const useChatStore = defineStore('chat', () => {
   function deleteMessage(messageId: string) {
     const index = messages.value.findIndex((m) => m.id === messageId)
     if (index !== -1) {
+      disposeDisplayBuffer(messages.value[index].id)
       messages.value.splice(index, 1)
     }
   }
@@ -501,6 +535,7 @@ export const useChatStore = defineStore('chat', () => {
 
     // 计算要删除的消息（包含 index 及之后的所有消息）
     const deletedMessages = messages.value.slice(index)
+    deletedMessages.forEach((message) => disposeDisplayBuffer(message.id))
     
     // 保留 index 之前的所有消息
     messages.value = messages.value.slice(0, index)
@@ -525,6 +560,7 @@ export const useChatStore = defineStore('chat', () => {
   function restoreRollback() {
     const state = rollbackHistory.value.pop()
     if (state) {
+      disposeAllDisplayBuffers()
       messages.value = state.messages
     }
   }
@@ -542,6 +578,7 @@ export const useChatStore = defineStore('chat', () => {
       // 删除该消息之后的所有消息（重新生成）
       const index = messages.value.indexOf(msg)
       if (index !== -1) {
+        messages.value.slice(index + 1).forEach((message) => disposeDisplayBuffer(message.id))
         messages.value.splice(index + 1)
       }
     }
@@ -579,6 +616,7 @@ export const useChatStore = defineStore('chat', () => {
       id: _generateMsgID(),
       role: 'assistant',
       content: '',
+      displayContent: '',
       thinking: '',
       toolSteps: [],
       isLoading: true,
@@ -587,10 +625,76 @@ export const useChatStore = defineStore('chat', () => {
     return msg
   }
 
+  function setMessageDisplayContent(messageId: string, displayContent: string) {
+    const index = messages.value.findIndex((message) => message.id === messageId)
+    if (index === -1) return
+    messages.value[index] = {
+      ...messages.value[index],
+      displayContent,
+    }
+  }
+
+  function getDisplayBuffer(message: Message): BufferedStreamText {
+    const existing = displayBuffers.get(message.id)
+    if (existing) return existing.buffer
+
+    const entry = {} as DisplayBufferEntry
+    entry.messageId = message.id
+    const buffer = createBufferedStreamText({
+      frameMs: 24,
+      initialText: message.displayContent ?? '',
+      onDisplayChange: (displayContent) => setMessageDisplayContent(entry.messageId, displayContent),
+    })
+    entry.buffer = buffer
+    displayBuffers.set(message.id, entry)
+    return buffer
+  }
+
+  function flushDisplayBuffer(messageId: string, remove = false) {
+    const entry = displayBuffers.get(messageId)
+    if (!entry) return
+    entry.buffer.flush()
+    if (remove) {
+      displayBuffers.delete(messageId)
+    }
+  }
+
+  function disposeDisplayBuffer(messageId: string) {
+    const entry = displayBuffers.get(messageId)
+    if (!entry) return
+    entry.buffer.dispose()
+    displayBuffers.delete(messageId)
+  }
+
+  function disposeAllDisplayBuffers() {
+    for (const entry of displayBuffers.values()) {
+      entry.buffer.dispose()
+    }
+    displayBuffers.clear()
+  }
+
+  function moveDisplayBuffer(oldMessageId: string, newMessageId: string) {
+    if (!oldMessageId || !newMessageId || oldMessageId === newMessageId) return
+    const entry = displayBuffers.get(oldMessageId)
+    if (!entry) return
+    displayBuffers.delete(oldMessageId)
+    entry.messageId = newMessageId
+    displayBuffers.set(newMessageId, entry)
+  }
+
   function updateLastMessage(updates: Partial<Message>) {
     const last = messages.value[messages.value.length - 1]
     if (last && last.role === 'assistant') {
-      Object.assign(last, updates)
+      const nextUpdates = { ...updates }
+      if (
+        nextUpdates.content !== undefined &&
+        nextUpdates.displayContent === undefined &&
+        nextUpdates.isLoading === false
+      ) {
+        disposeDisplayBuffer(last.id)
+        nextUpdates.displayContent = nextUpdates.content
+      }
+      Object.assign(last, nextUpdates)
     }
   }
 
@@ -635,8 +739,48 @@ export const useChatStore = defineStore('chat', () => {
       if (source === 'keyword_fallback' || source === 'visual_summary') {
         fallbacks.add(String(source))
       }
-      if (record.display_label || record.source_anchor) {
+      const sourceType = typeof record.type === 'string' ? record.type : ''
+      const url = typeof record.url === 'string' ? record.url : ''
+      if ((sourceType === 'web' || record.source === 'anysearch' || record.provider === 'anysearch') && url) {
+        let domain = typeof record.domain === 'string' ? record.domain : ''
+        if (!domain) {
+          try {
+            domain = new URL(url).hostname.replace(/^www\./, '')
+          } catch {
+            domain = ''
+          }
+        }
+        const title = String(record.title || record.display_label || record.displayLabel || domain || url)
         evidence.push({
+          type: 'web',
+          sourceId: typeof record.source_id === 'string'
+            ? record.source_id
+            : typeof record.sourceId === 'string'
+              ? record.sourceId
+              : undefined,
+          title,
+          displayLabel: typeof record.display_label === 'string'
+            ? record.display_label
+            : typeof record.displayLabel === 'string'
+              ? record.displayLabel
+              : title,
+          url,
+          domain,
+          snippet: typeof record.snippet === 'string' ? record.snippet : undefined,
+          contentPreview: typeof record.content_preview === 'string'
+            ? record.content_preview
+            : typeof record.contentPreview === 'string'
+              ? record.contentPreview
+              : undefined,
+          provider: typeof record.provider === 'string'
+            ? record.provider
+            : typeof record.source === 'string'
+              ? record.source
+              : undefined,
+        })
+      } else if (record.display_label || record.source_anchor) {
+        evidence.push({
+          type: 'document',
           docId: typeof record.doc_id === 'string'
             ? record.doc_id
             : typeof record.docId === 'string'
@@ -661,6 +805,58 @@ export const useChatStore = defineStore('chat', () => {
 
     visit(result)
     return { scope, fallbacks: Array.from(fallbacks), evidence }
+  }
+
+  function recordFromAnchor(anchor: Citation['source_anchor']): Record<string, unknown> {
+    return anchor && typeof anchor === 'object' ? anchor as Record<string, unknown> : {}
+  }
+
+  function safeWebUrlFromCitation(citation: Citation): string {
+    const anchor = recordFromAnchor(citation.source_anchor)
+    const rawUrl = typeof anchor.url === 'string'
+      ? anchor.url
+      : typeof citation.document_id === 'string'
+        ? citation.document_id
+        : ''
+    try {
+      const parsed = new URL(rawUrl)
+      return parsed.protocol === 'http:' || parsed.protocol === 'https:' ? parsed.toString() : ''
+    } catch {
+      return ''
+    }
+  }
+
+  function domainFromUrl(url: string): string {
+    try {
+      return new URL(url).hostname.replace(/^www\./, '')
+    } catch {
+      return ''
+    }
+  }
+
+  function evidenceFromCitation(citation: Citation): EvidenceItem {
+    const anchor = recordFromAnchor(citation.source_anchor)
+    const previewKind = String(citation.preview_kind || anchor.format || '').toLowerCase()
+    const url = safeWebUrlFromCitation(citation)
+    if (previewKind === 'web' || url) {
+      const title = citation.document_name || citation.display_label || url
+      return {
+        type: 'web',
+        sourceId: citation.citation_key,
+        title,
+        displayLabel: citation.display_label || title,
+        url,
+        domain: domainFromUrl(url),
+        provider: 'citation',
+      }
+    }
+    return {
+      type: 'document',
+      docId: citation.document_id,
+      documentName: citation.document_name,
+      displayLabel: citation.display_label,
+      sourceAnchor: citation.source_anchor as SourceAnchor,
+    }
   }
 
   function syncBackendConversationId(backendConversationId: string) {
@@ -731,46 +927,84 @@ export const useChatStore = defineStore('chat', () => {
   }
 
   function handleEnvelope(envelope: StreamEnvelope) {
-    const lastIndex = messages.value.length - 1
+    let lastIndex = messages.value.length - 1
+    const eventData = envelope.data as unknown as Record<string, unknown>
+    const backendMessageId = typeof eventData.message_id === 'string' ? eventData.message_id : ''
+    if (backendMessageId) {
+      const matchingIndex = messages.value.findIndex((message) => message.id === backendMessageId)
+      if (matchingIndex !== -1) {
+        lastIndex = matchingIndex
+      }
+    }
     const last = messages.value[lastIndex]
     if (!last || last.role !== 'assistant') return
 
     switch (envelope.event) {
-      case 'thinking': {
-        const data = envelope.data as unknown as ThinkingData
-        messages.value[lastIndex] = { ...last, thinking: last.thinking + data.content }
-        break
-      }
-      case 'content': {
-        const data = envelope.data as unknown as ContentData
-        messages.value[lastIndex] = { ...last, content: last.content + data.content }
-        break
-      }
-      case 'tool_call': {
-        const data = envelope.data as unknown as ToolCallData
+      case 'run_started': {
+        const data = envelope.data as unknown as RunStarted
+        if (data.conversation_id) {
+          syncBackendConversationId(data.conversation_id)
+        }
+        const nextMessageId = data.message_id || last.id
         messages.value[lastIndex] = {
           ...last,
-          toolSteps: [...last.toolSteps, {
+          id: nextMessageId,
+          isLoading: true,
+        }
+        moveDisplayBuffer(last.id, nextMessageId)
+        saveCurrentSession()
+        break
+      }
+      case 'progress': {
+        const data = envelope.data as unknown as ProgressEvent
+        flushDisplayBuffer(last.id)
+        const base = messages.value[lastIndex] || last
+        messages.value[lastIndex] = {
+          ...base,
+          progressSteps: [
+            ...(base.progressSteps || []),
+            {
+              message: data.message,
+              seq: data.seq,
+              ts: data.ts,
+            },
+          ],
+        }
+        break
+      }
+      case 'tool_started': {
+        const data = envelope.data as unknown as ToolStarted
+        flushDisplayBuffer(last.id)
+        const base = messages.value[lastIndex] || last
+        messages.value[lastIndex] = {
+          ...base,
+          toolSteps: [...base.toolSteps, {
             toolName: data.tool_name,
             arguments: data.arguments,
             result: null,
             status: 'calling' as const,
+            seq: data.seq,
+            ts: data.ts,
           }]
         }
         break
       }
-      case 'tool_result': {
-        const data = envelope.data as unknown as ToolResultData
-        const stepIndex = last.toolSteps.findIndex(
+      case 'tool_completed': {
+        const data = envelope.data as unknown as ToolCompleted
+        flushDisplayBuffer(last.id)
+        const base = messages.value[lastIndex] || last
+        const stepIndex = base.toolSteps.findIndex(
           (s) => s.toolName === data.tool_name && s.status === 'calling'
         )
         if (stepIndex !== -1) {
-          const raw = envelope.data as Record<string, unknown>
-          const updatedStep = { ...last.toolSteps[stepIndex] }
+          const raw = envelope.data as unknown as Record<string, unknown>
+          const updatedStep = { ...base.toolSteps[stepIndex] }
           updatedStep.result = data.result
           updatedStep.status = 'done' as const
-          if (raw.elapsed_ms !== undefined) {
-            updatedStep.elapsedMs = Number(raw.elapsed_ms)
+          updatedStep.seq = updatedStep.seq ?? data.seq
+          updatedStep.ts = updatedStep.ts ?? data.ts
+          if (data.elapsed_ms !== undefined) {
+            updatedStep.elapsedMs = Number(data.elapsed_ms)
           }
           if (raw.search_method !== undefined) {
             ;(updatedStep as any).searchMethod = String(raw.search_method)
@@ -778,61 +1012,109 @@ export const useChatStore = defineStore('chat', () => {
           if (raw.results_count !== undefined) {
             ;(updatedStep as any).resultsCount = Number(raw.results_count)
           }
-          const newToolSteps = [...last.toolSteps]
+          const newToolSteps = [...base.toolSteps]
           newToolSteps[stepIndex] = updatedStep
           const metadata = collectResultMetadata(data.result)
           messages.value[lastIndex] = {
-            ...last,
+            ...base,
             toolSteps: newToolSteps,
-            retrievalScope: metadata.scope || last.retrievalScope || null,
-            retrievalFallbacks: Array.from(new Set([...(last.retrievalFallbacks || []), ...metadata.fallbacks])),
-            evidenceItems: dedupeEvidence([...(last.evidenceItems || []), ...metadata.evidence]),
+            retrievalScope: metadata.scope || base.retrievalScope || null,
+            retrievalFallbacks: Array.from(new Set([...(base.retrievalFallbacks || []), ...metadata.fallbacks])),
+            evidenceItems: dedupeEvidence([...(base.evidenceItems || []), ...metadata.evidence]),
           }
         }
         break
       }
-      case 'conversation': {
-        const data = envelope.data as unknown as DoneData
-        if (data.conversation_id) {
-          syncBackendConversationId(data.conversation_id)
+      case 'answer_delta': {
+        const data = envelope.data as unknown as AnswerDelta
+        const base = messages.value[lastIndex] || last
+        const buffer = getDisplayBuffer(base)
+        buffer.push(data.content)
+        messages.value[lastIndex] = {
+          ...base,
+          content: base.content + data.content,
+          displayContent: buffer.current(),
         }
         break
       }
-      case 'done': {
-        const doneData = envelope.data as unknown as DoneData
-        if (doneData.conversation_id) {
-          syncBackendConversationId(doneData.conversation_id)
-        }
-        const metadata = collectResultMetadata([
-          ...(doneData.tool_results || []),
-          ...(doneData.citation_bindings || []),
-        ])
+      case 'citation_added': {
+        const data = envelope.data as unknown as CitationAdded
+        flushDisplayBuffer(last.id)
+        const base = messages.value[lastIndex] || last
+        const citations = dedupeCitations([...(base.citations || []), data.citation])
         messages.value[lastIndex] = {
-          ...last,
-          isLoading: false,
-          retrievalScope: metadata.scope || last.retrievalScope || null,
-          retrievalFallbacks: Array.from(new Set([...(last.retrievalFallbacks || []), ...metadata.fallbacks])),
-          evidenceItems: dedupeEvidence([...(last.evidenceItems || []), ...metadata.evidence]),
+          ...base,
+          citations,
+          evidenceItems: dedupeEvidence([
+            ...(base.evidenceItems || []),
+            evidenceFromCitation(data.citation),
+          ]),
         }
-        
-        // 更新对话记录的消息数
+        break
+      }
+      case 'run_completed': {
+        const data = envelope.data as unknown as RunCompleted
+        if (data.conversation_id) {
+          syncBackendConversationId(data.conversation_id)
+        }
+        const base = messages.value[lastIndex] || last
+        flushDisplayBuffer(base.id, true)
+        messages.value[lastIndex] = {
+          ...base,
+          displayContent: base.content,
+          isLoading: false,
+        }
         const currentConv = conversations.value.find(c => c.id === currentSessionId.value)
         if (currentConv) {
           currentConv.messageCount = messages.value.length
           currentConv.timestamp = Date.now()
           saveConversationsToStorage()
-          console.log('Updated conversation after AI reply:', currentConv.id, 'now has', messages.value.length, 'messages')
+        }
+        break
+      }
+      case 'run_failed': {
+        const data = envelope.data as unknown as RunFailed
+        const base = messages.value[lastIndex] || last
+        flushDisplayBuffer(base.id, true)
+        messages.value[lastIndex] = {
+          ...base,
+          content: base.content || data.error || '抱歉，处理请求时发生错误。',
+          displayContent: base.content || data.error || '抱歉，处理请求时发生错误。',
+          isLoading: false,
+        }
+        break
+      }
+      case 'run_cancelled': {
+        const base = messages.value[lastIndex] || last
+        flushDisplayBuffer(base.id, true)
+        messages.value[lastIndex] = {
+          ...base,
+          isLoading: false,
         }
         break
       }
     }
   }
 
+  function dedupeCitations(items: Citation[]): Citation[] {
+    const seen = new Set<string>()
+    const result: Citation[] = []
+    for (const item of items) {
+      const key = item.citation_key || `${item.document_id || ''}:${item.display_label}`
+      if (!key || seen.has(key)) continue
+      seen.add(key)
+      result.push(item)
+    }
+    return result
+  }
+
   function dedupeEvidence(items: EvidenceItem[]): EvidenceItem[] {
     const seen = new Set<string>()
     const result: EvidenceItem[] = []
     for (const item of items) {
-      const key = item.displayLabel || `${item.documentName || ''}:${JSON.stringify(item.sourceAnchor || {})}`
+      const key = item.type === 'web'
+        ? item.url || item.sourceId || item.displayLabel || ''
+        : item.displayLabel || `${item.documentName || ''}:${JSON.stringify(item.sourceAnchor || {})}`
       if (!key || seen.has(key)) continue
       seen.add(key)
       result.push(item)
@@ -842,6 +1124,7 @@ export const useChatStore = defineStore('chat', () => {
   }
 
   function clearMessages() {
+    disposeAllDisplayBuffers()
     messages.value = []
     conversationId.value = null
     currentSessionId.value = null
@@ -1085,6 +1368,8 @@ export const useChatStore = defineStore('chat', () => {
         }
       }
 
+      const last = messages.value[messages.value.length - 1]
+      if (last?.role === 'assistant') flushDisplayBuffer(last.id, true)
       updateLastMessage({ isLoading: false })
       
       // 保存当前会话状态
@@ -1098,6 +1383,8 @@ export const useChatStore = defineStore('chat', () => {
         saveConversationsToStorage()
       }
     } catch (error: any) {
+      const last = messages.value[messages.value.length - 1]
+      if (last?.role === 'assistant') flushDisplayBuffer(last.id, true)
       if (error?.name === 'AbortError') {
         updateLastMessage({ isLoading: false })
       } else {
@@ -1116,6 +1403,8 @@ export const useChatStore = defineStore('chat', () => {
   }
 
   function stopGeneration() {
+    const last = messages.value[messages.value.length - 1]
+    if (last?.role === 'assistant') flushDisplayBuffer(last.id, true)
     activeStreamController.value?.abort()
     activeStreamController.value = null
     isLoading.value = false

@@ -6,18 +6,19 @@ import { Bot, Check, Copy, RefreshCw, RotateCcw, Sparkles, Square, Undo2, User }
 import AppShell from '@/components/layout/AppShell.vue'
 import ChatComposer from '@/components/chat/ChatComposer.vue'
 import CitationPreviewDrawer from '@/components/chat/CitationPreviewDrawer.vue'
-import InlineToolStep from '@/components/chat/InlineToolStep.vue'
-import ThinkingBlock from '@/components/chat/ThinkingBlock.vue'
+import RunTimeline from '@/components/chat/RunTimeline.vue'
 import { useChatStore } from '@/stores/chat'
 import { useDocumentStore } from '@/stores/document'
 import { useFolderStore } from '@/stores/folder'
 import { chatApi, documentApi } from '@/api'
-import type { DocumentChatContext, Message } from '@/stores/chat'
+import type { DocumentChatContext, EvidenceItem, Message } from '@/stores/chat'
 import type { ChatAttachmentMetadata, ChatAttachmentPreview } from '@/types/chatAttachments'
 import type { ChatScopeRequest } from '@/types/retrieval'
+import type { SourceAnchor } from '@/types/preview'
+import type { Citation } from '@/types/stream'
 import { describeScopeTrace } from '@/utils/retrievalScope'
 import { answerStartScrollTop, isNearBottom } from '@/utils/chatScroll'
-import { bindInlineCitations, extractInlineCitations, type BoundInlineCitation } from '@/utils/citations'
+import { assignInlineSourceNumbers, bindInlineCitations, citationFileType, extractInlineCitations, type BoundInlineCitation } from '@/utils/citations'
 import { parseDocumentChatRouteQuery, parseFolderChatRouteContexts } from '@/ui/pagechatContracts'
 
 interface ComposerPayload {
@@ -26,6 +27,19 @@ interface ComposerPayload {
   documentIds: string[]
   folderIds: string[]
   attachments: ChatAttachmentMetadata[]
+}
+
+interface ActiveSourcePreview {
+  sourceType: 'document' | 'web'
+  docId?: string
+  documentName: string
+  displayLabel: string
+  fileType: string
+  sourceAnchor?: SourceAnchor | null
+  url?: string
+  domain?: string
+  snippet?: string
+  contentPreview?: string
 }
 
 const chatStore = useChatStore()
@@ -37,7 +51,7 @@ const composerRef = ref<InstanceType<typeof ChatComposer> | null>(null)
 const shouldFollowStream = ref(true)
 const latestAnswerStartRef = ref<HTMLElement | null>(null)
 const copiedMessageId = ref<string | null>(null)
-const activeCitation = ref<BoundInlineCitation | null>(null)
+const activeCitation = ref<ActiveSourcePreview | null>(null)
 const pendingRollback = ref<{
   prompt: string
   deletedCount: number
@@ -99,8 +113,10 @@ const messageSignature = computed(() =>
   chatStore.messages.map((message) => [
     message.id,
     message.content.length,
-    message.thinking.length,
-    message.toolSteps.length,
+    (message.displayContent || '').length,
+    (message.progressSteps || []).length,
+    (message.citations || []).length,
+    message.toolSteps.map((step) => `${step.toolName}:${step.status}:${step.seq ?? ''}`).join(','),
     (message.attachments || []).map((item) => item.attachment_id).join(','),
     message.isLoading ? 1 : 0,
   ].join(':')).join('|')
@@ -147,11 +163,33 @@ function escapeHtml(value: string): string {
     .replace(/'/g, '&#39;')
 }
 
-function citationBindingsForMessage(message: Message): BoundInlineCitation[] {
+function displayContentForMessage(message: Message): string {
+  return message.displayContent ?? message.content
+}
+
+function citationBindingsForMessage(message: Message, content = message.content): BoundInlineCitation[] {
   return bindInlineCitations(
-    message.content,
+    content,
     message.evidenceItems || [],
     documentStore.documents,
+  )
+}
+
+function webSourcesForMessage(message: Message): EvidenceItem[] {
+  return (message.evidenceItems || []).filter((item) => item.type === 'web' && item.url)
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+}
+
+function sourceNumbersForMessage(message: Message, content = message.content): {
+  documentNumbers: Map<number, number>
+  webNumbers: Map<number, number>
+} {
+  return assignInlineSourceNumbers(
+    content,
+    webSourcesForMessage(message).map((source) => source.url || ''),
   )
 }
 
@@ -171,23 +209,112 @@ function contentWithCitationPlaceholders(content: string): string {
 }
 
 function renderMessageMarkdown(message: Message): string {
-  const bindings = citationBindingsForMessage(message)
-  if (bindings.length === 0) return renderMarkdown(message.content)
+  const content = displayContentForMessage(message)
+  const bindings = citationBindingsForMessage(message, content)
+  const sourceNumbers = sourceNumbersForMessage(message, content)
+  if (bindings.length === 0) {
+    return appendStructuredCitationButtons(
+      decorateWebSourceLinks(renderMarkdown(content), message, sourceNumbers.webNumbers),
+      message,
+    )
+  }
 
-  let html = renderMarkdown(contentWithCitationPlaceholders(message.content))
+  let html = renderMarkdown(contentWithCitationPlaceholders(content))
   for (const binding of bindings) {
     const placeholder = `PAGECHAT_CITATION_${binding.index}`
-    const title = binding.resolved ? '打开来源预览' : '查找并打开来源预览'
+    const title = binding.displayLabel
+    const number = sourceNumbers.documentNumbers.get(binding.index) || binding.sourceNumber
     const button = [
       `<button type="button" class="inline-citation"`,
       ` data-citation-index="${binding.index}"`,
-      ` title="${title}">`,
-      escapeHtml(binding.displayLabel),
+      ` title="${escapeHtml(title)}">`,
+      `[${number}]`,
       '</button>',
     ].join('')
     html = html.replace(placeholder, button)
   }
-  return html
+  return decorateWebSourceLinks(html, message, sourceNumbers.webNumbers)
+}
+
+function citationAnchorRecord(citation: Citation): Record<string, unknown> {
+  return citation.source_anchor && typeof citation.source_anchor === 'object'
+    ? citation.source_anchor as Record<string, unknown>
+    : {}
+}
+
+function webUrlFromStructuredCitation(citation: Citation): string {
+  const anchor = citationAnchorRecord(citation)
+  const value = typeof anchor.url === 'string'
+    ? anchor.url
+    : typeof citation.document_id === 'string'
+      ? citation.document_id
+      : ''
+  try {
+    const parsed = new URL(value)
+    return parsed.protocol === 'http:' || parsed.protocol === 'https:' ? parsed.toString() : ''
+  } catch {
+    return ''
+  }
+}
+
+function domainFromUrl(url: string): string {
+  try {
+    return new URL(url).hostname.replace(/^www\./, '')
+  } catch {
+    return ''
+  }
+}
+
+function structuredCitationFileType(citation: Citation): string {
+  const anchor = citationAnchorRecord(citation)
+  const format = String(anchor.format || citation.preview_kind || '').toLowerCase()
+  if (format === 'web') return '.web'
+  return citationFileType(citation.document_name, anchor as Partial<SourceAnchor>)
+}
+
+function structuredCitationButton(index: number): string {
+  const number = index + 1
+  return [
+    `<button type="button" class="inline-citation structured-citation"`,
+    ` data-structured-citation-index="${index}"`,
+    ` title="来源 ${number}">`,
+    `[${number}]`,
+    '</button>',
+  ].join('')
+}
+
+function appendStructuredCitationButtons(html: string, message: Message): string {
+  const citations = message.citations || []
+  if (citations.length === 0) return html
+  const chips = citations.map((_, index) => structuredCitationButton(index)).join('')
+  const wrapped = `<span class="structured-citations">${chips}</span>`
+  if (/<\/p>\s*$/.test(html)) {
+    return html.replace(/<\/p>\s*$/, ` ${wrapped}</p>`)
+  }
+  return `${html}${wrapped}`
+}
+
+function decorateWebSourceLinks(html: string, message: Message, webNumbers: Map<number, number>): string {
+  let decorated = html
+  webSourcesForMessage(message).forEach((source, index) => {
+    if (!source.url) return
+    const escapedUrl = escapeHtml(source.url)
+    const pattern = new RegExp(
+      `<a([^>]*?)href="${escapeRegExp(escapedUrl)}"([^>]*)>.*?<\\/a>`,
+      'gi',
+    )
+    const number = webNumbers.get(index) || index + 1
+    const title = source.displayLabel || source.title || source.domain || source.url
+    const button = [
+      `<button type="button" class="inline-citation web-citation"`,
+      ` data-web-source-index="${index}"`,
+      ` title="${escapeHtml(title)}">`,
+      `[${number}]`,
+      '</button>',
+    ].join('')
+    decorated = decorated.replace(pattern, button)
+  })
+  return decorated
 }
 
 function scopeLabel(message: Message): string {
@@ -296,8 +423,57 @@ async function loadAttachmentPreview(attachment: ChatAttachmentMetadata) {
   }
 }
 
-async function resolveCitationDocument(binding: BoundInlineCitation): Promise<BoundInlineCitation> {
-  if (binding.docId) return binding
+function documentPreviewFromCitation(binding: BoundInlineCitation): ActiveSourcePreview {
+  return {
+    sourceType: 'document',
+    docId: binding.docId,
+    documentName: binding.documentName,
+    displayLabel: binding.displayLabel,
+    fileType: binding.fileType,
+    sourceAnchor: binding.sourceAnchor,
+  }
+}
+
+function webPreviewFromSource(source: EvidenceItem): ActiveSourcePreview {
+  return {
+    sourceType: 'web',
+    documentName: source.domain || source.url || 'Web source',
+    displayLabel: source.displayLabel || source.title || source.domain || source.url || 'Web source',
+    fileType: '.web',
+    url: source.url,
+    domain: source.domain,
+    snippet: source.snippet,
+    contentPreview: source.contentPreview,
+  }
+}
+
+function previewFromStructuredCitation(citation: Citation): ActiveSourcePreview {
+  const anchor = citationAnchorRecord(citation)
+  const url = webUrlFromStructuredCitation(citation)
+  const isWeb = String(citation.preview_kind || anchor.format || '').toLowerCase() === 'web' || Boolean(url)
+  if (isWeb) {
+    return {
+      sourceType: 'web',
+      documentName: citation.document_name || url || 'Web source',
+      displayLabel: citation.display_label || citation.document_name || url || 'Web source',
+      fileType: '.web',
+      url,
+      domain: domainFromUrl(url),
+    }
+  }
+  const sourceAnchor = citation.source_anchor as SourceAnchor
+  return {
+    sourceType: 'document',
+    docId: citation.document_id,
+    documentName: citation.document_name,
+    displayLabel: citation.display_label,
+    fileType: structuredCitationFileType(citation),
+    sourceAnchor,
+  }
+}
+
+async function resolveCitationDocument(binding: BoundInlineCitation): Promise<ActiveSourcePreview> {
+  if (binding.docId) return documentPreviewFromCitation(binding)
   try {
     const documents = await documentApi.searchByName(binding.documentName)
     const matched = Array.isArray(documents)
@@ -307,27 +483,39 @@ async function resolveCitationDocument(binding: BoundInlineCitation): Promise<Bo
           || name.replace(/\.[^.]+$/, '') === binding.documentName.toLowerCase().replace(/\.[^.]+$/, '')
       })
       : null
-    if (!matched) return binding
-    return {
+    if (!matched) return documentPreviewFromCitation(binding)
+    return documentPreviewFromCitation({
       ...binding,
       docId: String(matched.id),
       documentName: String(matched.original_name || matched.name || binding.documentName),
       fileType: String(matched.file_type || binding.fileType),
       resolved: true,
-    }
+    })
   } catch (error) {
     console.error('Failed to resolve citation document:', error)
-    return binding
+    return documentPreviewFromCitation(binding)
   }
 }
 
 async function handleAssistantContentClick(event: MouseEvent, message: Message) {
   const target = event.target instanceof HTMLElement
-    ? event.target.closest<HTMLButtonElement>('[data-citation-index]')
+    ? event.target.closest<HTMLButtonElement>('[data-citation-index], [data-web-source-index], [data-structured-citation-index]')
     : null
   if (!target) return
+  if (target.dataset.structuredCitationIndex !== undefined) {
+    const citationIndex = Number(target.dataset.structuredCitationIndex)
+    const citation = message.citations?.[citationIndex]
+    if (citation) activeCitation.value = previewFromStructuredCitation(citation)
+    return
+  }
+  if (target.dataset.webSourceIndex !== undefined) {
+    const sourceIndex = Number(target.dataset.webSourceIndex)
+    const source = webSourcesForMessage(message)[sourceIndex]
+    if (source) activeCitation.value = webPreviewFromSource(source)
+    return
+  }
   const citationIndex = Number(target.dataset.citationIndex)
-  const binding = citationBindingsForMessage(message).find((item) => item.index === citationIndex)
+  const binding = citationBindingsForMessage(message, displayContentForMessage(message)).find((item) => item.index === citationIndex)
   if (!binding) return
   activeCitation.value = await resolveCitationDocument(binding)
 }
@@ -439,7 +627,7 @@ onBeforeUnmount(() => {
 
 <template>
   <AppShell title="Chat">
-    <div class="chat-page">
+    <div :class="['chat-page', { 'has-preview': activeCitation }]">
       <div ref="scrollRef" class="chat-scroll" @scroll="handleChatScroll">
         <div class="chat-column">
           <section v-if="chatStore.messages.length === 0" class="empty-chat">
@@ -510,22 +698,14 @@ onBeforeUnmount(() => {
               </template>
 
               <template v-else>
-                <ThinkingBlock
-                  v-if="message.thinking"
-                  :content="message.thinking"
-                  :active="message.isLoading && !message.content"
+                <RunTimeline
+                  :progress-steps="message.progressSteps"
+                  :tool-steps="message.toolSteps"
+                  :is-loading="message.isLoading"
                 />
 
-                <div v-if="message.toolSteps.length > 0" class="inline-tools">
-                  <InlineToolStep
-                    v-for="(step, index) in message.toolSteps"
-                    :key="`${message.id}-${index}-${step.toolName}`"
-                    :step="step"
-                  />
-                </div>
-
                 <div
-                  v-if="message.content"
+                  v-if="displayContentForMessage(message)"
                   class="assistant-content"
                   v-html="renderMessageMarkdown(message)"
                   @click="handleAssistantContentClick($event, message)"
@@ -580,32 +760,56 @@ onBeforeUnmount(() => {
           </button>
         </div>
       </div>
-      <CitationPreviewDrawer
-        :open="Boolean(activeCitation)"
-        :doc-id="activeCitation?.docId"
-        :document-name="activeCitation?.documentName || ''"
-        :display-label="activeCitation?.displayLabel || ''"
-        :file-type="activeCitation?.fileType || '.pdf'"
-        :source-anchor="activeCitation?.sourceAnchor || null"
-        @close="closeCitationPreview"
-      />
+      <div v-if="activeCitation" class="citation-preview-pane">
+        <CitationPreviewDrawer
+          :open="Boolean(activeCitation)"
+          :doc-id="activeCitation?.docId"
+          :document-name="activeCitation?.documentName || ''"
+          :display-label="activeCitation?.displayLabel || ''"
+          :file-type="activeCitation?.fileType || '.pdf'"
+          :source-anchor="activeCitation?.sourceAnchor || null"
+          :source-type="activeCitation?.sourceType || 'document'"
+          :url="activeCitation?.url"
+          :domain="activeCitation?.domain"
+          :snippet="activeCitation?.snippet"
+          :content-preview="activeCitation?.contentPreview"
+          @close="closeCitationPreview"
+        />
+      </div>
     </div>
   </AppShell>
 </template>
 
 <style scoped>
 .chat-page {
+  position: relative;
   display: grid;
   height: 100%;
   min-height: 0;
+  grid-template-columns: minmax(0, 1fr);
   grid-template-rows: minmax(0, 1fr) auto;
   overflow: hidden;
 }
 
+.chat-page.has-preview {
+  grid-template-columns: minmax(0, 1fr) clamp(390px, 36vw, 620px);
+}
+
 .chat-scroll {
+  grid-column: 1;
+  grid-row: 1;
   min-height: 0;
   overflow-y: auto;
   overflow-x: hidden;
+}
+
+.citation-preview-pane {
+  grid-column: 2;
+  grid-row: 1 / 3;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  background: #fff;
 }
 
 .chat-column {
@@ -970,6 +1174,8 @@ onBeforeUnmount(() => {
 }
 
 .composer-zone {
+  grid-column: 1;
+  grid-row: 2;
   display: flex;
   justify-content: center;
   border-top: 1px solid rgba(229, 231, 235, 0.72);
@@ -985,18 +1191,20 @@ onBeforeUnmount(() => {
 
 .assistant-content :deep(.inline-citation) {
   display: inline-flex;
-  max-width: min(100%, 320px);
+  width: 20px;
+  height: 20px;
   align-items: center;
+  justify-content: center;
   vertical-align: baseline;
   border: 1px solid rgba(47, 128, 237, 0.2);
-  border-radius: 999px;
+  border-radius: 7px;
   background: #eef6ff;
-  padding: 1px 7px;
   color: #145eb8;
-  font-size: 11.5px;
+  font-size: 11px;
   font-weight: 620;
-  line-height: 17px;
+  line-height: 1;
   text-decoration: none;
+  cursor: pointer;
 }
 
 .assistant-content :deep(.inline-citation:hover) {
@@ -1115,6 +1323,20 @@ onBeforeUnmount(() => {
   
   .composer-stack {
     width: calc(100vw - 108px);
+  }
+}
+
+@media (max-width: 1120px) {
+  .chat-page.has-preview {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .citation-preview-pane {
+    position: absolute;
+    inset: 0 0 0 auto;
+    z-index: 30;
+    width: min(560px, 100vw);
+    box-shadow: -24px 0 48px rgba(15, 23, 42, 0.12);
   }
 }
 </style>

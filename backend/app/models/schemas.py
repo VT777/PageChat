@@ -142,6 +142,8 @@ class ChatRequest(BaseModel):
     folder_id: Optional[str] = None
     include_subfolders: bool = False
     strict_scope: Optional[bool] = None
+    web_search_requested: bool = False
+    web_search_enabled: bool = False
     conversation_id: Optional[str] = None
     web_search: bool = False
 

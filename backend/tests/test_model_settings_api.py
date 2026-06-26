@@ -114,6 +114,7 @@ def test_save_read_and_delete_provider_config_masks_api_key(tmp_path: Path) -> N
 
     assert saved.status_code == 200
     assert listed.json()[0]["api_key_mask"] == "sk-...3456"
+    assert listed.json()[0]["supports_responses_api"] is False
     assert "api_key" not in listed.json()[0]
     assert "sk-secret-123456" not in listed.text
 
@@ -217,6 +218,44 @@ def test_save_route_mapping(tmp_path: Path) -> None:
     assert response.status_code == 200
     assert response.json()[0]["route_slot"] == "general_chat"
     assert response.json()[0]["model"] == "custom-chat"
+
+
+def test_save_route_mapping_accepts_provider_capability_flags(tmp_path: Path) -> None:
+    client = _client(tmp_path)
+    provider = client.post(
+        "/api/settings/model-providers",
+        json={
+            "provider": "openai_compatible",
+            "base_url": "https://example.test/v1",
+            "api_key": "sk-secret-123456",
+        },
+    ).json()
+
+    response = client.put(
+        "/api/settings/model-routes",
+        json={
+            "routes": [
+                {
+                    "route_slot": "general_chat",
+                    "provider_id": provider["provider_id"],
+                    "model": "custom-chat",
+                    "supports_streaming": True,
+                    "supports_tool_calling": False,
+                    "supports_vision": False,
+                    "supports_structured_output": True,
+                    "supports_responses_api": False,
+                }
+            ]
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()[0]
+    assert payload["supports_streaming"] is True
+    assert payload["supports_tool_calling"] is False
+    assert payload["supports_vision"] is False
+    assert payload["supports_structured_output"] is True
+    assert payload["supports_responses_api"] is False
 
 
 def test_delete_provider_removes_route_mappings_for_fallback(tmp_path: Path) -> None:

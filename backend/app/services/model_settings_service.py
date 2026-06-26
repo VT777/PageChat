@@ -10,6 +10,7 @@ from typing import Any
 import aiosqlite
 
 from app.core import config
+from app.services.responses_adapter import response_provider_capabilities
 
 
 ROUTE_SLOTS = {
@@ -34,12 +35,16 @@ PROVIDER_PRESETS = [
         "label": "OpenAI compatible",
         "base_url": config.LLM_BASE_URL,
         "supports_custom_base_url": True,
+        **response_provider_capabilities("openai_compatible", config.LLM_BASE_URL),
     },
     {
         "provider": "dashscope",
         "label": "DashScope compatible",
         "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
         "supports_custom_base_url": False,
+        **response_provider_capabilities(
+            "dashscope", "https://dashscope.aliyuncs.com/compatible-mode/v1"
+        ),
     },
 ]
 
@@ -53,7 +58,13 @@ class ResolvedModelRoute:
     model: str
     source: str
     route_version: str
+    supports_streaming: bool = True
+    supports_tool_calling: bool = True
     supports_vision: bool = False
+    supports_structured_output: bool = False
+    supports_responses_api: bool = False
+    supports_reasoning_effort: bool = False
+    supports_reasoning_summary: bool = False
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -64,7 +75,13 @@ class ResolvedModelRoute:
             "model": self.model,
             "source": self.source,
             "route_version": self.route_version,
+            "supports_streaming": self.supports_streaming,
+            "supports_tool_calling": self.supports_tool_calling,
             "supports_vision": self.supports_vision,
+            "supports_structured_output": self.supports_structured_output,
+            "supports_responses_api": self.supports_responses_api,
+            "supports_reasoning_effort": self.supports_reasoning_effort,
+            "supports_reasoning_summary": self.supports_reasoning_summary,
         }
 
 
@@ -162,20 +179,26 @@ class ModelSettingsService:
 
         api_key_ciphertext = _protect_api_key(api_key)
         api_key_mask = mask_api_key(api_key)
+        capabilities = response_provider_capabilities(provider, base_url)
 
         await self.db.execute(
             """
             INSERT INTO model_provider_configs (
                 provider_id, user_id, provider, base_url, api_key_ciphertext,
-                api_key_mask, validation_status, created_at, updated_at
+                api_key_mask, validation_status, supports_responses_api,
+                supports_reasoning_effort, supports_reasoning_summary, created_at,
+                updated_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, 'untested', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+            VALUES (?, ?, ?, ?, ?, ?, 'untested', ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
             ON CONFLICT(provider_id) DO UPDATE SET
                 provider = excluded.provider,
                 base_url = excluded.base_url,
                 api_key_ciphertext = excluded.api_key_ciphertext,
                 api_key_mask = excluded.api_key_mask,
                 validation_status = 'untested',
+                supports_responses_api = excluded.supports_responses_api,
+                supports_reasoning_effort = excluded.supports_reasoning_effort,
+                supports_reasoning_summary = excluded.supports_reasoning_summary,
                 updated_at = CURRENT_TIMESTAMP
             """,
             (
@@ -185,6 +208,9 @@ class ModelSettingsService:
                 base_url,
                 api_key_ciphertext,
                 api_key_mask,
+                int(capabilities["supports_responses_api"]),
+                int(capabilities["supports_reasoning_effort"]),
+                int(capabilities["supports_reasoning_summary"]),
             ),
         )
         await self.db.commit()
@@ -194,14 +220,16 @@ class ModelSettingsService:
         cursor = await self.db.execute(
             """
             SELECT provider_id, user_id, provider, base_url, api_key_mask,
-                   validation_status, created_at, updated_at
+                   validation_status, supports_responses_api,
+                   supports_reasoning_effort, supports_reasoning_summary,
+                   created_at, updated_at
             FROM model_provider_configs
             WHERE user_id = ?
             ORDER BY updated_at DESC, created_at DESC
             """,
             (user_id,),
         )
-        return [dict(row) for row in await cursor.fetchall()]
+        return [self._provider_row_to_dict(row) for row in await cursor.fetchall()]
 
     async def get_provider_config(
         self, user_id: str, provider_id: str
@@ -209,14 +237,16 @@ class ModelSettingsService:
         cursor = await self.db.execute(
             """
             SELECT provider_id, user_id, provider, base_url, api_key_mask,
-                   validation_status, created_at, updated_at
+                   validation_status, supports_responses_api,
+                   supports_reasoning_effort, supports_reasoning_summary,
+                   created_at, updated_at
             FROM model_provider_configs
             WHERE user_id = ? AND provider_id = ?
             """,
             (user_id, provider_id),
         )
         row = await cursor.fetchone()
-        return dict(row) if row else None
+        return self._provider_row_to_dict(row) if row else None
 
     async def update_provider_config_fields(
         self,
@@ -239,11 +269,15 @@ class ModelSettingsService:
         if api_key:
             api_key_ciphertext = _protect_api_key(api_key)
             api_key_mask = mask_api_key(api_key)
+            capabilities = response_provider_capabilities(provider, base_url)
             cursor = await self.db.execute(
                 """
                 UPDATE model_provider_configs
                 SET provider = ?, base_url = ?, api_key_ciphertext = ?,
                     api_key_mask = ?, validation_status = 'untested',
+                    supports_responses_api = ?,
+                    supports_reasoning_effort = ?,
+                    supports_reasoning_summary = ?,
                     updated_at = CURRENT_TIMESTAMP
                 WHERE user_id = ? AND provider_id = ?
                 """,
@@ -252,19 +286,34 @@ class ModelSettingsService:
                     base_url,
                     api_key_ciphertext,
                     api_key_mask,
+                    int(capabilities["supports_responses_api"]),
+                    int(capabilities["supports_reasoning_effort"]),
+                    int(capabilities["supports_reasoning_summary"]),
                     user_id,
                     provider_id,
                 ),
             )
         else:
+            capabilities = response_provider_capabilities(provider, base_url)
             cursor = await self.db.execute(
                 """
                 UPDATE model_provider_configs
                 SET provider = ?, base_url = ?, validation_status = 'untested',
+                    supports_responses_api = ?,
+                    supports_reasoning_effort = ?,
+                    supports_reasoning_summary = ?,
                     updated_at = CURRENT_TIMESTAMP
                 WHERE user_id = ? AND provider_id = ?
                 """,
-                (provider, base_url, user_id, provider_id),
+                (
+                    provider,
+                    base_url,
+                    int(capabilities["supports_responses_api"]),
+                    int(capabilities["supports_reasoning_effort"]),
+                    int(capabilities["supports_reasoning_summary"]),
+                    user_id,
+                    provider_id,
+                ),
             )
         await self.db.commit()
         if cursor.rowcount == 0:
@@ -293,7 +342,11 @@ class ModelSettingsService:
         route_slot: str,
         provider_id: str,
         model: str,
+        supports_streaming: bool = True,
+        supports_tool_calling: bool = True,
         supports_vision: bool = False,
+        supports_structured_output: bool = False,
+        supports_responses_api: bool = False,
     ) -> dict[str, Any]:
         if route_slot not in ROUTE_SLOTS:
             raise ValueError(f"Unsupported route slot: {route_slot}")
@@ -303,22 +356,49 @@ class ModelSettingsService:
         if not provider:
             raise ValueError("provider config not found")
 
-        version = _route_version(user_id, route_slot, provider_id, model)
+        version = _route_version(
+            user_id,
+            route_slot,
+            provider_id,
+            model,
+            str(bool(supports_streaming)),
+            str(bool(supports_tool_calling)),
+            str(bool(supports_vision)),
+            str(bool(supports_structured_output)),
+            str(bool(supports_responses_api)),
+        )
         await self.db.execute(
             """
             INSERT INTO model_route_mappings (
-                user_id, route_slot, provider_id, model, supports_vision,
+                user_id, route_slot, provider_id, model, supports_streaming,
+                supports_tool_calling, supports_vision, supports_structured_output,
+                supports_responses_api,
                 route_version, created_at, updated_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
             ON CONFLICT(user_id, route_slot) DO UPDATE SET
                 provider_id = excluded.provider_id,
                 model = excluded.model,
+                supports_streaming = excluded.supports_streaming,
+                supports_tool_calling = excluded.supports_tool_calling,
                 supports_vision = excluded.supports_vision,
+                supports_structured_output = excluded.supports_structured_output,
+                supports_responses_api = excluded.supports_responses_api,
                 route_version = excluded.route_version,
                 updated_at = CURRENT_TIMESTAMP
             """,
-            (user_id, route_slot, provider_id, model, int(supports_vision), version),
+            (
+                user_id,
+                route_slot,
+                provider_id,
+                model,
+                int(supports_streaming),
+                int(supports_tool_calling),
+                int(supports_vision),
+                int(supports_structured_output),
+                int(supports_responses_api),
+                version,
+            ),
         )
         await self.db.commit()
         return await self.get_route_mapping(user_id, route_slot) or {}
@@ -328,7 +408,9 @@ class ModelSettingsService:
     ) -> dict[str, Any] | None:
         cursor = await self.db.execute(
             """
-            SELECT user_id, route_slot, provider_id, model, supports_vision,
+            SELECT user_id, route_slot, provider_id, model, supports_streaming,
+                   supports_tool_calling, supports_vision, supports_structured_output,
+                   supports_responses_api,
                    route_version, created_at, updated_at
             FROM model_route_mappings
             WHERE user_id = ? AND route_slot = ?
@@ -339,13 +421,19 @@ class ModelSettingsService:
         if not row:
             return None
         result = dict(row)
+        result["supports_streaming"] = bool(result["supports_streaming"])
+        result["supports_tool_calling"] = bool(result["supports_tool_calling"])
         result["supports_vision"] = bool(result["supports_vision"])
+        result["supports_structured_output"] = bool(result["supports_structured_output"])
+        result["supports_responses_api"] = bool(result["supports_responses_api"])
         return result
 
     async def list_route_mappings(self, user_id: str) -> list[dict[str, Any]]:
         cursor = await self.db.execute(
             """
-            SELECT user_id, route_slot, provider_id, model, supports_vision,
+            SELECT user_id, route_slot, provider_id, model, supports_streaming,
+                   supports_tool_calling, supports_vision, supports_structured_output,
+                   supports_responses_api,
                    route_version, created_at, updated_at
             FROM model_route_mappings
             WHERE user_id = ?
@@ -356,7 +444,11 @@ class ModelSettingsService:
         rows = []
         for row in await cursor.fetchall():
             item = dict(row)
+            item["supports_streaming"] = bool(item["supports_streaming"])
+            item["supports_tool_calling"] = bool(item["supports_tool_calling"])
             item["supports_vision"] = bool(item["supports_vision"])
+            item["supports_structured_output"] = bool(item["supports_structured_output"])
+            item["supports_responses_api"] = bool(item["supports_responses_api"])
             rows.append(item)
         return rows
 
@@ -366,8 +458,13 @@ class ModelSettingsService:
         if user_id:
             cursor = await self.db.execute(
                 """
-                SELECT m.route_slot, m.model, m.supports_vision, m.route_version,
-                       p.provider, p.base_url, p.api_key_ciphertext
+                SELECT m.route_slot, m.model, m.supports_streaming,
+                       m.supports_tool_calling, m.supports_vision,
+                       m.supports_structured_output, m.supports_responses_api,
+                       m.route_version,
+                       p.provider, p.base_url, p.api_key_ciphertext,
+                       p.supports_reasoning_effort,
+                       p.supports_reasoning_summary
                 FROM model_route_mappings m
                 JOIN model_provider_configs p ON p.provider_id = m.provider_id
                 WHERE m.user_id = ? AND m.route_slot = ? AND p.user_id = ?
@@ -384,10 +481,17 @@ class ModelSettingsService:
                     model=row["model"],
                     source="user",
                     route_version=row["route_version"],
+                    supports_streaming=bool(row["supports_streaming"]),
+                    supports_tool_calling=bool(row["supports_tool_calling"]),
                     supports_vision=bool(row["supports_vision"]),
+                    supports_structured_output=bool(row["supports_structured_output"]),
+                    supports_responses_api=bool(row["supports_responses_api"]),
+                    supports_reasoning_effort=bool(row["supports_reasoning_effort"]),
+                    supports_reasoning_summary=bool(row["supports_reasoning_summary"]),
                 ).as_dict()
 
         model = ENV_ROUTE_MODELS[route_slot]()
+        env_capabilities = response_provider_capabilities("environment", config.LLM_BASE_URL)
         return ResolvedModelRoute(
             route_slot=route_slot,
             provider="environment",
@@ -396,7 +500,11 @@ class ModelSettingsService:
             model=model,
             source="environment",
             route_version=_route_version("environment", route_slot, model),
+            supports_streaming=True,
+            supports_tool_calling=True,
             supports_vision=route_slot == "vision",
+            supports_structured_output=False,
+            **env_capabilities,
         ).as_dict()
 
     async def _get_provider_config_with_secret(
@@ -405,11 +513,30 @@ class ModelSettingsService:
         cursor = await self.db.execute(
             """
             SELECT provider_id, user_id, provider, base_url, api_key_ciphertext,
-                   api_key_mask, validation_status, created_at, updated_at
+                   api_key_mask, validation_status, supports_responses_api,
+                   supports_reasoning_effort, supports_reasoning_summary,
+                   created_at, updated_at
             FROM model_provider_configs
             WHERE user_id = ? AND provider_id = ?
             """,
             (user_id, provider_id),
         )
         row = await cursor.fetchone()
-        return dict(row) if row else None
+        return self._provider_secret_row_to_dict(row) if row else None
+
+    @staticmethod
+    def _provider_row_to_dict(row: aiosqlite.Row | None) -> dict[str, Any] | None:
+        if row is None:
+            return None
+        item = dict(row)
+        for key in (
+            "supports_responses_api",
+            "supports_reasoning_effort",
+            "supports_reasoning_summary",
+        ):
+            item[key] = bool(item.get(key))
+        return item
+
+    @staticmethod
+    def _provider_secret_row_to_dict(row: aiosqlite.Row | None) -> dict[str, Any] | None:
+        return ModelSettingsService._provider_row_to_dict(row)

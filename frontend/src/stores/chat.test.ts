@@ -32,7 +32,12 @@ function installLocalStorage() {
   })
 }
 
-function streamResponse(events = 'event: done\ndata: {}\n\n') {
+function streamResponse(events = [
+  'event: run_completed',
+  'data: {"run_id":"run-test","conversation_id":"conv-test","message_id":"msg-test","seq":1,"ts":"2026-06-26T10:00:00Z","status":"completed"}',
+  '',
+  '',
+].join('\n')) {
   const encoder = new TextEncoder()
   return {
     body: new ReadableStream({
@@ -456,7 +461,17 @@ describe('chat rollback', () => {
     store.messages.push(message('u1', 'user', 'question'), message('a1', 'assistant', 'answer'))
     store.saveCurrentSession()
 
-    store.handleEnvelope({ event: 'conversation', data: { conversation_id: 'backend-a' } })
+    store.handleEnvelope({
+      event: 'run_started',
+      data: {
+        run_id: 'run-a',
+        conversation_id: 'backend-a',
+        message_id: 'a1',
+        seq: 1,
+        ts: '2026-06-26T10:00:00Z',
+        status: 'running',
+      },
+    } as any)
 
     setActivePinia(createPinia())
     const restored = useChatStore()
@@ -464,6 +479,33 @@ describe('chat rollback', () => {
 
     expect(restored.currentSessionId).toBe('backend-a')
     expect(restored.messages.map((item) => item.content)).toEqual(['question', 'answer'])
+  })
+
+  it('persists the assistant placeholder when run_started migrates a draft session', () => {
+    const store = useChatStore()
+    store.currentSessionId = 'session-temp'
+    store.messages.push(message('u1', 'user', 'question'))
+    store.saveCurrentSession()
+    store.addAssistantMessage()
+
+    store.handleEnvelope({
+      event: 'run_started',
+      data: {
+        run_id: 'run-a',
+        conversation_id: 'backend-a',
+        message_id: 'backend-assistant-a',
+        seq: 1,
+        ts: '2026-06-26T10:00:00Z',
+        status: 'running',
+      },
+    } as any)
+
+    setActivePinia(createPinia())
+    const restored = useChatStore()
+    restored.loadConversationsFromStorage({ restoreLastActive: true, restoreDraft: false })
+
+    expect(restored.currentSessionId).toBe('backend-a')
+    expect(restored.messages.map((item) => item.id)).toEqual(['u1', 'backend-assistant-a'])
   })
 
   it('can abort an in-flight chat stream', async () => {
@@ -514,9 +556,16 @@ describe('chat rollback', () => {
     store.saveCurrentSession()
 
     store.handleEnvelope({
-      event: 'conversation',
-      data: { conversation_id: 'backend-existing' },
-    })
+      event: 'run_started',
+      data: {
+        run_id: 'run-a',
+        conversation_id: 'backend-existing',
+        message_id: 'a-current',
+        seq: 1,
+        ts: '2026-06-26T10:00:00Z',
+        status: 'running',
+      },
+    } as any)
 
     const matchingRows = store.conversations.filter((conversation) => conversation.id === 'backend-existing')
     expect(store.currentSessionId).toBe('backend-existing')
@@ -588,26 +637,207 @@ describe('chat rollback', () => {
     expect(chatViewSource).not.toContain('Web Search enabled')
   })
 
-  it('collects citation bindings from the done payload as preview evidence', () => {
+  it('ignores legacy stream envelopes without changing assistant message state', () => {
+    vi.useFakeTimers()
+    try {
+      const store = useChatStore()
+      store.addAssistantMessage()
+
+      store.handleEnvelope({ event: 'content', data: { content: 'Bei' } } as any)
+      store.handleEnvelope({ event: 'content', data: { content: 'jing' } } as any)
+      store.handleEnvelope({ event: 'thinking', data: { content: 'plan', step: 0 } } as any)
+      store.handleEnvelope({ event: 'done', data: { conversation_id: 'legacy-conv' } } as any)
+
+      expect(store.messages[0].content).toBe('')
+      expect(store.messages[0].thinking).toBe('')
+      expect(store.conversationId).toBeNull()
+
+      vi.advanceTimersByTime(40)
+
+      expect(store.messages[0].content).toBe('')
+      expect(store.messages[0].thinking).toBe('')
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('handles PageChat run events with buffered display text and citations', () => {
+    vi.useFakeTimers()
+    try {
+      const store = useChatStore()
+      const assistant = store.addAssistantMessage()
+
+      store.handleEnvelope({
+        event: 'run_started',
+        data: {
+          run_id: 'run-a',
+          conversation_id: 'conv-a',
+          message_id: 'backend-assistant-a',
+          seq: 1,
+          ts: '2026-06-26T10:00:00Z',
+          status: 'running',
+        },
+      } as any)
+      store.handleEnvelope({
+        event: 'progress',
+        data: {
+          run_id: 'run-a',
+          conversation_id: 'conv-a',
+          message_id: 'backend-assistant-a',
+          seq: 2,
+          ts: '2026-06-26T10:00:01Z',
+          message: '正在定位相关页面',
+        },
+      } as any)
+      store.handleEnvelope({
+        event: 'answer_delta',
+        data: {
+          run_id: 'run-a',
+          conversation_id: 'conv-a',
+          message_id: 'backend-assistant-a',
+          seq: 3,
+          ts: '2026-06-26T10:00:02Z',
+          content: '重庆',
+        },
+      } as any)
+
+      expect(store.conversationId).toBe('conv-a')
+      expect(store.messages[0].id).toBe('backend-assistant-a')
+      expect(store.messages[0].content).toBe('重庆')
+      expect(store.messages[0].displayContent).toBe('')
+      expect(store.messages[0].progressSteps).toEqual([
+        {
+          message: '正在定位相关页面',
+          seq: 2,
+          ts: '2026-06-26T10:00:01Z',
+        },
+      ])
+
+      vi.advanceTimersByTime(24)
+      expect(store.messages[0].displayContent).toBe('重庆')
+
+      store.handleEnvelope({
+        event: 'citation_added',
+        data: {
+          run_id: 'run-a',
+          conversation_id: 'conv-a',
+          message_id: 'backend-assistant-a',
+          seq: 4,
+          ts: '2026-06-26T10:00:03Z',
+          citation: {
+            citation_key: 'c1',
+            document_id: 'doc-cq',
+            document_name: '重庆报告.pdf',
+            display_label: '重庆报告.pdf p.2',
+            source_anchor: { format: 'pdf', start_page: 2 },
+            preview_kind: 'pdf',
+          },
+        },
+      } as any)
+      store.handleEnvelope({
+        event: 'run_completed',
+        data: {
+          run_id: 'run-a',
+          conversation_id: 'conv-a',
+          message_id: 'backend-assistant-a',
+          seq: 5,
+          ts: '2026-06-26T10:00:04Z',
+          status: 'completed',
+        },
+      } as any)
+
+      expect(store.messages[0].isLoading).toBe(false)
+      expect(store.messages[0].citations).toHaveLength(1)
+      expect(store.messages[0].evidenceItems?.[0]).toMatchObject({
+        docId: 'doc-cq',
+        documentName: '重庆报告.pdf',
+        displayLabel: '重庆报告.pdf p.2',
+      })
+      expect(assistant.id).not.toBe(store.messages[0].id)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('collects web source bindings from tool results as preview evidence', () => {
     const store = useChatStore()
     store.addAssistantMessage()
 
     store.handleEnvelope({
-      event: 'done',
+      event: 'tool_started',
       data: {
-        citation_bindings: [
-          {
-            doc_id: 'doc-cq',
-            document_name: '重庆统计年鉴.pdf',
-            display_label: '重庆统计年鉴.pdf p.12',
-            source_anchor: {
-              format: 'pdf',
-              unit_type: 'page',
-              start_page: 12,
-              end_page: 12,
+        run_id: 'run-a',
+        conversation_id: 'conv-a',
+        message_id: 'a1',
+        seq: 1,
+        ts: '2026-06-26T10:00:00Z',
+        tool_name: 'web_search',
+        arguments: { query: 'Beijing weather' },
+      },
+    } as any)
+    store.handleEnvelope({
+      event: 'tool_completed',
+      data: {
+        run_id: 'run-a',
+        conversation_id: 'conv-a',
+        message_id: 'a1',
+        seq: 2,
+        ts: '2026-06-26T10:00:01Z',
+        tool_name: 'web_search',
+        result: {
+          source_bindings: [
+            {
+              type: 'web',
+              source_id: 'web-1',
+              title: 'Beijing weather',
+              display_label: 'Beijing weather',
+              url: 'https://weather.example/beijing',
+              domain: 'weather.example',
+              snippet: 'Sunny and warm.',
             },
+          ],
+        },
+      },
+    } as any)
+
+    expect(store.messages[0].evidenceItems).toEqual([
+      expect.objectContaining({
+        type: 'web',
+        sourceId: 'web-1',
+        title: 'Beijing weather',
+        displayLabel: 'Beijing weather',
+        url: 'https://weather.example/beijing',
+        domain: 'weather.example',
+        snippet: 'Sunny and warm.',
+      }),
+    ])
+  })
+
+  it('collects citation bindings from citation events as preview evidence', () => {
+    const store = useChatStore()
+    store.addAssistantMessage()
+
+    store.handleEnvelope({
+      event: 'citation_added',
+      data: {
+        run_id: 'run-a',
+        conversation_id: 'conv-a',
+        message_id: 'a1',
+        seq: 2,
+        ts: '2026-06-26T10:00:01Z',
+        citation: {
+          citation_key: 'c1',
+          document_id: 'doc-cq',
+          document_name: '重庆统计年鉴.pdf',
+          display_label: '重庆统计年鉴.pdf p.12',
+          source_anchor: {
+            format: 'pdf',
+            unit_type: 'page',
+            start_page: 12,
+            end_page: 12,
           },
-        ],
+          preview_kind: 'pdf',
+        },
       },
     } as any)
 
@@ -619,5 +849,50 @@ describe('chat rollback', () => {
         sourceAnchor: expect.objectContaining({ start_page: 12 }),
       }),
     ])
+  })
+
+  it('keeps web citation events as web preview evidence', () => {
+    const store = useChatStore()
+    store.addAssistantMessage()
+
+    store.handleEnvelope({
+      event: 'citation_added',
+      data: {
+        run_id: 'run-a',
+        conversation_id: 'conv-a',
+        message_id: 'a1',
+        seq: 2,
+        ts: '2026-06-26T10:00:01Z',
+        citation: {
+          citation_key: 'https://weather.example/beijing',
+          document_id: 'https://weather.example/beijing',
+          document_name: 'Beijing weather forecast',
+          display_label: 'Beijing weather forecast',
+          source_anchor: {
+            format: 'web',
+            url: 'https://weather.example/beijing',
+          },
+          preview_kind: 'web',
+        },
+      },
+    } as any)
+
+    expect(store.messages[0].evidenceItems).toEqual([
+      expect.objectContaining({
+        type: 'web',
+        sourceId: 'https://weather.example/beijing',
+        title: 'Beijing weather forecast',
+        displayLabel: 'Beijing weather forecast',
+        url: 'https://weather.example/beijing',
+        domain: 'weather.example',
+      }),
+    ])
+  })
+
+  it('renders the new run timeline in ChatView instead of legacy thinking/tool blocks', () => {
+    expect(chatViewSource).toContain('RunTimeline')
+    expect(chatViewSource).not.toContain('ThinkingBlock')
+    expect(chatViewSource).not.toContain('InlineToolStep')
+    expect(chatViewSource).toContain('data-structured-citation-index')
   })
 })

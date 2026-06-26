@@ -32,10 +32,17 @@ export interface BoundInlineCitation extends InlineCitation {
   docId?: string
   documentName: string
   displayLabel: string
+  sourceNumber: number
+  compactLabel: string
   fileType: string
   sourceAnchor: SourceAnchor
   highlightedSnippet?: string
   resolved: boolean
+}
+
+export interface SourceNumberMaps {
+  documentNumbers: Map<number, number>
+  webNumbers: Map<number, number>
 }
 
 const CITATION_RE = /\[\[([^\[\]]+)\]\]/g
@@ -92,6 +99,8 @@ export function bindInlineCitations(
       docId: evidence?.docId || document?.id,
       documentName,
       displayLabel: evidence?.displayLabel || citation.label,
+      sourceNumber: citation.index + 1,
+      compactLabel: `[${citation.index + 1}]`,
       fileType,
       sourceAnchor: anchorFromCitation({
         fileType,
@@ -103,6 +112,33 @@ export function bindInlineCitations(
       resolved: Boolean(evidence?.docId || document?.id),
     }
   })
+}
+
+export function assignInlineSourceNumbers(content: string, webSourceUrls: string[] = []): SourceNumberMaps {
+  const entries: Array<{ kind: 'document' | 'web'; index: number; start: number }> = []
+  extractInlineCitations(content).forEach((citation) => {
+    entries.push({ kind: 'document', index: citation.index, start: citation.start })
+  })
+  webSourceUrls.forEach((url, index) => {
+    const start = url ? content.indexOf(url) : -1
+    entries.push({
+      kind: 'web',
+      index,
+      start: start >= 0 ? start : Number.MAX_SAFE_INTEGER - index,
+    })
+  })
+
+  entries.sort((a, b) => a.start - b.start || a.index - b.index)
+  const documentNumbers = new Map<number, number>()
+  const webNumbers = new Map<number, number>()
+  entries.forEach((entry, index) => {
+    if (entry.kind === 'document') {
+      documentNumbers.set(entry.index, index + 1)
+    } else {
+      webNumbers.set(entry.index, index + 1)
+    }
+  })
+  return { documentNumbers, webNumbers }
 }
 
 function parseCitationLabel(label: string): Pick<InlineCitation, 'documentName' | 'positionType' | 'position'> {

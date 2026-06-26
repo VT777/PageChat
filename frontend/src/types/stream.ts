@@ -1,54 +1,87 @@
-/**
- * SSE 事件类型定义
- * 基于 PageIndex 官方流程
- */
+import type { SourceAnchor } from './preview'
 
-// SSE 事件名称
 export type StreamEventName =
-  | 'conversation'
-  | 'thinking'
-  | 'content'
-  | 'tool_call'
-  | 'tool_result'
-  | 'done'
+  | 'run_started'
+  | 'progress'
+  | 'tool_started'
+  | 'tool_completed'
+  | 'answer_delta'
+  | 'citation_added'
+  | 'run_completed'
+  | 'run_failed'
+  | 'run_cancelled'
 
-// 通用信封
-export interface StreamEnvelope<TData = Record<string, unknown>> {
+export interface StreamEnvelope<TData = PageChatStreamData> {
   event: StreamEventName
   data: TData
 }
 
-// thinking 事件 - 模型思考过程（流式）
-export interface ThinkingData {
-  content: string
-  step: number
+export interface PageChatEventMeta {
+  run_id: string
+  conversation_id: string
+  message_id: string
+  seq: number
+  ts: string
 }
 
-// content 事件 - 最终答案内容（流式）
-export interface ContentData {
-  content: string
+export interface RunStarted extends PageChatEventMeta {
+  status: 'running'
 }
 
-// tool_call 事件 - 工具调用
-export interface ToolCallData {
+export interface ProgressEvent extends PageChatEventMeta {
+  message: string
+}
+
+export interface ToolStarted extends PageChatEventMeta {
   tool_name: string
   arguments: Record<string, unknown>
-  step: number
 }
 
-// tool_result 事件 - 工具返回结果
-export interface ToolResultData {
+export interface ToolCompleted extends PageChatEventMeta {
   tool_name: string
   result: Record<string, unknown>
-  step: number
+  elapsed_ms?: number
+  search_method?: string
+  results_count?: number
 }
 
-// done 事件 - 完成
-export interface DoneData {
-  conversation_id?: string
-  tool_results?: Array<{
-    tool_name: string
-    result: Record<string, unknown>
-  }>
-  citation_bindings?: Array<Record<string, unknown>>
+export interface AnswerDelta extends PageChatEventMeta {
+  content: string
 }
+
+export interface Citation {
+  citation_key: string
+  document_id?: string
+  document_name: string
+  source_anchor: SourceAnchor | Record<string, unknown>
+  display_label: string
+  preview_kind: string
+}
+
+export interface CitationAdded extends PageChatEventMeta {
+  citation: Citation
+}
+
+export interface RunCompleted extends PageChatEventMeta {
+  status: 'completed'
+}
+
+export interface RunFailed extends PageChatEventMeta {
+  status: 'failed'
+  error: string
+}
+
+export interface RunCancelled extends PageChatEventMeta {
+  status: 'cancelled'
+}
+
+export type PageChatStreamData =
+  | RunStarted
+  | ProgressEvent
+  | ToolStarted
+  | ToolCompleted
+  | AnswerDelta
+  | CitationAdded
+  | RunCompleted
+  | RunFailed
+  | RunCancelled

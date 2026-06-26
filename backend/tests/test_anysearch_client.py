@@ -77,6 +77,50 @@ def test_search_posts_compact_anysearch_payload(monkeypatch) -> None:
     assert "content" not in result["results"][0]
 
 
+def test_search_parses_anysearch_data_wrapper(monkeypatch) -> None:
+    def fake_post(url, **kwargs):
+        return FakeResponse(
+            200,
+            {
+                "code": 0,
+                "message": "success",
+                "data": {
+                    "results": [
+                        {
+                            "title": "北京天气",
+                            "url": "https://example.test/weather",
+                            "snippet": "北京今日天气。",
+                            "content": "北京今日天气晴。",
+                        }
+                    ],
+                    "total_results": 1,
+                    "request_id": "req-data",
+                    "search_time_ms": 88,
+                },
+            },
+        )
+
+    monkeypatch.setattr("requests.post", fake_post)
+
+    result = asyncio.run(AnySearchClient().search(query="北京天气", api_key="as-key"))
+
+    assert result["success"] is True
+    assert result["results"] == [
+        {
+            "title": "北京天气",
+            "url": "https://example.test/weather",
+            "snippet": "北京今日天气。",
+            "content_preview": "北京今日天气晴。",
+            "source": "anysearch",
+        }
+    ]
+    assert result["metadata"] == {
+        "request_id": "req-data",
+        "search_time_ms": 88,
+        "total_results": 1,
+    }
+
+
 def test_anonymous_request_omits_authorization_header(monkeypatch) -> None:
     calls = []
 

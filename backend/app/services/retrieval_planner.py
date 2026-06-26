@@ -3,6 +3,11 @@ from enum import Enum
 import re
 from typing import Any, Dict, List, Optional
 
+from app.services.retrieval_policy import (
+    normalize_folder_id,
+    question_needs_document_retrieval,
+)
+
 
 class RetrievalRoute(str, Enum):
     SELECTED_DOCUMENT = "selected_document"
@@ -46,6 +51,8 @@ class RetrievalPlanner:
         strict_scope: Optional[bool] = None,
     ) -> RetrievalPlan:
         question = (question or "").strip()
+        folder_id = normalize_folder_id(folder_id)
+        has_explicit_document_scope = document_ids is not None
         selected_docs = list(document_ids or [])
 
         if not question:
@@ -63,7 +70,12 @@ class RetrievalPlanner:
             expanded_to_user_library=bool((selected_docs or folder_id) and not effective_strict),
         )
 
-        if self._is_table_query(question):
+        if has_explicit_document_scope and not selected_docs and not folder_id:
+            return RetrievalPlan(route=RetrievalRoute.AGENT_FALLBACK, scope=scope)
+
+        if self._is_table_query(question) and (
+            selected_docs or folder_id or question_needs_document_retrieval(question)
+        ):
             arguments = self._browse_arguments(question, scope)
             return RetrievalPlan(
                 route=RetrievalRoute.TABLE_AGGREGATION,
@@ -107,6 +119,12 @@ class RetrievalPlanner:
         if folder_id and effective_strict:
             return self._search_plan(question, RetrievalRoute.SELECTED_FOLDER, scope)
 
+        if (selected_docs or folder_id) and not effective_strict:
+            return self._search_plan(question, RetrievalRoute.USER_LIBRARY, scope)
+
+        if not question_needs_document_retrieval(question):
+            return RetrievalPlan(route=RetrievalRoute.AGENT_FALLBACK, scope=scope)
+
         return self._search_plan(question, RetrievalRoute.USER_LIBRARY, scope)
 
     def _search_plan(
@@ -130,9 +148,9 @@ class RetrievalPlanner:
             "query": question,
             "sort": "relevance",
         }
-        if scope.folder_id:
+        if scope.folder_id and scope.strict_scope:
             arguments["folder_id"] = scope.folder_id
-        if scope.include_subfolders:
+        if scope.include_subfolders and scope.strict_scope:
             arguments["recursive"] = True
         if scope.document_ids and scope.strict_scope:
             arguments["document_ids"] = scope.document_ids

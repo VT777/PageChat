@@ -5,7 +5,6 @@ Agent 核心服务 - PageChat
 """
 
 import json
-import re
 import time
 import logging
 from typing import AsyncGenerator, List, Dict, Any, Optional
@@ -16,6 +15,7 @@ agent_logger = logging.getLogger("agent")
 
 from app.services.pageindex_service import PageIndexService
 from app.services.document_service import DocumentService
+from app.services.folder_service import FolderService
 from app.services.tool_executor import ToolExecutor, AGENT_TOOLS
 from app.services.web_search_settings_service import (
     DEFAULT_WEB_SEARCH_SETTINGS,
@@ -23,12 +23,11 @@ from app.services.web_search_settings_service import (
 )
 from app.services.web_search_tool import WEB_SEARCH_TOOL, execute_web_search_tool
 from app.services.retrieval_planner import RetrievalPlanner
-from app.services.citation_binding_service import (
-    bind_answer_citations,
-    build_missing_citation_suffix,
-    has_document_citation,
-)
 from app.core.config import CHAT_ATTACHMENT_MAX_PER_MESSAGE
+from app.services.retrieval_policy import (
+    normalize_folder_id,
+    question_needs_document_retrieval,
+)
 from app.core.llm import chat_by_scenario, async_chat_completion
 from app.models.retrieval import RetrievalScope
 from app.prompts import build_agent_system_prompt, QA_SYSTEM_PROMPT
@@ -101,6 +100,118 @@ class AgentService:
         self.db = db
         self.pageindex_service = PageIndexService()
         self.document_service = DocumentService(db)
+        self.folder_service = FolderService(db)
+
+    def build_explicit_agent_graph(
+        self,
+        *,
+        tool_executor: Any | None = None,
+        answer_generator: Any | None = None,
+        finalizer: Any | None = None,
+        failure_handler: Any | None = None,
+        user_id: str | None = None,
+    ):
+        from app.agent.graph import PageChatAgentGraph
+        from app.agent.nodes import AgentNodeDependencies
+
+        return PageChatAgentGraph(
+            AgentNodeDependencies(
+                tool_executor=tool_executor,
+                document_service=getattr(self, "document_service", None),
+                folder_service=getattr(self, "folder_service", None),
+                user_id=user_id,
+                answer_generator=answer_generator or self._generate_graph_answer,
+                finalizer=finalizer or self._finalize_graph_run,
+                failure_handler=failure_handler or self._fail_graph_run,
+            )
+        )
+
+    async def _resolve_valid_folder_id(
+        self, folder_id: Optional[str], user_id: Optional[str]
+    ) -> tuple[Optional[str], bool]:
+        normalized = normalize_folder_id(folder_id)
+        if not normalized:
+            return None, False
+        folder_service = getattr(self, "folder_service", None)
+        if folder_service is None:
+            return normalized, False
+        folder = await folder_service.get_folder(normalized, user_id=user_id)
+        if not folder:
+            return None, True
+        return normalized, False
+
+    async def _list_folder_document_ids(
+        self,
+        folder_id: str,
+        *,
+        include_subfolders: bool,
+        user_id: Optional[str],
+        page_size: int = 500,
+    ) -> List[str]:
+        document_ids: List[str] = []
+        page = 1
+        while True:
+            docs, total = await self.document_service.list_documents(
+                page=page,
+                page_size=page_size,
+                folder_id=folder_id,
+                include_subfolders=include_subfolders,
+                user_id=user_id,
+            )
+            document_ids.extend(doc.id for doc in docs)
+            if len(document_ids) >= total or not docs:
+                break
+            page += 1
+        return document_ids
+
+    async def _generate_graph_answer(self, state) -> str:
+        messages = [{"role": "system", "content": QA_SYSTEM_PROMPT}]
+        for item in state.history[-6:]:
+            role = item.get("role")
+            content = item.get("content")
+            if role in {"user", "assistant"} and content:
+                messages.append({"role": role, "content": content})
+
+        evidence_pack = state.scope.get("evidence_pack") or []
+        if evidence_pack:
+            messages.append(
+                {
+                    "role": "assistant",
+                    "content": "Evidence pack:\n"
+                    + json.dumps(evidence_pack, ensure_ascii=False),
+                }
+            )
+        messages.append({"role": "user", "content": state.question})
+
+        response = await chat_by_scenario(
+            scenario="qa",
+            messages=messages,
+            stream=True,
+            user_id=state.scope.get("user_id"),
+        )
+        answer = ""
+        async for chunk in response:
+            if not getattr(chunk, "choices", None):
+                continue
+            delta = chunk.choices[0].delta
+            content = getattr(delta, "content", None)
+            if content:
+                answer += content
+        return answer
+
+    async def _finalize_graph_run(self, state) -> None:
+        from app.services.chat_run_repository import ChatRunRepository
+
+        await ChatRunRepository(self.db).complete_run(
+            state.run_id,
+            final_content=state.answer,
+            citations=state.citations,
+        )
+
+    async def _fail_graph_run(self, state, error: str) -> None:
+        from app.services.chat_run_repository import ChatRunRepository
+
+        await ChatRunRepository(self.db).fail_run(state.run_id, error)
 
     def _format_sse(self, event: str, data: dict) -> str:
         """格式化 SSE 事件"""
@@ -110,9 +221,21 @@ class AgentService:
 
     @staticmethod
     def _tools_for_request(web_search_enabled: bool = False) -> List[Dict[str, Any]]:
-        tools = list(AGENT_TOOLS)
+        tools = [
+            tool
+            for tool in AGENT_TOOLS
+            if tool.get("function", {}).get("name") != "web_search"
+        ]
         if web_search_enabled:
-            tools.append(WEB_SEARCH_TOOL)
+            web_tool = next(
+                (
+                    tool
+                    for tool in AGENT_TOOLS
+                    if tool.get("function", {}).get("name") == "web_search"
+                ),
+                WEB_SEARCH_TOOL,
+            )
+            tools.append(web_tool)
         return tools
 
     async def _web_search_settings_for_request(
@@ -213,27 +336,47 @@ class AgentService:
         folder_id: Optional[str] = None,
         include_subfolders: bool = False,
         strict_scope: Optional[bool] = None,
+        web_search_requested: bool = False,
+        web_search_enabled: bool = False,
+        suppress_user_library_fallback: bool = False,
+        request_attachments: Optional[List[Dict[str, Any]]] = None,
         user_id: str = None,
         max_steps: int = 8,
         history_messages: Optional[List[Dict[str, Any]]] = None,
-        web_search_requested: bool = False,
-        request_attachments: Optional[List[Dict[str, Any]]] = None,
     ) -> AsyncGenerator[str, None]:
         """
         Agent 流式执行 - 基于 PageIndex 官方流程
 
-        SSE 事件类型：
-        - thinking: 模型思考过程（reasoning_content 流式）
-        - tool_call: 工具调用
-        - tool_result: 工具返回结果
-        - content: 最终答案内容
-        - done: 完成
+        内部 SSE 事件类型：
+        - progress: 简短运行进度
+        - tool_started: 工具调用开始
+        - tool_completed: 工具调用完成
+        - answer_delta: 答案增量
+        - citation_added: 结构化引用（如由运行节点直接产生）
         """
         # 检查是否有可用文档
         if not user_id:
             raise ValueError("user_id is required")
 
+        folder_id, invalid_folder_scope = await self._resolve_valid_folder_id(
+            folder_id, user_id
+        )
+
         docs = await self.document_service.get_indexed_documents(user_id=user_id)
+        available_doc_ids = {doc.id for doc in docs}
+        requested_document_ids = list(document_ids or [])
+        if document_ids is not None:
+            document_ids = [
+                doc_id for doc_id in requested_document_ids if doc_id in available_doc_ids
+            ]
+            if requested_document_ids and not document_ids and not folder_id:
+                suppress_user_library_fallback = True
+        if invalid_folder_scope and not document_ids:
+            suppress_user_library_fallback = True
+        if preferred_document_ids is not None:
+            preferred_document_ids = [
+                doc_id for doc_id in preferred_document_ids if doc_id in available_doc_ids
+            ]
         doc_count = len(document_ids) if document_ids is not None else len(docs)
         conversation_state_key = (
             self._conversation_state_key(
@@ -248,13 +391,30 @@ class AgentService:
             else None
         )
 
-        has_explicit_scope = bool(document_ids or folder_id)
+        has_valid_explicit_scope = bool(document_ids or folder_id)
         effective_strict_scope = strict_scope
         if effective_strict_scope is None:
-            effective_strict_scope = has_explicit_scope
-        executor_allowed_doc_ids = (
-            document_ids if document_ids is not None and effective_strict_scope else None
-        )
+            effective_strict_scope = has_valid_explicit_scope
+        needs_document_retrieval = question_needs_document_retrieval(question)
+        skip_initial_retrieval = bool(request_attachments) and self._is_image_only_question(question)
+        folder_allowed_doc_ids: Optional[List[str]] = None
+        if folder_id and effective_strict_scope and not skip_initial_retrieval:
+            folder_allowed_doc_ids = await self._list_folder_document_ids(
+                folder_id,
+                include_subfolders=include_subfolders,
+                user_id=user_id,
+            )
+        executor_allowed_doc_ids = None
+        if effective_strict_scope:
+            if document_ids is not None and folder_allowed_doc_ids is not None:
+                folder_allowed_set = set(folder_allowed_doc_ids)
+                executor_allowed_doc_ids = [
+                    doc_id for doc_id in document_ids if doc_id in folder_allowed_set
+                ]
+            elif document_ids is not None:
+                executor_allowed_doc_ids = document_ids
+            elif folder_allowed_doc_ids is not None:
+                executor_allowed_doc_ids = folder_allowed_doc_ids
 
         # 将当前请求允许访问的文档范围注入工具执行器（防止越权）
         tool_executor = ToolExecutor(
@@ -268,24 +428,23 @@ class AgentService:
         user_lang = detect_language(question)
         web_search_settings = await self._web_search_settings_for_request(
             user_id=user_id,
-            requested=web_search_requested,
+            requested=bool(web_search_requested or web_search_enabled),
         )
-        runtime_tools = self._tools_for_request(
-            web_search_enabled=bool(web_search_settings.get("enabled"))
-        )
+        web_search_active = bool(web_search_settings.get("enabled"))
+        runtime_tools = self._tools_for_request(web_search_enabled=web_search_active)
 
         # 如果没有文档库且没有显式检索范围，直接走简单聊天模式（不调用工具）
         if (
-            doc_count == 0
-            and not has_explicit_scope
-            and not web_search_settings.get("enabled")
+            not has_valid_explicit_scope
+            and (not needs_document_retrieval or suppress_user_library_fallback)
+            and not web_search_active
             and not request_attachments
         ):
             print(
-                f"[Agent] No documents or no document_ids specified, using simple chat mode"
+                "[Agent] No retrieval intent or explicit scope, using simple chat mode"
             )
             async for event in self._simple_chat_stream(
-                question, conversation_id, history_messages
+                question, conversation_id, history_messages, user_id=user_id
             ):
                 yield event
             return
@@ -344,34 +503,84 @@ class AgentService:
 
         initial_evidence = (
             []
-            if doc_count == 0 and not has_explicit_scope
+            if skip_initial_retrieval
             else await self._execute_initial_retrieval_plan(
                 question=question,
                 tool_executor=tool_executor,
+                document_ids=document_ids,
                 preferred_document_ids=preferred_document_ids,
                 folder_id=folder_id,
                 include_subfolders=include_subfolders,
                 strict_scope=strict_scope,
+                web_search_requested=web_search_requested,
+                web_search_enabled=web_search_active,
+                web_search_settings=web_search_settings,
+                suppress_user_library_fallback=suppress_user_library_fallback,
             )
         )
-        for evidence in initial_evidence:
+        for evidence_index, evidence in enumerate(initial_evidence):
+            tool_name = evidence.get("tool_name", "")
+            arguments = evidence.get("arguments", {})
+            result = evidence.get("result", {})
+            elapsed_ms = evidence.get("elapsed_ms")
+            if elapsed_ms is None and isinstance(result, dict):
+                elapsed_ms = result.get("elapsed_ms")
+
+            yield self._format_sse(
+                "tool_started",
+                {
+                    "tool_name": tool_name,
+                    "arguments": arguments,
+                    "step": -(evidence_index + 1),
+                    "status": "calling",
+                    "source": "initial_retrieval",
+                    "retrieval_plan_route": evidence.get("retrieval_plan_route"),
+                },
+            )
+
+            client_result = self._sanitize_tool_result_for_client(result)
+            yield self._format_sse(
+                "tool_completed",
+                {
+                    "tool_name": tool_name,
+                    "result": client_result,
+                    "step": -(evidence_index + 1),
+                    "elapsed_ms": elapsed_ms,
+                    "status": "completed",
+                    "source": "initial_retrieval",
+                    "retrieval_plan_route": evidence.get("retrieval_plan_route"),
+                },
+            )
+
             tool_results_for_answer.append(
                 self._sanitize_tool_result_for_client(evidence)
             )
             messages.append(self._planner_evidence_message(evidence))
 
+        active_tools = [] if (skip_initial_retrieval and not web_search_active) else runtime_tools
+        if suppress_user_library_fallback and not has_valid_explicit_scope:
+            active_tools = self._tools_for_request(web_search_enabled=web_search_active)
+            active_tools = [
+                tool
+                for tool in active_tools
+                if tool.get("function", {}).get("name") == "web_search"
+            ]
+        elif not has_valid_explicit_scope and not needs_document_retrieval:
+            active_tools = []
+
         # Agent 循环
         for step_num in range(max_steps):
             # 流式调用模型（带工具）
             tool_logger.info(
-                f"Sending {len(runtime_tools)} tools: {[t['function']['name'] for t in runtime_tools]}"
+                f"Sending {len(active_tools)} tools: {[t['function']['name'] for t in active_tools]}"
             )
             response = await chat_by_scenario(
                 scenario="qa",
                 messages=messages,
-                tools=runtime_tools,
+                tools=active_tools,
                 stream=True,
                 user_id=user_id,
+                allow_deterministic_tools=bool(initial_evidence),
             )
 
             # 收集本轮响应
@@ -390,19 +599,12 @@ class AgentService:
                 # 流式输出 thinking（reasoning_content）
                 if hasattr(delta, "reasoning_content") and delta.reasoning_content:
                     reasoning_content += delta.reasoning_content
-                    yield self._format_sse(
-                        "thinking",
-                        {
-                            "content": delta.reasoning_content,
-                            "step": step_num,
-                        },
-                    )
 
                 # 流式输出答案内容
                 if delta.content:
                     assistant_content += delta.content
                     yield self._format_sse(
-                        "content",
+                        "answer_delta",
                         {
                             "content": delta.content,
                         },
@@ -474,7 +676,7 @@ class AgentService:
                     f"Calling {tool_name} with {json.dumps(tool_args, ensure_ascii=False)[:200]}"
                 )
                 yield self._format_sse(
-                    "tool_call",
+                    "tool_started",
                     {
                         "tool_name": tool_name,
                         "arguments": tool_args,
@@ -539,7 +741,7 @@ class AgentService:
 
                 # 发送工具结果事件
                 yield self._format_sse(
-                    "tool_result",
+                    "tool_completed",
                     {
                         "tool_name": tool_name,
                         "result": client_result,
@@ -596,62 +798,15 @@ class AgentService:
                     continue
                 delta = chunk.choices[0].delta
                 if hasattr(delta, "reasoning_content") and delta.reasoning_content:
-                    yield self._format_sse(
-                        "thinking",
-                        {"content": delta.reasoning_content, "step": max_steps},
-                    )
+                    pass
                 if delta.content:
                     assistant_content += delta.content
-                    yield self._format_sse("content", {"content": delta.content})
+                    yield self._format_sse("answer_delta", {"content": delta.content})
             if assistant_content:
                 messages.append({"role": "assistant", "content": assistant_content})
 
-        # 最终兜底：避免前端长时间等待后无可见输出
         if not assistant_content:
-            assistant_content = "我已完成检索，但暂时无法整理出最终回答。请换个问法，或指定文档与页码后我继续回答。"
-            yield self._format_sse("content", {"content": assistant_content})
-            messages.append({"role": "assistant", "content": assistant_content})
-
-        # 轻量引用修复：有工具证据但模型漏掉文档引用时，追加最近证据的来源标记。
-        citation_suffix = build_missing_citation_suffix(
-            assistant_content,
-            tool_results_for_answer,
-        )
-        if citation_suffix:
-            assistant_content += citation_suffix
-            yield self._format_sse("content", {"content": citation_suffix})
-            for message in reversed(messages):
-                if message.get("role") == "assistant" and isinstance(
-                    message.get("content"), str
-                ):
-                    message["content"] = str(message["content"]) + citation_suffix
-                    break
-
-        citation_bindings = bind_answer_citations(
-            assistant_content,
-            tool_results_for_answer,
-        )
-
-        # 静默日志：检查引用格式（不影响用户，仅用于数据驱动优化 prompt）
-        if tool_results_for_answer and assistant_content:
-            if not has_document_citation(assistant_content):
-                agent_logger.warning(
-                    f"[CITATION_MISS] conv={conversation_id}, "
-                    f"tools={[r['tool_name'] for r in tool_results_for_answer]}, "
-                    f"content_len={len(assistant_content)}"
-                )
-
-        # 发送完成事件
-        yield self._format_sse(
-            "done",
-            {
-                "conversation_id": conversation_id,
-                "tool_results": self._sanitize_tool_result_for_client(
-                    tool_results_for_answer
-                ),
-                "citation_bindings": citation_bindings,
-            },
-        )
+            raise RuntimeError("No final answer generated by the selected model")
 
         # 保存完整消息历史到全局缓存（包含工具调用记录，供下一轮使用）
         if conversation_state_key:
@@ -690,15 +845,43 @@ class AgentService:
     async def _execute_initial_retrieval_plan(
         question: str,
         tool_executor: ToolExecutor,
-        preferred_document_ids: Optional[List[str]],
-        folder_id: Optional[str],
-        include_subfolders: bool,
-        strict_scope: Optional[bool],
+        document_ids: Optional[List[str]] = None,
+        preferred_document_ids: Optional[List[str]] = None,
+        folder_id: Optional[str] = None,
+        include_subfolders: bool = False,
+        strict_scope: Optional[bool] = None,
+        web_search_requested: bool = False,
+        web_search_enabled: bool = False,
+        web_search_settings: Optional[Dict[str, Any]] = None,
+        suppress_user_library_fallback: bool = False,
     ) -> List[Dict[str, Any]]:
+        folder_id = normalize_folder_id(folder_id)
+        if web_search_requested and web_search_enabled:
+            arguments = {"query": question}
+            result = await execute_web_search_tool(
+                arguments=arguments,
+                settings=web_search_settings or DEFAULT_WEB_SEARCH_SETTINGS,
+            )
+            return [
+                {
+                    "tool_name": "web_search",
+                    "arguments": arguments,
+                    "result": result,
+                    "retrieval_plan_route": "web_search",
+                }
+            ]
+        if suppress_user_library_fallback:
+            return []
+
         planner = RetrievalPlanner()
+        planner_document_ids = (
+            preferred_document_ids
+            if preferred_document_ids is not None
+            else document_ids
+        )
         plan = planner.plan(
             question=question,
-            document_ids=preferred_document_ids,
+            document_ids=planner_document_ids,
             folder_id=folder_id,
             include_subfolders=include_subfolders,
             strict_scope=strict_scope,
@@ -874,13 +1057,13 @@ class AgentService:
         question: str,
         conversation_id: Optional[str] = None,
         history_messages: Optional[List[Dict[str, Any]]] = None,
+        user_id: str = None,
     ) -> AsyncGenerator[str, None]:
         """
         简单聊天模式 - 当没有文档时使用
         直接调用 LLM，不使用任何工具
         """
         from app.prompts import CHAT_SYSTEM_PROMPT
-        from app.core.llm import async_chat_completion
 
         try:
             print(f"[SimpleChat] Starting simple chat for question: {question[:50]}...")
@@ -901,10 +1084,11 @@ class AgentService:
             print(f"[SimpleChat] Messages prepared, calling LLM...")
 
             # 调用 LLM（不带工具）
-            response = await async_chat_completion(
+            response = await chat_by_scenario(
+                scenario="qa",
                 messages=messages,
-                model=None,  # 使用默认模型
                 stream=True,
+                user_id=user_id,
                 temperature=0.7,
             )
 
@@ -922,28 +1106,25 @@ class AgentService:
 
                 # 输出 reasoning_content（思考过程）
                 if hasattr(delta, "reasoning_content") and delta.reasoning_content:
-                    yield self._format_sse(
-                        "thinking", {"content": delta.reasoning_content, "step": 0}
-                    )
+                    pass
 
                 # 输出内容
                 if delta.content:
                     full_content += delta.content
-                    yield self._format_sse("content", {"content": delta.content})
+                    yield self._format_sse("answer_delta", {"content": delta.content})
 
             print(
                 f"[SimpleChat] Stream complete, {chunk_count} chunks, {len(full_content)} chars"
             )
-
-            # 发送完成事件
-            yield self._format_sse("done", {"content": full_content})
+            if not full_content:
+                raise RuntimeError("No final answer generated by the selected model")
 
         except Exception as e:
             print(f"[SimpleChat] Error: {e}")
             import traceback
 
             traceback.print_exc()
-            yield self._format_sse("error", {"message": str(e)})
+            raise
 
     def _trim_history(
         self, history_messages: List[Dict[str, Any]], current_question: str
@@ -961,6 +1142,37 @@ class AgentService:
                 trimmed.append({"role": role, "content": content})
 
         return trimmed
+
+    @staticmethod
+    def _is_image_only_question(question: str) -> bool:
+        text = (question or "").lower()
+        image_terms = [
+            "图片",
+            "截图",
+            "图里",
+            "图中",
+            "这张图",
+            "这张图片",
+            "screen",
+            "screenshot",
+            "image",
+            "picture",
+        ]
+        document_terms = [
+            "文档",
+            "文件",
+            "资料库",
+            "文件夹",
+            "报告",
+            "pdf",
+            "document",
+            "file",
+            "folder",
+            "library",
+        ]
+        return any(term in text for term in image_terms) and not any(
+            term in text for term in document_terms
+        )
 
     @staticmethod
     def _build_doc_scope_instruction(document_ids: List[str]) -> str:
@@ -985,6 +1197,7 @@ class AgentService:
         include_subfolders: bool = False,
         strict_scope: Optional[bool] = None,
     ) -> Dict[str, Any]:
+        folder_id = normalize_folder_id(folder_id)
         patched = dict(tool_args)
         preferred_scope_ids = list(preferred_document_ids or [])
         request_scope_ids = list(document_ids or [])
@@ -1020,9 +1233,9 @@ class AgentService:
             )
             if scope_ids and strict_or_unspecified and not patched.get("document_ids"):
                 patched["document_ids"] = scope_ids
-            if folder_id and not patched.get("folder_id"):
+            if folder_id and strict_or_unspecified and not patched.get("folder_id"):
                 patched["folder_id"] = folder_id
-            if include_subfolders and "recursive" not in patched:
+            if include_subfolders and strict_or_unspecified and "recursive" not in patched:
                 patched["recursive"] = include_subfolders
             return patched
 

@@ -108,6 +108,9 @@ def test_migrations_create_history_and_are_idempotent() -> None:
                 "20260615_004_add_ocr_settings_tables",
                 "20260625_005_add_web_search_settings_table",
                 "20260625_006_add_chat_attachments",
+                "20260626_007_add_model_provider_response_capabilities",
+                "20260626_008_add_agent_runs_events_citations",
+                "20260626_009_add_model_route_capabilities",
             ]
 
     asyncio.run(run())
@@ -252,13 +255,112 @@ def test_migrations_add_model_settings_tables() -> None:
                 "base_url",
                 "api_key_ciphertext",
                 "api_key_mask",
+                "supports_responses_api",
+                "supports_reasoning_effort",
+                "supports_reasoning_summary",
             }.issubset(provider_columns)
             assert {
                 "user_id",
                 "route_slot",
                 "provider_id",
                 "model",
+                "supports_streaming",
+                "supports_tool_calling",
+                "supports_vision",
+                "supports_structured_output",
+                "supports_responses_api",
                 "route_version",
             }.issubset(route_columns)
+
+    asyncio.run(run())
+
+
+def test_migrations_add_agent_run_storage_and_message_ordering() -> None:
+    async def run() -> None:
+        async with aiosqlite.connect(":memory:") as db:
+            await _create_bootstrap_schema(db)
+            await db.execute(
+                """
+                INSERT INTO conversations (id, title, user_id)
+                VALUES ('conv-a', 'Conversation A', 'user-a')
+                """
+            )
+            await db.executemany(
+                """
+                INSERT INTO messages (id, conversation_id, role, content, created_at)
+                VALUES (?, 'conv-a', ?, ?, ?)
+                """,
+                [
+                    ("msg-c", "assistant", "third", "2026-06-26 10:00:03"),
+                    ("msg-a", "user", "first", "2026-06-26 10:00:01"),
+                    ("msg-b", "assistant", "second", "2026-06-26 10:00:02"),
+                ],
+            )
+            await db.commit()
+
+            await run_migrations(db)
+            await run_migrations(db)
+
+            message_columns = await _column_names(db, "messages")
+            assert {"sequence", "run_id"}.issubset(message_columns)
+
+            assert {
+                "id",
+                "conversation_id",
+                "user_message_id",
+                "assistant_message_id",
+                "status",
+                "provider_id",
+                "model",
+                "protocol",
+                "started_at",
+                "completed_at",
+                "error",
+            }.issubset(await _column_names(db, "agent_runs"))
+            assert {
+                "id",
+                "run_id",
+                "seq",
+                "event_type",
+                "payload_json",
+                "created_at",
+            }.issubset(await _column_names(db, "agent_run_events"))
+            assert {
+                "id",
+                "message_id",
+                "citation_key",
+                "document_id",
+                "document_name",
+                "source_anchor_json",
+                "display_label",
+                "preview_kind",
+            }.issubset(await _column_names(db, "message_citations"))
+
+            cursor = await db.execute(
+                """
+                SELECT id, sequence
+                FROM messages
+                WHERE conversation_id = 'conv-a'
+                ORDER BY sequence
+                """
+            )
+            assert await cursor.fetchall() == [
+                ("msg-a", 1),
+                ("msg-b", 2),
+                ("msg-c", 3),
+            ]
+
+            assert "idx_messages_conversation_sequence" in await _index_names(
+                db, "messages"
+            )
+            assert "idx_agent_runs_conversation_started" in await _index_names(
+                db, "agent_runs"
+            )
+            assert "idx_agent_run_events_run_seq" in await _index_names(
+                db, "agent_run_events"
+            )
+            assert "idx_message_citations_message" in await _index_names(
+                db, "message_citations"
+            )
 
     asyncio.run(run())

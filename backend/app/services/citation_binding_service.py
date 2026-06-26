@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 from typing import Any
+from urllib.parse import urlparse
 
 
 _CITATION_RE = re.compile(r"\[\[([^\[\]]+)\]\]")
@@ -87,6 +88,35 @@ def collect_citation_evidence(tool_results: list[dict[str, Any]]) -> list[dict[s
     return collected[:24]
 
 
+def collect_web_sources(tool_results: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    collected: list[dict[str, Any]] = []
+    seen_urls: set[str] = set()
+
+    def visit(value: Any, depth: int = 0) -> None:
+        if value is None or depth > 5 or len(collected) >= 24:
+            return
+        if isinstance(value, list):
+            for item in value:
+                visit(item, depth + 1)
+            return
+        if not isinstance(value, dict):
+            return
+
+        source = _web_source_from_record(value, len(collected) + 1)
+        if source:
+            url = source["url"]
+            if url not in seen_urls:
+                seen_urls.add(url)
+                collected.append(source)
+
+        for nested in value.values():
+            if isinstance(nested, (dict, list)):
+                visit(nested, depth + 1)
+
+    visit(tool_results)
+    return collected
+
+
 def _parse_citation_label(label: str) -> dict[str, Any] | None:
     normalized = re.sub(r"\s+", " ", (label or "").strip())
     if not normalized:
@@ -99,6 +129,31 @@ def _parse_citation_label(label: str) -> dict[str, Any] | None:
         "document_name": match.group(1).strip(),
         "position_type": _normalize_position_type(match.group(2)),
         "position": _first_number(match.group(3)),
+    }
+
+
+def _web_source_from_record(record: dict[str, Any], number: int) -> dict[str, Any] | None:
+    url = _first_string(record, "url", "link")
+    if not url:
+        return None
+    if record.get("source") != "anysearch" and not (
+        "content_preview" in record or "snippet" in record
+    ):
+        return None
+
+    parsed = urlparse(url)
+    domain = parsed.netloc.replace("www.", "", 1)
+    title = _first_string(record, "title", "name") or domain or url
+    return {
+        "type": "web",
+        "source_id": f"web-{number}",
+        "title": title,
+        "display_label": title,
+        "url": url,
+        "domain": domain,
+        "snippet": _first_string(record, "snippet", "summary") or "",
+        "content_preview": _first_string(record, "content_preview", "content") or "",
+        "provider": str(record.get("source") or "web"),
     }
 
 

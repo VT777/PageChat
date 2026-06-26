@@ -427,3 +427,45 @@ npm.cmd run build
 1. 完成 OCR、解析、问答设置的后端持久化与前端真实接入。
 2. 补齐 Documents 后端动作：文件夹递归下载、重新解析、移动、删除。
 3. 清理真实用户流中的 demo fallback，并把当前产品闭环分支合入集成基线。
+
+## Agent Runtime Event Protocol Integration
+
+当前 agent runtime 以 `docs/architecture/pagechat_agent_runtime_event_protocol.md` 为准。
+
+集成时遵守以下规则：
+
+1. 后端对浏览器只输出 PageChat 新事件协议：
+   - `run_started`
+   - `progress`
+   - `tool_started`
+   - `tool_completed`
+   - `answer_delta`
+   - `citation_added`
+   - `run_completed`
+   - `run_failed`
+   - `run_cancelled`
+2. 不再新增依赖 legacy stream events：
+   - `thinking`
+   - `content`
+   - `tool_call`
+   - `tool_result`
+   - `done`
+3. `AgentService` 内部也应产出 PageChat 风格事件片段，由 `ChatService` 负责补齐 run metadata、持久化 `agent_run_events`、更新 assistant message、绑定 citations。
+4. `thinking_content` 只作为旧数据库记录兼容字段保留。新 run 不应展示或保存 raw provider reasoning。
+5. 引用必须优先来自结构化 citation，而不是只靠 markdown 正则解析。前端点击 citation 后打开右侧集成预览 pane。
+6. 每个 assistant answer 只能使用一个 provider protocol，并写入 `agent_runs.protocol`。不要在同一 run 内从 Responses API fallback 到 Chat Completions 或其他协议。
+7. 调试 run 时优先使用：
+
+```powershell
+GET /api/chat/runs/{run_id}/events?after_seq=0
+```
+
+再检查：
+
+- `agent_runs`
+- `agent_run_events`
+- `message_citations`
+
+合并 frontend 分支时，`frontend/src/types/stream.ts` 必须保持只声明新协议事件；如果需要显示旧消息，只在历史消息渲染层做兼容，不要重新引入旧 SSE 事件消费路径。
+
+手工验收步骤以 `docs/superpowers/qa/2026-06-26-agent-runtime-verification.md` 和 `docs/architecture/pagechat_agent_runtime_event_protocol.md` 的 “Manual QA Checklist” 为准。至少覆盖文档范围问答、普通问题、工具 timeline、inline citations、右侧预览、PDF 180% 缩放、Documents -> Chat 历史保持、以及 run replay 中没有 legacy SSE events。

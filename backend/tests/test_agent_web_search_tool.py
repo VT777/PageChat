@@ -5,6 +5,7 @@ import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from app.services.agent_service import AgentService  # noqa: E402
+from app.services.citation_binding_service import collect_web_sources  # noqa: E402
 from app.services.tool_executor import AGENT_TOOLS  # noqa: E402
 from app.services.web_search_tool import execute_web_search_tool  # noqa: E402
 
@@ -82,3 +83,38 @@ def test_execute_web_search_tool_respects_disabled_settings() -> None:
         assert result["error_code"] == "web_search_disabled"
 
     asyncio.run(run())
+
+
+def test_collect_web_sources_from_anysearch_results() -> None:
+    sources = collect_web_sources(
+        [
+            {
+                "tool_name": "web_search",
+                "result": {
+                    "results": [
+                        {
+                            "title": "Beijing weather",
+                            "url": "https://weather.example/beijing",
+                            "snippet": "Sunny and warm.",
+                            "content_preview": "Detailed forecast preview.",
+                            "source": "anysearch",
+                        }
+                    ]
+                },
+            }
+        ]
+    )
+
+    assert sources == [
+        {
+            "type": "web",
+            "source_id": "web-1",
+            "title": "Beijing weather",
+            "display_label": "Beijing weather",
+            "url": "https://weather.example/beijing",
+            "domain": "weather.example",
+            "snippet": "Sunny and warm.",
+            "content_preview": "Detailed forecast preview.",
+            "provider": "anysearch",
+        }
+    ]

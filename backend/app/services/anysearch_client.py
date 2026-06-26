@@ -98,20 +98,38 @@ class AnySearchClient:
                 or (body.get("data") or {}).get("retry_after"),
             )
 
+        data = body.get("data") if isinstance(body.get("data"), dict) else {}
         metadata = body.get("metadata") if isinstance(body.get("metadata"), dict) else {}
+        data_metadata = (
+            data.get("metadata") if isinstance(data.get("metadata"), dict) else {}
+        )
+        raw_results = body.get("results")
+        if raw_results is None:
+            raw_results = data.get("results")
+        if not isinstance(raw_results, list):
+            raw_results = []
         return {
             "success": True,
             "query": payload["query"],
             "results": [
                 self._compact_result(item)
-                for item in body.get("results", [])
+                for item in raw_results
                 if isinstance(item, dict)
             ],
             "metadata": {
-                "request_id": metadata.get("request_id") or body.get("request_id"),
+                "request_id": (
+                    metadata.get("request_id")
+                    or data_metadata.get("request_id")
+                    or data.get("request_id")
+                    or body.get("request_id")
+                ),
                 "search_time_ms": metadata.get("search_time_ms")
+                or data_metadata.get("search_time_ms")
+                or data.get("search_time_ms")
                 or body.get("search_time_ms"),
                 "total_results": metadata.get("total_results")
+                or data_metadata.get("total_results")
+                or data.get("total_results")
                 or body.get("total_results"),
             },
         }

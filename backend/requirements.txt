@@ -17,6 +17,7 @@ PyJWT==2.13.0
 email-validator==2.3.0
 jieba==0.42.1
 litellm==1.88.0
+langgraph==1.2.6
 nest-asyncio==1.6.0
 sentence-transformers==5.5.1
 transformers

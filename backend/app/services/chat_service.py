@@ -6,17 +6,30 @@
 
 import json
 import re
+import uuid
+import asyncio
 from typing import AsyncGenerator, List, Optional
 import aiosqlite
 
 from app.core import config
 from app.services.document_service import DocumentService
-from app.core.llm import chat_by_scenario
-from app.prompts import CHAT_SYSTEM_PROMPT, build_tool_catalog
 from app.services.chat_attachment_service import ChatAttachmentService
-from app.services.tool_executor import AGENT_TOOLS
 from app.services.web_search_settings_service import WebSearchSettingsService
+from app.agent.events import (
+    PageChatEventEmitter,
+    citation_events_from_tool_result,
+    parse_sse_frame,
+    sse_frame,
+)
+from app.agent.citations import citation_dedupe_key, dedupe_citations
+from app.agent.nodes import compact_tool_result
+from app.agent.provider_adapter import CHAT_COMPLETIONS_PROTOCOL
+from app.services.chat_run_repository import ChatRunRepository
+from app.services.tool_executor import AGENT_TOOLS
 from app.services.web_search_tool import WEB_SEARCH_TOOL
+from app.services.folder_service import FolderService
+from app.services.retrieval_policy import normalize_folder_id
+from app.prompts import build_tool_catalog
 
 
 class ChatService:
@@ -26,6 +39,8 @@ class ChatService:
         self.db = db
         self.agent_service = None
         self.document_service = DocumentService(db)
+        self.folder_service = FolderService(db)
+        self.run_repository = ChatRunRepository(db)
 
     def _get_agent_service(self):
         if self.agent_service is None:
@@ -41,26 +56,59 @@ class ChatService:
         return max(1, config.MULTITURN_MAX_USER_ROUNDS * 2)
 
     async def _runtime_tools_for_request(
-        self, *, user_id: str | None, web_search: bool
+        self,
+        *,
+        user_id: str | None,
+        web_search_requested: bool,
+        web_search_enabled: bool,
     ) -> list[dict]:
-        enabled = bool(web_search)
+        enabled = bool(web_search_requested or web_search_enabled)
         if not enabled and self.db is not None and user_id:
             settings = await WebSearchSettingsService(self.db).resolve_for_request(
                 user_id=user_id,
-                requested=False,
+                requested=web_search_requested,
             )
             enabled = bool(settings.get("enabled"))
-        tools = list(AGENT_TOOLS)
+        tools = [
+            tool
+            for tool in AGENT_TOOLS
+            if tool.get("function", {}).get("name") != "web_search"
+        ]
         if enabled:
-            tools.append(WEB_SEARCH_TOOL)
+            web_tool = next(
+                (
+                    tool
+                    for tool in AGENT_TOOLS
+                    if tool.get("function", {}).get("name") == "web_search"
+                ),
+                WEB_SEARCH_TOOL,
+            )
+            tools.append(web_tool)
         return tools
+
+    async def _resolve_valid_folder_id(
+        self, folder_id: Optional[str], user_id: Optional[str]
+    ) -> tuple[Optional[str], bool]:
+        normalized = normalize_folder_id(folder_id)
+        if not normalized:
+            return None, False
+        folder = await self.folder_service.get_folder(normalized, user_id=user_id)
+        if not folder:
+            return None, True
+        return normalized, False
 
     async def get_history_messages(
         self, conversation_id: str, limit: int = 20
     ) -> List[dict]:
         """获取历史消息"""
         cursor = await self.db.execute(
-            "SELECT role, content, thinking_content, agent_steps, status FROM messages WHERE conversation_id = ? ORDER BY created_at ASC LIMIT ?",
+            """
+            SELECT role, content, thinking_content, agent_steps, status
+            FROM messages
+            WHERE conversation_id = ?
+            ORDER BY COALESCE(sequence, 999999), created_at, id
+            LIMIT ?
+            """,
             (conversation_id, limit),
         )
         rows = await cursor.fetchall()
@@ -106,30 +154,22 @@ class ChatService:
         agent_steps: str = "[]",
         status: str = "completed",
         attachments: Optional[List[dict]] = None,
+        run_id: str = None,
     ) -> str:
         """保存消息，返回消息 ID"""
-        message_id = __import__("uuid").uuid4().hex[:16]
-        attachments_json = self._attachments_json(attachments)
-        await self.db.execute(
-            """INSERT INTO messages 
-               (id, conversation_id, role, content, thinking_content, agent_steps, status, attachments_json) 
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-            (
-                message_id,
-                conversation_id,
-                role,
-                content,
-                thinking_content,
-                agent_steps,
-                status,
-                attachments_json,
-            ),
+        return await self.run_repository.create_message(
+            conversation_id,
+            role,
+            content,
+            thinking_content=thinking_content,
+            agent_steps=agent_steps,
+            status=status,
+            run_id=run_id,
+            attachments=self._attachment_metadata(attachments),
         )
-        await self.db.commit()
-        return message_id
 
     @staticmethod
-    def _attachments_json(attachments: Optional[List[dict]]) -> Optional[str]:
+    def _attachment_metadata(attachments: Optional[List[dict]]) -> Optional[List[dict]]:
         if not attachments:
             return None
         metadata = []
@@ -150,7 +190,7 @@ class ChatService:
             )
         if not metadata:
             return None
-        return json.dumps(metadata, ensure_ascii=False)
+        return metadata
 
     async def update_message(
         self,
@@ -184,7 +224,14 @@ class ChatService:
             f"UPDATE messages SET {', '.join(updates)} WHERE id = ?",
             params,
         )
-        await self.db.commit()
+        cursor = await self.db.execute(
+            "SELECT conversation_id FROM messages WHERE id = ?", (message_id,)
+        )
+        row = await cursor.fetchone()
+        if row:
+            await self.run_repository.touch_conversation(row[0])
+        else:
+            await self.db.commit()
 
     async def stream_chat(
         self,
@@ -195,6 +242,8 @@ class ChatService:
         include_subfolders: bool = False,
         strict_scope: Optional[bool] = None,
         web_search: bool = False,
+        web_search_requested: bool = False,
+        web_search_enabled: bool = False,
         attachment_ids: Optional[List[str]] = None,
         user_id: str = None,
     ) -> AsyncGenerator[str, None]:
@@ -203,20 +252,20 @@ class ChatService:
         实时保存所有中间状态到数据库
 
         SSE 事件：
-        - thinking: 模型思考过程
-        - content: 答案内容
-        - tool_call: 工具调用
-        - tool_result: 工具结果
-        - done: 完成
+        - run_started / progress
+        - tool_started / tool_completed
+        - answer_delta
+        - citation_added
+        - run_completed / run_failed / run_cancelled
         """
         conversation_id = await self.ensure_conversation(
             conversation_id, user_id=user_id
         )
-
-        # 尽早告知前端后端会话ID，避免页面切换时丢失映射
-        yield f"event: conversation\ndata: {json.dumps({'conversation_id': conversation_id}, ensure_ascii=False)}\n\n"
+        web_search_requested = bool(web_search_requested or web_search)
+        web_search_enabled = bool(web_search_enabled or web_search)
 
         request_attachments = []
+        attachment_error: Optional[str] = None
         attachment_ids = list(dict.fromkeys(attachment_ids or []))
         if attachment_ids:
             try:
@@ -224,19 +273,13 @@ class ChatService:
                     user_id, attachment_ids
                 )
             except ValueError as exc:
-                content = f"图片附件不可用：{exc}"
-                yield f"event: content\ndata: {json.dumps({'content': content}, ensure_ascii=False)}\n\n"
-                yield f"event: done\ndata: {json.dumps({'conversation_id': conversation_id}, ensure_ascii=False)}\n\n"
-                await self.save_message(
-                    conversation_id, "assistant", content, status="completed"
-                )
-                return
+                attachment_error = str(exc)
 
         # 保存用户消息
         user_message_id = await self.save_message(
             conversation_id, "user", question, attachments=request_attachments
         )
-        if attachment_ids:
+        if attachment_ids and not attachment_error:
             try:
                 await self._get_attachment_service().bind_to_message(
                     user_id,
@@ -245,44 +288,177 @@ class ChatService:
                     message_id=user_message_id,
                 )
             except ValueError as exc:
-                content = f"图片附件不可用：{exc}"
-                yield f"event: content\ndata: {json.dumps({'content': content}, ensure_ascii=False)}\n\n"
-                yield f"event: done\ndata: {json.dumps({'conversation_id': conversation_id}, ensure_ascii=False)}\n\n"
-                await self.save_message(
-                    conversation_id, "assistant", content, status="completed"
+                attachment_error = str(exc)
+        run_id = f"run_{uuid.uuid4().hex[:16]}"
+        full_content = ""
+        full_thinking = ""
+        tool_steps = []
+        pending_citations = []
+        emitted_citation_keys: set[str] = set()
+        last_tool_name = ""
+        assistant_message_id: Optional[str] = None
+        emitter: Optional[PageChatEventEmitter] = None
+        run_created = False
+        run_protocol = CHAT_COMPLETIONS_PROTOCOL
+
+        async def ensure_run(protocol: str = CHAT_COMPLETIONS_PROTOCOL) -> None:
+            nonlocal assistant_message_id, emitter, run_created, run_protocol
+            run_protocol = protocol
+            if assistant_message_id is None:
+                assistant_message_id = await self.save_message(
+                    conversation_id,
+                    "assistant",
+                    "",
+                    "",
+                    "[]",
+                    "streaming",
+                    run_id=run_id,
                 )
-                return
+            if not run_created:
+                await self.run_repository.create_run(
+                    run_id=run_id,
+                    conversation_id=conversation_id,
+                    user_message_id=user_message_id,
+                    assistant_message_id=assistant_message_id,
+                    protocol=protocol,
+                )
+                run_created = True
+            if emitter is None:
+                emitter = PageChatEventEmitter(
+                    run_id=run_id,
+                    conversation_id=conversation_id,
+                    message_id=assistant_message_id,
+                )
+
+        async def emit(event_type: str, payload: dict) -> str:
+            if emitter is None:
+                raise RuntimeError("Cannot emit run event before run is created")
+            built_event_type, data = emitter.build(event_type, payload)
+            seq = await self.run_repository.append_run_event(
+                run_id,
+                built_event_type,
+                data,
+            )
+            data["seq"] = seq
+            return sse_frame(built_event_type, data)
+
+        async def fail_current_run(error_message: str) -> str:
+            try:
+                await self.db.rollback()
+            except Exception:
+                pass
+            await ensure_run(run_protocol)
+            await self.update_message(
+                assistant_message_id,
+                content=full_content,
+                thinking_content=full_thinking,
+                agent_steps=json.dumps(tool_steps, ensure_ascii=False),
+                status="failed",
+            )
+            try:
+                frame = await emit(
+                    "run_failed",
+                    {
+                        "status": "failed",
+                        "error": error_message,
+                    },
+                )
+            except Exception:
+                if emitter is None:
+                    raise
+                built_event_type, data = emitter.build(
+                    "run_failed",
+                    {
+                        "status": "failed",
+                        "error": error_message,
+                    },
+                )
+                frame = sse_frame(built_event_type, data)
+            await self.run_repository.fail_run(run_id, error_message)
+            return frame
+
+        def citation_identity(citation: dict) -> str:
+            return citation_dedupe_key(citation)
+
+        async def emit_citation_once(citation: dict) -> Optional[str]:
+            key = citation_identity(citation)
+            if key in emitted_citation_keys:
+                return None
+            emitted_citation_keys.add(key)
+            return await emit("citation_added", {"citation": citation})
+
+        if attachment_error:
+            try:
+                await ensure_run("attachment_validation")
+                yield await emit("run_started", {"status": "running"})
+                yield await fail_current_run(f"图片附件不可用：{attachment_error}")
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                yield sse_frame("run_failed", {"error": str(e), "status": "failed"})
+            return
 
         # 工具查询走确定性响应，避免模型漏报工具
         if re.search(
-            r"(有哪些|有什么|能用|可用|支持).*(工具|tool)|(工具|tool).*(有哪些|有什么|能用|可用|支持)",
+            r"(有哪些|有什么|能用|可用|支持|available|support|use).*(工具|tools?|tooling)"
+            r"|(工具|tools?|tooling).*(有哪些|有什么|能用|可用|支持|available|support|use)",
             question,
             re.IGNORECASE,
         ):
             runtime_tools = await self._runtime_tools_for_request(
                 user_id=user_id,
-                web_search=web_search,
+                web_search_requested=web_search_requested,
+                web_search_enabled=web_search_enabled,
             )
             content = "当前可用工具如下：\n" + build_tool_catalog(runtime_tools)
-            yield f"event: content\ndata: {json.dumps({'content': content}, ensure_ascii=False)}\n\n"
-            yield f"event: done\ndata: {json.dumps({'conversation_id': conversation_id}, ensure_ascii=False)}\n\n"
-            await self.save_message(
-                conversation_id, "assistant", content, status="completed"
-            )
+            try:
+                await ensure_run("deterministic")
+                yield await emit("run_started", {"status": "running"})
+                full_content = content
+                yield await emit("answer_delta", {"content": content})
+                await self.run_repository.complete_run(
+                    run_id,
+                    final_content=content,
+                    citations=[],
+                )
+                yield await emit("run_completed", {"status": "completed"})
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                yield await fail_current_run(str(e))
             return
 
         # 获取历史消息
-        history = await self.get_history_messages(
-            conversation_id,
-            limit=self._history_message_limit(),
-        )
+        try:
+            history = await self.get_history_messages(
+                conversation_id,
+                limit=self._history_message_limit(),
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            yield await fail_current_run(str(e))
+            return
         # 去掉最后一条（当前问题）
         if history and history[-1].get("content") == question:
             history = history[:-1]
 
+        try:
+            await ensure_run(CHAT_COMPLETIONS_PROTOCOL)
+            yield await emit("run_started", {"status": "running"})
+
+            folder_id, invalid_folder_scope = await self._resolve_valid_folder_id(
+                folder_id, user_id
+            )
+
         # 获取可用文档
-        docs = await self.document_service.get_indexed_documents(user_id=user_id)
-        available_doc_ids = [d.id for d in docs]
+            docs = await self.document_service.get_indexed_documents(user_id=user_id)
+            available_doc_ids = [d.id for d in docs]
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            yield await fail_current_run(str(e))
+            return
 
         # 前端可指定文档范围：默认严格限制在选中文档；strict_scope=false 时才扩展到用户库。
         preferred_document_ids: Optional[List[str]] = None
@@ -290,98 +466,199 @@ class ChatService:
         valid_ids: List[str] = []
         if document_ids:
             valid_ids = [did for did in document_ids if did in available_doc_ids]
-            if valid_ids:
-                preferred_document_ids = valid_ids
+            preferred_document_ids = valid_ids
+
+        can_expand_to_user_library = bool(valid_ids or folder_id)
+        suppress_user_library_fallback = bool(
+            (requested_document_scope and not valid_ids and not folder_id)
+            or (invalid_folder_scope and not valid_ids)
+        )
 
         if requested_document_scope and strict_scope is not False:
             document_ids = valid_ids
-        else:
+        elif strict_scope is False and can_expand_to_user_library:
             document_ids = available_doc_ids if available_doc_ids else None
+        else:
+            document_ids = None
 
-        agent = self._get_agent_service()
-
-        # 创建助手消息并获取 ID
-        assistant_message_id = await self.save_message(
-            conversation_id, "assistant", "", "", "[]", "streaming"
-        )
+        try:
+            agent = self._get_agent_service()
+        except Exception as e:
+            yield await fail_current_run(str(e))
+            return
 
         # 累积的内容
         full_content = ""
-        full_thinking = ""
-        tool_steps = []
-
         # 上次保存的时间
         last_save_time = __import__("time").time()
         save_interval = 1.0  # 每秒保存一次
 
-        async for event in agent.run_agent_stream(
-            question=question,
-            conversation_id=conversation_id,
-            document_ids=document_ids,
-            preferred_document_ids=preferred_document_ids,
-            folder_id=folder_id,
-            include_subfolders=include_subfolders,
-            strict_scope=strict_scope,
-            web_search_requested=web_search,
-            request_attachments=request_attachments,
-            user_id=user_id,
-            history_messages=history,
-        ):
-            yield event
-
+        async def agent_events():
             try:
-                # 解析事件类型和内容
-                if event.startswith("event: "):
-                    lines = event.strip().split("\n")
-                    event_type = lines[0][7:].strip()  # 去掉 "event: "
-
-                    if len(lines) >= 2 and lines[1].startswith("data: "):
-                        data_str = lines[1][6:]  # 去掉 "data: "
-                        data = json.loads(data_str)
-
-                        # 根据事件类型更新累积内容
-                        if event_type == "thinking":
-                            full_thinking += data.get("content", "")
-                        elif event_type == "content":
-                            full_content += data.get("content", "")
-                        elif event_type == "tool_call":
-                            tool_steps.append(
-                                {
-                                    "toolName": data.get("tool_name", ""),
-                                    "arguments": data.get("arguments", {}),
-                                    "status": "calling",
-                                    "result": None,
-                                }
-                            )
-                        elif event_type == "tool_result":
-                            # 更新最后一个工具调用的结果
-                            if tool_steps:
-                                tool_steps[-1]["status"] = "done"
-                                tool_steps[-1]["result"] = data.get("result", {})
-                                tool_steps[-1]["elapsedMs"] = data.get("elapsed_ms")
-                        elif event_type == "done":
-                            # 标记完成
-                            pass
-            except Exception as e:
-                print(f"[ChatService] Error processing event: {e}")
-
-            # 定期保存到数据库
-            current_time = __import__("time").time()
-            if current_time - last_save_time >= save_interval:
+                async for agent_event in agent.run_agent_stream(
+                    question=question,
+                    conversation_id=conversation_id,
+                    document_ids=document_ids,
+                    preferred_document_ids=preferred_document_ids,
+                    folder_id=folder_id,
+                    include_subfolders=include_subfolders,
+                    strict_scope=strict_scope,
+                    web_search_requested=web_search_requested,
+                    web_search_enabled=web_search_enabled,
+                    request_attachments=request_attachments,
+                    suppress_user_library_fallback=suppress_user_library_fallback,
+                    user_id=user_id,
+                    history_messages=history,
+                ):
+                    yield agent_event
+            except asyncio.CancelledError:
                 await self.update_message(
                     assistant_message_id,
                     content=full_content,
                     thinking_content=full_thinking,
                     agent_steps=json.dumps(tool_steps, ensure_ascii=False),
-                    status="streaming",
+                    status="cancelled",
                 )
+                try:
+                    await emit("run_cancelled", {"status": "cancelled"})
+                except Exception:
+                    pass
+                await self.run_repository.cancel_run(run_id)
+                raise
+            except Exception as e:
+                yield sse_frame("__agent_error__", {"error": str(e)})
+
+        async for event in agent_events():
+            try:
+                # 解析事件类型和内容
+                if event.startswith("event: "):
+                    event_type, data = parse_sse_frame(event)
+
+                    # 根据事件类型更新累积内容并转为 PageChat 标准事件。
+                    if event_type == "__agent_error__":
+                        error_message = data.get("error") or "Agent stream failed"
+                        yield await fail_current_run(error_message)
+                        return
+                    elif event_type == "progress":
+                        progress_payload = dict(data)
+                        for metadata_key in (
+                            "run_id",
+                            "conversation_id",
+                            "message_id",
+                            "seq",
+                            "ts",
+                        ):
+                            progress_payload.pop(metadata_key, None)
+                        yield await emit("progress", progress_payload)
+                    elif event_type == "answer_delta":
+                        content_delta = data.get("content", "")
+                        full_content += content_delta
+                        yield await emit("answer_delta", {"content": content_delta})
+                    elif event_type == "tool_started":
+                        last_tool_name = data.get("tool_name", "")
+                        arguments = data.get("arguments", {})
+                        tool_steps.append(
+                            {
+                                "toolName": last_tool_name,
+                                "arguments": arguments,
+                                "status": "calling",
+                                "result": None,
+                            }
+                        )
+                        yield await emit(
+                            "tool_started",
+                            {
+                                "tool_name": last_tool_name,
+                                "arguments": arguments,
+                            },
+                        )
+                    elif event_type == "tool_completed":
+                        result = data.get("result", {})
+                        compact_result = compact_tool_result(result)
+                        elapsed_ms = data.get("elapsed_ms")
+                        tool_name = data.get("tool_name") or last_tool_name
+                        if tool_steps:
+                            tool_steps[-1]["status"] = "done"
+                            tool_steps[-1]["result"] = compact_result
+                            tool_steps[-1]["elapsedMs"] = elapsed_ms
+                        pending_citations = dedupe_citations(
+                            pending_citations
+                            + citation_events_from_tool_result(result)
+                        )
+                        yield await emit(
+                            "tool_completed",
+                            {
+                                "tool_name": tool_name,
+                                "result": compact_result,
+                                "elapsed_ms": elapsed_ms,
+                            },
+                        )
+                    elif event_type == "citation_added":
+                        citation = data.get("citation")
+                        if isinstance(citation, dict):
+                            previous_count = len(pending_citations)
+                            pending_citations = dedupe_citations(
+                                pending_citations + [citation]
+                            )
+                            if len(pending_citations) > previous_count:
+                                citation_frame = await emit_citation_once(citation)
+                                if citation_frame:
+                                    yield citation_frame
+                    elif event_type == "run_failed":
+                        error_message = data.get("error") or "Agent stream failed"
+                        yield await fail_current_run(error_message)
+                        return
+                    else:
+                        yield await fail_current_run(
+                            f"Unsupported agent event: {event_type}"
+                        )
+                        return
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                yield await fail_current_run(str(e))
+                return
+
+            # 定期保存到数据库
+            current_time = __import__("time").time()
+            if current_time - last_save_time >= save_interval:
+                try:
+                    await self.update_message(
+                        assistant_message_id,
+                        content=full_content,
+                        thinking_content=full_thinking,
+                        agent_steps=json.dumps(tool_steps, ensure_ascii=False),
+                        status="streaming",
+                    )
+                except asyncio.CancelledError:
+                    raise
+                except Exception as e:
+                    yield await fail_current_run(str(e))
+                    return
                 last_save_time = current_time
 
         # 最终保存（标记为完成）
-        await self.update_message(
-            assistant_message_id,
-            content=full_content,
-            thinking_content=full_thinking,
-            agent_steps=json.dumps(tool_steps, ensure_ascii=False),
-            status="completed",
-        )
+        try:
+            pending_citations = dedupe_citations(pending_citations)
+            for citation in pending_citations:
+                citation_frame = await emit_citation_once(citation)
+                if citation_frame:
+                    yield citation_frame
+            await self.update_message(
+                assistant_message_id,
+                content=full_content,
+                thinking_content=full_thinking,
+                agent_steps=json.dumps(tool_steps, ensure_ascii=False),
+                status="streaming",
+            )
+            await self.run_repository.complete_run(
+                run_id,
+                final_content=full_content,
+                citations=dedupe_citations(pending_citations),
+            )
+            yield await emit("run_completed", {"status": "completed"})
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            yield await fail_current_run(str(e))
+            return

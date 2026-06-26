@@ -139,6 +139,30 @@ def test_allowed_doc_ids_empty_allows_no_documents() -> None:
     asyncio.run(run())
 
 
+def test_allowed_doc_ids_rejects_same_user_document_outside_scope() -> None:
+    async def run() -> None:
+        docs = FakeDocumentService()
+        docs.owners["doc-c"] = "user-a"
+        docs.docs["doc-c"] = _doc("doc-c", "user-a", "gamma.pdf")
+        index = FakePageIndexService()
+        executor = ToolExecutor(
+            index,
+            docs,
+            user_id="user-a",
+            allowed_doc_ids=["doc-a"],
+        )
+
+        result = await executor.execute(
+            "get_document_structure", {"doc_id": "doc-c"}
+        )
+
+        assert "error" in result
+        assert docs.get_document_calls == []
+        assert index.load_index_calls == []
+
+    asyncio.run(run())
+
+
 def test_aggregate_tables_reports_rejected_document_ids() -> None:
     async def run() -> None:
         docs = FakeDocumentService()

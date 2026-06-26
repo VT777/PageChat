@@ -29,7 +29,6 @@ def test_agent_prompt_prefers_navigation_tools_over_raw_retrieval() -> None:
     assert "not as final evidence" in prompt
     assert "visual pages intentionally omit OCR text" in prompt
 
-
 def test_agent_prompt_describes_keyword_document_locator_rules() -> None:
     prompt = build_agent_system_prompt(AGENT_TOOLS)
 
@@ -38,3 +37,19 @@ def test_agent_prompt_describes_keyword_document_locator_rules() -> None:
     assert "use search matches to choose pages, then fetch source content or page images" in prompt
     assert "OCR/visual search matches must be verified through get_page_image or get_document_image" in prompt
     assert "do not repeat the same tool call with identical arguments" in prompt
+
+
+def test_agent_prompt_matches_latest_user_language_without_forcing_chinese() -> None:
+    prompt = build_agent_system_prompt(AGENT_TOOLS, lang="zh")
+
+    assert "Answer in the same language as the user's latest question" in prompt
+    assert "Tool arguments may use search/document terms in the language best suited to retrieval" in prompt
+    assert "Keep visible reasoning/progress notes concise and in the user's language" in prompt
+    assert "You MUST think and respond in Chinese" not in prompt
+
+
+def test_agent_prompt_does_not_require_legacy_text_citation_markers() -> None:
+    prompt = build_agent_system_prompt(AGENT_TOOLS)
+
+    assert "[[" not in prompt
+    assert "citation marker" not in prompt.lower()
