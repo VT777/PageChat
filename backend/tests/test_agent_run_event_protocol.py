@@ -15,9 +15,60 @@ from phase0_chat_helpers import (  # noqa: E402
     parse_sse_frames,
     sse_frame,
 )
+from app.agent.loop_runtime import ObservationBuilder  # noqa: E402
+from app.agent.nodes import compact_tool_result  # noqa: E402
 
 
 LEGACY_STREAM_EVENTS = {"thinking", "content", "tool_call", "tool_result", "done"}
+
+
+def test_compact_tool_result_preserves_error_and_next_steps() -> None:
+    result = compact_tool_result(
+        {
+            "success": False,
+            "error": "Document report.pdf does not exist. Use doc_id='doc-a'.",
+            "next_steps": {
+                "summary": "Retry with the resolved document id.",
+                "options": [
+                    "Retry search_within_document(doc_id='doc-a', query='alpha')."
+                ],
+            },
+        },
+        tool_name="search_within_document",
+    )
+
+    assert result == {
+        "success": False,
+        "status": "error",
+        "summary": "Document report.pdf does not exist. Use doc_id='doc-a'.",
+        "error": "Document report.pdf does not exist. Use doc_id='doc-a'.",
+        "items": [],
+        "citations": [],
+        "next_steps": [
+            "Retry with the resolved document id.",
+            "Retry search_within_document(doc_id='doc-a', query='alpha').",
+        ],
+    }
+
+
+def test_observation_builder_surfaces_tool_error_instead_of_empty_result() -> None:
+    observation = ObservationBuilder().build(
+        tool_name="search_within_document",
+        arguments={"doc_id": "report.pdf", "query": "alpha"},
+        result={
+            "success": False,
+            "error": "Document report.pdf does not exist. Use doc_id='doc-a'.",
+            "next_steps": ["Retry with doc_id='doc-a'."],
+        },
+        step=1,
+    )
+
+    assert observation["message"] == "Document report.pdf does not exist. Use doc_id='doc-a'."
+    assert observation["success"] is False
+    assert observation["status"] == "error"
+    assert observation["error"] == "Document report.pdf does not exist. Use doc_id='doc-a'."
+    assert observation["next_steps"] == ["Retry with doc_id='doc-a'."]
+    assert observation["evidence_sufficient"] is False
 
 
 class FakeDocumentService:
@@ -30,14 +81,14 @@ class FakeProviderAgent:
         yield sse_frame(
             "tool_started",
             {
-                "tool_name": "search_within_document",
-                "arguments": {"doc_id": "doc-alpha", "query": "alpha"},
+                "tool_name": "get_page_content",
+                "arguments": {"doc_id": "doc-alpha", "pages": "2"},
             },
         )
         yield sse_frame(
             "tool_completed",
             {
-                "tool_name": "search_within_document",
+                "tool_name": "get_page_content",
                 "result": {
                     "status": "success",
                     "page_image_base64": "raw-image-payload",
@@ -79,15 +130,15 @@ class DuplicateCitationAgent:
             yield sse_frame(
                 "tool_started",
                 {
-                    "tool_name": "search_within_document",
-                    "arguments": {"doc_id": "doc-alpha", "query": "alpha"},
+                    "tool_name": "get_page_content",
+                    "arguments": {"doc_id": "doc-alpha", "pages": "2"},
                     "step": step,
                 },
             )
             yield sse_frame(
                 "tool_completed",
                 {
-                    "tool_name": "search_within_document",
+                    "tool_name": "get_page_content",
                     "result": {"status": "success", "citations": [dict(citation)]},
                     "elapsed_ms": 10 + step,
                 },

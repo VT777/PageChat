@@ -200,7 +200,7 @@ async def execute_tools(
             "tool_completed",
             {
                 "tool_name": tool_name,
-                "result": compact_tool_result(result),
+                "result": compact_tool_result(result, tool_name=tool_name),
                 "elapsed_ms": elapsed_ms,
             },
         )
@@ -215,7 +215,10 @@ async def build_evidence_pack(
         {
             "tool_name": item.get("tool_name"),
             "arguments": item.get("arguments"),
-            **compact_tool_result(item.get("result")),
+            **compact_tool_result(
+                item.get("result"),
+                tool_name=str(item.get("tool_name") or ""),
+            ),
         }
         for item in state.tool_results
     ]
@@ -230,8 +233,12 @@ async def build_evidence_pack(
     )
 
 
-def compact_tool_result(result: Any) -> dict[str, Any]:
-    citations = citation_events_from_tool_result(result)
+def compact_tool_result(result: Any, tool_name: str | None = None) -> dict[str, Any]:
+    citations = (
+        citation_events_from_tool_result(result)
+        if _tool_result_can_cite_answer(tool_name)
+        else []
+    )
     if not isinstance(result, dict):
         return {
             "status": "",
@@ -247,13 +254,26 @@ def compact_tool_result(result: Any) -> dict[str, Any]:
             items.extend(_compact_evidence_item(item) for item in value[:5])
             break
 
-    summary = result.get("summary") or result.get("message") or ""
-    return {
-        "status": str(result.get("status") or ""),
+    error = result.get("error")
+    success = result.get("success")
+    status = result.get("status") or ""
+    if error and not status:
+        status = "error"
+    summary = result.get("summary") or result.get("message") or error or ""
+    compact = {
+        "status": str(status),
         "summary": _truncate(str(summary)),
         "items": [item for item in items if item],
         "citations": citations,
     }
+    if success is not None:
+        compact["success"] = bool(success)
+    if error:
+        compact["error"] = _truncate(str(error))
+    next_steps = _compact_next_steps(result.get("next_steps"))
+    if next_steps:
+        compact["next_steps"] = next_steps
+    return compact
 
 
 def _compact_evidence_item(item: Any) -> dict[str, Any]:
@@ -281,6 +301,45 @@ def _first_item_value(item: dict[str, Any], keys: tuple[str, ...]) -> Any:
         if item.get(key) not in (None, ""):
             return item.get(key)
     return None
+
+
+def _compact_next_steps(value: Any) -> list[str]:
+    steps: list[str] = []
+
+    def add(step: Any) -> None:
+        if step in (None, ""):
+            return
+        text = _truncate(str(step), limit=180)
+        if text and text not in steps:
+            steps.append(text)
+
+    if isinstance(value, dict):
+        add(value.get("summary"))
+        options = value.get("options")
+        if isinstance(options, list):
+            for option in options:
+                add(option)
+                if len(steps) >= 3:
+                    break
+        add(value.get("continuation_hint"))
+    elif isinstance(value, list):
+        for option in value:
+            add(option)
+            if len(steps) >= 3:
+                break
+    elif isinstance(value, str):
+        add(value)
+
+    return steps[:3]
+
+
+def _tool_result_can_cite_answer(tool_name: str | None) -> bool:
+    return tool_name in {
+        "get_page_content",
+        "get_page_image",
+        "get_document_image",
+        "web_search",
+    }
 
 
 def _truncate(value: str, limit: int = 500) -> str:

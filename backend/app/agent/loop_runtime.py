@@ -197,7 +197,7 @@ class AgentLoopRuntime:
         started = time.perf_counter()
         result = await self.tool_runner.execute(action.tool_name, action.arguments)
         elapsed_ms = int((time.perf_counter() - started) * 1000)
-        compact_result = compact_tool_result(result)
+        compact_result = compact_tool_result(result, tool_name=action.tool_name)
         state.tool_results.append(
             {
                 "tool_name": action.tool_name,
@@ -242,6 +242,7 @@ class ObservationBuilder:
         step: int,
     ) -> dict[str, Any]:
         payload = result if isinstance(result, dict) else {}
+        compact = compact_tool_result(payload, tool_name=tool_name)
         observation: dict[str, Any] = {
             "kind": "observation",
             "tool_name": tool_name,
@@ -253,9 +254,14 @@ class ObservationBuilder:
         }
         if arguments:
             observation["arguments"] = dict(arguments)
+        for key in ("success", "status", "error", "next_steps", "summary"):
+            if compact.get(key) not in (None, "", []):
+                observation[key] = compact[key]
         return observation
 
     def _message(self, tool_name: str, result: dict[str, Any]) -> str:
+        if result.get("error"):
+            return str(result.get("error"))
         if tool_name == "view_folder_structure":
             total = result.get("total_folders")
             return f"Observed folder structure with {total or 0} folder(s)."
