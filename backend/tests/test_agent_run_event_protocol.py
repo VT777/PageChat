@@ -71,6 +71,106 @@ def test_observation_builder_surfaces_tool_error_instead_of_empty_result() -> No
     assert observation["evidence_sufficient"] is False
 
 
+def test_compact_tool_result_keeps_complete_document_structure_tree() -> None:
+    structure = [
+        {
+            "node_id": "root",
+            "title": "Root",
+            "start_page": 1,
+            "end_page": 10,
+            "children": [
+                {
+                    "node_id": "child",
+                    "title": "Child",
+                    "start_page": 4,
+                    "end_page": 4,
+                    "children": [
+                        {
+                            "node_id": "grandchild",
+                            "title": "Grandchild",
+                            "start_page": 4,
+                            "end_page": 4,
+                            "children": [],
+                        }
+                    ],
+                }
+            ],
+        }
+    ]
+
+    result = compact_tool_result(
+        {
+            "success": True,
+            "doc_id": "doc-a",
+            "doc_name": "alpha.pdf",
+            "total_pages": 10,
+            "part": 1,
+            "has_more_parts": False,
+            "structure": structure,
+            "next_steps": {"options": ["Use get_page_content(doc_id='doc-a', pages='4')."]},
+        },
+        tool_name="get_document_structure",
+    )
+
+    assert result["success"] is True
+    assert result["doc_id"] == "doc-a"
+    assert result["doc_name"] == "alpha.pdf"
+    assert result["structure"] == structure
+    assert result["next_steps"] == ["Use get_page_content(doc_id='doc-a', pages='4')."]
+
+
+def test_compact_tool_result_keeps_page_text_without_large_payloads() -> None:
+    result = compact_tool_result(
+        {
+            "status": "success",
+            "data": {
+                "doc_id": "doc-a",
+                "doc_name": "alpha.pdf",
+                "content": [
+                    {
+                        "page": 2,
+                        "text": "Relevant page text.",
+                        "page_image_base64": "raw-image-payload",
+                        "images": [
+                            {
+                                "image_path": "alpha.pdf/img-1.jpeg",
+                                "mimeType": "image/jpeg",
+                                "page": 2,
+                            }
+                        ],
+                    }
+                ],
+            },
+            "next_steps": {
+                "summary": "Page content retrieved.",
+                "options": ["Answer with citations if evidence is sufficient."],
+            },
+        },
+        tool_name="get_page_content",
+    )
+
+    assert result["doc_id"] == "doc-a"
+    assert result["doc_name"] == "alpha.pdf"
+    assert result["items"] == [
+        {
+            "page": 2,
+            "text": "Relevant page text.",
+            "images": [
+                {
+                    "image_path": "alpha.pdf/img-1.jpeg",
+                    "mimeType": "image/jpeg",
+                    "page": 2,
+                }
+            ],
+        }
+    ]
+    assert "raw-image-payload" not in json.dumps(result, ensure_ascii=False)
+    assert result["next_steps"] == [
+        "Page content retrieved.",
+        "Answer with citations if evidence is sufficient.",
+    ]
+
+
 class FakeDocumentService:
     async def get_indexed_documents(self, user_id=None):
         return [SimpleNamespace(id="doc-alpha")]

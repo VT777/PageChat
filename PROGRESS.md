@@ -152,3 +152,13 @@ Keep hidden from the model unless explicitly needed: local file paths, index pat
 **Tests:** Passed `D:\projects\page_chat\backend\venv\Scripts\python.exe -m pytest backend/tests/test_tool_executor_scope.py backend/tests/test_agent_navigation_tools_contract.py -q` (`28 passed`).
 
 **Next step:** Start Phase 3 by standardizing compact model-visible results and concise string `next_steps` for each tool while keeping `get_document_structure` as a complete deep tree.
+
+### 2026-06-26 Phase 3: Per-Tool Model Views and String next_steps
+
+**Current phase task:** Standardize compact model-visible tool results and concise string `next_steps`, while preserving complete deep structure output for `get_document_structure`.
+
+**Completed:** Added compact-result tests for full nested document structure and page content evidence without large image payloads. Updated compact result handling so structure evidence keeps the deep tree, page content keeps short text/image refs, browse/search items expose useful compact fields, and `next_steps` is a short string list.
+
+**Tests:** Passed `D:\projects\page_chat\backend\venv\Scripts\python.exe -m pytest backend/tests/test_agent_navigation_tools_contract.py backend/tests/test_web_search_tool_contract.py backend/tests/test_agent_citation_bindings.py -q` (`31 passed`).
+
+**Next step:** Start Phase 4 by adding planner document registry context and policy repair/reject behavior for invalid document references.

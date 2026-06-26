@@ -247,6 +247,11 @@ def compact_tool_result(result: Any, tool_name: str | None = None) -> dict[str, 
             "citations": citations,
         }
 
+    if tool_name == "get_document_structure":
+        return _compact_document_structure_result(result, citations)
+    if tool_name == "get_page_content":
+        return _compact_page_content_result(result, citations)
+
     items: list[dict[str, Any]] = []
     for key in ("documents", "matches", "pages", "results", "items"):
         value = result.get(key)
@@ -276,6 +281,74 @@ def compact_tool_result(result: Any, tool_name: str | None = None) -> dict[str, 
     return compact
 
 
+def _compact_base_result(
+    result: dict[str, Any],
+    citations: list[dict[str, Any]],
+) -> dict[str, Any]:
+    error = result.get("error")
+    success = result.get("success")
+    status = result.get("status") or ""
+    if error and not status:
+        status = "error"
+    summary = result.get("summary") or result.get("message") or error or ""
+    compact = {
+        "status": str(status),
+        "summary": _truncate(str(summary)),
+        "items": [],
+        "citations": citations,
+    }
+    if success is not None:
+        compact["success"] = bool(success)
+    if error:
+        compact["error"] = _truncate(str(error))
+    next_steps = _compact_next_steps(result.get("next_steps"))
+    if next_steps:
+        compact["next_steps"] = next_steps
+    return compact
+
+
+def _compact_document_structure_result(
+    result: dict[str, Any],
+    citations: list[dict[str, Any]],
+) -> dict[str, Any]:
+    compact = _compact_base_result(result, citations)
+    for key in (
+        "doc_id",
+        "doc_name",
+        "file_type",
+        "total_pages",
+        "part",
+        "has_more_parts",
+        "structure_format",
+    ):
+        if result.get(key) not in (None, ""):
+            compact[key] = result.get(key)
+    if isinstance(result.get("structure"), list):
+        compact["structure"] = result["structure"]
+    return compact
+
+
+def _compact_page_content_result(
+    result: dict[str, Any],
+    citations: list[dict[str, Any]],
+) -> dict[str, Any]:
+    compact = _compact_base_result(result, citations)
+    data = result.get("data") if isinstance(result.get("data"), dict) else {}
+    for key in ("doc_id", "doc_name", "requested_pages", "returned_pages"):
+        value = data.get(key) or result.get(key)
+        if value not in (None, ""):
+            compact[key] = value
+
+    pages = data.get("content") or data.get("pages") or result.get("content") or []
+    if isinstance(pages, list):
+        compact["items"] = [
+            _compact_page_content_item(page)
+            for page in pages[:5]
+            if isinstance(page, dict)
+        ]
+    return compact
+
+
 def _compact_evidence_item(item: Any) -> dict[str, Any]:
     if not isinstance(item, dict):
         return {"text": _truncate(str(item or ""))}
@@ -288,11 +361,52 @@ def _compact_evidence_item(item: Any) -> dict[str, Any]:
         "source_anchor": ("source_anchor",),
         "snippet": ("snippet", "text", "content", "summary"),
         "url": ("url",),
+        "page": ("page", "page_num"),
+        "matched_terms": ("matched_terms",),
+        "next_tool": ("next_tool",),
+        "visual_evidence_required": ("visual_evidence_required",),
+        "folder_id": ("folder_id",),
+        "path": ("path",),
+        "status": ("status",),
+        "page_count": ("page_count",),
+        "description": ("description",),
     }
     for target, source_keys in key_map.items():
         value = _first_item_value(item, source_keys)
         if value not in (None, ""):
             compact[target] = _truncate(value) if isinstance(value, str) else value
+    return compact
+
+
+def _compact_page_content_item(page: dict[str, Any]) -> dict[str, Any]:
+    compact: dict[str, Any] = {}
+    for key in (
+        "page",
+        "page_num",
+        "node_id",
+        "node_title",
+        "text_omitted_reason",
+        "visual_evidence_required",
+    ):
+        if page.get(key) not in (None, ""):
+            compact[key] = page.get(key)
+    if page.get("text"):
+        compact["text"] = _truncate(str(page.get("text")), limit=1500)
+    images = page.get("images")
+    if isinstance(images, list):
+        compact_images = []
+        for image in images[:3]:
+            if not isinstance(image, dict):
+                continue
+            compact_image = {
+                key: image.get(key)
+                for key in ("image_path", "alt", "mimeType", "page", "fallback_tool")
+                if image.get(key) not in (None, "")
+            }
+            if compact_image:
+                compact_images.append(compact_image)
+        if compact_images:
+            compact["images"] = compact_images
     return compact
 
 
