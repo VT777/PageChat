@@ -18,6 +18,7 @@ from urllib import request
 
 LEGACY_EVENTS = {"thinking", "content", "tool_call", "tool_result", "done"}
 DOCUMENT_TOOL_NAMES = {
+    "browse_documents",
     "find_related_documents",
     "search_within_document",
     "get_document_structure",
@@ -35,6 +36,7 @@ class Scenario:
     expected_tools: str
     require_citation: bool
     description: str
+    expected_tool_chain: tuple[str, ...] = ()
 
 
 SCENARIOS: tuple[Scenario, ...] = (
@@ -45,6 +47,11 @@ SCENARIOS: tuple[Scenario, ...] = (
         expected_tools="document",
         require_citation=True,
         description="Selected Chongqing document should drive document tools and inline citations.",
+        expected_tool_chain=(
+            "browse_documents",
+            "search_within_document",
+            "get_page_content",
+        ),
     ),
     Scenario(
         id="cq-compare-themes",
@@ -131,6 +138,18 @@ def _tool_name(event: dict[str, Any]) -> str:
     return str(data.get("tool_name") or data.get("name") or "")
 
 
+def _has_ordered_tool_chain(tool_names: list[str], expected_chain: tuple[str, ...]) -> bool:
+    if not expected_chain:
+        return True
+    cursor = 0
+    for name in tool_names:
+        if name == expected_chain[cursor]:
+            cursor += 1
+            if cursor == len(expected_chain):
+                return True
+    return False
+
+
 def validate_scenario_events(
     scenario: Scenario,
     events: list[dict[str, Any]],
@@ -169,6 +188,14 @@ def validate_scenario_events(
             failures.append("document scenario did not start a document tool")
         if any(name in WEB_TOOL_NAMES for name in tool_names):
             failures.append("document scenario unexpectedly used a web tool")
+        if scenario.expected_tool_chain and not _has_ordered_tool_chain(
+            tool_names,
+            scenario.expected_tool_chain,
+        ):
+            failures.append(
+                "required tool chain was not observed: "
+                + " -> ".join(scenario.expected_tool_chain)
+            )
     elif scenario.expected_tools == "web_or_none":
         if any(name in DOCUMENT_TOOL_NAMES for name in tool_names):
             failures.append("general web scenario unexpectedly used document tools")

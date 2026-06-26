@@ -172,3 +172,13 @@ Keep hidden from the model unless explicitly needed: local file paths, index pat
 **Tests:** Passed `D:\projects\page_chat\backend\venv\Scripts\python.exe -m pytest backend/tests/test_agent_loop_runtime.py backend/tests/test_agent_run_event_protocol.py backend/tests/test_agent_navigation_tools_contract.py backend/tests/test_agent_policy.py backend/tests/test_agent_structured_llm_planner.py backend/tests/test_agent_service_loop_runtime.py -q` (`60 passed`).
 
 **Next step:** Start Phase 5 integration regression by running the backend contract suite plus frontend trace/build checks, then record any remaining gaps.
+
+### 2026-06-26 Phase 5: Integration Regression
+
+**Current phase task:** Run backend tool/citation contracts, frontend trace checks, frontend build, and the Chongqing scenario contract.
+
+**Completed:** Added an ordered Chongqing scenario tool-chain contract to the manual verification script: `browse_documents -> search_within_document -> get_page_content`, plus required page citation events. Verified the existing tool result compacting, error propagation, citation binding, web search contract, and frontend trace/build paths. Live HTTP execution against a prepared parsed Chongqing document remains a manual QA step through `backend/scripts/verify_pagechat_agent_runtime.py --document-id ... --token ...`.
+
+**Tests:** Passed `D:\projects\page_chat\backend\venv\Scripts\python.exe -m pytest backend/tests/test_agent_navigation_tools_contract.py backend/tests/test_agent_run_event_protocol.py backend/tests/test_agent_citation_bindings.py backend/tests/test_tool_executor_scope.py backend/tests/test_web_search_tool_contract.py backend/tests/test_pagechat_real_document_scenarios.py -q` (`57 passed`). Passed `npm.cmd exec -- vitest run src/components/chat/RunTimeline.contract.test.ts src/views/ChatView.contract.test.ts` (`5 passed`). Passed `npm.cmd run build`.
+
+**Next step:** Review the remaining uncommitted frontend/citation changes separately, then decide whether to start the live backend QA pass or merge this tool-contract branch.

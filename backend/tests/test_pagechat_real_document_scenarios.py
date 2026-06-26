@@ -108,20 +108,46 @@ def test_document_scenario_accepts_tools_citations_and_completed_run() -> None:
             event(
                 "tool_started",
                 2,
+                tool_name="browse_documents",
+                arguments={"query": "重庆师范大学"},
+            ),
+            event(
+                "tool_completed",
+                3,
+                tool_name="browse_documents",
+                result={"documents": [{"doc_id": "doc-chongqing"}]},
+                elapsed_ms=21,
+            ),
+            event(
+                "tool_started",
+                4,
                 tool_name="search_within_document",
                 arguments={"doc_id": "doc-chongqing", "query": "重庆师范大学"},
             ),
             event(
                 "tool_completed",
-                3,
+                5,
                 tool_name="search_within_document",
                 result={"count": 2},
                 elapsed_ms=42,
             ),
-            event("answer_delta", 4, content="重庆师范大学案例包含 AI 教学创新。"),
+            event(
+                "tool_started",
+                6,
+                tool_name="get_page_content",
+                arguments={"doc_id": "doc-chongqing", "pages": "43"},
+            ),
+            event(
+                "tool_completed",
+                7,
+                tool_name="get_page_content",
+                result={"doc_id": "doc-chongqing", "page_num": 43},
+                elapsed_ms=30,
+            ),
+            event("answer_delta", 8, content="重庆师范大学案例包含 AI 教学创新。"),
             event(
                 "citation_added",
-                5,
+                9,
                 citation={
                     "citation_key": "c1",
                     "document_id": "doc-chongqing",
@@ -131,11 +157,49 @@ def test_document_scenario_accepts_tools_citations_and_completed_run() -> None:
                     "preview_kind": "pdf",
                 },
             ),
-            event("run_completed", 6, status="completed"),
+            event("run_completed", 10, status="completed"),
         ],
     )
 
     assert failures == []
+
+
+def test_chongqing_document_scenario_requires_ordered_tool_chain() -> None:
+    module = load_script()
+    scenario = module.SCENARIOS[0]
+
+    failures = module.validate_scenario_events(
+        scenario,
+        [
+            event("run_started", 1, status="running"),
+            event(
+                "tool_started",
+                2,
+                tool_name="search_within_document",
+                arguments={"doc_id": "doc-chongqing", "query": "重庆师范大学"},
+            ),
+            event(
+                "tool_started",
+                3,
+                tool_name="get_page_content",
+                arguments={"doc_id": "doc-chongqing", "pages": "43"},
+            ),
+            event(
+                "citation_added",
+                4,
+                citation={
+                    "display_label": "重庆案例 p.43",
+                    "source_anchor": {"format": "pdf", "start_page": 43},
+                },
+            ),
+            event("run_completed", 5, status="completed"),
+        ],
+    )
+
+    assert (
+        "required tool chain was not observed: browse_documents -> "
+        "search_within_document -> get_page_content"
+    ) in failures
 
 
 def test_document_scenario_rejects_legacy_events_and_missing_citations() -> None:
