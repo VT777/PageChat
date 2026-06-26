@@ -51,6 +51,7 @@ async def _create_bootstrap_schema(db: aiosqlite.Connection) -> None:
             id TEXT PRIMARY KEY,
             title TEXT NOT NULL,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             user_id TEXT
         )
         """
@@ -75,8 +76,11 @@ async def _create_bootstrap_schema(db: aiosqlite.Connection) -> None:
         """
         CREATE TABLE IF NOT EXISTS folders (
             id TEXT PRIMARY KEY,
+            name TEXT NOT NULL DEFAULT '',
             parent_id TEXT,
             path TEXT NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             user_id TEXT
         )
         """
@@ -271,8 +275,7 @@ def test_chat_stream_never_emits_base64_attachment_payload(
 
         async def run_agent_stream(self, **kwargs):
             assert kwargs["request_attachments"][0]["data_base64"]
-            yield 'event: content\ndata: {"content":"我看到了截图。"}\n\n'
-            yield 'event: done\ndata: {"conversation_id":"conv-a","tool_results":[]}\n\n'
+            yield 'event: answer_delta\ndata: {"content":"我看到了截图。"}\n\n'
 
     monkeypatch.setattr("app.services.agent_service.AgentService", FakeAgentService)
     client = _client(tmp_path, user_id="user-a")

@@ -63,6 +63,16 @@ describe('inline citation helpers', () => {
     }))
   })
 
+  it('reuses the same source number for repeated citations to the same source', () => {
+    const numbers = assignInlineSourceNumbers(
+      'Alpha [[report.pdf p.3]] and again [[report.pdf p.3]], then beta [[report.pdf p.4]].',
+    )
+
+    expect(numbers.documentNumbers.get(0)).toBe(1)
+    expect(numbers.documentNumbers.get(1)).toBe(1)
+    expect(numbers.documentNumbers.get(2)).toBe(2)
+  })
+
   it('numbers document and web citations by their appearance in the answer', () => {
     const numbers = assignInlineSourceNumbers(
       'Live source [Weather](https://weather.example/beijing) and report [[report.pdf p.3]].',

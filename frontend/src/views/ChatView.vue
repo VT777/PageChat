@@ -15,10 +15,9 @@ import type { DocumentChatContext, EvidenceItem, Message } from '@/stores/chat'
 import type { ChatAttachmentMetadata, ChatAttachmentPreview } from '@/types/chatAttachments'
 import type { ChatScopeRequest } from '@/types/retrieval'
 import type { SourceAnchor } from '@/types/preview'
-import type { Citation } from '@/types/stream'
 import { describeScopeTrace } from '@/utils/retrievalScope'
 import { answerStartScrollTop, isNearBottom } from '@/utils/chatScroll'
-import { assignInlineSourceNumbers, bindInlineCitations, citationFileType, extractInlineCitations, type BoundInlineCitation } from '@/utils/citations'
+import { assignInlineSourceNumbers, bindInlineCitations, extractInlineCitations, type BoundInlineCitation } from '@/utils/citations'
 import { parseDocumentChatRouteQuery, parseFolderChatRouteContexts } from '@/ui/pagechatContracts'
 
 interface ComposerPayload {
@@ -213,10 +212,7 @@ function renderMessageMarkdown(message: Message): string {
   const bindings = citationBindingsForMessage(message, content)
   const sourceNumbers = sourceNumbersForMessage(message, content)
   if (bindings.length === 0) {
-    return appendStructuredCitationButtons(
-      decorateWebSourceLinks(renderMarkdown(content), message, sourceNumbers.webNumbers),
-      message,
-    )
+    return decorateWebSourceLinks(renderMarkdown(content), message, sourceNumbers.webNumbers)
   }
 
   let html = renderMarkdown(contentWithCitationPlaceholders(content))
@@ -234,64 +230,6 @@ function renderMessageMarkdown(message: Message): string {
     html = html.replace(placeholder, button)
   }
   return decorateWebSourceLinks(html, message, sourceNumbers.webNumbers)
-}
-
-function citationAnchorRecord(citation: Citation): Record<string, unknown> {
-  return citation.source_anchor && typeof citation.source_anchor === 'object'
-    ? citation.source_anchor as Record<string, unknown>
-    : {}
-}
-
-function webUrlFromStructuredCitation(citation: Citation): string {
-  const anchor = citationAnchorRecord(citation)
-  const value = typeof anchor.url === 'string'
-    ? anchor.url
-    : typeof citation.document_id === 'string'
-      ? citation.document_id
-      : ''
-  try {
-    const parsed = new URL(value)
-    return parsed.protocol === 'http:' || parsed.protocol === 'https:' ? parsed.toString() : ''
-  } catch {
-    return ''
-  }
-}
-
-function domainFromUrl(url: string): string {
-  try {
-    return new URL(url).hostname.replace(/^www\./, '')
-  } catch {
-    return ''
-  }
-}
-
-function structuredCitationFileType(citation: Citation): string {
-  const anchor = citationAnchorRecord(citation)
-  const format = String(anchor.format || citation.preview_kind || '').toLowerCase()
-  if (format === 'web') return '.web'
-  return citationFileType(citation.document_name, anchor as Partial<SourceAnchor>)
-}
-
-function structuredCitationButton(index: number): string {
-  const number = index + 1
-  return [
-    `<button type="button" class="inline-citation structured-citation"`,
-    ` data-structured-citation-index="${index}"`,
-    ` title="来源 ${number}">`,
-    `[${number}]`,
-    '</button>',
-  ].join('')
-}
-
-function appendStructuredCitationButtons(html: string, message: Message): string {
-  const citations = message.citations || []
-  if (citations.length === 0) return html
-  const chips = citations.map((_, index) => structuredCitationButton(index)).join('')
-  const wrapped = `<span class="structured-citations">${chips}</span>`
-  if (/<\/p>\s*$/.test(html)) {
-    return html.replace(/<\/p>\s*$/, ` ${wrapped}</p>`)
-  }
-  return `${html}${wrapped}`
 }
 
 function decorateWebSourceLinks(html: string, message: Message, webNumbers: Map<number, number>): string {
@@ -447,31 +385,6 @@ function webPreviewFromSource(source: EvidenceItem): ActiveSourcePreview {
   }
 }
 
-function previewFromStructuredCitation(citation: Citation): ActiveSourcePreview {
-  const anchor = citationAnchorRecord(citation)
-  const url = webUrlFromStructuredCitation(citation)
-  const isWeb = String(citation.preview_kind || anchor.format || '').toLowerCase() === 'web' || Boolean(url)
-  if (isWeb) {
-    return {
-      sourceType: 'web',
-      documentName: citation.document_name || url || 'Web source',
-      displayLabel: citation.display_label || citation.document_name || url || 'Web source',
-      fileType: '.web',
-      url,
-      domain: domainFromUrl(url),
-    }
-  }
-  const sourceAnchor = citation.source_anchor as SourceAnchor
-  return {
-    sourceType: 'document',
-    docId: citation.document_id,
-    documentName: citation.document_name,
-    displayLabel: citation.display_label,
-    fileType: structuredCitationFileType(citation),
-    sourceAnchor,
-  }
-}
-
 async function resolveCitationDocument(binding: BoundInlineCitation): Promise<ActiveSourcePreview> {
   if (binding.docId) return documentPreviewFromCitation(binding)
   try {
@@ -499,15 +412,9 @@ async function resolveCitationDocument(binding: BoundInlineCitation): Promise<Ac
 
 async function handleAssistantContentClick(event: MouseEvent, message: Message) {
   const target = event.target instanceof HTMLElement
-    ? event.target.closest<HTMLButtonElement>('[data-citation-index], [data-web-source-index], [data-structured-citation-index]')
+    ? event.target.closest<HTMLButtonElement>('[data-citation-index], [data-web-source-index]')
     : null
   if (!target) return
-  if (target.dataset.structuredCitationIndex !== undefined) {
-    const citationIndex = Number(target.dataset.structuredCitationIndex)
-    const citation = message.citations?.[citationIndex]
-    if (citation) activeCitation.value = previewFromStructuredCitation(citation)
-    return
-  }
   if (target.dataset.webSourceIndex !== undefined) {
     const sourceIndex = Number(target.dataset.webSourceIndex)
     const source = webSourcesForMessage(message)[sourceIndex]

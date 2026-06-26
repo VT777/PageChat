@@ -29,6 +29,7 @@ from app.services.tool_executor import AGENT_TOOLS
 from app.services.web_search_tool import WEB_SEARCH_TOOL
 from app.services.folder_service import FolderService
 from app.services.retrieval_policy import normalize_folder_id
+from app.services.citation_binding_service import has_document_citation
 from app.prompts import build_tool_catalog
 
 
@@ -191,6 +192,46 @@ class ChatService:
         if not metadata:
             return None
         return metadata
+
+    @staticmethod
+    def _missing_inline_citation_suffix(content: str, citations: list[dict]) -> str:
+        if not citations or has_document_citation(content):
+            return ""
+        for citation in citations:
+            if not isinstance(citation, dict):
+                continue
+            anchor = citation.get("source_anchor") or {}
+            anchor_format = (
+                str(anchor.get("format") or "").lower()
+                if isinstance(anchor, dict)
+                else ""
+            )
+            preview_kind = str(citation.get("preview_kind") or "").lower()
+            if preview_kind == "web" or anchor_format == "web":
+                continue
+            unit_type = str(anchor.get("unit_type") or "").lower() if isinstance(anchor, dict) else ""
+            has_precise_anchor = (
+                any(
+                    anchor.get(key) not in (None, "")
+                    for key in (
+                        "start_page",
+                        "page",
+                        "start_line",
+                        "start_row",
+                        "start_paragraph",
+                        "start_slide",
+                        "slide",
+                    )
+                )
+                if isinstance(anchor, dict)
+                else False
+            )
+            if unit_type == "document" or not has_precise_anchor:
+                continue
+            display_label = str(citation.get("display_label") or "").strip()
+            if display_label:
+                return f" [[{display_label}]]"
+        return ""
 
     async def update_message(
         self,
@@ -640,6 +681,13 @@ class ChatService:
         # 最终保存（标记为完成）
         try:
             pending_citations = dedupe_citations(pending_citations)
+            citation_suffix = self._missing_inline_citation_suffix(
+                full_content,
+                pending_citations,
+            )
+            if citation_suffix:
+                full_content += citation_suffix
+                yield await emit("answer_delta", {"content": citation_suffix})
             for citation in pending_citations:
                 citation_frame = await emit_citation_once(citation)
                 if citation_frame:

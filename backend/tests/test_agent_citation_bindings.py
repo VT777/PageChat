@@ -4,15 +4,19 @@ import asyncio
 import json
 from types import SimpleNamespace
 
+import aiosqlite
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from app.services.agent_service import AgentService
+from app.models.migrations import run_migrations
+from app.services.chat_service import ChatService
 from app.services.citation_binding_service import (
     bind_answer_citations,
     build_missing_citation_suffix,
     collect_citation_evidence,
     has_document_citation,
 )
+from phase0_chat_helpers import create_chat_history_schema, parse_sse_frames, sse_frame
 
 
 def test_collect_citation_evidence_from_tool_results() -> None:
@@ -110,81 +114,145 @@ def test_missing_citation_suffix_uses_first_document_evidence() -> None:
     assert build_missing_citation_suffix("已有引用 [[重庆统计年鉴.pdf p.8]]", tool_results) == ""
 
 
-def test_agent_stream_repairs_missing_citation_and_emits_bindings(monkeypatch) -> None:
+def test_chat_service_missing_inline_citation_suffix_ignores_document_inventory_citations() -> None:
+    citations = [
+        {
+            "citation_key": "doc-a:{document}",
+            "document_id": "doc-a",
+            "document_name": "alpha.pdf",
+            "display_label": "alpha.pdf",
+            "source_anchor": {"format": "pdf", "unit_type": "document"},
+            "preview_kind": "pdf",
+        }
+    ]
+
+    assert ChatService._missing_inline_citation_suffix("当前库中有 alpha.pdf。", citations) == ""
+
+
+def test_chat_stream_repairs_missing_inline_citation_and_emits_bindings() -> None:
     class FakeDocumentService:
         async def get_indexed_documents(self, user_id=None):
             return [SimpleNamespace(id="doc-cq")]
 
-    class FakeToolExecutor:
-        def __init__(self, *args, **kwargs):
-            pass
-
-    class FakeContentChunk:
-        choices = [
-            SimpleNamespace(
-                delta=SimpleNamespace(
-                    content="重庆工业投资增长来自制造业升级。",
-                    reasoning_content=None,
-                    tool_calls=None,
-                )
+    class EvidenceAgent:
+        async def run_agent_stream(self, **kwargs):
+            yield sse_frame(
+                "progress",
+                {"kind": "plan", "message": "先读取文档页面证据。", "step": 1},
             )
-        ]
-
-    class FakeStream:
-        def __aiter__(self):
-            return self
-
-        async def __anext__(self):
-            if getattr(self, "_sent", False):
-                raise StopAsyncIteration
-            self._sent = True
-            return FakeContentChunk()
-
-    async def run() -> None:
-        agent = AgentService.__new__(AgentService)
-        agent.db = None
-        agent.pageindex_service = object()
-        agent.document_service = FakeDocumentService()
-
-        async def fake_execute_initial_retrieval_plan(**kwargs):
-            return [
+            yield sse_frame(
+                "tool_started",
                 {
                     "tool_name": "get_page_content",
-                    "arguments": {"doc_id": "doc-cq", "page_nums": [12]},
+                    "arguments": {"doc_id": "doc-cq", "pages": "12"},
+                },
+            )
+            yield sse_frame(
+                "tool_completed",
+                {
+                    "tool_name": "get_page_content",
+                    "arguments": {"doc_id": "doc-cq", "pages": "12"},
                     "result": {
+                        "status": "success",
                         "doc_id": "doc-cq",
                         "doc_name": "重庆统计年鉴.pdf",
                         "page_num": 12,
                         "text_content": "工业投资增长来自制造业升级。",
                     },
-                }
+                    "elapsed_ms": 8,
+                },
+            )
+            yield sse_frame(
+                "answer_delta",
+                {"content": "重庆工业投资增长来自制造业升级。"},
+            )
+
+    async def run() -> None:
+        async with aiosqlite.connect(":memory:") as db:
+            await create_chat_history_schema(db)
+            await run_migrations(db)
+            await db.execute(
+                """
+                INSERT INTO conversations (id, title, user_id)
+                VALUES ('conv-citation-repair', 'Citation repair', 'user-a')
+                """
+            )
+            await db.commit()
+
+            service = ChatService(db)
+            service.document_service = FakeDocumentService()
+            service._get_agent_service = lambda: EvidenceAgent()
+
+            frames = [
+                frame
+                async for frame in service.stream_chat(
+                    question="重庆工业投资增长原因是什么？",
+                    conversation_id="conv-citation-repair",
+                    document_ids=["doc-cq"],
+                    strict_scope=True,
+                    user_id="user-a",
+                )
             ]
 
-        async def fake_chat_by_scenario(**kwargs):
-            return FakeStream()
-
-        monkeypatch.setattr("app.services.agent_service.ToolExecutor", FakeToolExecutor)
-        monkeypatch.setattr(
-            AgentService,
-            "_execute_initial_retrieval_plan",
-            staticmethod(fake_execute_initial_retrieval_plan),
-        )
-        monkeypatch.setattr("app.services.agent_service.chat_by_scenario", fake_chat_by_scenario)
-
-        events = [
-            event
-            async for event in agent.run_agent_stream(
-                question="重庆工业投资增长原因是什么？",
-                document_ids=["doc-cq"],
-                user_id="user-a",
-                max_steps=1,
+            cursor = await db.execute(
+                """
+                SELECT content
+                FROM messages
+                WHERE conversation_id = 'conv-citation-repair' AND role = 'assistant'
+                ORDER BY sequence
+                LIMIT 1
+                """
             )
+            assistant_row = await cursor.fetchone()
+            cursor = await db.execute(
+                """
+                SELECT document_id, display_label, source_anchor_json
+                FROM message_citations
+                ORDER BY created_at, id
+                """
+            )
+            persisted_citations = await cursor.fetchall()
+
+        events = parse_sse_frames(frames)
+        answer_text = "".join(
+            event["data"].get("content", "")
+            for event in events
+            if event["event"] == "answer_delta"
+        )
+        citation_events = [
+            event["data"]["citation"]
+            for event in events
+            if event["event"] == "citation_added"
         ]
 
-        assert any("[[重庆统计年鉴.pdf p.12]]" in event for event in events if event.startswith("event: content"))
-        done = [event for event in events if event.startswith("event: done")][-1]
-        payload = json.loads(done.split("data: ", 1)[1])
-        assert payload["citation_bindings"][0]["doc_id"] == "doc-cq"
-        assert payload["citation_bindings"][0]["source_anchor"]["start_page"] == 12
+        assert [event["event"] for event in events] == [
+            "run_started",
+            "progress",
+            "tool_started",
+            "tool_completed",
+            "answer_delta",
+            "answer_delta",
+            "citation_added",
+            "run_completed",
+        ]
+        assert answer_text.endswith("[[重庆统计年鉴 p.12]]")
+        assert assistant_row[0].endswith("[[重庆统计年鉴 p.12]]")
+        assert citation_events[0]["document_id"] == "doc-cq"
+        assert citation_events[0]["source_anchor"]["start_page"] == 12
+        assert persisted_citations == [
+            (
+                "doc-cq",
+                "重庆统计年鉴 p.12",
+                json.dumps(
+                    {
+                        "format": "pdf",
+                        "unit_type": "page",
+                        "start_page": 12,
+                        "end_page": 12,
+                    },
+                    ensure_ascii=False,
+                ),
+            )
+        ]
 
     asyncio.run(run())

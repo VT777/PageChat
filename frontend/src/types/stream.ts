@@ -29,7 +29,10 @@ export interface RunStarted extends PageChatEventMeta {
 }
 
 export interface ProgressEvent extends PageChatEventMeta {
+  kind?: string
   message: string
+  step?: number
+  status?: string
 }
 
 export interface ToolStarted extends PageChatEventMeta {

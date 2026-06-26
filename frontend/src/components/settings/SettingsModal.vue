@@ -11,6 +11,7 @@ import {
   ListTree,
   Loader2,
   MessageSquare,
+  RefreshCw,
   Search,
   Settings2,
   SlidersHorizontal,
@@ -20,7 +21,9 @@ import {
 } from 'lucide-vue-next'
 import { settingsApi } from '@/api'
 import { useUserStore } from '@/stores/user'
-import type { ModelProviderConfig, ModelProviderPreset } from '@/types/modelSettings'
+import type { ModelProviderConfig, ModelProviderModel, ModelProviderPreset } from '@/types/modelSettings'
+import { buildAvailableModelOptions, resolveProviderTestModel } from '@/utils/modelProviderModels'
+import { buildModelProviderRows } from '@/utils/modelProviderRows'
 import {
   defaultWebSearchSettings,
   type WebSearchContentType,
@@ -55,9 +58,12 @@ const presets = ref<ModelProviderPreset[]>([])
 const loadingProviders = ref(false)
 const savingProvider = ref(false)
 const testingProviderId = ref<string | null>(null)
+const loadingModelProviderId = ref<string | null>(null)
 const providerMessage = ref('')
 const providerError = ref('')
 const expandedProviderId = ref<string | null>(null)
+const providerModels = ref<Record<string, ModelProviderModel[]>>({})
+const providerModelErrors = ref<Record<string, string>>({})
 const webSearchSettings = ref<WebSearchSettings>(defaultWebSearchSettings())
 const webSearchApiKey = ref('')
 const loadingWebSearchSettings = ref(false)
@@ -71,7 +77,7 @@ const providerForm = ref({
   provider: 'openai_compatible',
   baseUrl: 'https://api.openai.com/v1',
   apiKey: '',
-  testModel: 'gpt-4.1',
+  testModel: '',
 })
 
 const ocrSettings = ref({
@@ -101,31 +107,16 @@ const iconMap = {
 }
 
 const providerRows = computed(() => {
-  if (providers.value.length > 0) {
-    return providers.value.map((provider) => ({
-      id: provider.provider_id,
-      provider: provider.provider,
-      label: providerLabel(provider.provider),
-      baseUrl: provider.base_url,
-      configured: true,
-      keyMask: provider.api_key_mask || 'stored',
-      validation: provider.validation_status || 'Configured',
-    }))
-  }
-  return defaultProviders().map((provider) => ({
-    id: provider.provider,
-    provider: provider.provider,
-    label: provider.label,
-    baseUrl: provider.base_url,
-    configured: false,
-    keyMask: '',
-    validation: 'Not configured',
-  }))
+  return buildModelProviderRows(
+    providers.value,
+    presets.value.length > 0 ? presets.value : defaultProviders(),
+    providerLabel,
+  )
 })
 
 const availableModels = computed(() => {
   const base = providers.value.length > 0
-    ? providers.value.map((provider) => `${provider.provider}: ${providerForm.value.testModel || 'default'}`)
+    ? buildAvailableModelOptions(providers.value, providerModels.value, providerLabel)
     : ['OpenAI Compatible: gpt-4.1', 'OpenAI Compatible: gpt-4.1-mini', 'Local: qwen2.5-vl']
   return Array.from(new Set(base))
 })
@@ -137,6 +128,13 @@ function navIcon(icon: string) {
 function providerLabel(provider: string) {
   const normalized = provider.toLowerCase()
   if (normalized.includes('openai') && normalized.includes('compatible')) return 'OpenAI Compatible'
+  if (normalized.includes('dashscope') || normalized.includes('tongyi') || normalized.includes('aliyun')) return 'Alibaba Cloud Bailian / Tongyi'
+  if (normalized.includes('deepseek')) return 'DeepSeek'
+  if (normalized.includes('moonshot') || normalized.includes('kimi')) return 'Moonshot AI / Kimi'
+  if (normalized.includes('zhipu')) return 'Zhipu AI'
+  if (normalized.includes('siliconflow')) return 'SiliconFlow'
+  if (normalized.includes('volcengine') || normalized.includes('ark')) return 'Volcengine Ark'
+  if (normalized.includes('openrouter')) return 'OpenRouter'
   if (normalized.includes('openai')) return 'OpenAI'
   if (normalized.includes('anthropic')) return 'Anthropic'
   if (normalized.includes('gemini') || normalized.includes('google')) return 'Google Gemini'
@@ -147,6 +145,13 @@ function providerLabel(provider: string) {
 
 function providerInitial(label: string) {
   if (label === 'OpenAI') return '◎'
+  if (label.includes('Alibaba')) return 'Ali'
+  if (label === 'DeepSeek') return 'DS'
+  if (label.includes('Kimi')) return 'Ki'
+  if (label === 'Zhipu AI') return 'Z'
+  if (label === 'SiliconFlow') return 'SF'
+  if (label === 'Volcengine Ark') return 'Ark'
+  if (label === 'OpenRouter') return 'OR'
   if (label === 'Anthropic') return 'A'
   if (label === 'Google Gemini') return 'G'
   if (label === 'Azure OpenAI') return 'Az'
@@ -154,14 +159,28 @@ function providerInitial(label: string) {
   return 'OC'
 }
 
+function hideBrokenLogo(event: Event) {
+  const target = event.currentTarget
+  if (target instanceof HTMLImageElement) {
+    target.hidden = true
+  }
+}
+
 function defaultProviders(): ModelProviderPreset[] {
   return [
-    { provider: 'openai', label: 'OpenAI', base_url: 'https://api.openai.com/v1', supports_custom_base_url: false },
-    { provider: 'anthropic', label: 'Anthropic', base_url: 'https://api.anthropic.com', supports_custom_base_url: false },
-    { provider: 'google_gemini', label: 'Google Gemini', base_url: 'https://generativelanguage.googleapis.com/v1beta', supports_custom_base_url: false },
-    { provider: 'azure_openai', label: 'Azure OpenAI', base_url: 'https://{resource}.openai.azure.com', supports_custom_base_url: true },
-    { provider: 'ollama', label: 'Ollama', base_url: 'http://localhost:11434/v1', supports_custom_base_url: true },
-    { provider: 'openai_compatible', label: 'OpenAI Compatible', base_url: 'https://api.openai.com/v1', supports_custom_base_url: true },
+    { provider: 'openai', label: 'OpenAI', base_url: 'https://api.openai.com/v1', icon_url: '/provider-logos/openai.svg', supports_custom_base_url: false },
+    { provider: 'dashscope', label: 'Alibaba Cloud Bailian / Tongyi', base_url: 'https://dashscope.aliyuncs.com/compatible-mode/v1', icon_url: '/provider-logos/dashscope.svg', supports_custom_base_url: false },
+    { provider: 'deepseek', label: 'DeepSeek', base_url: 'https://api.deepseek.com', icon_url: '/provider-logos/deepseek.svg', supports_custom_base_url: true },
+    { provider: 'moonshot', label: 'Moonshot AI / Kimi', base_url: 'https://api.moonshot.cn/v1', icon_url: '/provider-logos/moonshot.svg', supports_custom_base_url: true },
+    { provider: 'zhipuai', label: 'Zhipu AI', base_url: 'https://open.bigmodel.cn/api/paas/v4', icon_url: '/provider-logos/zhipuai.svg', supports_custom_base_url: true },
+    { provider: 'siliconflow', label: 'SiliconFlow', base_url: 'https://api.siliconflow.cn/v1', icon_url: '/provider-logos/siliconflow.svg', supports_custom_base_url: true },
+    { provider: 'volcengine_ark', label: 'Volcengine Ark', base_url: 'https://ark.cn-beijing.volces.com/api/v3', icon_url: '/provider-logos/volcengine_ark.svg', supports_custom_base_url: true },
+    { provider: 'openrouter', label: 'OpenRouter', base_url: 'https://openrouter.ai/api/v1', icon_url: '/provider-logos/openrouter.svg', supports_custom_base_url: true },
+    { provider: 'google_gemini', label: 'Google Gemini', base_url: 'https://generativelanguage.googleapis.com/v1beta/openai', icon_url: '/provider-logos/google_gemini.svg', supports_custom_base_url: true },
+    { provider: 'anthropic', label: 'Anthropic', base_url: 'https://api.anthropic.com/v1', icon_url: '/provider-logos/anthropic.svg', supports_custom_base_url: true },
+    { provider: 'azure_openai', label: 'Azure OpenAI', base_url: 'https://{resource}.openai.azure.com/openai/deployments/{deployment}', icon_url: '/provider-logos/azure_openai.svg', supports_custom_base_url: true },
+    { provider: 'ollama', label: 'Ollama', base_url: 'http://localhost:11434/v1', icon_url: '/provider-logos/ollama.svg', supports_custom_base_url: true },
+    { provider: 'openai_compatible', label: 'OpenAI Compatible', base_url: 'https://api.openai.com/v1', icon_url: '/provider-logos/openai_compatible.svg', supports_custom_base_url: true },
   ]
 }
 
@@ -252,15 +271,56 @@ async function saveWebSearchSettings() {
 }
 
 function startConfigure(provider: string, baseUrl: string, providerId = '') {
+  const selectedModel = providerId
+    ? resolveProviderTestModel(providerForm.value.testModel, modelsForProvider(providerId))
+    : ''
   providerForm.value = {
     providerId,
     credentialName: `${providerLabel(provider)} credential`,
     provider,
     baseUrl,
     apiKey: '',
-    testModel: providerForm.value.testModel || 'gpt-4.1',
+    testModel: selectedModel,
   }
   expandedProviderId.value = providerId || provider
+}
+
+function modelsForProvider(providerId: string): ModelProviderModel[] {
+  return providerModels.value[providerId] || []
+}
+
+async function fetchProviderModels(providerId: string) {
+  if (!providerId) return
+  loadingModelProviderId.value = providerId
+  providerModelErrors.value = {
+    ...providerModelErrors.value,
+    [providerId]: '',
+  }
+  try {
+    const response = await settingsApi.listModelProviderModels(providerId)
+    const models = response.data?.models || []
+    providerModels.value = {
+      ...providerModels.value,
+      [providerId]: models,
+    }
+    const selectedModel = resolveProviderTestModel(providerForm.value.testModel, models)
+    if (selectedModel) providerForm.value.testModel = selectedModel
+  } catch (error: any) {
+    providerModelErrors.value = {
+      ...providerModelErrors.value,
+      [providerId]: error?.response?.data?.detail || 'Failed to fetch models.',
+    }
+  } finally {
+    loadingModelProviderId.value = null
+  }
+}
+
+async function toggleProvider(provider: { id: string; configured: boolean }) {
+  const nextId = expandedProviderId.value === provider.id ? null : provider.id
+  expandedProviderId.value = nextId
+  if (nextId && provider.configured && !providerModels.value[provider.id]?.length) {
+    await fetchProviderModels(provider.id)
+  }
 }
 
 async function saveProvider() {
@@ -296,7 +356,12 @@ async function testProvider(providerId: string) {
   providerError.value = ''
   providerMessage.value = ''
   try {
-    await settingsApi.testModelProvider(providerId, providerForm.value.testModel || 'default')
+    const model = resolveProviderTestModel(providerForm.value.testModel, modelsForProvider(providerId))
+    if (!model) {
+      providerError.value = '请先刷新模型列表，或手动填写一个可用的测试模型。'
+      return
+    }
+    await settingsApi.testModelProvider(providerId, model)
     providerMessage.value = '连接测试通过。'
   } catch (error: any) {
     providerError.value = error?.response?.data?.detail || '连接测试失败。'
@@ -379,7 +444,10 @@ onMounted(() => {
           <div class="provider-list">
             <article v-for="provider in providerRows" :key="provider.id" class="provider-row">
               <div class="provider-main">
-                <div class="provider-logo">{{ providerInitial(provider.label) }}</div>
+                <div class="provider-logo">
+                  <img :src="provider.iconUrl" :alt="provider.label" @error="hideBrokenLogo" />
+                  <span>{{ providerInitial(provider.label) }}</span>
+                </div>
                 <div class="provider-title">
                   <div>
                     <strong>{{ provider.label }}</strong>
@@ -409,7 +477,7 @@ onMounted(() => {
                 <button
                   class="icon-button"
                   type="button"
-                  @click="expandedProviderId = expandedProviderId === provider.id ? null : provider.id"
+                  @click="toggleProvider(provider)"
                 >
                   <ChevronDown />
                 </button>
@@ -417,12 +485,36 @@ onMounted(() => {
 
               <div v-if="expandedProviderId === provider.id" class="provider-expanded">
                 <div class="model-list">
-                  <div v-for="model in availableModels.slice(0, 3)" :key="model" class="model-row">
-                    <span>{{ model }}</span>
+                  <div class="model-list-header">
+                    <strong>Available models</strong>
+                    <button
+                      v-if="provider.configured"
+                      type="button"
+                      :disabled="loadingModelProviderId === provider.id"
+                      @click="fetchProviderModels(provider.id)"
+                    >
+                      <Loader2 v-if="loadingModelProviderId === provider.id" class="spin" />
+                      <RefreshCw v-else />
+                      Refresh
+                    </button>
+                  </div>
+                  <div v-if="!provider.configured" class="model-empty">
+                    Configure this provider to fetch available models.
+                  </div>
+                  <div v-else-if="loadingModelProviderId === provider.id" class="model-empty">
+                    Fetching models...
+                  </div>
+                  <div v-else-if="providerModelErrors[provider.id]" class="model-empty error">
+                    {{ providerModelErrors[provider.id] }}
+                  </div>
+                  <div v-else-if="modelsForProvider(provider.id).length === 0" class="model-empty">
+                    No models returned yet.
+                  </div>
+                  <div v-for="model in modelsForProvider(provider.id).slice(0, 8)" :key="model.id" class="model-row">
+                    <span>{{ model.id }}</span>
                     <div>
-                      <small>128k context</small>
-                      <span>Vision</span>
-                      <span>Tools</span>
+                      <small>{{ model.owned_by || provider.label }}</small>
+                      <span>Remote</span>
                     </div>
                   </div>
                 </div>
@@ -912,6 +1004,7 @@ onMounted(() => {
 }
 
 .provider-logo {
+  position: relative;
   display: grid;
   width: 40px;
   height: 40px;
@@ -921,7 +1014,22 @@ onMounted(() => {
   border-radius: 10px;
   background: linear-gradient(180deg, #fff, #f3f6fb);
   color: var(--kc-text);
-  font-size: 13px;
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.provider-logo img {
+  position: relative;
+  z-index: 1;
+  width: 24px;
+  height: 24px;
+  object-fit: contain;
+}
+
+.provider-logo span {
+  position: absolute;
+  color: var(--kc-text-tertiary);
+  font-size: 11px;
   font-weight: 750;
 }
 
@@ -1037,6 +1145,56 @@ onMounted(() => {
   display: grid;
   align-content: start;
   gap: 8px;
+}
+
+.model-list-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.model-list-header strong {
+  color: var(--kc-text);
+  font-size: 12.5px;
+}
+
+.model-list-header button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 28px;
+  border: 1px solid var(--kc-border);
+  border-radius: var(--kc-radius-sm);
+  background: #fff;
+  padding: 0 9px;
+  color: var(--kc-text-secondary);
+  font-size: 11.5px;
+}
+
+.model-list-header button:disabled {
+  opacity: 0.62;
+}
+
+.model-list-header svg {
+  width: 13px;
+  height: 13px;
+}
+
+.model-empty {
+  border: 1px dashed var(--kc-border);
+  border-radius: var(--kc-radius-md);
+  background: #fff;
+  padding: 14px;
+  color: var(--kc-text-tertiary);
+  font-size: 12px;
+  line-height: 18px;
+}
+
+.model-empty.error {
+  border-color: rgba(220, 38, 38, 0.22);
+  background: #fff7f7;
+  color: #b42318;
 }
 
 .model-row {

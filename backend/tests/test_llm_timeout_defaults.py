@@ -43,6 +43,20 @@ def test_chat_completion_preserves_explicit_timeout(monkeypatch):
     assert client.chat.completions.params["timeout"] == 3.5
 
 
+def test_chat_completion_disables_thinking_when_requested(monkeypatch):
+    client = FakeClient()
+    monkeypatch.setattr(llm, "get_llm_client", lambda: client)
+
+    llm.chat_completion(
+        messages=[{"role": "user", "content": "hi"}],
+        model="qwen-plus",
+        disable_thinking=True,
+    )
+
+    assert client.chat.completions.params["extra_body"]["enable_thinking"] is False
+    assert "disable_thinking" not in client.chat.completions.params
+
+
 def test_chat_completion_uses_litellm_adapter_when_provider_config_is_supplied(monkeypatch):
     calls = []
 
@@ -107,6 +121,46 @@ def test_chat_by_scenario_resolves_user_model_settings(monkeypatch):
 
     assert result == {"ok": True}
     assert calls[0]["provider_config"]["model"] == "custom-qa"
+
+
+def test_chat_by_scenario_forwards_disable_thinking_to_user_route(monkeypatch):
+    calls = []
+
+    async def fake_resolve(user_id, route_slot):
+        return {
+            "route_version": "qa-v1",
+            "provider_config": {
+                "provider": "openai_compatible",
+                "base_url": "https://example.test/v1",
+                "api_key": "sk-secret",
+                "model": "custom-qa",
+                "route_version": "qa-v1",
+            },
+            "model": "custom-qa",
+        }
+
+    class FakeAdapter:
+        async def acompletion(self, **kwargs):
+            calls.append(kwargs)
+            return {"ok": True}
+
+    monkeypatch.setattr(llm, "_resolve_user_route", fake_resolve)
+    monkeypatch.setattr(llm, "LiteLLMAdapter", lambda: FakeAdapter())
+
+    import asyncio
+
+    result = asyncio.run(
+        llm.chat_by_scenario(
+            "qa",
+            [{"role": "user", "content": "hi"}],
+            user_id="user-a",
+            disable_thinking=True,
+        )
+    )
+
+    assert result == {"ok": True}
+    assert calls[0]["extra_body"]["enable_thinking"] is False
+    assert "disable_thinking" not in calls[0]
 
 
 def test_resolve_scenario_route_prefers_user_route(monkeypatch):

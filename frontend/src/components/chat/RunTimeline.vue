@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
-import { Brain, ChevronDown, ChevronRight, Circle } from 'lucide-vue-next'
+import { Brain, ChevronDown, ChevronRight } from 'lucide-vue-next'
 import type { ProgressStep, ToolStep } from '@/stores/chat'
 import ToolTimelineItem from './ToolTimelineItem.vue'
 
@@ -22,12 +22,16 @@ interface TimelineEntry {
 const UNSEQUENCED_BASE = 1_000_000_000
 const expandedThought = ref(false)
 
-const hasTools = computed(() => (props.toolSteps || []).length > 0)
+const visibleProgressSteps = computed(() =>
+  (props.progressSteps || []).filter((step) => (
+    step.kind !== 'guardrail' && step.kind !== 'observation'
+  )),
+)
 
 const progressEntries = computed<TimelineEntry[]>(() =>
-  (props.progressSteps || []).map((step, index) => ({
+  visibleProgressSteps.value.map((step, index) => ({
     kind: 'progress',
-    key: `progress-${step.seq ?? index}`,
+    key: `progress-${step.step ?? step.seq ?? index}`,
     seq: step.seq ?? UNSEQUENCED_BASE + index,
     order: index,
     message: step.message,
@@ -55,11 +59,23 @@ const showThoughtDetails = computed(() => props.isLoading || expandedThought.val
 
 <template>
   <div
-    v-if="progressEntries.length || hasTools"
+    v-if="timelineEntries.length"
     class="run-timeline"
     data-testid="run-timeline"
   >
-    <template v-if="hasTools">
+    <button
+      class="thought-row"
+      type="button"
+      :aria-expanded="showThoughtDetails"
+      @click="expandedThought = !expandedThought"
+    >
+      <Brain class="thought-icon" />
+      <span>{{ thoughtLabel }}</span>
+      <ChevronDown v-if="showThoughtDetails" />
+      <ChevronRight v-else />
+    </button>
+
+    <div v-if="showThoughtDetails" class="thought-details">
       <div
         v-for="entry in timelineEntries"
         :key="entry.key"
@@ -67,36 +83,11 @@ const showThoughtDetails = computed(() => props.isLoading || expandedThought.val
         :data-kind="entry.kind"
       >
         <div v-if="entry.kind === 'progress'" class="progress-row">
-          <Circle class="progress-dot" />
-          <span>{{ entry.message }}</span>
+          <p>{{ entry.message }}</p>
         </div>
         <ToolTimelineItem v-else-if="entry.tool" :tool="entry.tool" />
       </div>
-    </template>
-
-    <template v-else>
-      <button
-        class="thought-row"
-        type="button"
-        :aria-expanded="showThoughtDetails"
-        @click="expandedThought = !expandedThought"
-      >
-        <Brain class="thought-icon" />
-        <span>{{ thoughtLabel }}</span>
-        <ChevronDown v-if="showThoughtDetails" />
-        <ChevronRight v-else />
-      </button>
-      <div v-if="showThoughtDetails" class="thought-details">
-        <div
-          v-for="entry in progressEntries"
-          :key="entry.key"
-          class="progress-row"
-        >
-          <Circle class="progress-dot" />
-          <span>{{ entry.message }}</span>
-        </div>
-      </div>
-    </template>
+    </div>
   </div>
 </template>
 
@@ -111,7 +102,6 @@ const showThoughtDetails = computed(() => props.isLoading || expandedThought.val
   display: block;
 }
 
-.progress-row,
 .thought-row {
   display: flex;
   min-height: 28px;
@@ -132,8 +122,7 @@ const showThoughtDetails = computed(() => props.isLoading || expandedThought.val
   color: var(--kc-text);
 }
 
-.thought-row svg,
-.progress-dot {
+.thought-row svg {
   width: 14px;
   height: 14px;
   stroke-width: 1.9;
@@ -143,15 +132,20 @@ const showThoughtDetails = computed(() => props.isLoading || expandedThought.val
   color: var(--kc-accent);
 }
 
-.progress-dot {
-  color: var(--kc-text-tertiary);
-  fill: currentColor;
-  opacity: 0.55;
+.progress-row {
+  color: var(--kc-text);
+  font-size: 14px;
+  line-height: 1.65;
+}
+
+.progress-row p {
+  margin: 5px 0 8px;
+  white-space: pre-wrap;
 }
 
 .thought-details {
-  margin-left: 22px;
-  border-left: 1px solid var(--kc-border-soft);
-  padding-left: 10px;
+  display: grid;
+  gap: 4px;
+  padding: 2px 0 0;
 }
 </style>

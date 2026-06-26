@@ -197,6 +197,8 @@ export const settingsApi = {
     api.patch(`/settings/model-providers/${providerId}`, payload),
   deleteModelProvider: (providerId: string) =>
     api.delete(`/settings/model-providers/${providerId}`),
+  listModelProviderModels: (providerId: string) =>
+    api.get(`/settings/model-providers/${providerId}/models`),
   testModelProvider: (providerId: string, model: string) =>
     api.post(`/settings/model-providers/${providerId}/test`, { model }),
   listModelRoutes: () => api.get('/settings/model-routes'),

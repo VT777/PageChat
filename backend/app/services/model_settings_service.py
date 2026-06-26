@@ -4,10 +4,12 @@ import base64
 import hashlib
 import os
 import uuid
+import asyncio
 from dataclasses import dataclass
 from typing import Any
 
 import aiosqlite
+import requests
 
 from app.core import config
 from app.services.responses_adapter import response_provider_capabilities
@@ -29,23 +31,100 @@ ENV_ROUTE_MODELS = {
     "vision": lambda: config.LLM_PLUS_MODEL,
 }
 
+def _provider_preset(
+    provider: str,
+    label: str,
+    base_url: str,
+    *,
+    supports_custom_base_url: bool = False,
+) -> dict[str, Any]:
+    return {
+        "provider": provider,
+        "label": label,
+        "base_url": base_url,
+        "icon_url": f"/provider-logos/{provider}.svg",
+        "supports_custom_base_url": supports_custom_base_url,
+        **response_provider_capabilities(provider, base_url),
+    }
+
+
 PROVIDER_PRESETS = [
-    {
-        "provider": "openai_compatible",
-        "label": "OpenAI compatible",
-        "base_url": config.LLM_BASE_URL,
-        "supports_custom_base_url": True,
-        **response_provider_capabilities("openai_compatible", config.LLM_BASE_URL),
-    },
-    {
-        "provider": "dashscope",
-        "label": "DashScope compatible",
-        "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
-        "supports_custom_base_url": False,
-        **response_provider_capabilities(
-            "dashscope", "https://dashscope.aliyuncs.com/compatible-mode/v1"
-        ),
-    },
+    _provider_preset(
+        "openai",
+        "OpenAI",
+        "https://api.openai.com/v1",
+    ),
+    _provider_preset(
+        "dashscope",
+        "Alibaba Cloud Bailian / Tongyi",
+        "https://dashscope.aliyuncs.com/compatible-mode/v1",
+    ),
+    _provider_preset(
+        "deepseek",
+        "DeepSeek",
+        "https://api.deepseek.com",
+        supports_custom_base_url=True,
+    ),
+    _provider_preset(
+        "moonshot",
+        "Moonshot AI / Kimi",
+        "https://api.moonshot.cn/v1",
+        supports_custom_base_url=True,
+    ),
+    _provider_preset(
+        "zhipuai",
+        "Zhipu AI",
+        "https://open.bigmodel.cn/api/paas/v4",
+        supports_custom_base_url=True,
+    ),
+    _provider_preset(
+        "siliconflow",
+        "SiliconFlow",
+        "https://api.siliconflow.cn/v1",
+        supports_custom_base_url=True,
+    ),
+    _provider_preset(
+        "volcengine_ark",
+        "Volcengine Ark",
+        "https://ark.cn-beijing.volces.com/api/v3",
+        supports_custom_base_url=True,
+    ),
+    _provider_preset(
+        "openrouter",
+        "OpenRouter",
+        "https://openrouter.ai/api/v1",
+        supports_custom_base_url=True,
+    ),
+    _provider_preset(
+        "google_gemini",
+        "Google Gemini",
+        "https://generativelanguage.googleapis.com/v1beta/openai",
+        supports_custom_base_url=True,
+    ),
+    _provider_preset(
+        "anthropic",
+        "Anthropic",
+        "https://api.anthropic.com/v1",
+        supports_custom_base_url=True,
+    ),
+    _provider_preset(
+        "azure_openai",
+        "Azure OpenAI",
+        "https://{resource}.openai.azure.com/openai/deployments/{deployment}",
+        supports_custom_base_url=True,
+    ),
+    _provider_preset(
+        "ollama",
+        "Ollama",
+        "http://localhost:11434/v1",
+        supports_custom_base_url=True,
+    ),
+    _provider_preset(
+        "openai_compatible",
+        "OpenAI Compatible",
+        config.LLM_BASE_URL,
+        supports_custom_base_url=True,
+    ),
 ]
 
 
@@ -135,6 +214,48 @@ def _unprotect_api_key(ciphertext: str) -> str:
     if ciphertext.startswith("dev-plain:"):
         return base64.urlsafe_b64decode(ciphertext[10:].encode("ascii")).decode("utf-8")
     raise RuntimeError("Unsupported model API key storage format")
+
+
+def _models_url(base_url: str) -> str:
+    base = (base_url or "").strip().rstrip("/")
+    if not base:
+        raise ValueError("base_url is required")
+    return f"{base}/models"
+
+
+def _sanitize_provider_error(exc: Exception, api_key: str | None) -> str:
+    message = str(exc)
+    if api_key:
+        message = message.replace(str(api_key), "[redacted-api-key]")
+    return message
+
+
+def _normalize_provider_models(payload: Any) -> list[dict[str, Any]]:
+    if isinstance(payload, dict):
+        items = payload.get("data") or payload.get("models") or []
+    elif isinstance(payload, list):
+        items = payload
+    else:
+        items = []
+
+    models: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for item in items:
+        raw = item if isinstance(item, dict) else {}
+        model_id = (
+            item.strip()
+            if isinstance(item, str)
+            else str(raw.get("id") or raw.get("name") or raw.get("model") or "").strip()
+        )
+        if not model_id or model_id in seen:
+            continue
+        seen.add(model_id)
+        model: dict[str, Any] = {"id": model_id}
+        for key in ("owned_by", "created", "object"):
+            if raw.get(key) is not None:
+                model[key] = raw[key]
+        models.append(model)
+    return models
 
 
 def _route_version(*parts: str) -> str:
@@ -248,6 +369,42 @@ class ModelSettingsService:
         row = await cursor.fetchone()
         return self._provider_row_to_dict(row) if row else None
 
+    async def list_provider_models(
+        self,
+        *,
+        user_id: str,
+        provider_id: str,
+        timeout: float = 12,
+    ) -> dict[str, Any]:
+        provider = await self._get_provider_config_with_secret(user_id, provider_id)
+        if not provider:
+            raise ValueError("provider config not found")
+
+        api_key = _unprotect_api_key(provider["api_key_ciphertext"])
+        url = _models_url(provider["base_url"])
+
+        def fetch() -> Any:
+            response = requests.get(
+                url,
+                headers={"Authorization": f"Bearer {api_key}"},
+                timeout=timeout,
+            )
+            response.raise_for_status()
+            return response.json()
+
+        try:
+            payload = await asyncio.to_thread(fetch)
+        except Exception as exc:
+            raise RuntimeError(_sanitize_provider_error(exc, api_key)) from exc
+
+        return {
+            "provider_id": provider_id,
+            "provider": provider["provider"],
+            "base_url": provider["base_url"],
+            "models": _normalize_provider_models(payload),
+            "source": "remote",
+        }
+
     async def update_provider_config_fields(
         self,
         *,
@@ -346,7 +503,7 @@ class ModelSettingsService:
         supports_tool_calling: bool = True,
         supports_vision: bool = False,
         supports_structured_output: bool = False,
-        supports_responses_api: bool = False,
+        supports_responses_api: bool | None = None,
     ) -> dict[str, Any]:
         if route_slot not in ROUTE_SLOTS:
             raise ValueError(f"Unsupported route slot: {route_slot}")
@@ -355,6 +512,11 @@ class ModelSettingsService:
         provider = await self._get_provider_config_with_secret(user_id, provider_id)
         if not provider:
             raise ValueError("provider config not found")
+        route_supports_responses_api = (
+            bool(provider.get("supports_responses_api"))
+            if supports_responses_api is None
+            else bool(supports_responses_api)
+        )
 
         version = _route_version(
             user_id,
@@ -365,7 +527,7 @@ class ModelSettingsService:
             str(bool(supports_tool_calling)),
             str(bool(supports_vision)),
             str(bool(supports_structured_output)),
-            str(bool(supports_responses_api)),
+            str(route_supports_responses_api),
         )
         await self.db.execute(
             """
@@ -396,7 +558,7 @@ class ModelSettingsService:
                 int(supports_tool_calling),
                 int(supports_vision),
                 int(supports_structured_output),
-                int(supports_responses_api),
+                int(route_supports_responses_api),
                 version,
             ),
         )

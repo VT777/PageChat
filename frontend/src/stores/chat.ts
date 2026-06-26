@@ -55,6 +55,9 @@ export interface ToolStep {
 
 export interface ProgressStep {
   message: string
+  kind?: string
+  step?: number
+  status?: string
   seq?: number
   ts?: string
 }
@@ -959,16 +962,33 @@ export const useChatStore = defineStore('chat', () => {
         const data = envelope.data as unknown as ProgressEvent
         flushDisplayBuffer(last.id)
         const base = messages.value[lastIndex] || last
+        const nextProgressSteps = [...(base.progressSteps || [])]
+        const progressStep: ProgressStep = {
+          message: data.message,
+          kind: data.kind,
+          step: data.step,
+          status: data.status,
+          seq: data.seq,
+          ts: data.ts,
+        }
+        const existingProgressIndex = (
+          data.kind === 'plan' && typeof data.step === 'number'
+            ? nextProgressSteps.findIndex((step) => (
+                step.kind === 'plan' && step.step === data.step
+              ))
+            : -1
+        )
+        if (existingProgressIndex >= 0) {
+          nextProgressSteps[existingProgressIndex] = {
+            ...nextProgressSteps[existingProgressIndex],
+            ...progressStep,
+          }
+        } else {
+          nextProgressSteps.push(progressStep)
+        }
         messages.value[lastIndex] = {
           ...base,
-          progressSteps: [
-            ...(base.progressSteps || []),
-            {
-              message: data.message,
-              seq: data.seq,
-              ts: data.ts,
-            },
-          ],
+          progressSteps: nextProgressSteps,
         }
         break
       }

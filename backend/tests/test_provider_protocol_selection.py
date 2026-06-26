@@ -46,6 +46,31 @@ def test_dashscope_uses_chat_completions_even_when_responses_requested() -> None
     assert selection.fallback_protocol is None
 
 
+def test_openai_compatible_vendor_presets_can_use_deterministic_tool_strategy() -> None:
+    for provider in [
+        "deepseek",
+        "moonshot",
+        "zhipuai",
+        "siliconflow",
+        "volcengine_ark",
+        "openrouter",
+        "ollama",
+    ]:
+        selection = select_provider_protocol(
+            {
+                "provider": provider,
+                "model": "vendor-model",
+                "supports_streaming": True,
+                "supports_tool_calling": False,
+            },
+            requires_streaming=True,
+            requires_tool_calling=True,
+        )
+
+        assert selection.protocol == "chat_completions"
+        assert selection.tool_strategy == "pagechat_deterministic_tools"
+
+
 def test_provider_selection_fails_fast_when_required_capability_is_missing() -> None:
     try:
         select_provider_protocol(

@@ -115,9 +115,14 @@ export function bindInlineCitations(
 }
 
 export function assignInlineSourceNumbers(content: string, webSourceUrls: string[] = []): SourceNumberMaps {
-  const entries: Array<{ kind: 'document' | 'web'; index: number; start: number }> = []
+  const entries: Array<{ kind: 'document' | 'web'; index: number; start: number; key: string }> = []
   extractInlineCitations(content).forEach((citation) => {
-    entries.push({ kind: 'document', index: citation.index, start: citation.start })
+    entries.push({
+      kind: 'document',
+      index: citation.index,
+      start: citation.start,
+      key: `document:${normalizeComparable(citation.label)}`,
+    })
   })
   webSourceUrls.forEach((url, index) => {
     const start = url ? content.indexOf(url) : -1
@@ -125,17 +130,26 @@ export function assignInlineSourceNumbers(content: string, webSourceUrls: string
       kind: 'web',
       index,
       start: start >= 0 ? start : Number.MAX_SAFE_INTEGER - index,
+      key: `web:${url}`,
     })
   })
 
   entries.sort((a, b) => a.start - b.start || a.index - b.index)
   const documentNumbers = new Map<number, number>()
   const webNumbers = new Map<number, number>()
-  entries.forEach((entry, index) => {
+  const numberByKey = new Map<string, number>()
+  let nextNumber = 1
+  entries.forEach((entry) => {
+    let number = numberByKey.get(entry.key)
+    if (!number) {
+      number = nextNumber
+      numberByKey.set(entry.key, number)
+      nextNumber += 1
+    }
     if (entry.kind === 'document') {
-      documentNumbers.set(entry.index, index + 1)
+      documentNumbers.set(entry.index, number)
     } else {
-      webNumbers.set(entry.index, index + 1)
+      webNumbers.set(entry.index, number)
     }
   })
   return { documentNumbers, webNumbers }

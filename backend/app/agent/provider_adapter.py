@@ -6,6 +6,21 @@ from typing import Any
 
 CHAT_COMPLETIONS_PROTOCOL = "chat_completions"
 RESPONSES_PROTOCOL = "responses_api"
+OPENAI_COMPATIBLE_PROVIDER_KEYS = {
+    "environment",
+    "openai",
+    "openai_compatible",
+    "dashscope",
+    "deepseek",
+    "moonshot",
+    "zhipuai",
+    "siliconflow",
+    "volcengine_ark",
+    "openrouter",
+    "google_gemini",
+    "azure_openai",
+    "ollama",
+}
 
 
 class ProviderCapabilityError(ValueError):
@@ -66,7 +81,7 @@ def select_provider_protocol(
     if requires_tool_calling:
         if capabilities.supports_tool_calling:
             tool_strategy = "function_calling"
-        elif provider in {"openai_compatible", "dashscope"}:
+        elif provider in OPENAI_COMPATIBLE_PROVIDER_KEYS:
             tool_strategy = "pagechat_deterministic_tools"
         else:
             raise ProviderCapabilityError(
@@ -127,12 +142,7 @@ def infer_provider_capabilities(
     config = dict(provider_config or {})
     provider = str(config.get("provider") or "openai_compatible").lower()
 
-    default_tool_calling = provider in {
-        "environment",
-        "openai",
-        "openai_compatible",
-        "dashscope",
-    }
+    default_tool_calling = provider in OPENAI_COMPATIBLE_PROVIDER_KEYS
     default_responses = False
 
     return ProviderCapabilities(

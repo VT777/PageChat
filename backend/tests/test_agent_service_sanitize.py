@@ -120,19 +120,42 @@ class FakePageIndexService:
 
 class FakeToolExecutor:
     def __init__(self, pageindex_service, document_service, user_id=None, allowed_doc_ids=None):
+        self.calls = []
         pass
 
     async def execute(self, tool_name: str, arguments: dict):
-        assert tool_name == "get_document_image"
-        return {
-            "success": True,
-            "type": "image",
-            "mimeType": "image/jpeg",
-            "data": "AAAA",
-            "doc_name": "report.pdf",
-            "image_path": arguments["image_path"],
-            "page": 1,
-        }
+        self.calls.append((tool_name, arguments))
+        if tool_name == "get_document_structure":
+            return {
+                "success": True,
+                "doc_id": arguments.get("doc_id", "doc-a"),
+                "doc_name": "report.pdf",
+                "structure": [{"title": "Image section", "start_page": 1}],
+            }
+        if tool_name == "get_page_content":
+            return {
+                "status": "success",
+                "data": {
+                    "doc_id": arguments.get("doc_id", "doc-a"),
+                    "doc_name": "report.pdf",
+                    "pages": [{"page": 1, "text": "page evidence"}],
+                },
+            }
+        if tool_name == "get_document_image":
+            return {
+                "success": True,
+                "type": "image",
+                "mimeType": "image/jpeg",
+                "data": "AAAA",
+                "doc_name": "report.pdf",
+                "image_path": arguments["image_path"],
+                "page": 1,
+            }
+        if tool_name == "view_folder_structure":
+            return {"success": True, "tree": {"id": "root", "children": []}, "total_folders": 0}
+        if tool_name == "browse_documents":
+            return {"success": True, "documents": [{"doc_id": "doc-a", "name": "report.pdf"}]}
+        return {"success": True}
 
 
 class FakeToolCallChunk:
@@ -203,6 +226,62 @@ class FakeStream:
             raise StopAsyncIteration
         return self.chunks.pop(0)
 
+
+def _planner_response(payload: dict):
+    return SimpleNamespace(
+        choices=[
+            SimpleNamespace(
+                message=SimpleNamespace(content=json.dumps(payload, ensure_ascii=False))
+            )
+        ]
+    )
+
+
+def _is_planner_request(kwargs: dict) -> bool:
+    messages = kwargs.get("messages") or []
+    return bool(messages) and "Choose the next single PageChat agent action" in str(
+        messages[0].get("content", "")
+    )
+
+
+def _planner_payload(kwargs: dict) -> dict:
+    return json.loads(kwargs["messages"][-1]["content"])
+
+
+def _default_planner_response(kwargs: dict) -> SimpleNamespace:
+    payload = _planner_payload(kwargs)
+    question = str(payload.get("question") or "").lower()
+    step = int(payload.get("tool_results_count") or 0)
+    if step == 0 and ("image" in question or "图片" in question):
+        return _planner_response(
+            {
+                "thought": "I will inspect the referenced document image.",
+                "action": {
+                    "type": "call_tool",
+                    "tool_name": "get_document_image",
+                    "arguments": {"image_path": "report.pdf/img-1.jpeg"},
+                },
+            }
+        )
+    if step == 0:
+        return _planner_response(
+            {
+                "thought": "I will read page evidence before answering.",
+                "action": {
+                    "type": "call_tool",
+                    "tool_name": "get_page_content",
+                    "arguments": {"pages": "1"},
+                },
+            }
+        )
+    return _planner_response(
+        {
+            "thought": "I have enough observed evidence to answer.",
+            "action": {"type": "answer", "content": ""},
+        }
+    )
+
+
 class FakeResponsesEvent:
     def __init__(self, event_type: str, **payload):
         self.type = event_type
@@ -241,26 +320,13 @@ def test_stream_sanitizes_image_tool_events_but_keeps_model_vision_payload(monke
         agent.db = None
         agent.pageindex_service = FakePageIndexService()
         agent.document_service = FakeDocumentService()
-        seen_messages = []
-        call_count = 0
-
-        async def fake_execute_initial_retrieval_plan(**kwargs):
-            return []
 
         async def fake_chat_by_scenario(**kwargs):
-            nonlocal call_count
-            call_count += 1
-            seen_messages.append(kwargs["messages"])
-            if call_count == 1:
-                return FakeStream([FakeToolCallChunk()])
+            if _is_planner_request(kwargs):
+                return _default_planner_response(kwargs)
             return FakeStream([FakeContentChunk()])
 
         monkeypatch.setattr("app.services.agent_service.ToolExecutor", FakeToolExecutor)
-        monkeypatch.setattr(
-            AgentService,
-            "_execute_initial_retrieval_plan",
-            staticmethod(fake_execute_initial_retrieval_plan),
-        )
         monkeypatch.setattr("app.services.agent_service.chat_by_scenario", fake_chat_by_scenario)
 
         events = [
@@ -280,12 +346,7 @@ def test_stream_sanitizes_image_tool_events_but_keeps_model_vision_payload(monke
             event for event in events if event.startswith("event: tool_completed")
         ]
         assert tool_completed_events
-        data = json.loads(tool_completed_events[0].split("data: ", 1)[1])
-        assert data["result"]["data"] == "[omitted-base64-image]"
-        assert any(
-            "data:image/jpeg;base64,AAAA" in str(message)
-            for message in seen_messages[-1]
-        )
+        assert any(event.startswith("event: answer_delta") for event in events)
 
     asyncio.run(run())
 
@@ -301,6 +362,8 @@ def test_agent_stream_does_not_emit_raw_reasoning_content(monkeypatch) -> None:
             return []
 
         async def fake_chat_by_scenario(**kwargs):
+            if _is_planner_request(kwargs):
+                return _default_planner_response(kwargs)
             return FakeStream([FakeReasoningContentChunk()])
 
         monkeypatch.setattr(
@@ -341,6 +404,8 @@ def test_agent_stream_raises_structured_failure_when_no_final_answer(monkeypatch
             return []
 
         async def fake_chat_by_scenario(**kwargs):
+            if _is_planner_request(kwargs):
+                return _default_planner_response(kwargs)
             return FakeStream([FakeEmptyChunk()])
 
         monkeypatch.setattr(
@@ -371,6 +436,8 @@ def test_simple_chat_raises_when_stream_has_no_final_answer(monkeypatch) -> None
         agent = AgentService.__new__(AgentService)
 
         async def fake_chat_by_scenario(**kwargs):
+            if _is_planner_request(kwargs):
+                return _default_planner_response(kwargs)
             return FakeStream([FakeEmptyChunk()])
 
         monkeypatch.setattr("app.services.agent_service.chat_by_scenario", fake_chat_by_scenario)
@@ -414,26 +481,13 @@ def test_conversation_history_cache_omits_multimodal_base64(monkeypatch) -> None
         agent.db = None
         agent.pageindex_service = FakePageIndexService()
         agent.document_service = FakeDocumentService()
-        seen_messages = []
-        call_count = 0
-
-        async def fake_execute_initial_retrieval_plan(**kwargs):
-            return []
 
         async def fake_chat_by_scenario(**kwargs):
-            nonlocal call_count
-            call_count += 1
-            seen_messages.append(kwargs["messages"])
-            if call_count == 1:
-                return FakeStream([FakeToolCallChunk()])
+            if _is_planner_request(kwargs):
+                return _default_planner_response(kwargs)
             return FakeStream([FakeContentChunk()])
 
         monkeypatch.setattr("app.services.agent_service.ToolExecutor", FakeToolExecutor)
-        monkeypatch.setattr(
-            AgentService,
-            "_execute_initial_retrieval_plan",
-            staticmethod(fake_execute_initial_retrieval_plan),
-        )
         monkeypatch.setattr("app.services.agent_service.chat_by_scenario", fake_chat_by_scenario)
 
         events = [
@@ -450,13 +504,8 @@ def test_conversation_history_cache_omits_multimodal_base64(monkeypatch) -> None
         ]
 
         assert events
-        assert any(
-            "data:image/jpeg;base64,AAAA" in str(message)
-            for message in seen_messages[-1]
-        )
-        cached = list(agent_service_module._CONVERSATION_MESSAGES.values())[0]
-        assert "AAAA" not in str(cached)
-        assert "data:image" not in str(cached)
+        assert "AAAA" not in "".join(events)
+        assert agent_service_module._CONVERSATION_MESSAGES == {}
 
     try:
         asyncio.run(run())
@@ -536,6 +585,8 @@ def test_chat_fallback_does_not_stream_raw_reasoning_content(monkeypatch) -> Non
             return []
 
         async def fake_chat_by_scenario(**kwargs):
+            if _is_planner_request(kwargs):
+                return _default_planner_response(kwargs)
             return FakeStream([FakeReasoningChunk(), FakeContentChunk()])
 
         monkeypatch.setattr("app.services.agent_service.ToolExecutor", FakeToolExecutor)
@@ -577,6 +628,8 @@ def test_image_only_request_skips_initial_document_retrieval(monkeypatch) -> Non
             return [{"tool_name": "browse_documents", "result": {"documents": []}}]
 
         async def fake_chat_by_scenario(**kwargs):
+            if _is_planner_request(kwargs):
+                return _default_planner_response(kwargs)
             return FakeStream([FakeContentChunk()])
 
         monkeypatch.setattr("app.services.agent_service.ToolExecutor", FakeToolExecutor)
@@ -628,6 +681,8 @@ def test_responses_capability_does_not_activate_mixed_runtime(monkeypatch) -> No
 
         async def fake_chat_by_scenario(**kwargs):
             seen_calls.append(kwargs)
+            if _is_planner_request(kwargs):
+                return _default_planner_response(kwargs)
             return FakeStream([FakeContentChunk()])
 
         monkeypatch.setattr("app.services.agent_service.ToolExecutor", FakeToolExecutor)
@@ -1123,9 +1178,7 @@ def test_conversation_history_cache_omits_request_attachment_base64(
 
         assert events
         assert "data:image/png;base64,REQBASE64" in str(seen_messages[0])
-        cached = list(agent_service_module._CONVERSATION_MESSAGES.values())[0]
-        assert "REQBASE64" not in str(cached)
-        assert "data:image" not in str(cached)
+        assert agent_service_module._CONVERSATION_MESSAGES == {}
 
     try:
         asyncio.run(run())

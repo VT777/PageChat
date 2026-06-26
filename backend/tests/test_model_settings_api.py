@@ -10,6 +10,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from app.api import settings
 from app.models.migrations import run_migrations
+from app.services import model_settings_service
 
 
 async def _create_bootstrap_schema(db: aiosqlite.Connection) -> None:
@@ -97,6 +98,31 @@ def test_list_provider_presets(tmp_path: Path) -> None:
     assert response.json()[0]["provider"]
 
 
+def test_list_provider_presets_includes_common_dify_style_providers(tmp_path: Path) -> None:
+    client = _client(tmp_path)
+
+    response = client.get("/api/settings/model-providers/presets")
+
+    providers = {item["provider"]: item for item in response.json()}
+    expected = {
+        "openai",
+        "openai_compatible",
+        "dashscope",
+        "deepseek",
+        "moonshot",
+        "zhipuai",
+        "siliconflow",
+        "volcengine_ark",
+        "openrouter",
+        "ollama",
+    }
+    assert expected.issubset(providers)
+    assert providers["dashscope"]["label"] == "Alibaba Cloud Bailian / Tongyi"
+    assert providers["dashscope"]["base_url"] == "https://dashscope.aliyuncs.com/compatible-mode/v1"
+    assert providers["deepseek"]["base_url"] == "https://api.deepseek.com"
+    assert providers["siliconflow"]["supports_custom_base_url"] is True
+
+
 def test_save_read_and_delete_provider_config_masks_api_key(tmp_path: Path) -> None:
     client = _client(tmp_path)
 
@@ -121,6 +147,74 @@ def test_save_read_and_delete_provider_config_masks_api_key(tmp_path: Path) -> N
     deleted = client.delete(f"/api/settings/model-providers/{provider_id}")
     assert deleted.status_code == 200
     assert client.get("/api/settings/model-providers").json() == []
+
+
+def test_list_provider_models_uses_openai_compatible_models_endpoint(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    client = _client(tmp_path)
+    provider = client.post(
+        "/api/settings/model-providers",
+        json={
+            "provider": "openai_compatible",
+            "base_url": "https://example.test/v1",
+            "api_key": "sk-secret-123456",
+        },
+    ).json()
+    calls = []
+
+    class FakeResponse:
+        status_code = 200
+        text = '{"data":[{"id":"qwen-plus"},{"id":"qwen-vl-max"}]}'
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"data": [{"id": "qwen-plus"}, {"id": "qwen-vl-max"}]}
+
+    def fake_get(url, headers=None, timeout=None):
+        calls.append((url, headers, timeout))
+        return FakeResponse()
+
+    monkeypatch.setattr(model_settings_service.requests, "get", fake_get)
+
+    response = client.get(f"/api/settings/model-providers/{provider['provider_id']}/models")
+
+    assert response.status_code == 200
+    assert response.json()["models"] == [
+        {"id": "qwen-plus"},
+        {"id": "qwen-vl-max"},
+    ]
+    assert calls[0][0] == "https://example.test/v1/models"
+    assert calls[0][1]["Authorization"] == "Bearer sk-secret-123456"
+
+
+def test_list_provider_models_sanitizes_provider_errors(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    client = _client(tmp_path)
+    provider = client.post(
+        "/api/settings/model-providers",
+        json={
+            "provider": "openai_compatible",
+            "base_url": "https://example.test/v1",
+            "api_key": "sk-secret-123456",
+        },
+    ).json()
+
+    def fake_get(url, headers=None, timeout=None):
+        raise RuntimeError("bad key sk-secret-123456")
+
+    monkeypatch.setattr(model_settings_service.requests, "get", fake_get)
+
+    response = client.get(f"/api/settings/model-providers/{provider['provider_id']}/models")
+
+    assert response.status_code == 400
+    assert "sk-secret-123456" not in response.text
+    assert "[redacted-api-key]" in response.text
 
 
 def test_update_provider_non_secret_fields_preserves_saved_key(tmp_path: Path) -> None:

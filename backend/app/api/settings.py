@@ -250,6 +250,24 @@ async def test_model_provider(
         raise HTTPException(status_code=400, detail=str(exc))
 
 
+@router.get("/model-providers/{provider_id}/models")
+async def list_model_provider_models(
+    provider_id: str,
+    db: aiosqlite.Connection = Depends(get_db),
+    current_user: dict = Depends(require_auth),
+):
+    service = _model_settings_service(db)
+    try:
+        return await service.list_provider_models(
+            user_id=current_user["id"],
+            provider_id=provider_id,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except RuntimeError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
 @router.get("/model-routes")
 async def list_model_routes(
     db: aiosqlite.Connection = Depends(get_db),

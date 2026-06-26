@@ -9,7 +9,11 @@ export interface ModelProviderPreset {
   provider: string
   label: string
   base_url: string
+  icon_url?: string
   supports_custom_base_url: boolean
+  supports_responses_api?: boolean
+  supports_reasoning_effort?: boolean
+  supports_reasoning_summary?: boolean
 }
 
 export interface ModelProviderConfig {
@@ -20,6 +24,21 @@ export interface ModelProviderConfig {
   validation_status?: string
   created_at?: string
   updated_at?: string
+}
+
+export interface ModelProviderModel {
+  id: string
+  owned_by?: string
+  created?: number
+  object?: string
+}
+
+export interface ModelProviderModelsResponse {
+  provider_id: string
+  provider: string
+  base_url: string
+  models: ModelProviderModel[]
+  source: 'remote' | string
 }
 
 export interface ModelProviderInput {

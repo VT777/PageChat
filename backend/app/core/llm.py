@@ -32,6 +32,23 @@ def _default_timeout_for_model(model_name: str) -> float:
     )
 
 
+def _apply_thinking_control(
+    params: dict,
+    model_name: str | None,
+    *,
+    disable_thinking: bool = False,
+) -> None:
+    if not disable_thinking and not _should_disable_thinking(model_name or ""):
+        return
+    extra_body = params.get("extra_body")
+    if isinstance(extra_body, dict):
+        merged_extra_body = dict(extra_body)
+    else:
+        merged_extra_body = {}
+    merged_extra_body["enable_thinking"] = False
+    params["extra_body"] = merged_extra_body
+
+
 SCENARIO_ROUTE_SLOTS = {
     "chat": "general_chat",
     "qa": "document_qa",
@@ -184,6 +201,7 @@ def chat_completion(
     stream: bool = False,
     timeout: float | None = None,
     provider_config: dict | None = None,
+    disable_thinking: bool = False,
     **kwargs,
 ):
     """同步调用 LLM"""
@@ -210,6 +228,11 @@ def chat_completion(
                 )
             extra.pop("tools", None)
             extra.pop("tool_choice", None)
+        _apply_thinking_control(
+            extra,
+            resolved_config.get("model") or model or LLM_MODEL,
+            disable_thinking=disable_thinking,
+        )
         return LiteLLMAdapter().completion(
             provider_config=resolved_config,
             messages=messages,
@@ -226,8 +249,7 @@ def chat_completion(
         "temperature": temperature,
         "stream": stream,
     }
-    if _should_disable_thinking(resolved_model):
-        params["extra_body"] = {"enable_thinking": False}
+    _apply_thinking_control(params, resolved_model, disable_thinking=disable_thinking)
     params["timeout"] = timeout if timeout is not None else _default_timeout_for_model(resolved_model)
     params.update(kwargs)
     return client.chat.completions.create(**params)
@@ -240,6 +262,7 @@ async def async_chat_completion(
     stream: bool = False,
     timeout: float | None = None,
     provider_config: dict | None = None,
+    disable_thinking: bool = False,
     **kwargs,
 ):
     """异步调用 LLM"""
@@ -266,6 +289,11 @@ async def async_chat_completion(
                 )
             extra.pop("tools", None)
             extra.pop("tool_choice", None)
+        _apply_thinking_control(
+            extra,
+            resolved_config.get("model") or model or LLM_MODEL,
+            disable_thinking=disable_thinking,
+        )
         return await LiteLLMAdapter().acompletion(
             provider_config=resolved_config,
             messages=messages,
@@ -282,8 +310,7 @@ async def async_chat_completion(
         "temperature": temperature,
         "stream": stream,
     }
-    if _should_disable_thinking(resolved_model):
-        params["extra_body"] = {"enable_thinking": False}
+    _apply_thinking_control(params, resolved_model, disable_thinking=disable_thinking)
     params["timeout"] = timeout if timeout is not None else _default_timeout_for_model(resolved_model)
     params.update(kwargs)
     try:
@@ -304,6 +331,7 @@ async def chat_by_scenario(
     timeout: float | None = None,
     user_id: str | None = None,
     allow_deterministic_tools: bool = False,
+    disable_thinking: bool = False,
     **kwargs,
 ):
     """
@@ -334,6 +362,7 @@ async def chat_by_scenario(
                 timeout=timeout,
                 provider_config=route["provider_config"],
                 allow_deterministic_tools=allow_deterministic_tools,
+                disable_thinking=disable_thinking,
                 **extra,
             )
     client = get_async_llm_client()
@@ -345,8 +374,7 @@ async def chat_by_scenario(
         "temperature": config.get("temperature", 0),
         "stream": stream,
     }
-    if _should_disable_thinking(resolved_model):
-        params["extra_body"] = {"enable_thinking": False}
+    _apply_thinking_control(params, resolved_model, disable_thinking=disable_thinking)
 
     params["timeout"] = timeout if timeout is not None else _default_timeout_for_model(resolved_model)
 

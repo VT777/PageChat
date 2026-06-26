@@ -7,6 +7,7 @@ Agent 核心服务 - PageChat
 import json
 import time
 import logging
+from pathlib import Path
 from typing import AsyncGenerator, List, Dict, Any, Optional
 import aiosqlite
 
@@ -31,6 +32,7 @@ from app.services.retrieval_policy import (
 from app.core.llm import chat_by_scenario, async_chat_completion
 from app.models.retrieval import RetrievalScope
 from app.prompts import build_agent_system_prompt, QA_SYSTEM_PROMPT
+from app.agent.state import AgentRunState
 
 
 # 全局会话级缓存（跨请求持久化）
@@ -46,6 +48,25 @@ _NON_CACHEABLE_TOOLS = {
     "get_page_image",
     "web_search",
 }
+
+
+class AgentLoopToolRunner:
+    def __init__(
+        self,
+        *,
+        tool_executor: ToolExecutor,
+        web_search_settings: Dict[str, Any],
+    ) -> None:
+        self.tool_executor = tool_executor
+        self.web_search_settings = web_search_settings
+
+    async def execute(self, tool_name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
+        if tool_name == "web_search":
+            return await execute_web_search_tool(
+                arguments=arguments,
+                settings=self.web_search_settings,
+            )
+        return await self.tool_executor.execute(tool_name, arguments)
 
 
 def clear_conversation_cache(conversation_id: Optional[str] = None):
@@ -126,6 +147,42 @@ class AgentService:
             )
         )
 
+    def build_agent_loop_runtime(
+        self,
+        *,
+        tool_executor: Any,
+        web_search_settings: Dict[str, Any],
+        runtime_tools: Optional[List[Dict[str, Any]]] = None,
+        answer_generator: Any | None = None,
+        user_id: str | None = None,
+        max_steps: int = 8,
+    ):
+        from app.agent.loop_runtime import AgentLoopRuntime
+        from app.agent.planner import StructuredLLMPlanner
+        from app.agent.policy import AgentPolicy
+
+        generator = answer_generator or self._stream_graph_answer
+        tools = list(
+            runtime_tools
+            if runtime_tools is not None
+            else self._tools_for_request(bool(web_search_settings.get("enabled")))
+        )
+        planner = StructuredLLMPlanner(
+            completion_fn=chat_by_scenario,
+            tools=tools,
+            user_id=user_id,
+        )
+        return AgentLoopRuntime(
+            planner=planner,
+            tool_runner=AgentLoopToolRunner(
+                tool_executor=tool_executor,
+                web_search_settings=web_search_settings,
+            ),
+            policy=AgentPolicy(tools=tools),
+            answer_generator=generator,
+            max_steps=max_steps,
+        )
+
     async def _resolve_valid_folder_id(
         self, folder_id: Optional[str], user_id: Optional[str]
     ) -> tuple[Optional[str], bool]:
@@ -164,7 +221,91 @@ class AgentService:
             page += 1
         return document_ids
 
-    async def _generate_graph_answer(self, state) -> str:
+    @staticmethod
+    def _match_document_ids_from_question(
+        question: str,
+        docs: List[Any],
+    ) -> List[str]:
+        q = (question or "").casefold()
+        if not q:
+            return []
+        matches: List[str] = []
+        for doc in docs:
+            names = {
+                str(getattr(doc, "name", "") or ""),
+                str(getattr(doc, "original_name", "") or ""),
+            }
+            stems = {Path(name).stem for name in names if name}
+            for candidate in {*(name.casefold() for name in names if name), *(stem.casefold() for stem in stems if stem)}:
+                if candidate and candidate in q:
+                    matches.append(doc.id)
+                    break
+        return matches
+
+    @staticmethod
+    def _should_use_document_library(
+        question: str,
+        *,
+        has_documents: bool,
+        has_valid_explicit_scope: bool,
+        web_search_active: bool,
+    ) -> bool:
+        if not has_documents or has_valid_explicit_scope or web_search_active:
+            return False
+        if question_needs_document_retrieval(question):
+            return True
+        q = (question or "").strip().lower()
+        if not q:
+            return False
+        current_fact_hints = (
+            "天气",
+            "几点",
+            "时间",
+            "今天",
+            "新闻",
+            "股价",
+            "汇率",
+            "weather",
+            "time",
+            "today",
+            "news",
+            "stock",
+        )
+        if any(hint in q for hint in current_fact_hints):
+            return False
+        simple_chat_hints = ("你好", "hello", "hi", "谢谢", "thanks")
+        if q in simple_chat_hints or len(q) <= 4:
+            return False
+        library_question_hints = (
+            "什么",
+            "哪些",
+            "如何",
+            "为什么",
+            "分析",
+            "总结",
+            "概括",
+            "主要",
+            "讲",
+            "提到",
+            "应用",
+            "创新",
+            "趋势",
+            "案例",
+            "对比",
+            "what",
+            "which",
+            "how",
+            "why",
+            "analyze",
+            "summarize",
+            "summary",
+            "case",
+            "trend",
+            "compare",
+        )
+        return any(hint in q for hint in library_question_hints)
+
+    async def _stream_graph_answer(self, state):
         messages = [{"role": "system", "content": QA_SYSTEM_PROMPT}]
         for item in state.history[-6:]:
             role = item.get("role")
@@ -188,15 +329,20 @@ class AgentService:
             messages=messages,
             stream=True,
             user_id=state.scope.get("user_id"),
+            disable_thinking=True,
         )
-        answer = ""
         async for chunk in response:
             if not getattr(chunk, "choices", None):
                 continue
             delta = chunk.choices[0].delta
             content = getattr(delta, "content", None)
             if content:
-                answer += content
+                yield content
+
+    async def _generate_graph_answer(self, state) -> str:
+        answer = ""
+        async for content in self._stream_graph_answer(state):
+            answer += content
         return answer
 
     async def _finalize_graph_run(self, state) -> None:
@@ -364,6 +510,11 @@ class AgentService:
 
         docs = await self.document_service.get_indexed_documents(user_id=user_id)
         available_doc_ids = {doc.id for doc in docs}
+        if document_ids is None:
+            matched_doc_ids = self._match_document_ids_from_question(question, docs)
+            if matched_doc_ids:
+                document_ids = matched_doc_ids
+                preferred_document_ids = matched_doc_ids
         requested_document_ids = list(document_ids or [])
         if document_ids is not None:
             document_ids = [
@@ -431,388 +582,55 @@ class AgentService:
             requested=bool(web_search_requested or web_search_enabled),
         )
         web_search_active = bool(web_search_settings.get("enabled"))
+        needs_document_retrieval = needs_document_retrieval or self._should_use_document_library(
+            question,
+            has_documents=bool(docs),
+            has_valid_explicit_scope=has_valid_explicit_scope,
+            web_search_active=web_search_active,
+        )
         runtime_tools = self._tools_for_request(web_search_enabled=web_search_active)
 
-        # 如果没有文档库且没有显式检索范围，直接走简单聊天模式（不调用工具）
-        if (
-            not has_valid_explicit_scope
-            and (not needs_document_retrieval or suppress_user_library_fallback)
-            and not web_search_active
-            and not request_attachments
-        ):
-            print(
-                "[Agent] No retrieval intent or explicit scope, using simple chat mode"
-            )
-            async for event in self._simple_chat_stream(
-                question, conversation_id, history_messages, user_id=user_id
+        if request_attachments and self._is_image_only_question(question):
+            async for event in self._attachment_chat_stream(
+                question=question,
+                request_attachments=request_attachments,
+                history_messages=history_messages,
+                user_id=user_id,
             ):
                 yield event
             return
 
-        # 使用持久化的会话消息历史（包含工具调用记录）
-        if (
-            conversation_state_key
-            and conversation_state_key in _CONVERSATION_MESSAGES
-        ):
-            # 复用缓存消息历史，但强制刷新系统提示与文档范围提示，避免旧会话污染
-            messages = _CONVERSATION_MESSAGES[conversation_state_key].copy()
-
-            # 更新/补充主系统提示
-            system_prompt = build_agent_system_prompt(runtime_tools, lang=user_lang)
-            if messages and messages[0].get("role") == "system":
-                messages[0] = {"role": "system", "content": system_prompt}
-            else:
-                messages.insert(0, {"role": "system", "content": system_prompt})
-
-            # 清理旧的文档范围提示（历史兼容）
-            def _is_scope_system_message(msg: Dict[str, Any]) -> bool:
-                if msg.get("role") != "system":
-                    return False
-                content = str(msg.get("content") or "")
-                return (
-                    content.startswith("Available document ID scope this turn:")
-                    or content.startswith("Only document ID is allowed this turn:")
-                    or content.startswith("Preferred document IDs this turn:")
-                    or content.startswith("本轮可用文档ID范围：")
-                    or content.startswith("本轮仅允许使用文档ID:")
-                    or content.startswith("优先检索这些文档ID：")
-                )
-
-            messages = [m for m in messages if not _is_scope_system_message(m)]
-
-            messages.append(
-                self._user_message_with_attachments(question, request_attachments)
-            )
-        else:
-            # 新建消息历史 - 动态获取文档数量并注入提示词
-            system_prompt = build_agent_system_prompt(runtime_tools, lang=user_lang)
-            messages = [{"role": "system", "content": system_prompt}]
-
-            # 添加历史消息（来自数据库）
-            if history_messages:
-                trimmed = self._trim_history(history_messages, question)
-                messages.extend(trimmed)
-
-            messages.append(
-                self._user_message_with_attachments(question, request_attachments)
-            )
-
-        # 工具调用历史（用于传递给最终答案生成）
-        tool_results_for_answer = []
-        assistant_content = ""
-
-        initial_evidence = (
-            []
-            if skip_initial_retrieval
-            else await self._execute_initial_retrieval_plan(
-                question=question,
-                tool_executor=tool_executor,
-                document_ids=document_ids,
-                preferred_document_ids=preferred_document_ids,
-                folder_id=folder_id,
-                include_subfolders=include_subfolders,
-                strict_scope=strict_scope,
-                web_search_requested=web_search_requested,
-                web_search_enabled=web_search_active,
-                web_search_settings=web_search_settings,
-                suppress_user_library_fallback=suppress_user_library_fallback,
-            )
+        scope = {
+            "user_id": user_id,
+            "document_ids": list(document_ids or []),
+            "preferred_document_ids": list(preferred_document_ids or []),
+            "folder_id": folder_id,
+            "include_subfolders": bool(include_subfolders),
+            "strict_scope": bool(effective_strict_scope),
+            "web_search_requested": bool(web_search_requested),
+            "web_search_enabled": bool(web_search_active),
+            "suppress_user_library_fallback": bool(suppress_user_library_fallback),
+            "available_document_ids": sorted(available_doc_ids),
+        }
+        runtime = self.build_agent_loop_runtime(
+            tool_executor=tool_executor,
+            web_search_settings=web_search_settings,
+            runtime_tools=runtime_tools,
+            answer_generator=self._stream_graph_answer,
+            user_id=user_id,
+            max_steps=max_steps,
         )
-        for evidence_index, evidence in enumerate(initial_evidence):
-            tool_name = evidence.get("tool_name", "")
-            arguments = evidence.get("arguments", {})
-            result = evidence.get("result", {})
-            elapsed_ms = evidence.get("elapsed_ms")
-            if elapsed_ms is None and isinstance(result, dict):
-                elapsed_ms = result.get("elapsed_ms")
-
-            yield self._format_sse(
-                "tool_started",
-                {
-                    "tool_name": tool_name,
-                    "arguments": arguments,
-                    "step": -(evidence_index + 1),
-                    "status": "calling",
-                    "source": "initial_retrieval",
-                    "retrieval_plan_route": evidence.get("retrieval_plan_route"),
-                },
-            )
-
-            client_result = self._sanitize_tool_result_for_client(result)
-            yield self._format_sse(
-                "tool_completed",
-                {
-                    "tool_name": tool_name,
-                    "result": client_result,
-                    "step": -(evidence_index + 1),
-                    "elapsed_ms": elapsed_ms,
-                    "status": "completed",
-                    "source": "initial_retrieval",
-                    "retrieval_plan_route": evidence.get("retrieval_plan_route"),
-                },
-            )
-
-            tool_results_for_answer.append(
-                self._sanitize_tool_result_for_client(evidence)
-            )
-            messages.append(self._planner_evidence_message(evidence))
-
-        active_tools = [] if (skip_initial_retrieval and not web_search_active) else runtime_tools
-        if suppress_user_library_fallback and not has_valid_explicit_scope:
-            active_tools = self._tools_for_request(web_search_enabled=web_search_active)
-            active_tools = [
-                tool
-                for tool in active_tools
-                if tool.get("function", {}).get("name") == "web_search"
-            ]
-        elif not has_valid_explicit_scope and not needs_document_retrieval:
-            active_tools = []
-
-        # Agent 循环
-        for step_num in range(max_steps):
-            # 流式调用模型（带工具）
-            tool_logger.info(
-                f"Sending {len(active_tools)} tools: {[t['function']['name'] for t in active_tools]}"
-            )
-            response = await chat_by_scenario(
-                scenario="qa",
-                messages=messages,
-                tools=active_tools,
-                stream=True,
-                user_id=user_id,
-                allow_deterministic_tools=bool(initial_evidence),
-            )
-
-            # 收集本轮响应
-            assistant_content = ""
-            reasoning_content = ""
-            tool_calls = []
-            current_tool_call = None
-            has_tool_calls = False
-
-            async for chunk in response:
-                if not chunk.choices:
-                    continue
-
-                delta = chunk.choices[0].delta
-
-                # 流式输出 thinking（reasoning_content）
-                if hasattr(delta, "reasoning_content") and delta.reasoning_content:
-                    reasoning_content += delta.reasoning_content
-
-                # 流式输出答案内容
-                if delta.content:
-                    assistant_content += delta.content
-                    yield self._format_sse(
-                        "answer_delta",
-                        {
-                            "content": delta.content,
-                        },
-                    )
-
-                # 处理工具调用
-                if delta.tool_calls:
-                    has_tool_calls = True
-                    for tc in delta.tool_calls:
-                        if tc.index is not None and tc.index >= len(tool_calls):
-                            tool_calls.append(
-                                {
-                                    "id": tc.id or "",
-                                    "function": {"name": "", "arguments": ""},
-                                }
-                            )
-                        if tc.index is not None and tc.index < len(tool_calls):
-                            if tc.function and tc.function.name:
-                                tool_calls[tc.index]["function"]["name"] = (
-                                    tc.function.name
-                                )
-                            if tc.function and tc.function.arguments:
-                                tool_calls[tc.index]["function"]["arguments"] += (
-                                    tc.function.arguments
-                                )
-
-            # 如果没有工具调用，说明可以生成最终答案了
-            if not has_tool_calls:
-                # 将 assistant 消息加入历史
-                messages.append({"role": "assistant", "content": assistant_content})
-                break
-
-            # 构建 assistant 消息（含工具调用）
-            assistant_msg = {
-                "role": "assistant",
-                "content": assistant_content or None,
-                "tool_calls": [
-                    {
-                        "id": tc["id"],
-                        "type": "function",
-                        "function": tc["function"],
-                    }
-                    for tc in tool_calls
-                ],
-            }
-            messages.append(assistant_msg)
-
-            # 执行工具调用
-            for tc in tool_calls:
-                tool_name = tc["function"]["name"]
-
-                try:
-                    tool_args = json.loads(tc["function"]["arguments"])
-                except json.JSONDecodeError:
-                    tool_args = {}
-
-                tool_args = self._inject_default_doc_id(
-                    tool_name,
-                    tool_args,
-                    document_ids,
-                    preferred_document_ids,
-                    folder_id=folder_id,
-                    include_subfolders=include_subfolders,
-                    strict_scope=strict_scope,
-                )
-
-                # 发送工具调用事件
-                tool_logger.info(
-                    f"Calling {tool_name} with {json.dumps(tool_args, ensure_ascii=False)[:200]}"
-                )
-                yield self._format_sse(
-                    "tool_started",
-                    {
-                        "tool_name": tool_name,
-                        "arguments": tool_args,
-                        "step": step_num,
-                        "status": "calling",
-                    },
-                )
-
-                # 执行工具（带会话缓存，部分工具不缓存）
-                started_at = time.perf_counter()
-
-                # 检查是否需要缓存
-                should_cache = tool_name not in _NON_CACHEABLE_TOOLS
-
-                if should_cache:
-                    # 缓存 key：忽略 include_image 差异，同一页面只缓存一份
-                    cache_key = self._build_tool_cache_key(
-                        tool_name,
-                        tool_args,
-                        user_id=user_id,
-                        document_ids=document_ids,
-                        folder_id=folder_id,
-                        include_subfolders=include_subfolders,
-                        strict_scope=strict_scope,
-                    )
-
-                    conv_cache = _CONVERSATION_CACHES.get(
-                        conversation_state_key, {}
-                    )
-                    if cache_key in conv_cache:
-                        result = conv_cache[cache_key]
-                        elapsed_ms = int((time.perf_counter() - started_at) * 1000)
-                        tool_logger.info(
-                            f"{tool_name} completed in {elapsed_ms}ms (session cache hit)"
-                        )
-                    else:
-                        result = await tool_executor.execute(tool_name, tool_args)
-                        elapsed_ms = int((time.perf_counter() - started_at) * 1000)
-                        if conversation_state_key:
-                            _CONVERSATION_CACHES.setdefault(
-                                conversation_state_key, {}
-                            )[cache_key] = result
-                        tool_logger.info(f"{tool_name} completed in {elapsed_ms}ms")
-                else:
-                    # 不缓存的工具：直接执行
-                    if tool_name == "web_search":
-                        result = await execute_web_search_tool(
-                            arguments=tool_args,
-                            settings=web_search_settings,
-                        )
-                    else:
-                        result = await tool_executor.execute(tool_name, tool_args)
-                    elapsed_ms = int((time.perf_counter() - started_at) * 1000)
-                    tool_logger.info(
-                        f"{tool_name} completed in {elapsed_ms}ms (no cache)"
-                    )
-                print(f"[TOOL] {tool_name} completed in {elapsed_ms}ms")
-                if isinstance(result, dict):
-                    result.setdefault("elapsed_ms", elapsed_ms)
-
-                client_result = self._sanitize_tool_result_for_client(result)
-
-                # 发送工具结果事件
-                yield self._format_sse(
-                    "tool_completed",
-                    {
-                        "tool_name": tool_name,
-                        "result": client_result,
-                        "step": step_num,
-                        "elapsed_ms": elapsed_ms,
-                        "status": "completed",
-                    },
-                )
-
-                # 将工具结果加入消息历史（移除 base64 图片避免 tool result 过大）
-                tool_result_clean = self._sanitize_tool_result_for_history(result)
-                tool_content = json.dumps(tool_result_clean, ensure_ascii=False)
-                tool_message = {
-                    "role": "tool",
-                    "tool_call_id": tc["id"],
-                    "content": tool_content,
-                }
-                messages.append(tool_message)
-
-                vision_message = self._vision_message_for_tool_result(
-                    tool_name, result
-                )
-                if vision_message:
-                    messages.append(vision_message)
-                    image_url = vision_message["content"][0]["image_url"]["url"]
-                    print(
-                        f"[VISION] Injected image_url for {tool_name}, size={len(image_url)}"
-                    )
-
-                # 收集工具结果用于最终答案生成
-                tool_results_for_answer.append(
-                    {
-                        "tool_name": tool_name,
-                        "result": client_result,
-                    }
-                )
-
-                if conversation_id and tool_name in {
-                    "get_page_content",
-                    "get_document_structure",
-                }:
-                    pass  # per-conversation cache handled at execution level
-
-        # 如果有工具调用但没有生成答案，强制调用一次模型生成最终答案
-        if tool_results_for_answer and not assistant_content:
-            fallback_response = await chat_by_scenario(
-                scenario="qa",
-                messages=messages,
-                stream=True,
-                user_id=user_id,
-            )
-            async for chunk in fallback_response:
-                if not chunk.choices:
-                    continue
-                delta = chunk.choices[0].delta
-                if hasattr(delta, "reasoning_content") and delta.reasoning_content:
-                    pass
-                if delta.content:
-                    assistant_content += delta.content
-                    yield self._format_sse("answer_delta", {"content": delta.content})
-            if assistant_content:
-                messages.append({"role": "assistant", "content": assistant_content})
-
-        if not assistant_content:
-            raise RuntimeError("No final answer generated by the selected model")
-
-        # 保存完整消息历史到全局缓存（包含工具调用记录，供下一轮使用）
-        if conversation_state_key:
-            _CONVERSATION_MESSAGES[conversation_state_key] = (
-                self._sanitize_messages_for_conversation_history(messages)
-            )
+        state = AgentRunState(
+            question=question,
+            conversation_id=conversation_id or "",
+            run_id="",
+            message_id="",
+            scope=scope,
+            history=history_messages or [],
+        )
+        async for runtime_event in runtime.stream(state):
+            yield self._format_sse(runtime_event.event_type, runtime_event.payload)
+        return
 
     def _build_tool_content(self, tool_name: str, result: dict) -> str:
         """
@@ -1090,6 +908,7 @@ class AgentService:
                 stream=True,
                 user_id=user_id,
                 temperature=0.7,
+                disable_thinking=True,
             )
 
             print(f"[SimpleChat] Got response from LLM, streaming...")
@@ -1125,6 +944,43 @@ class AgentService:
 
             traceback.print_exc()
             raise
+
+    async def _attachment_chat_stream(
+        self,
+        *,
+        question: str,
+        request_attachments: Optional[List[Dict[str, Any]]] = None,
+        history_messages: Optional[List[Dict[str, Any]]] = None,
+        user_id: str = None,
+    ) -> AsyncGenerator[str, None]:
+        from app.prompts import CHAT_SYSTEM_PROMPT
+
+        messages = [{"role": "system", "content": CHAT_SYSTEM_PROMPT}]
+        if history_messages:
+            for msg in history_messages[-6:]:
+                if msg.get("role") in ("user", "assistant") and msg.get("content"):
+                    messages.append({"role": msg["role"], "content": msg["content"]})
+        messages.append(self._user_message_with_attachments(question, request_attachments))
+
+        response = await chat_by_scenario(
+            scenario="qa",
+            messages=messages,
+            stream=True,
+            user_id=user_id,
+            temperature=0.7,
+            disable_thinking=True,
+        )
+        full_content = ""
+        async for chunk in response:
+            if not getattr(chunk, "choices", None):
+                continue
+            delta = chunk.choices[0].delta
+            content = getattr(delta, "content", None)
+            if content:
+                full_content += content
+                yield self._format_sse("answer_delta", {"content": content})
+        if not full_content:
+            raise RuntimeError("No final answer generated by the selected model")
 
     def _trim_history(
         self, history_messages: List[Dict[str, Any]], current_question: str

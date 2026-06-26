@@ -134,7 +134,22 @@ class FakeNoToolStream:
         return FakeNoToolChunk()
 
 
-def test_agent_service_emits_initial_retrieval_as_tool_events_without_provider_tool_calls(
+def _planner_response(content: str):
+    return SimpleNamespace(
+        choices=[SimpleNamespace(message=SimpleNamespace(content=content))]
+    )
+
+
+def _is_planner_request(kwargs: dict) -> bool:
+    messages = kwargs.get("messages") or []
+    if not messages:
+        return False
+    return "Choose the next single PageChat agent action" in str(
+        messages[0].get("content", "")
+    )
+
+
+def test_agent_service_emits_loop_runtime_tool_events_without_initial_retrieval(
     monkeypatch,
 ) -> None:
     async def run() -> None:
@@ -144,32 +159,39 @@ def test_agent_service_emits_initial_retrieval_as_tool_events_without_provider_t
         service.db = None
         service.pageindex_service = object()
         service.document_service = FakeDocumentService()
+        planner_actions = [
+            {
+                "thought": "I will inspect the selected document structure.",
+                "action": {
+                    "type": "call_tool",
+                    "tool_name": "get_document_structure",
+                    "arguments": {"compact": True},
+                },
+            },
+            {
+                "thought": "I will read likely source pages next.",
+                "action": {
+                    "type": "call_tool",
+                    "tool_name": "get_page_content",
+                    "arguments": {"pages": "1"},
+                },
+            },
+            {
+                "thought": "I have enough observed evidence to answer.",
+                "action": {"type": "answer", "content": "final answer"},
+            },
+        ]
 
         async def fake_chat_by_scenario(**_kwargs):
-            assert _kwargs["allow_deterministic_tools"] is True
+            assert "allow_deterministic_tools" not in _kwargs
+            if _is_planner_request(_kwargs):
+                return _planner_response(
+                    json.dumps(planner_actions.pop(0), ensure_ascii=False)
+                )
             return FakeNoToolStream()
 
-        async def fake_initial_retrieval_plan(**_kwargs):
-            return [
-                {
-                    "tool_name": "search_within_document",
-                    "arguments": {"doc_id": "doc-alpha", "query": "alpha"},
-                    "result": {
-                        "status": "success",
-                        "citations": [
-                            {
-                                "citation_key": "c1",
-                                "document_id": "doc-alpha",
-                                "document_name": "alpha.pdf",
-                                "source_anchor": {"format": "pdf", "start_page": 2},
-                                "display_label": "alpha.pdf p.2",
-                                "preview_kind": "pdf",
-                            }
-                        ],
-                    },
-                    "retrieval_plan_route": "document",
-                }
-            ]
+        async def fail_initial_retrieval_plan(**_kwargs):
+            raise AssertionError("legacy initial retrieval must not run")
 
         monkeypatch.setattr(
             "app.services.agent_service.chat_by_scenario",
@@ -178,7 +200,7 @@ def test_agent_service_emits_initial_retrieval_as_tool_events_without_provider_t
         monkeypatch.setattr(
             AgentService,
             "_execute_initial_retrieval_plan",
-            staticmethod(fake_initial_retrieval_plan),
+            staticmethod(fail_initial_retrieval_plan),
         )
 
         frames = [
@@ -196,13 +218,26 @@ def test_agent_service_emits_initial_retrieval_as_tool_events_without_provider_t
 
         events = parse_sse_frames(frames)
         assert [event["event"] for event in events] == [
+            "progress",
             "tool_started",
             "tool_completed",
+            "progress",
+            "progress",
+            "tool_started",
+            "tool_completed",
+            "progress",
+            "progress",
             "answer_delta",
         ]
         assert not (LEGACY_STREAM_EVENTS & {event["event"] for event in events})
-        assert events[0]["data"]["tool_name"] == "search_within_document"
-        assert events[1]["data"]["result"]["citations"][0]["document_id"] == "doc-alpha"
+        assert events[0]["data"]["kind"] == "plan"
+        assert events[1]["data"]["tool_name"] == "get_document_structure"
+        assert events[2]["data"]["result"]["status"] in {"", "error"}
+        assert events[3]["data"]["kind"] == "observation"
+        assert events[4]["data"]["kind"] == "plan"
+        assert events[5]["data"]["tool_name"] == "get_page_content"
+        assert events[7]["data"]["kind"] == "observation"
+        assert events[8]["data"]["kind"] == "plan"
 
     asyncio.run(run())
 
@@ -301,10 +336,11 @@ def test_chat_service_emits_normalized_pagechat_run_events() -> None:
                 "tool_started",
                 "tool_completed",
                 "answer_delta",
+                "answer_delta",
                 "citation_added",
                 "run_completed",
             ],
-            "seqs": [1, 2, 3, 4, 5, 6],
+            "seqs": [1, 2, 3, 4, 5, 6, 7],
             "all_events_have_run_metadata": True,
             "all_events_have_ts": True,
             "leaked_raw_provider_thinking": False,
@@ -315,6 +351,7 @@ def test_chat_service_emits_normalized_pagechat_run_events() -> None:
                 "run_started",
                 "tool_started",
                 "tool_completed",
+                "answer_delta",
                 "answer_delta",
                 "citation_added",
                 "run_completed",
