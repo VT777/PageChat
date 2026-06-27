@@ -45,6 +45,27 @@ Completion status:
   - `3 passed`.
 - Next phase: build compact model-facing tool result messages.
 
+### Flat Tool Loop Phase 2 - Compact tool result messages
+
+Start status:
+- Started Phase 2 after commit `a896482`.
+- Goal: convert PageChat tool results into compact OpenAI-compatible `role="tool"` messages plus UI metadata.
+- TDD: add `backend/tests/test_tool_messages.py` first; expected initial failure is missing `app.agent.tool_messages`.
+- Reuse `backend/app/agent/nodes.py::compact_tool_result` where practical, while adding missing `view_folder_structure` display metadata.
+
+Completion status:
+- RED test run:
+  - `D:\projects\page_chat\backend\venv\Scripts\python.exe -m pytest backend/tests/test_tool_messages.py -q`
+  - failed as expected with `ModuleNotFoundError: No module named 'app.agent.tool_messages'`.
+- Added `backend/app/agent/tool_messages.py` with `build_tool_result_message`.
+- Model-facing tool message content now uses compact JSON and strips local paths, base64 payloads, raw OCR fields, embeddings, scores, and other oversized/sensitive keys.
+- UI result reuses `compact_tool_result` so timeline metadata remains consistent.
+- Added `view_folder_structure` display metadata in `compact_tool_result`.
+- Verification:
+  - `D:\projects\page_chat\backend\venv\Scripts\python.exe -m pytest backend/tests/test_tool_messages.py -q` -> `3 passed`.
+  - `D:\projects\page_chat\backend\venv\Scripts\python.exe -m pytest backend/tests/test_tool_messages.py backend/tests/test_agent_run_event_protocol.py -q` -> `14 passed, 9 warnings`.
+- Next phase: add boundary-only runtime policy.
+
 ## Phase Log
 
 ### Phase 1 - Architecture Audit And Production Path Confirmation

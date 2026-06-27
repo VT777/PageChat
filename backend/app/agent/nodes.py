@@ -389,6 +389,12 @@ def _result_display_metadata(
         count = _list_count(result.get("results")) or _list_count(result.get("items")) or len(items)
         if count:
             return {"result_count": count, "result_label": _plural(count, "result")}
+    if tool_name == "view_folder_structure":
+        count = _coerce_positive_int(result.get("total_folders")) or _list_count(
+            result.get("folders")
+        )
+        if count:
+            return {"result_count": count, "result_label": _plural(count, "folder")}
     if tool_name in {"get_page_image", "get_document_image"} and not result.get("error"):
         count = _list_count(result.get("images")) or 1
         return {"result_count": count, "result_label": _plural(count, "image")}
