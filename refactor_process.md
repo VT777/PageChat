@@ -28,6 +28,23 @@ Start status:
 - Execution rule: update this section at the start and completion of every phase.
 - Current task: register the new plan, then start Phase 1 with failing tests first.
 
+### Flat Tool Loop Phase 1 - Provider-neutral model turn events
+
+Start status:
+- Started Phase 1 after baseline commit `7589059`.
+- Goal: create provider-neutral model turn/event dataclasses with no planner/action concepts.
+- TDD: first add `backend/tests/test_model_turn.py`, verify it fails because `app.agent.model_turn` does not exist, then add minimal implementation.
+
+Completion status:
+- RED test run:
+  - `D:\projects\page_chat\backend\venv\Scripts\python.exe -m pytest backend/tests/test_model_turn.py -q`
+  - failed as expected with `ModuleNotFoundError: No module named 'app.agent.model_turn'`.
+- Added `backend/app/agent/model_turn.py` with `ModelToolCall`, `ModelToolCallDelta`, `ModelTextDelta`, and `ModelTurn`.
+- GREEN test run:
+  - `D:\projects\page_chat\backend\venv\Scripts\python.exe -m pytest backend/tests/test_model_turn.py -q`
+  - `3 passed`.
+- Next phase: build compact model-facing tool result messages.
+
 ## Phase Log
 
 ### Phase 1 - Architecture Audit And Production Path Confirmation
