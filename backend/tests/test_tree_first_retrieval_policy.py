@@ -17,13 +17,14 @@ def test_tree_first_thresholds_are_conservative() -> None:
     assert TREE_FALLBACK_CONFIDENCE_THRESHOLD < TREE_HIGH_CONFIDENCE_THRESHOLD
 
 
-def test_agent_prompt_states_tree_first_and_source_before_answer() -> None:
+def test_agent_prompt_states_agentic_tool_selection_and_source_boundaries() -> None:
     prompt = build_agent_system_prompt(AGENT_TOOLS)
 
-    assert "tree-first retrieval policy" in prompt
-    assert "get_document_structure before get_page_content" in prompt
-    assert "view_folder_structure or browse_documents" in prompt
-    assert "fetch source content before final answer" in prompt
+    assert "Tool Selection Principles" in prompt
+    assert "You decide which tool, if any, is useful for the current turn" in prompt
+    assert "get_document_structure before get_page_content" not in prompt
+    assert "fetch source content before final answer" not in prompt
+    assert "Document claims need source evidence from available observations or tools" in prompt
 
 
 def test_agent_prompt_requires_fallback_disclosure() -> None:

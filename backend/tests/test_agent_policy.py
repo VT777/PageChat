@@ -135,6 +135,10 @@ def test_policy_blocks_document_answer_without_evidence() -> None:
     assert result.allowed is False
     assert result.observation is not None
     assert "evidence" in result.observation["message"].lower()
+    assert "Decide what information is missing" in result.observation["message"]
+    assert "Read document structure" not in result.observation["message"]
+    assert "search within a selected document" not in result.observation["message"]
+    assert "fetch page/image evidence" not in result.observation["message"]
 
 
 def test_policy_allows_document_answer_with_sufficient_evidence() -> None:
@@ -418,6 +422,10 @@ def test_policy_blocks_answer_after_visual_only_page_content() -> None:
     )
 
     assert result.allowed is False
+    assert result.observation is not None
+    assert "visual_evidence_required" in result.observation["message"]
+    assert "image-capable tool" in result.observation["message"]
+    assert "Read document structure" not in result.observation["message"]
 
 
 def test_policy_allows_answer_after_page_image_evidence() -> None:

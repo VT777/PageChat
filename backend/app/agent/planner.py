@@ -111,11 +111,14 @@ class StructuredLLMPlanner:
                 f"{retry_error}. Return only valid JSON now."
             )
         instruction = (
-            "Choose the next single PageChat agent action.\n"
+            "Choose the next PageChat agent turn.\n"
             "Return JSON only with this schema:\n"
             "{\"thought\": string, \"action\": {\"type\": "
             "\"call_tool|answer|ask_clarification|fail\", \"tool_name\": "
             "string|null, \"arguments\": object, \"content\": string|null}}\n"
+            "You decide whether to answer, ask for clarification, or call tools. "
+            "Policy only enforces boundaries such as available tools, scope, citations, "
+            "and unsafe or unsupported final answers; it does not plan the route for you. "
             "The thought is a short user-visible decision note, not hidden chain-of-thought. "
             "It should sound natural, calm, and helpful. "
             "Do not narrate implementation details such as empty scope, policy checks, JSON, "
@@ -133,7 +136,7 @@ class StructuredLLMPlanner:
             "Only browse documents when the user needs a document list or content selection "
             "that is not already covered by the selected scope summary. "
             "Use the same language as the user's question when possible. "
-            "Choose tools freely from available_tools; policy will validate safety and evidence."
+            "Choose tools freely from available_tools according to the information gap."
         )
         if retry_error:
             instruction += "\nThe previous planner output was invalid; follow the JSON schema exactly."

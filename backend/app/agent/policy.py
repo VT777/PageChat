@@ -89,9 +89,14 @@ class AgentPolicy:
             return PolicyValidation(True, action=action)
         if self._has_sufficient_metadata_evidence(state):
             return PolicyValidation(True, action=action)
+        if self._has_visual_evidence_gap(state):
+            return self._reject(
+                "The available page evidence is marked visual_evidence_required. "
+                "Use an image-capable tool before making visual or layout-dependent claims."
+            )
         return self._reject(
-            "Document evidence is not sufficient yet. Read document structure, search within a selected document, "
-            "or fetch page/image evidence before answering."
+            "The final answer needs source evidence. Decide what information is missing "
+            "and choose an available tool or ask a clarification."
         )
 
     def _patch_scope_arguments(
@@ -297,6 +302,33 @@ class AgentPolicy:
             return True
         if overview_question and tool_names & {"browse_documents", "get_document_structure"}:
             return True
+        return False
+
+    def _has_visual_evidence_gap(self, state: AgentRunState) -> bool:
+        entries: list[Any] = []
+        entries.extend(state.scope.get("observations") or [])
+        entries.extend(state.scope.get("evidence_pack") or [])
+        entries.extend(state.scope.get("prior_evidence") or [])
+        return any(
+            isinstance(entry, dict) and self._entry_mentions_visual_required(entry)
+            for entry in entries
+        )
+
+    def _entry_mentions_visual_required(self, entry: dict[str, Any]) -> bool:
+        if entry.get("visual_evidence_required") is True:
+            return True
+        if entry.get("text_omitted_reason") == "visual_evidence_required":
+            return True
+        for key in ("items", "pages", "content", "matches", "results"):
+            value = entry.get(key)
+            if isinstance(value, list) and any(
+                isinstance(item, dict) and self._entry_mentions_visual_required(item)
+                for item in value
+            ):
+                return True
+        data = entry.get("data")
+        if isinstance(data, dict):
+            return self._entry_mentions_visual_required(data)
         return False
 
     def _evidence_entry_is_sufficient(self, entry: dict[str, Any]) -> bool:

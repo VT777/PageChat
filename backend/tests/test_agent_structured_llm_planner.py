@@ -135,6 +135,40 @@ def test_structured_planner_prompt_keeps_visible_notes_natural() -> None:
     asyncio.run(run())
 
 
+def test_structured_planner_prompt_emphasizes_model_driven_decisions() -> None:
+    async def run() -> None:
+        calls = []
+
+        async def fake_completion(**kwargs):
+            calls.append(kwargs)
+            return _response(
+                """
+                {
+                  "thought": "我会根据当前信息判断是否需要工具。",
+                  "action": {"type": "answer", "content": "可以。"}
+                }
+                """
+            )
+
+        planner = StructuredLLMPlanner(completion_fn=fake_completion, tools=_tools())
+        state = AgentRunState(
+            question="可以直接回答吗？",
+            conversation_id="conv-a",
+            run_id="run-a",
+            message_id="msg-a",
+        )
+
+        await planner.next_action(state)
+
+        system_prompt = calls[0]["messages"][0]["content"]
+        assert "You decide whether to answer, ask for clarification, or call tools" in system_prompt
+        assert "Choose the next single PageChat agent action" not in system_prompt
+        assert "policy will validate safety and evidence" not in system_prompt
+        assert "Policy only enforces boundaries" in system_prompt
+
+    asyncio.run(run())
+
+
 def test_structured_planner_payload_hides_document_registry_and_keeps_scope_summary() -> None:
     async def run() -> None:
         calls = []

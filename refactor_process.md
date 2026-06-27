@@ -1,0 +1,109 @@
+# PageChat LLM-Driven Agent Loop Refactor Process
+
+This file is the handoff log for the LLM-driven Agent Loop refactor. Read it before starting or resuming work. Update it at the start and end of every phase so context compression can recover the current state.
+
+## Baseline
+
+- Branch: `codex/pagechat-ui-agent-runtime-integration`
+- Worktree: `C:\Users\TT_WT\.codex\worktrees\pagechat-ui-agent-runtime-integration`
+- Baseline checkpoint before refactor: `c551c12 chore(agent): checkpoint before llm-driven loop refactor`
+- Primary plan: `docs/superpowers/plans/2026-06-27-pagechat-llm-driven-agent-loop-plan.zh.md`
+- Execution order: Phase 1, Phase 2, Phase 3, Phase 6, Phase 7, Phase 4, Phase 5, Phase 8, Phase 9.
+
+## Current Status
+
+- Current phase: Phase 3 - Policy as boundary guardrails.
+- Status: Completed.
+- Started at: 2026-06-27.
+- Notes: Phase 3 completed. Next phase is Phase 6 tool contract cleanup.
+
+## Phase Log
+
+### Phase 1 - Architecture Audit And Production Path Confirmation
+
+Start status:
+- Started Phase 1.
+- Read the primary plan.
+- Need to inspect:
+  - `backend/app/agent/loop_runtime.py`
+  - `backend/app/agent/planner.py`
+  - `backend/app/agent/policy.py`
+  - `backend/app/prompts/__init__.py`
+  - `backend/app/services/agent_service.py`
+- Expected output: concise audit notes in this file before Phase 2 begins.
+
+Completion status:
+- Production path in `AgentService.build_agent_loop_runtime` constructs `StructuredLLMPlanner`, `AgentPolicy`, `AgentLoopRuntime`, and `_stream_graph_answer`.
+- `PolicyGuidedPlanner` still exists in `backend/app/agent/loop_runtime.py` but appears test/fallback-only; `backend/tests/test_agent_service_loop_runtime.py` asserts runtime planner is not `PolicyGuidedPlanner`.
+- `run_agent_stream` currently builds scope, selected scope summary, optional prior evidence, and then calls `build_agent_loop_runtime`; it does not call `_execute_initial_retrieval_plan` in the current main path.
+- `_execute_initial_retrieval_plan` and older tests still exist; keep them in mind as legacy/retrieval-planner residue when simplifying architecture.
+- Planner payload hides `document_registry` via `_compact_scope`, but `document_registry` remains in state scope for policy doc-name-to-doc-id repair.
+- Final answer is currently split: planner chooses `answer` with empty content, then `AgentLoopRuntime` invokes `_stream_graph_answer`; this is a real model-responsibility split and should be revisited after prompt/policy cleanup.
+- Current runtime events are `progress`, `tool_started`, `tool_completed`, and `answer_delta`; no separate `processing_delta` or `tool_call_delta` yet.
+- Policy rejection appends a guardrail observation and retracts already streamed plan progress. This avoids final visible rejected thought, but frequent rejections still make the loop feel mechanical.
+- Phase 1 produced no product code changes except this process log.
+
+### Phase 2 - Prompt Rewrite Toward Model Autonomy
+
+Start status:
+- Started Phase 2.
+- Goal: rewrite prompt constraints from workflow-like stages to model-autonomous principles.
+- TDD target: backend planner prompt tests should fail first for old workflow language and pass after prompt rewrite.
+- Files expected:
+  - `backend/app/prompts/__init__.py`
+  - `backend/app/agent/planner.py`
+  - `backend/tests/test_agent_structured_llm_planner.py`
+
+Completion status:
+- Added RED tests for model-autonomous prompt behavior:
+  - planner prompt must say the model decides whether to answer, clarify, or call tools.
+  - planner prompt must not say `Choose the next single PageChat agent action`.
+  - agent system prompt must not contain hardcoded `browse_documents -> ...` / `get_document_structure -> get_page_content -> answer` routes.
+  - global prompt now uses `Model Autonomy` and `Tool Selection Principles`.
+- Initial targeted test run failed as expected:
+  - `4 failed, 12 passed`
+- Implementation changed only prompt text in:
+  - `backend/app/agent/planner.py`
+  - `backend/app/prompts/__init__.py`
+- Final targeted test command:
+  - `D:\projects\page_chat\backend\venv\Scripts\python.exe -m pytest backend/tests/test_agent_structured_llm_planner.py backend/tests/test_tools_prompt_catalog.py backend/tests/test_tree_first_retrieval_policy.py -q`
+- Final result:
+  - `16 passed, 9 warnings`
+
+### Phase 3 - Policy As Boundary Guardrails
+
+Start status:
+- Started Phase 3.
+- Goal: keep policy deterministic but stop it from planning routes for the model.
+- TDD target: policy rejection observations should be neutral boundary feedback, not fixed tool-order instructions.
+- Files expected:
+  - `backend/app/agent/policy.py`
+  - `backend/app/agent/loop_runtime.py`
+  - `backend/tests/test_agent_policy.py`
+  - `backend/tests/test_agent_loop_runtime.py`
+
+Completion status:
+- Added RED tests requiring policy to stop prescribing fixed retrieval routes.
+- Generic document-evidence rejection now says:
+  - `The final answer needs source evidence. Decide what information is missing and choose an available tool or ask a clarification.`
+- Visual-only page evidence rejection now says:
+  - `The available page evidence is marked visual_evidence_required. Use an image-capable tool before making visual or layout-dependent claims.`
+- Policy still repairs scope/doc references, blocks disabled Web Search, blocks obvious repeat tool calls, and enforces evidence guardrails.
+- Targeted test command:
+  - `D:\projects\page_chat\backend\venv\Scripts\python.exe -m pytest backend/tests/test_agent_policy.py backend/tests/test_agent_loop_runtime.py -q`
+- Final result:
+  - `27 passed`
+
+### Phase 6 - Tool Contract Cleanup
+
+Start status:
+- Started Phase 6.
+- Goal: make tool arguments/results easier for the model and UI to understand without becoming a hidden workflow.
+- First focus:
+  - `get_page_content` natural page range parsing.
+  - `success/result_count/result_label/next_steps` consistency.
+  - no Python exceptions in tool-facing page argument errors.
+- Files expected:
+  - `backend/app/agent/nodes.py`
+  - tool schemas wherever defined.
+  - relevant backend tool tests.
