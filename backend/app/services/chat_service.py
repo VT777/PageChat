@@ -279,6 +279,7 @@ class ChatService:
             "get_page_content",
             "get_page_image",
             "get_document_image",
+            "search_within_document",
             "web_search",
         }
 

@@ -6,6 +6,7 @@ import asyncio
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from app.core import config
+from app.services import agent_service as agent_service_module
 from app.services.agent_service import AgentService
 from phase0_chat_helpers import parse_sse_frames
 
@@ -15,7 +16,15 @@ class FakeDocumentService:
         return []
 
 
-def test_agent_service_builds_flat_tool_loop_when_runtime_mode_enabled(monkeypatch):
+def test_config_default_runtime_mode_is_flat_tool_loop():
+    source = (Path(__file__).resolve().parents[1] / "app" / "core" / "config.py").read_text(
+        encoding="utf-8"
+    )
+
+    assert 'AGENT_RUNTIME_MODE = os.getenv("AGENT_RUNTIME_MODE", "flat_tool_loop")' in source
+
+
+def test_agent_service_builds_flat_tool_loop_by_default(monkeypatch):
     monkeypatch.setattr(config, "AGENT_RUNTIME_MODE", "flat_tool_loop", raising=False)
     service = AgentService.__new__(AgentService)
 
@@ -31,7 +40,7 @@ def test_agent_service_builds_flat_tool_loop_when_runtime_mode_enabled(monkeypat
     assert type(runtime.boundary_policy).__name__ == "RuntimeBoundaryPolicy"
 
 
-def test_agent_service_keeps_legacy_runtime_when_runtime_mode_unset(monkeypatch):
+def test_agent_service_keeps_legacy_runtime_when_runtime_mode_explicit(monkeypatch):
     monkeypatch.setattr(config, "AGENT_RUNTIME_MODE", "legacy_loop", raising=False)
     service = AgentService.__new__(AgentService)
 
@@ -44,6 +53,30 @@ def test_agent_service_keeps_legacy_runtime_when_runtime_mode_unset(monkeypatch)
 
     assert type(runtime).__name__ == "AgentLoopRuntime"
     assert type(runtime.planner).__name__ == "StructuredLLMPlanner"
+
+
+def test_agent_service_passes_qa_thinking_setting_to_flat_adapter(monkeypatch):
+    class FakeRuntimeSettings:
+        def get_settings(self):
+            return {"qa_thinking_mode": "auto"}
+
+    monkeypatch.setattr(config, "AGENT_RUNTIME_MODE", "flat_tool_loop", raising=False)
+    monkeypatch.setattr(
+        agent_service_module,
+        "runtime_settings_service",
+        FakeRuntimeSettings(),
+        raising=False,
+    )
+    service = AgentService.__new__(AgentService)
+
+    runtime = service.build_agent_loop_runtime(
+        tool_executor=object(),
+        web_search_settings={"enabled": False},
+        runtime_tools=[{"type": "function", "function": {"name": "browse_documents"}}],
+        user_id="user-a",
+    )
+
+    assert runtime.model.disable_thinking is False
 
 
 def test_agent_service_stream_accepts_flat_runtime_event_shape(monkeypatch):

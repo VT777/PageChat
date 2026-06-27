@@ -591,6 +591,7 @@ def _tool_result_can_cite_answer(tool_name: str | None) -> bool:
         "get_page_content",
         "get_page_image",
         "get_document_image",
+        "search_within_document",
         "web_search",
     }
 

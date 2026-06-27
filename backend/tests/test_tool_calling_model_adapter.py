@@ -68,6 +68,26 @@ def test_adapter_parses_non_streaming_message_tool_calls():
     assert events[0].tool_calls[0].arguments == {"folder_id": "root"}
 
 
+def test_adapter_allows_native_thinking_when_configured():
+    calls = []
+
+    async def fake_completion(**kwargs):
+        calls.append(kwargs)
+        return {"choices": [{"message": {"content": "ok"}}]}
+
+    adapter = ToolCallingModelAdapter(
+        completion_fn=fake_completion,
+        disable_thinking=False,
+    )
+
+    import asyncio
+
+    events = asyncio.run(_collect(adapter))
+
+    assert calls[0]["disable_thinking"] is False
+    assert events == [ModelTurn(content="ok")]
+
+
 def test_adapter_streams_tool_call_deltas_and_final_turn():
     async def stream_response():
         yield {

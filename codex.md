@@ -187,6 +187,24 @@ npm.cmd test
 npm.cmd run build
 ```
 
+## Agent Runtime Mode
+
+Current default backend runtime:
+
+```text
+AGENT_RUNTIME_MODE=flat_tool_loop
+```
+
+This is the expected runtime for the current integration branch. The backend no longer needs the desktop script to inject `AGENT_RUNTIME_MODE=flat_tool_loop`.
+
+Rollback switch:
+
+```text
+AGENT_RUNTIME_MODE=legacy_loop
+```
+
+Use `legacy_loop` only when explicitly debugging the older planner/policy runtime. If the UI shows planner-style behavior after restart, first check the backend process source and environment before changing code.
+
 ## 不要做的事
 
 - 不要只因为 `8000` 或 `5173` 能打开，就认为正在运行最新版。

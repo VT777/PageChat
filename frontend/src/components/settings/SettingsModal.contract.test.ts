@@ -54,4 +54,13 @@ describe('SettingsModal model provider contract', () => {
     expect(source).toContain('settingsApi.listModelRoutes')
     expect(source).toContain('settingsApi.saveModelRoutes')
   })
+
+  it('renders QA thinking controls and persists them through settings API', () => {
+    const source = readFileSync(new URL('./SettingsModal.vue', import.meta.url), 'utf-8')
+
+    expect(source).toContain('qaThinkingOptions')
+    expect(source).toContain('qaSettings.thinkingMode')
+    expect(source).toContain('settingsApi.getQaSettings')
+    expect(source).toContain('settingsApi.updateQaSettings')
+  })
 })

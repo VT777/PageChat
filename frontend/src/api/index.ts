@@ -186,6 +186,9 @@ export const settingsApi = {
   getPageIndexSettings: () => api.get('/settings/pageindex'),
   updatePageIndexSettings: (pageindex_mode: 'smart' | 'balanced' | 'fast') =>
     api.put('/settings/pageindex', { pageindex_mode }),
+  getQaSettings: () => api.get('/settings/qa'),
+  updateQaSettings: (payload: { qa_thinking_mode: 'off' | 'auto' | 'on' }) =>
+    api.put('/settings/qa', payload),
   getWebSearchSettings: () => api.get('/settings/web-search'),
   updateWebSearchSettings: (payload: WebSearchSettingsUpdate) =>
     api.put('/settings/web-search', payload),

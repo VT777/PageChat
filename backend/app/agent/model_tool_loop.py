@@ -217,6 +217,9 @@ _DEFAULT_SYSTEM_PROMPT = (
     "whether to answer directly, ask a clarifying question, or call tools. "
     "Choose tools only when they close an information gap for the current turn; "
     "there is no fixed document workflow. When tool results are enough, answer "
-    "in the user's language. Cite document and web evidence inline when using "
-    "sources, and keep progress notes concise. Do not expose internal mechanics."
+    "in the user's language. When using document evidence, put the provided "
+    "human-readable citation_marker, formatted like [[display_label]], immediately "
+    "after the supported claim. Never write internal IDs, citation_key values, "
+    "or raw markers such as [cite: ...]. For web evidence, cite with normal "
+    "markdown links. Keep progress notes concise. Do not expose internal mechanics."
 )

@@ -22,6 +22,7 @@ from app.services.web_search_settings_service import (
     DEFAULT_WEB_SEARCH_SETTINGS,
     WebSearchSettingsService,
 )
+from app.services.runtime_settings_service import runtime_settings_service
 from app.services.web_search_tool import WEB_SEARCH_TOOL, execute_web_search_tool
 from app.services.conversation_evidence_repository import ConversationEvidenceRepository
 from app.services.retrieval_planner import RetrievalPlanner
@@ -124,6 +125,11 @@ class AgentService:
         self.document_service = DocumentService(db)
         self.folder_service = FolderService(db)
 
+    @staticmethod
+    def _qa_disable_thinking() -> bool:
+        settings = runtime_settings_service.get_settings()
+        return str(settings.get("qa_thinking_mode") or "off").strip().lower() == "off"
+
     def build_explicit_agent_graph(
         self,
         *,
@@ -175,7 +181,9 @@ class AgentService:
             from app.agent.tool_calling_model_adapter import ToolCallingModelAdapter
 
             return ModelToolLoopRuntime(
-                model=ToolCallingModelAdapter(),
+                model=ToolCallingModelAdapter(
+                    disable_thinking=self._qa_disable_thinking()
+                ),
                 tool_runner=AgentLoopToolRunner(
                     tool_executor=tool_executor,
                     web_search_settings=web_search_settings,
@@ -356,7 +364,7 @@ class AgentService:
             messages=messages,
             stream=True,
             user_id=state.scope.get("user_id"),
-            disable_thinking=True,
+            disable_thinking=self._qa_disable_thinking(),
         )
         async for chunk in response:
             if not getattr(chunk, "choices", None):
@@ -1039,7 +1047,7 @@ class AgentService:
                 stream=True,
                 user_id=user_id,
                 temperature=0.7,
-                disable_thinking=True,
+                disable_thinking=self._qa_disable_thinking(),
             )
 
             print(f"[SimpleChat] Got response from LLM, streaming...")
@@ -1099,7 +1107,7 @@ class AgentService:
             stream=True,
             user_id=user_id,
             temperature=0.7,
-            disable_thinking=True,
+            disable_thinking=self._qa_disable_thinking(),
         )
         full_content = ""
         async for chunk in response:

@@ -96,6 +96,15 @@ def test_flat_runtime_prompt_guides_model_without_planner_language() -> None:
     assert "cite" in lower
 
 
+def test_flat_runtime_prompt_requires_readable_inline_citation_markers() -> None:
+    prompt = _DEFAULT_SYSTEM_PROMPT
+
+    assert "[[display_label]]" in prompt
+    assert "citation_key" in prompt
+    assert "[cite:" in prompt
+    assert "immediately after the supported claim" in prompt
+
+
 def test_initial_messages_do_not_inject_forced_document_route() -> None:
     runtime = ModelToolLoopRuntime(
         model=FakeModel(),

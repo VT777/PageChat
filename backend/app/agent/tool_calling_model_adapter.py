@@ -21,9 +21,11 @@ class ToolCallingModelAdapter:
         *,
         completion_fn: CompletionFn | None = None,
         scenario: str = "qa",
+        disable_thinking: bool = True,
     ) -> None:
         self.completion_fn = completion_fn or self._default_completion
         self.scenario = scenario
+        self.disable_thinking = disable_thinking
 
     async def stream_turn(
         self,
@@ -40,7 +42,7 @@ class ToolCallingModelAdapter:
             tool_choice="auto",
             user_id=user_id,
             allow_deterministic_tools=True,
-            disable_thinking=True,
+            disable_thinking=self.disable_thinking,
         )
         if not hasattr(response, "__aiter__"):
             yield self._parse_response_turn(response)

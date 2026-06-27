@@ -17,6 +17,7 @@ from phase0_chat_helpers import (  # noqa: E402
 )
 from app.agent.loop_runtime import ObservationBuilder  # noqa: E402
 from app.agent.nodes import compact_tool_result  # noqa: E402
+from app.core import config  # noqa: E402
 
 
 LEGACY_STREAM_EVENTS = {"thinking", "content", "tool_call", "tool_result", "done"}
@@ -356,6 +357,7 @@ def test_agent_service_emits_loop_runtime_tool_events_without_initial_retrieval(
     async def run() -> None:
         from app.services.agent_service import AgentService
 
+        monkeypatch.setattr(config, "AGENT_RUNTIME_MODE", "legacy_loop", raising=False)
         service = AgentService.__new__(AgentService)
         service.db = None
         service.pageindex_service = object()

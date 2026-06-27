@@ -5,6 +5,7 @@ from types import SimpleNamespace
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from app.core import config  # noqa: E402
 from app.services.agent_service import AgentService  # noqa: E402
 from phase0_chat_helpers import parse_sse_frames, sse_frame  # noqa: E402
 
@@ -76,7 +77,8 @@ class FakeLoopRuntime:
         )
 
 
-def test_agent_service_builds_structured_llm_planner_for_product_runtime() -> None:
+def test_agent_service_builds_structured_llm_planner_for_legacy_runtime(monkeypatch) -> None:
+    monkeypatch.setattr(config, "AGENT_RUNTIME_MODE", "legacy_loop", raising=False)
     service = AgentService.__new__(AgentService)
     runtime = service.build_agent_loop_runtime(
         tool_executor=object(),
@@ -92,7 +94,10 @@ def test_agent_service_builds_structured_llm_planner_for_product_runtime() -> No
     assert type(runtime.planner).__name__ != "PolicyGuidedPlanner"
 
 
-def test_agent_service_passes_runtime_tool_catalog_to_planner_and_policy() -> None:
+def test_agent_service_passes_runtime_tool_catalog_to_legacy_planner_and_policy(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(config, "AGENT_RUNTIME_MODE", "legacy_loop", raising=False)
     service = AgentService.__new__(AgentService)
     tools = [
         {"type": "function", "function": {"name": "view_folder_structure"}},

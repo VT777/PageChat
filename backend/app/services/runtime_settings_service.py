@@ -5,6 +5,9 @@ from pathlib import Path
 from app.core.config import DATA_DIR, PAGEINDEX_MODE
 
 
+QA_THINKING_MODES = {"off", "auto", "on"}
+
+
 class RuntimeSettingsService:
     def __init__(self, file_path: Path | None = None):
         self.file_path = file_path or (DATA_DIR / "runtime_settings.json")
@@ -16,7 +19,7 @@ class RuntimeSettingsService:
             if PAGEINDEX_MODE in {"smart", "balanced", "fast"}
             else "balanced"
         )
-        return {"pageindex_mode": mode}
+        return {"pageindex_mode": mode, "qa_thinking_mode": "off"}
 
     def get_settings(self) -> dict:
         defaults = self._defaults()
@@ -31,12 +34,15 @@ class RuntimeSettingsService:
             except Exception:
                 return defaults
 
-        mode = (
-            str(data.get("pageindex_mode", defaults["pageindex_mode"])).strip().lower()
-        )
+        mode = str(data.get("pageindex_mode", defaults["pageindex_mode"])).strip().lower()
         if mode not in {"smart", "balanced", "fast"}:
             mode = defaults["pageindex_mode"]
-        return {"pageindex_mode": mode}
+        qa_thinking_mode = str(
+            data.get("qa_thinking_mode", defaults["qa_thinking_mode"])
+        ).strip().lower()
+        if qa_thinking_mode not in QA_THINKING_MODES:
+            qa_thinking_mode = defaults["qa_thinking_mode"]
+        return {"pageindex_mode": mode, "qa_thinking_mode": qa_thinking_mode}
 
     def update_pageindex_mode(self, mode: str) -> dict:
         normalized = str(mode or "").strip().lower()
@@ -46,6 +52,19 @@ class RuntimeSettingsService:
         data = self.get_settings()
         data["pageindex_mode"] = normalized
 
+        return self._write_settings(data)
+
+    def update_qa_thinking_mode(self, mode: str) -> dict:
+        normalized = str(mode or "").strip().lower()
+        if normalized not in QA_THINKING_MODES:
+            raise ValueError("qa_thinking_mode must be 'off', 'auto' or 'on'")
+
+        data = self.get_settings()
+        data["qa_thinking_mode"] = normalized
+
+        return self._write_settings(data)
+
+    def _write_settings(self, data: dict) -> dict:
         with self._lock:
             self.file_path.parent.mkdir(parents=True, exist_ok=True)
             self.file_path.write_text(

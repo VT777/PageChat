@@ -88,7 +88,7 @@ MULTITURN_MAX_USER_ROUNDS = 6
 MULTITURN_MAX_EVIDENCE = 20
 EVIDENCE_REUSE_SIMILARITY_MIN = 0.72
 ALLOW_CROSS_SESSION_EVIDENCE_REUSE = False
-AGENT_RUNTIME_MODE = os.getenv("AGENT_RUNTIME_MODE", "legacy_loop").strip().lower()
+AGENT_RUNTIME_MODE = os.getenv("AGENT_RUNTIME_MODE", "flat_tool_loop").strip().lower()
 
 # OCR 閰嶇疆锛堜娇鐢?DashScope qwen3.5-ocr锛?
 OCR_API_KEY = os.getenv("OCR_API_KEY", os.getenv("LLM_API_KEY"))  # 浼樺厛鐙珛閰嶇疆锛屽惁鍒欏鐢?LLM Key

@@ -47,6 +47,7 @@ import {
 } from '@/ui/pagechatContracts'
 
 type SectionId = typeof SETTINGS_NAV_SECTIONS.primary[number]['id'] | typeof SETTINGS_NAV_SECTIONS.footer[number]['id']
+type QaThinkingMode = 'off' | 'auto' | 'on'
 
 defineProps<{
   open: boolean
@@ -83,6 +84,10 @@ const loadingWebSearchSettings = ref(false)
 const savingWebSearchSettings = ref(false)
 const webSearchMessage = ref('')
 const webSearchError = ref('')
+const loadingQaSettings = ref(false)
+const savingQaSettings = ref(false)
+const qaSettingsMessage = ref('')
+const qaSettingsError = ref('')
 
 const providerForm = ref({
   providerId: '',
@@ -106,7 +111,26 @@ const parsingSettings = ref({
 
 const qaSettings = ref({
   model: 'OpenAI Compatible: gpt-4.1',
+  thinkingMode: 'off' as QaThinkingMode,
 })
+
+const qaThinkingOptions: Array<{ id: QaThinkingMode; label: string; description: string }> = [
+  {
+    id: 'off',
+    label: '关闭',
+    description: '默认关闭模型原生 thinking，优先保持响应轻快、输出干净。',
+  },
+  {
+    id: 'auto',
+    label: '自动',
+    description: '允许支持的供应商自行启用 thinking，适合复杂文档推理。',
+  },
+  {
+    id: 'on',
+    label: '开启',
+    description: '明确允许原生 thinking；不支持的模型会按供应商兼容行为处理。',
+  },
+]
 
 const iconMap = {
   Globe,
@@ -303,6 +327,41 @@ async function loadWebSearchSettings() {
     webSearchError.value = error?.response?.data?.detail || 'Web Search 配置暂时无法加载，已显示默认设置。'
   } finally {
     loadingWebSearchSettings.value = false
+  }
+}
+
+function normalizeQaThinkingMode(value: unknown): QaThinkingMode {
+  return value === 'auto' || value === 'on' ? value : 'off'
+}
+
+async function loadQaSettings() {
+  loadingQaSettings.value = true
+  qaSettingsError.value = ''
+  try {
+    const response = await settingsApi.getQaSettings()
+    qaSettings.value.thinkingMode = normalizeQaThinkingMode(response.data?.qa_thinking_mode)
+  } catch (error: any) {
+    qaSettings.value.thinkingMode = 'off'
+    qaSettingsError.value = error?.response?.data?.detail || '问答设置暂时无法加载，已使用默认值。'
+  } finally {
+    loadingQaSettings.value = false
+  }
+}
+
+async function saveQaSettings() {
+  savingQaSettings.value = true
+  qaSettingsMessage.value = ''
+  qaSettingsError.value = ''
+  try {
+    const response = await settingsApi.updateQaSettings({
+      qa_thinking_mode: qaSettings.value.thinkingMode,
+    })
+    qaSettings.value.thinkingMode = normalizeQaThinkingMode(response.data?.qa_thinking_mode)
+    qaSettingsMessage.value = '问答设置已保存。'
+  } catch (error: any) {
+    qaSettingsError.value = error?.response?.data?.detail || '保存问答设置失败。'
+  } finally {
+    savingQaSettings.value = false
   }
 }
 
@@ -573,7 +632,7 @@ function close() {
 }
 
 onMounted(async () => {
-  await Promise.all([loadProviders(), loadWebSearchSettings()])
+  await Promise.all([loadProviders(), loadWebSearchSettings(), loadQaSettings()])
   await fetchAllConfiguredProviderModels()
   await loadFunctionalRoutes()
 })
@@ -872,6 +931,40 @@ onMounted(async () => {
                 Save model routing
               </button>
             </div>
+            <div class="wide">
+              <div class="field-label">模型 Thinking</div>
+              <div class="mode-options three">
+                <button
+                  v-for="option in qaThinkingOptions"
+                  :key="option.id"
+                  :class="{ active: qaSettings.thinkingMode === option.id }"
+                  type="button"
+                  @click="qaSettings.thinkingMode = option.id"
+                >
+                  <strong>{{ option.label }}</strong>
+                  <small>{{ option.description }}</small>
+                </button>
+              </div>
+            </div>
+            <div class="wide settings-actions">
+              <span>
+                <template v-if="loadingQaSettings">正在加载问答设置...</template>
+                <template v-else>{{ qaSettingsMessage || 'Thinking 默认关闭；复杂推理时可切换为自动或开启。' }}</template>
+              </span>
+              <button
+                type="button"
+                :disabled="savingQaSettings || loadingQaSettings"
+                @click="saveQaSettings"
+              >
+                <Loader2 v-if="savingQaSettings" class="spin" />
+                <CheckCircle2 v-else />
+                保存问答设置
+              </button>
+            </div>
+            <p v-if="qaSettingsError" class="wide error-message">
+              <AlertCircle />
+              {{ qaSettingsError }}
+            </p>
             <div class="wide">
               <div class="field-label">Web Search</div>
               <div class="mode-options two">

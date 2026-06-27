@@ -23,6 +23,10 @@ class PageIndexModeUpdate(BaseModel):
     pageindex_mode: str
 
 
+class QASettingsUpdate(BaseModel):
+    qa_thinking_mode: str
+
+
 class ModelProviderConfigIn(BaseModel):
     provider: str
     base_url: str
@@ -122,6 +126,26 @@ async def update_pageindex_settings(
 ):
     try:
         return runtime_settings_service.update_pageindex_mode(payload.pageindex_mode)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.get("/qa")
+async def get_qa_settings(_current_user: dict = Depends(require_auth)):
+    settings = runtime_settings_service.get_settings()
+    return {"qa_thinking_mode": settings["qa_thinking_mode"]}
+
+
+@router.put("/qa")
+async def update_qa_settings(
+    payload: QASettingsUpdate,
+    _current_user: dict = Depends(require_auth),
+):
+    try:
+        settings = runtime_settings_service.update_qa_thinking_mode(
+            payload.qa_thinking_mode
+        )
+        return {"qa_thinking_mode": settings["qa_thinking_mode"]}
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 

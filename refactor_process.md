@@ -247,6 +247,39 @@ Completion status:
   - Do not switch the default runtime yet; keep `flat_tool_loop` explicit until manual browser/model validation is complete.
 - Next phase: after manual validation, decide whether to make `flat_tool_loop` the default or fix remaining runtime issues first.
 
+### Flat Tool Loop Phase 11 - QA thinking setting, citation contract, and default runtime
+
+Start status:
+- Started after user approved:
+  - add a configurable thinking option in 问答设置,
+  - fix model-facing inline citation guidance,
+  - make `flat_tool_loop` the default runtime.
+- Branch/worktree confirmed by `codex.md`: `codex/pagechat-ui-agent-runtime-integration` at `C:\Users\TT_WT\.codex\worktrees\pagechat-ui-agent-runtime-integration`.
+- TDD targets:
+  - runtime settings expose and persist QA thinking mode with safe default `off`,
+  - flat runtime adapter receives the configured thinking flag,
+  - model-facing tool messages expose readable `[[display_label]]` citation markers and hide internal citation ids/keys,
+  - config default runtime becomes `flat_tool_loop` while `legacy_loop` remains an explicit rollback.
+
+Completion status:
+- Added QA settings backed by `runtime_settings.json`:
+  - default `qa_thinking_mode` is `off`,
+  - supported values are `off`, `auto`, and `on`,
+  - `GET /api/settings/qa` and `PUT /api/settings/qa` expose the setting.
+- Added 问答设置 UI controls for model thinking mode and wired them through `settingsApi.getQaSettings` / `settingsApi.updateQaSettings`.
+- `ToolCallingModelAdapter` now receives `disable_thinking` from QA settings; `off` disables provider-native thinking, `auto/on` allow it.
+- Flat model-facing tool messages now expose readable `citation_marker` / `citation_markers` such as `[[Chongqing cases.pdf p.43]]`, hide `citation_key`, and include `search_within_document` as citable page evidence.
+- `ModelToolLoopRuntime` prompt now explicitly requires inline `[[display_label]]` markers immediately after supported claims and forbids `[cite: ...]` / `citation_key` output.
+- `AGENT_RUNTIME_MODE` config default is now `flat_tool_loop`; `AGENT_RUNTIME_MODE=legacy_loop` remains the rollback switch.
+- Verification:
+  - `D:\projects\page_chat\backend\venv\Scripts\python.exe -m pytest backend/tests/test_runtime_settings_service.py backend/tests/test_runtime_settings_api.py backend/tests/test_tool_calling_model_adapter.py backend/tests/test_agent_service_flat_loop_runtime.py backend/tests/test_tool_messages.py backend/tests/test_flat_loop_tool_guidance.py -q` -> `24 passed`.
+  - `D:\projects\page_chat\backend\venv\Scripts\python.exe -m pytest backend/tests/test_agent_service_loop_runtime.py backend/tests/test_agent_service_flat_loop_runtime.py backend/tests/test_model_tool_loop_runtime.py backend/tests/test_tool_calling_model_adapter.py backend/tests/test_tool_messages.py backend/tests/test_agent_citation_bindings.py backend/tests/test_flat_tool_loop_e2e.py backend/tests/test_agent_run_event_protocol.py -q` -> `45 passed`.
+  - `D:\projects\page_chat\backend\venv\Scripts\python.exe -m pytest backend/tests/test_runtime_settings_service.py backend/tests/test_runtime_settings_api.py backend/tests/test_web_search_settings_api.py backend/tests/test_model_settings_api.py backend/tests/test_llm_timeout_defaults.py -q` -> `34 passed`.
+  - Fresh combined backend regression on 2026-06-27 covering agent/provider/citation/settings/flat-loop suites -> `199 passed, 1330 warnings`.
+  - `npm.cmd test` in `frontend` -> `20 passed test files, 131 tests`.
+  - `npm.cmd run build` in `frontend` -> completed successfully.
+- Next phase: restart backend/frontend from the current worktree and manually verify QA setting persistence plus a cited document answer in the browser.
+
 ## Phase Log
 
 ### Phase 1 - Architecture Audit And Production Path Confirmation

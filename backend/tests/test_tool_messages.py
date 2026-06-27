@@ -73,6 +73,67 @@ def test_model_tool_message_strips_large_payloads_but_keeps_page_evidence():
     assert ui_result["result_label"] == "1 page"
 
 
+def test_model_tool_message_exposes_readable_citation_markers_not_internal_keys():
+    call = ModelToolCall(
+        id="call_3",
+        name="search_within_document",
+        arguments={"doc_id": "doc-cq", "query": "Chongqing Normal University"},
+    )
+    result = {
+        "success": True,
+        "matches": [
+            {
+                "doc_id": "doc-cq",
+                "doc_name": "Chongqing cases.pdf",
+                "page": 43,
+                "snippet": "Chongqing Normal University case appears here.",
+                "citation_key": "c0c48156",
+                "display_label": "Chongqing cases.pdf p.43",
+                "source_anchor": {
+                    "format": "pdf",
+                    "unit_type": "page",
+                    "start_page": 43,
+                    "end_page": 43,
+                },
+            }
+        ],
+    }
+
+    message, ui_result = build_tool_result_message(call, result)
+    content = json.loads(message["content"])
+
+    assert content["items"][0]["citation_marker"] == "[[Chongqing cases.pdf p.43]]"
+    assert content["citation_markers"] == ["[[Chongqing cases.pdf p.43]]"]
+    assert "c0c48156" not in message["content"]
+    assert "citation_key" not in message["content"]
+    assert ui_result["citations"][0]["display_label"] == "Chongqing cases.pdf p.43"
+
+
+def test_web_tool_message_does_not_emit_document_style_citation_marker():
+    call = ModelToolCall(
+        id="call_web",
+        name="web_search",
+        arguments={"query": "PageChat"},
+    )
+    result = {
+        "success": True,
+        "results": [
+            {
+                "title": "PageChat docs",
+                "url": "https://example.test/pagechat",
+                "snippet": "PageChat web result.",
+                "source": "anysearch",
+            }
+        ],
+    }
+
+    message, _ui_result = build_tool_result_message(call, result)
+
+    assert "citation_marker" not in message["content"]
+    assert "[[PageChat docs]]" not in message["content"]
+    assert "https://example.test/pagechat" in message["content"]
+
+
 def test_view_folder_structure_has_display_metadata():
     result = compact_tool_result(
         {
