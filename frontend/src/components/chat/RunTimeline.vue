@@ -52,7 +52,7 @@ const timelineEntries = computed<TimelineEntry[]>(() => {
 })
 
 const thoughtLabel = computed(() => (
-  props.isLoading && !props.isAnswering ? 'Thinking...' : 'Thought for a moment'
+  props.isLoading && !props.isAnswering ? 'Processing...' : 'Processing details'
 ))
 
 const showThoughtDetails = computed(() => (

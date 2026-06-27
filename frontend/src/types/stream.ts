@@ -2,6 +2,8 @@ import type { SourceAnchor } from './preview'
 
 export type StreamEventName =
   | 'run_started'
+  | 'processing_delta'
+  | 'tool_call_delta'
   | 'progress'
   | 'tool_started'
   | 'tool_completed'
@@ -36,12 +38,29 @@ export interface ProgressEvent extends PageChatEventMeta {
   target_kind?: string
 }
 
+export interface ProcessingDelta extends PageChatEventMeta {
+  content: string
+  kind?: string
+  step?: number
+  status?: string
+}
+
+export interface ToolCallDelta extends PageChatEventMeta {
+  tool_call_id?: string
+  tool_name?: string
+  arguments?: Record<string, unknown>
+  arguments_delta?: string
+  status?: string
+}
+
 export interface ToolStarted extends PageChatEventMeta {
+  tool_call_id?: string
   tool_name: string
   arguments: Record<string, unknown>
 }
 
 export interface ToolCompleted extends PageChatEventMeta {
+  tool_call_id?: string
   tool_name: string
   result: Record<string, unknown>
   elapsed_ms?: number
@@ -81,6 +100,8 @@ export interface RunCancelled extends PageChatEventMeta {
 
 export type PageChatStreamData =
   | RunStarted
+  | ProcessingDelta
+  | ToolCallDelta
   | ProgressEvent
   | ToolStarted
   | ToolCompleted

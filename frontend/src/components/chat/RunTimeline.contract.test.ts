@@ -35,4 +35,16 @@ describe('RunTimeline contract', () => {
     expect(source).toContain('isAnswering')
     expect(source).toContain('props.isLoading && !props.isAnswering')
   })
+
+  it('uses processing status language instead of claiming hidden model thinking', () => {
+    const source = readFileSync(
+      new URL('./RunTimeline.vue', import.meta.url),
+      'utf8',
+    )
+
+    expect(source).toContain('Processing...')
+    expect(source).toContain('Processing details')
+    expect(source).not.toContain('Thinking...')
+    expect(source).not.toContain('Thought for a moment')
+  })
 })

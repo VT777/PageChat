@@ -95,6 +95,10 @@ function formatJSON(value: unknown): string {
     </button>
 
     <div v-if="expanded" :id="panelId" class="tool-panel">
+      <section v-if="tool.argumentText && !tool.result">
+        <span>Partial parameters</span>
+        <pre>{{ tool.argumentText }}</pre>
+      </section>
       <section>
         <span>Parameters</span>
         <pre>{{ formatJSON(tool.arguments) }}</pre>

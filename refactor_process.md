@@ -12,10 +12,10 @@ This file is the handoff log for the LLM-driven Agent Loop refactor. Read it bef
 
 ## Current Status
 
-- Current phase: Phase 6 - Tool contract cleanup.
+- Current phase: Phase 7 - UI Processing / Thinking Area.
 - Status: Completed.
 - Started at: 2026-06-27.
-- Notes: Phase 6 completed. Next phase is Phase 7 UI processing/thinking area.
+- Notes: Phase 7 completed. Next phase is Phase 4 multi-tool model turn support.
 
 ## Phase Log
 
@@ -142,3 +142,27 @@ Start status:
   - `frontend/src/components/chat/ToolTimelineItem.vue`
   - `frontend/src/views/ChatView.vue`
   - frontend contract tests.
+
+Resume status:
+- Resumed Phase 7 after context handoff.
+- Confirmed branch/worktree with `codex.md`: `codex/pagechat-ui-agent-runtime-integration` at `C:\Users\TT_WT\.codex\worktrees\pagechat-ui-agent-runtime-integration`.
+- Current focus: add event/type/store support for `processing_delta` and `tool_call_delta`, keep UI simple, and avoid fake model thinking when no provider processing stream exists.
+
+Completion status:
+- Added frontend stream contract for `processing_delta` and `tool_call_delta`.
+- Store now merges `processing_delta` chunks into a single visible `processing` progress step.
+- Store now uses `tool_call_delta` to create/update the same pending tool row that `tool_started` continues, keyed by `tool_call_id` when available.
+- Runtime label changed from fake hidden-thinking wording to `Processing...` / `Processing details`.
+- Tool details can show partial parameters while a provider streams tool-call arguments.
+- Targeted frontend test command:
+  - `npm.cmd test -- src/types/stream.contract.test.ts src/stores/chat.test.ts src/components/chat/RunTimeline.contract.test.ts src/components/chat/ToolTimelineItem.contract.test.ts`
+- Targeted result:
+  - `4 passed test files, 40 passed tests`
+- Full frontend test command:
+  - `npm.cmd test`
+- Full frontend result:
+  - `20 passed test files, 128 passed tests`
+- Frontend build command:
+  - `npm.cmd run build`
+- Frontend build result:
+  - `vue-tsc && vite build` completed successfully.

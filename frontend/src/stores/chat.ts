@@ -7,11 +7,13 @@ import type {
   AnswerDelta,
   Citation,
   CitationAdded,
+  ProcessingDelta,
   ProgressEvent,
   RunCompleted,
   RunFailed,
   RunStarted,
   StreamEnvelope,
+  ToolCallDelta,
   ToolCompleted,
   ToolStarted,
 } from '@/types/stream'
@@ -42,8 +44,10 @@ export interface EvidenceItem {
 }
 
 export interface ToolStep {
+  toolCallId?: string
   toolName: string
   arguments: Record<string, unknown>
+  argumentText?: string
   result: Record<string, unknown> | null
   status: 'calling' | 'done'
   seq?: number
@@ -929,6 +933,20 @@ export const useChatStore = defineStore('chat', () => {
     }
   }
 
+  function pendingToolStepIndex(
+    steps: ToolStep[],
+    data: { tool_call_id?: string; tool_name?: string },
+  ): number {
+    if (data.tool_call_id) {
+      const byCallId = steps.findIndex((step) => step.toolCallId === data.tool_call_id)
+      if (byCallId !== -1) return byCallId
+    }
+    if (data.tool_name) {
+      return steps.findIndex((step) => step.toolName === data.tool_name && step.status === 'calling')
+    }
+    return -1
+  }
+
   function handleEnvelope(envelope: StreamEnvelope) {
     let lastIndex = messages.value.length - 1
     const eventData = envelope.data as unknown as Record<string, unknown>
@@ -956,6 +974,37 @@ export const useChatStore = defineStore('chat', () => {
         }
         moveDisplayBuffer(last.id, nextMessageId)
         saveCurrentSession()
+        break
+      }
+      case 'processing_delta': {
+        const data = envelope.data as unknown as ProcessingDelta
+        const content = data.content || ''
+        if (!content) break
+        flushDisplayBuffer(last.id)
+        const base = messages.value[lastIndex] || last
+        const nextProgressSteps = [...(base.progressSteps || [])]
+        const step = data.step ?? 0
+        const existingProgressIndex = nextProgressSteps.findIndex((item) => (
+          item.kind === 'processing' && (item.step ?? 0) === step
+        ))
+        const previous = existingProgressIndex >= 0 ? nextProgressSteps[existingProgressIndex] : null
+        const progressStep: ProgressStep = {
+          message: `${previous?.message || ''}${content}`,
+          kind: 'processing',
+          step,
+          status: data.status || 'streaming',
+          seq: data.seq,
+          ts: data.ts,
+        }
+        if (existingProgressIndex >= 0) {
+          nextProgressSteps[existingProgressIndex] = progressStep
+        } else {
+          nextProgressSteps.push(progressStep)
+        }
+        messages.value[lastIndex] = {
+          ...base,
+          progressSteps: nextProgressSteps,
+        }
         break
       }
       case 'progress': {
@@ -1001,20 +1050,63 @@ export const useChatStore = defineStore('chat', () => {
         }
         break
       }
+      case 'tool_call_delta': {
+        const data = envelope.data as unknown as ToolCallDelta
+        if (!data.tool_name && !data.tool_call_id) break
+        flushDisplayBuffer(last.id)
+        const base = messages.value[lastIndex] || last
+        const nextToolSteps = [...base.toolSteps]
+        const stepIndex = pendingToolStepIndex(nextToolSteps, {
+          tool_call_id: data.tool_call_id,
+          tool_name: data.tool_name,
+        })
+        const existing = stepIndex >= 0 ? nextToolSteps[stepIndex] : null
+        const toolStep: ToolStep = {
+          toolCallId: data.tool_call_id || existing?.toolCallId,
+          toolName: data.tool_name || existing?.toolName || 'tool_call',
+          arguments: data.arguments || existing?.arguments || {},
+          argumentText: `${existing?.argumentText || ''}${data.arguments_delta || ''}` || undefined,
+          result: existing?.result || null,
+          status: 'calling',
+          seq: existing?.seq ?? data.seq,
+          ts: existing?.ts ?? data.ts,
+        }
+        if (stepIndex >= 0) {
+          nextToolSteps[stepIndex] = toolStep
+        } else {
+          nextToolSteps.push(toolStep)
+        }
+        messages.value[lastIndex] = {
+          ...base,
+          toolSteps: nextToolSteps,
+        }
+        break
+      }
       case 'tool_started': {
         const data = envelope.data as unknown as ToolStarted
         flushDisplayBuffer(last.id)
         const base = messages.value[lastIndex] || last
+        const nextToolSteps = [...base.toolSteps]
+        const stepIndex = pendingToolStepIndex(nextToolSteps, data)
+        const existing = stepIndex >= 0 ? nextToolSteps[stepIndex] : null
+        const toolStep: ToolStep = {
+          ...(existing || {}),
+          toolCallId: data.tool_call_id || existing?.toolCallId,
+          toolName: data.tool_name,
+          arguments: data.arguments,
+          result: null,
+          status: 'calling' as const,
+          seq: existing?.seq ?? data.seq,
+          ts: existing?.ts ?? data.ts,
+        }
+        if (stepIndex >= 0) {
+          nextToolSteps[stepIndex] = toolStep
+        } else {
+          nextToolSteps.push(toolStep)
+        }
         messages.value[lastIndex] = {
           ...base,
-          toolSteps: [...base.toolSteps, {
-            toolName: data.tool_name,
-            arguments: data.arguments,
-            result: null,
-            status: 'calling' as const,
-            seq: data.seq,
-            ts: data.ts,
-          }]
+          toolSteps: nextToolSteps,
         }
         break
       }
@@ -1022,9 +1114,7 @@ export const useChatStore = defineStore('chat', () => {
         const data = envelope.data as unknown as ToolCompleted
         flushDisplayBuffer(last.id)
         const base = messages.value[lastIndex] || last
-        const stepIndex = base.toolSteps.findIndex(
-          (s) => s.toolName === data.tool_name && s.status === 'calling'
-        )
+        const stepIndex = pendingToolStepIndex(base.toolSteps, data)
         if (stepIndex !== -1) {
           const raw = envelope.data as unknown as Record<string, unknown>
           const updatedStep = { ...base.toolSteps[stepIndex] }

@@ -759,6 +759,97 @@ describe('chat rollback', () => {
     }
   })
 
+  it('merges processing deltas into one visible processing step', () => {
+    const store = useChatStore()
+    store.addAssistantMessage()
+
+    store.handleEnvelope({
+      event: 'run_started',
+      data: {
+        run_id: 'run-a',
+        conversation_id: 'conv-a',
+        message_id: 'assistant-a',
+        seq: 1,
+        ts: '2026-06-26T10:00:00Z',
+        status: 'running',
+      },
+    } as any)
+    store.handleEnvelope({
+      event: 'processing_delta',
+      data: {
+        run_id: 'run-a',
+        conversation_id: 'conv-a',
+        message_id: 'assistant-a',
+        seq: 2,
+        ts: '2026-06-26T10:00:01Z',
+        step: 1,
+        content: 'I will check ',
+      },
+    } as any)
+    store.handleEnvelope({
+      event: 'processing_delta',
+      data: {
+        run_id: 'run-a',
+        conversation_id: 'conv-a',
+        message_id: 'assistant-a',
+        seq: 3,
+        ts: '2026-06-26T10:00:02Z',
+        step: 1,
+        content: 'the selected evidence.',
+      },
+    } as any)
+
+    expect(store.messages[0].progressSteps).toEqual([
+      expect.objectContaining({
+        kind: 'processing',
+        step: 1,
+        message: 'I will check the selected evidence.',
+        status: 'streaming',
+      }),
+    ])
+  })
+
+  it('uses tool call deltas as the same pending tool row that tool_started completes', () => {
+    const store = useChatStore()
+    store.addAssistantMessage()
+
+    store.handleEnvelope({
+      event: 'tool_call_delta',
+      data: {
+        run_id: 'run-a',
+        conversation_id: 'conv-a',
+        message_id: 'a1',
+        seq: 2,
+        ts: '2026-06-26T10:00:01Z',
+        tool_call_id: 'call-read-pages',
+        tool_name: 'get_page_content',
+        arguments_delta: '{"doc_id":"doc-cq"',
+      },
+    } as any)
+    store.handleEnvelope({
+      event: 'tool_started',
+      data: {
+        run_id: 'run-a',
+        conversation_id: 'conv-a',
+        message_id: 'a1',
+        seq: 3,
+        ts: '2026-06-26T10:00:02Z',
+        tool_call_id: 'call-read-pages',
+        tool_name: 'get_page_content',
+        arguments: { doc_id: 'doc-cq', pages: '1-3,8' },
+      },
+    } as any)
+
+    expect(store.messages[0].toolSteps).toHaveLength(1)
+    expect(store.messages[0].toolSteps[0]).toMatchObject({
+      toolCallId: 'call-read-pages',
+      toolName: 'get_page_content',
+      arguments: { doc_id: 'doc-cq', pages: '1-3,8' },
+      argumentText: '{"doc_id":"doc-cq"',
+      status: 'calling',
+    })
+  })
+
   it('removes a streamed planner thought when the backend retracts it', () => {
     const store = useChatStore()
     store.addAssistantMessage()
