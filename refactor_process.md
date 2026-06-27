@@ -178,6 +178,29 @@ Completion status:
 - Static scan for old route wording in `backend/app` found no new flat-runtime route text; remaining `Return JSON` / `action.type` matches are legacy planner/classification/parsing prompts outside the flat runtime path.
 - Next phase: adapt SSE/frontend timeline if current frontend still needs event contract changes for flat loop events.
 
+### Flat Tool Loop Phase 8 - SSE events and frontend timeline
+
+Start status:
+- Started Phase 8 after commit `80906cc`.
+- Goal: verify and complete frontend support for flat-loop stream events, especially `processing_delta`, `tool_call_delta`, `tool_started`, `tool_completed`, smooth `answer_delta`, and non-misleading result labels.
+- TDD: inspect existing frontend tests first; add or tighten failing tests for any missing flat event behavior before implementation.
+- Scope: no backend runtime routing changes in this phase.
+
+Completion status:
+- Existing frontend already declared and handled `processing_delta` / `tool_call_delta`, merged tool-call deltas into pending tool rows, preferred `result_label`, and collapsed processing details after answer streaming starts.
+- Found backend flat runtime gap: `ModelToolCallDelta` was swallowed and final answer `ModelTextDelta`s were buffered until the whole model turn completed.
+- RED backend test run:
+  - `D:\projects\page_chat\backend\venv\Scripts\python.exe -m pytest backend/tests/test_model_tool_loop_runtime.py -q`
+  - failed as expected because final answer text streamed as one chunk and no `tool_call_delta` event was emitted.
+- Updated `ModelToolLoopRuntime` to forward native `ModelToolCallDelta` as runtime `tool_call_delta` and stream final answer `ModelTextDelta` chunks as `answer_delta` without duplicating the final `ModelTurn` content.
+- Verification:
+  - `D:\projects\page_chat\backend\venv\Scripts\python.exe -m pytest backend/tests/test_model_tool_loop_runtime.py -q` -> `5 passed`.
+  - `D:\projects\page_chat\backend\venv\Scripts\python.exe -m pytest backend/tests/test_model_tool_loop_runtime.py backend/tests/test_agent_service_flat_loop_runtime.py -q` -> `8 passed, 9 warnings`.
+  - `npm.cmd test -- src/types/stream.contract.test.ts src/stores/chat.test.ts src/components/chat/RunTimeline.contract.test.ts src/components/chat/ToolTimelineItem.contract.test.ts` -> `4 passed test files, 41 passed tests`.
+  - `npm.cmd test` in `frontend` -> `20 passed test files, 130 passed tests`.
+  - `npm.cmd run build` in `frontend` -> completed successfully.
+- Next phase: add API E2E tests for flat loop scenarios.
+
 ## Phase Log
 
 ### Phase 1 - Architecture Audit And Production Path Confirmation

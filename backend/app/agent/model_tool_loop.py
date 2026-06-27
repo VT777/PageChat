@@ -39,7 +39,37 @@ class ModelToolLoopRuntime:
     async def stream(self, state: AgentRunState) -> AsyncIterator[RuntimeStreamEvent]:
         messages = self._initial_messages(state)
         for _step in range(1, self.max_steps + 1):
-            turn = await self._collect_model_turn(messages, state)
+            turn: ModelTurn | None = None
+            streamed_content = ""
+            async for model_event in self.model.stream_turn(
+                messages=messages,
+                tools=self.tools,
+                user_id=state.scope.get("user_id"),
+            ):
+                if isinstance(model_event, ModelTextDelta):
+                    streamed_content += model_event.delta
+                    state.answer += model_event.delta
+                    yield RuntimeStreamEvent("answer_delta", {"content": model_event.delta})
+                    continue
+                if isinstance(model_event, ModelToolCallDelta):
+                    yield RuntimeStreamEvent(
+                        "tool_call_delta",
+                        {
+                            "tool_call_id": model_event.id,
+                            "tool_name": model_event.name,
+                            "arguments_delta": model_event.arguments_delta,
+                            "status": "streaming",
+                        },
+                    )
+                    continue
+                if isinstance(model_event, ModelTurn):
+                    turn = model_event
+
+            if turn is None:
+                turn = ModelTurn(content=streamed_content)
+            elif streamed_content and not turn.content and not turn.tool_calls:
+                turn = ModelTurn(content=streamed_content)
+
             if turn.has_tool_calls:
                 messages.append(self._assistant_tool_call_message(turn))
                 for call in turn.tool_calls:
@@ -47,8 +77,18 @@ class ModelToolLoopRuntime:
                         yield event
                 continue
             if turn.content.strip():
-                state.answer += turn.content
-                yield RuntimeStreamEvent("answer_delta", {"content": turn.content})
+                if streamed_content:
+                    remainder = (
+                        turn.content[len(streamed_content):]
+                        if turn.content.startswith(streamed_content)
+                        else ""
+                    )
+                    if remainder:
+                        state.answer += remainder
+                        yield RuntimeStreamEvent("answer_delta", {"content": remainder})
+                else:
+                    state.answer += turn.content
+                    yield RuntimeStreamEvent("answer_delta", {"content": turn.content})
                 return
             yield RuntimeStreamEvent(
                 "run_failed",

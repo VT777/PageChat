@@ -5,7 +5,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from app.agent.model_tool_loop import ModelToolLoopRuntime
-from app.agent.model_turn import ModelToolCall, ModelTurn
+from app.agent.model_turn import ModelTextDelta, ModelToolCall, ModelToolCallDelta, ModelTurn
 from app.agent.state import AgentRunState
 
 
@@ -44,6 +44,36 @@ class ToolThenAnswerModel:
 class FinalOnlyModel:
     async def stream_turn(self, *, messages, tools, user_id=None):
         yield ModelTurn(content="Hello, how can I help?")
+
+
+class StreamingFinalAnswerModel:
+    async def stream_turn(self, *, messages, tools, user_id=None):
+        yield ModelTextDelta("Hello, ")
+        yield ModelTextDelta("how can I help?")
+        yield ModelTurn(content="Hello, how can I help?")
+
+
+class StreamingToolCallThenAnswerModel:
+    def __init__(self):
+        self.calls = 0
+
+    async def stream_turn(self, *, messages, tools, user_id=None):
+        self.calls += 1
+        if self.calls == 1:
+            yield ModelToolCallDelta(index=0, id="call_1", name="browse_documents")
+            yield ModelToolCallDelta(index=0, arguments_delta='{"folder_id":"root"')
+            yield ModelToolCallDelta(index=0, arguments_delta=',"recursive":true}')
+            yield ModelTurn(
+                tool_calls=[
+                    ModelToolCall(
+                        id="call_1",
+                        name="browse_documents",
+                        arguments={"folder_id": "root", "recursive": True},
+                    )
+                ]
+            )
+        else:
+            yield ModelTurn(content="There are three documents.")
 
 
 class MultiToolThenAnswerModel:
@@ -153,6 +183,49 @@ def test_flat_loop_greeting_returns_answer_without_tool_call():
         assert [event.payload["content"] for event in events if event.type == "answer_delta"] == [
             "Hello, how can I help?"
         ]
+
+    asyncio.run(run())
+
+
+def test_flat_loop_streams_final_answer_text_deltas():
+    async def run() -> None:
+        runtime = ModelToolLoopRuntime(
+            model=StreamingFinalAnswerModel(),
+            tool_runner=RecordingToolRunner(),
+            tools=[{"function": {"name": "browse_documents"}}],
+        )
+
+        events = [event async for event in runtime.stream(_state("Hello"))]
+
+        assert [event.payload["content"] for event in events if event.type == "answer_delta"] == [
+            "Hello, ",
+            "how can I help?",
+        ]
+
+    asyncio.run(run())
+
+
+def test_flat_loop_forwards_native_tool_call_deltas_before_tool_start():
+    async def run() -> None:
+        runtime = ModelToolLoopRuntime(
+            model=StreamingToolCallThenAnswerModel(),
+            tool_runner=RecordingToolRunner(),
+            tools=[{"function": {"name": "browse_documents"}}],
+        )
+
+        events = [event async for event in runtime.stream(_state())]
+
+        event_types = [event.type for event in events]
+        assert event_types.index("tool_call_delta") < event_types.index("tool_started")
+        deltas = [event for event in events if event.type == "tool_call_delta"]
+        assert deltas[0].payload == {
+            "tool_call_id": "call_1",
+            "tool_name": "browse_documents",
+            "arguments_delta": "",
+            "status": "streaming",
+        }
+        assert deltas[1].payload["arguments_delta"] == '{"folder_id":"root"'
+        assert deltas[2].payload["arguments_delta"] == ',"recursive":true}'
 
     asyncio.run(run())
 
