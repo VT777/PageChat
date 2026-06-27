@@ -112,6 +112,29 @@ Completion status:
   - `D:\projects\page_chat\backend\venv\Scripts\python.exe -m pytest backend/tests/test_model_turn.py backend/tests/test_tool_messages.py backend/tests/test_runtime_boundary_policy.py backend/tests/test_model_tool_loop_runtime.py -q` -> `14 passed`.
 - Next phase: add native tool-calling model adapter.
 
+### Flat Tool Loop Phase 5 - Native tool-calling model adapter
+
+Start status:
+- Started Phase 5 after commit `07b3f6b`.
+- Goal: add a standalone `ToolCallingModelAdapter` that converts OpenAI-compatible native tool-call responses into `ModelTextDelta`, `ModelToolCallDelta`, and final `ModelTurn`.
+- TDD: add `backend/tests/test_tool_calling_model_adapter.py` first; expected initial failure is missing `app.agent.tool_calling_model_adapter`.
+- Scope: adapter only, no service wiring yet.
+
+Completion status:
+- RED test run:
+  - `D:\projects\page_chat\backend\venv\Scripts\python.exe -m pytest backend/tests/test_tool_calling_model_adapter.py -q`
+  - failed as expected with `ModuleNotFoundError: No module named 'app.agent.tool_calling_model_adapter'`.
+- Added `backend/app/agent/tool_calling_model_adapter.py`.
+- Adapter calls the configured completion function with `stream=True`, native `tools`, `tool_choice="auto"`, `allow_deterministic_tools=True`, and `disable_thinking=True`.
+- It parses:
+  - non-streaming OpenAI-compatible `message.tool_calls`,
+  - streaming `delta.tool_calls` into `ModelToolCallDelta` plus final `ModelTurn`,
+  - streaming text deltas into `ModelTextDelta` plus final text `ModelTurn`.
+- Verification:
+  - `D:\projects\page_chat\backend\venv\Scripts\python.exe -m pytest backend/tests/test_tool_calling_model_adapter.py -q` -> `3 passed`.
+  - `D:\projects\page_chat\backend\venv\Scripts\python.exe -m pytest backend/tests/test_model_turn.py backend/tests/test_tool_messages.py backend/tests/test_runtime_boundary_policy.py backend/tests/test_model_tool_loop_runtime.py backend/tests/test_tool_calling_model_adapter.py -q` -> `17 passed`.
+- Next phase: wire the new runtime behind an explicit runtime mode flag.
+
 ## Phase Log
 
 ### Phase 1 - Architecture Audit And Production Path Confirmation
