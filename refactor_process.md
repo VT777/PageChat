@@ -13,9 +13,9 @@ This file is the handoff log for the LLM-driven Agent Loop refactor. Read it bef
 ## Current Status
 
 - Current phase: Phase 9 - Regression and acceptance.
-- Status: Ready to start.
+- Status: Completed.
 - Started at: 2026-06-27.
-- Notes: Phase 8 completed; next step is final regression/manual acceptance pass.
+- Notes: All planned refactor phases are complete; ready for human browser validation or branch finishing.
 
 ## Phase Log
 
@@ -257,5 +257,21 @@ Completion status:
 ### Phase 9 - Regression And Acceptance
 
 Start status:
-- Ready to start after Phase 8 checkpoint.
+- Started after Phase 8 checkpoint `cb66480`.
 - Goal: run final acceptance scenarios and inspect any remaining product-level gaps before finishing the refactor branch.
+- Planned checks:
+  - run backend agent/provider/citation regression set.
+  - run frontend tests and production build.
+  - inspect runtime prompts/tool contracts for remaining hardcoded workflow language.
+  - summarize any remaining manual/browser validation gaps.
+
+Completion status:
+- Updated the manual QA verifier to align with the LLM-driven loop: document scenarios require document tool evidence and citations, but no longer require a fixed `browse_documents -> search_within_document -> get_page_content` chain.
+- Added/updated verifier tests so model-chosen document tool paths pass when they provide document evidence and citations.
+- Static scan for old fixed-chain production text found no matches in `backend/app`, `backend/scripts`, or active tests. Remaining matches are historical/design-plan docs and tests asserting old prompt text is absent.
+- Verification:
+  - `D:\projects\page_chat\backend\venv\Scripts\python.exe -m pytest backend/tests/test_agent_structured_llm_planner.py backend/tests/test_tools_prompt_catalog.py backend/tests/test_tree_first_retrieval_policy.py backend/tests/test_agent_policy.py backend/tests/test_agent_loop_runtime.py backend/tests/test_agent_navigation_tools_contract.py backend/tests/test_provider_protocol_selection.py backend/tests/test_model_gateway_settings.py backend/tests/test_llm_timeout_defaults.py backend/tests/test_litellm_adapter.py backend/tests/test_agent_citation_bindings.py backend/tests/test_agent_run_event_protocol.py backend/tests/test_chat_run_repository.py backend/tests/test_citation_binding.py backend/tests/test_pagechat_real_document_scenarios.py -q` -> `147 passed, 67 warnings`
+  - `npm.cmd test` in `frontend` -> `20 passed test files, 130 passed tests`
+  - `npm.cmd run build` in `frontend` -> completed successfully
+  - `D:\projects\page_chat\backend\venv\Scripts\python.exe backend\scripts\verify_pagechat_agent_runtime.py --dry-run --document-name "重庆案例.pdf"` -> printed the expected four-scenario verification plan
+- Manual browser/model validation was not run in this phase because it requires a live logged-in browser session, a selected parsed Chongqing document id, and configured model provider credentials.

@@ -164,7 +164,7 @@ def test_document_scenario_accepts_tools_citations_and_completed_run() -> None:
     assert failures == []
 
 
-def test_chongqing_document_scenario_requires_ordered_tool_chain() -> None:
+def test_chongqing_document_scenario_accepts_model_chosen_document_tool_path() -> None:
     module = load_script()
     scenario = module.SCENARIOS[0]
 
@@ -196,10 +196,7 @@ def test_chongqing_document_scenario_requires_ordered_tool_chain() -> None:
         ],
     )
 
-    assert (
-        "required tool chain was not observed: browse_documents -> "
-        "search_within_document -> get_page_content"
-    ) in failures
+    assert failures == []
 
 
 def test_document_scenario_rejects_legacy_events_and_missing_citations() -> None:
