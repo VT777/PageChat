@@ -116,6 +116,8 @@ def test_compact_tool_result_keeps_complete_document_structure_tree() -> None:
     assert result["doc_id"] == "doc-a"
     assert result["doc_name"] == "alpha.pdf"
     assert result["structure"] == structure
+    assert result["result_count"] == 10
+    assert result["result_label"] == "10 pages / 3 sections"
     assert result["next_steps"] == ["Use get_page_content(doc_id='doc-a', pages='4')."]
 
 
@@ -151,6 +153,8 @@ def test_compact_tool_result_keeps_page_text_without_large_payloads() -> None:
 
     assert result["doc_id"] == "doc-a"
     assert result["doc_name"] == "alpha.pdf"
+    assert result["result_count"] == 1
+    assert result["result_label"] == "1 page"
     assert result["items"] == [
         {
             "page": 2,
@@ -169,6 +173,52 @@ def test_compact_tool_result_keeps_page_text_without_large_payloads() -> None:
         "Page content retrieved.",
         "Answer with citations if evidence is sufficient.",
     ]
+
+
+def test_compact_tool_result_adds_display_counts_for_tool_timeline() -> None:
+    structure = compact_tool_result(
+        {
+            "success": True,
+            "doc_id": "doc-a",
+            "total_pages": 44,
+            "structure": [
+                {"title": "A", "children": [{"title": "A.1"}]},
+                {"title": "B"},
+            ],
+        },
+        tool_name="get_document_structure",
+    )
+    page_image = compact_tool_result(
+        {"success": True, "doc_id": "doc-a", "page": 2, "image_ref": "page-2.png"},
+        tool_name="get_page_image",
+    )
+    document_image = compact_tool_result(
+        {"success": True, "doc_id": "doc-a", "image_ref": "cover.png"},
+        tool_name="get_document_image",
+    )
+    browse = compact_tool_result(
+        {
+            "success": True,
+            "documents": [{"doc_id": "doc-a"}, {"doc_id": "doc-b"}],
+            "folders": [{"folder_id": "folder-a"}],
+        },
+        tool_name="browse_documents",
+    )
+    search = compact_tool_result(
+        {"success": True, "matches": [{"page": 1}, {"page": 3}, {"page": 5}]},
+        tool_name="search_within_document",
+    )
+
+    assert structure["result_label"] == "44 pages / 3 sections"
+    assert structure["result_count"] == 44
+    assert page_image["result_label"] == "1 image"
+    assert page_image["result_count"] == 1
+    assert document_image["result_label"] == "1 image"
+    assert document_image["result_count"] == 1
+    assert browse["result_label"] == "2 documents / 1 folder"
+    assert browse["result_count"] == 3
+    assert search["result_label"] == "3 matches"
+    assert search["result_count"] == 3
 
 
 class FakeDocumentService:

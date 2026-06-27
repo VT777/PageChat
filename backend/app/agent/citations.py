@@ -108,13 +108,6 @@ def _anchor_from_page(value: dict[str, Any], document_name: str) -> dict[str, An
     }
 
 
-def _anchor_for_document(document_name: str) -> dict[str, Any]:
-    return {
-        "format": "pdf" if _kind_from_name(document_name) == "pdf" else _kind_from_name(document_name),
-        "unit_type": "document",
-    }
-
-
 def normalize_citation(citation: dict[str, Any]) -> dict[str, Any]:
     source_anchor = citation.get("source_anchor") or {}
     if not isinstance(source_anchor, dict):
@@ -233,12 +226,6 @@ def citation_events_from_tool_result(result: Any) -> list[dict[str, Any]]:
         source_anchor = value.get("source_anchor")
         if not isinstance(source_anchor, dict):
             source_anchor = _anchor_from_page(value, document_name)
-        if not source_anchor and (
-            parent_key in {"documents", "document"}
-            or value.get("file_type")
-            or value.get("page_count") is not None
-        ):
-            source_anchor = _anchor_for_document(document_name)
         if not source_anchor:
             return None
 

@@ -5,7 +5,11 @@ from pydantic import BaseModel, Field
 from app.api.auth import require_auth
 from app.models.database import get_db
 from app.services.litellm_adapter import LiteLLMAdapter
-from app.services.model_settings_service import ModelSettingsService, _unprotect_api_key
+from app.services.model_settings_service import (
+    ModelSettingsService,
+    _sanitize_provider_error,
+    _unprotect_api_key,
+)
 from app.services.ocr_engines.openai_compatible_adapter import OpenAICompatibleOCRAdapter
 from app.services.ocr_engines.paddleocr_job_adapter import PaddleOCRJobAdapter
 from app.services.ocr_settings_service import OCRSettingsService
@@ -32,7 +36,7 @@ class ModelProviderUpdateIn(BaseModel):
 
 
 class ModelProviderTestIn(BaseModel):
-    model: str
+    model: str | None = None
 
 
 class ModelRouteIn(BaseModel):
@@ -232,12 +236,32 @@ async def test_model_provider(
     if not provider:
         raise HTTPException(status_code=404, detail="Provider config not found")
 
+    api_key = _unprotect_api_key(provider["api_key_ciphertext"])
     try:
+        model = (payload.model or "").strip()
+        if not model:
+            models_payload = await service.list_provider_models(
+                user_id=current_user["id"],
+                provider_id=provider_id,
+                timeout=5,
+            )
+            model = str(
+                next(
+                    (
+                        item.get("id")
+                        for item in models_payload.get("models", [])
+                        if item.get("id")
+                    ),
+                    "",
+                )
+            ).strip()
+        if not model:
+            raise ValueError("No available model returned by provider")
         provider_config = {
             "provider": provider["provider"],
             "base_url": provider["base_url"],
-            "api_key": _unprotect_api_key(provider["api_key_ciphertext"]),
-            "model": payload.model,
+            "api_key": api_key,
+            "model": model,
         }
         await LiteLLMAdapter().acompletion(
             provider_config=provider_config,
@@ -245,9 +269,19 @@ async def test_model_provider(
             temperature=0,
             timeout=5,
         )
-        return {"success": True}
+        await service.update_provider_validation_status(
+            user_id=current_user["id"],
+            provider_id=provider_id,
+            validation_status="valid",
+        )
+        return {"success": True, "tested_model": model}
     except Exception as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
+        await service.update_provider_validation_status(
+            user_id=current_user["id"],
+            provider_id=provider_id,
+            validation_status="invalid",
+        )
+        raise HTTPException(status_code=400, detail=_sanitize_provider_error(exc, api_key))
 
 
 @router.get("/model-providers/{provider_id}/models")

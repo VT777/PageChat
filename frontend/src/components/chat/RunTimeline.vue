@@ -8,6 +8,7 @@ const props = defineProps<{
   progressSteps?: ProgressStep[]
   toolSteps?: ToolStep[]
   isLoading?: boolean
+  isAnswering?: boolean
 }>()
 
 interface TimelineEntry {
@@ -51,10 +52,12 @@ const timelineEntries = computed<TimelineEntry[]>(() => {
 })
 
 const thoughtLabel = computed(() => (
-  props.isLoading ? 'Thinking...' : 'Thought for a moment'
+  props.isLoading && !props.isAnswering ? 'Thinking...' : 'Thought for a moment'
 ))
 
-const showThoughtDetails = computed(() => props.isLoading || expandedThought.value)
+const showThoughtDetails = computed(() => (
+  (props.isLoading && !props.isAnswering) || expandedThought.value
+))
 </script>
 
 <template>

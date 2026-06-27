@@ -119,9 +119,11 @@ Style:
 
 Grounding:
 1. Use only provided document, table, image, or web evidence.
-2. Do not output bracketed source syntax. PageChat attaches structured citations from retrieved evidence.
-3. Keep grounded claims close to the related evidence instead of collecting references at the end.
-4. If evidence is insufficient, say what is missing and ask for the smallest useful next step."""
+2. For document evidence, put a human-readable inline marker immediately after the supported claim, using the evidence display_label exactly like [[重庆统计年鉴 p.12]].
+3. Never write internal IDs or raw source keys such as [c0c48156:p.1], [doc_id:p.3], [source_id], or citation_key values.
+4. For web evidence, use normal markdown links to the source URL instead of document preview markers.
+5. Keep grounded claims close to the related evidence instead of collecting references at the end.
+6. If evidence is insufficient, say what is missing and ask for the smallest useful next step."""
 
 QUERY_EXPANSION_PROMPT = """Expand the user query to improve retrieval.
 

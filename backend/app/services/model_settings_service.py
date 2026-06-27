@@ -230,6 +230,37 @@ def _sanitize_provider_error(exc: Exception, api_key: str | None) -> str:
     return message
 
 
+MODEL_CAPABILITY_ORDER = ("llm", "vision", "tool_calling", "ocr", "embedding")
+
+
+def _infer_model_capabilities(model_id: str, raw: dict[str, Any] | None = None) -> list[str]:
+    raw_capabilities = []
+    for key in ("capabilities", "supported_capabilities", "features"):
+        value = (raw or {}).get(key)
+        if isinstance(value, list):
+            raw_capabilities.extend(str(item).lower() for item in value)
+    explicit = [item for item in raw_capabilities if item in MODEL_CAPABILITY_ORDER]
+    if explicit:
+        return _ordered_capabilities(explicit)
+
+    normalized = model_id.lower()
+    if "embedding" in normalized or "embed" in normalized or "bge-" in normalized:
+        return ["embedding"]
+    if "ocr" in normalized:
+        return ["llm", "vision", "ocr"]
+    if any(
+        marker in normalized
+        for marker in ("vl", "vision", "gpt-4o", "gemini", "claude-3", "qvq")
+    ):
+        return ["llm", "vision", "tool_calling"]
+    return ["llm", "tool_calling"]
+
+
+def _ordered_capabilities(capabilities: list[str]) -> list[str]:
+    selected = set(capabilities)
+    return [item for item in MODEL_CAPABILITY_ORDER if item in selected]
+
+
 def _normalize_provider_models(payload: Any) -> list[dict[str, Any]]:
     if isinstance(payload, dict):
         items = payload.get("data") or payload.get("models") or []
@@ -254,6 +285,7 @@ def _normalize_provider_models(payload: Any) -> list[dict[str, Any]]:
         for key in ("owned_by", "created", "object"):
             if raw.get(key) is not None:
                 model[key] = raw[key]
+        model["capabilities"] = _infer_model_capabilities(model_id, raw)
         models.append(model)
     return models
 
@@ -472,6 +504,28 @@ class ModelSettingsService:
                     provider_id,
                 ),
             )
+        await self.db.commit()
+        if cursor.rowcount == 0:
+            raise ValueError("provider config not found")
+        return await self.get_provider_config(user_id, provider_id) or {}
+
+    async def update_provider_validation_status(
+        self,
+        *,
+        user_id: str,
+        provider_id: str,
+        validation_status: str,
+    ) -> dict[str, Any]:
+        if validation_status not in {"untested", "valid", "invalid"}:
+            raise ValueError("unsupported provider validation status")
+        cursor = await self.db.execute(
+            """
+            UPDATE model_provider_configs
+            SET validation_status = ?, updated_at = CURRENT_TIMESTAMP
+            WHERE user_id = ? AND provider_id = ?
+            """,
+            (validation_status, user_id, provider_id),
+        )
         await self.db.commit()
         if cursor.rowcount == 0:
             raise ValueError("provider config not found")

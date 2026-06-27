@@ -23,6 +23,21 @@ class FakeDocumentService:
             )
         ]
 
+    async def list_documents(
+        self,
+        page=1,
+        page_size=500,
+        folder_id=None,
+        include_subfolders=False,
+        user_id=None,
+    ):
+        docs = [
+            SimpleNamespace(id="doc-folder-1"),
+            SimpleNamespace(id="doc-folder-2"),
+            SimpleNamespace(id="doc-folder-3"),
+        ]
+        return docs, len(docs)
+
 
 class FakeLoopRuntime:
     def __init__(self):
@@ -156,15 +171,146 @@ def test_agent_service_stream_uses_loop_runtime_not_initial_retrieval(monkeypatc
             "answer_delta",
         ]
         assert loop_runtime.states[0].scope["document_ids"] == ["doc-alpha"]
-        assert loop_runtime.states[0].scope["document_registry"] == [
-            {
-                "document_id": "doc-alpha",
-                "document_name": "alpha.pdf",
-                "folder_id": None,
-                "path": "root / alpha.pdf",
-            }
-        ]
         assert "retrieval_plan" not in loop_runtime.states[0].scope
+
+    asyncio.run(run())
+
+
+def test_agent_service_adds_selected_folder_scope_summary(monkeypatch) -> None:
+    async def run() -> None:
+        service = AgentService.__new__(AgentService)
+        service.db = None
+        service.pageindex_service = object()
+        service.document_service = FakeDocumentService()
+        service.folder_service = None
+        loop_runtime = FakeLoopRuntime()
+
+        def fake_build_loop_runtime(self, **_kwargs):
+            return loop_runtime
+
+        async def fake_web_search_settings_for_request(**_kwargs):
+            return {"enabled": False}
+
+        monkeypatch.setattr(
+            AgentService,
+            "build_agent_loop_runtime",
+            fake_build_loop_runtime,
+            raising=False,
+        )
+        monkeypatch.setattr(
+            service,
+            "_web_search_settings_for_request",
+            fake_web_search_settings_for_request,
+        )
+
+        frames = [
+            frame
+            async for frame in service.run_agent_stream(
+                question="这里有多少文件？",
+                conversation_id="conv-folder",
+                folder_id="folder-a",
+                include_subfolders=True,
+                strict_scope=True,
+                user_id="user-a",
+                history_messages=[],
+            )
+        ]
+
+        events = parse_sse_frames(frames)
+        assert events[0]["event"] == "progress"
+        assert loop_runtime.states[0].scope["selected_scope_summary"] == {
+            "type": "folder",
+            "folder_id": "folder-a",
+            "include_subfolders": True,
+            "document_count": 3,
+        }
+
+    asyncio.run(run())
+
+
+def test_agent_service_loads_prior_evidence_for_same_scope(monkeypatch) -> None:
+    async def run() -> None:
+        from app.services import agent_service as agent_service_module
+
+        captured = {}
+
+        class FakeEvidenceRepository:
+            def __init__(self, db):
+                captured["db"] = db
+
+            async def list_relevant(self, *, conversation_id, scope_key, question, limit):
+                captured["conversation_id"] = conversation_id
+                captured["scope_key"] = scope_key
+                captured["question"] = question
+                captured["limit"] = limit
+                return [
+                    {
+                        "tool_name": "get_page_content",
+                        "arguments": {"doc_id": "doc-alpha", "pages": "2"},
+                        "doc_id": "doc-alpha",
+                        "doc_name": "alpha.pdf",
+                        "page": 2,
+                        "snippet": "上一轮第二页证据。",
+                        "result": {
+                            "doc_id": "doc-alpha",
+                            "items": [{"page": 2, "text": "上一轮第二页证据。"}],
+                        },
+                    }
+                ]
+
+        service = AgentService.__new__(AgentService)
+        service.db = object()
+        service.pageindex_service = object()
+        service.document_service = FakeDocumentService()
+        service.folder_service = None
+        loop_runtime = FakeLoopRuntime()
+
+        def fake_build_loop_runtime(self, **_kwargs):
+            return loop_runtime
+
+        async def fake_web_search_settings_for_request(**_kwargs):
+            return {"enabled": False}
+
+        monkeypatch.setattr(
+            agent_service_module,
+            "ConversationEvidenceRepository",
+            FakeEvidenceRepository,
+            raising=False,
+        )
+        monkeypatch.setattr(
+            AgentService,
+            "build_agent_loop_runtime",
+            fake_build_loop_runtime,
+            raising=False,
+        )
+        monkeypatch.setattr(
+            service,
+            "_web_search_settings_for_request",
+            fake_web_search_settings_for_request,
+        )
+
+        frames = [
+            frame
+            async for frame in service.run_agent_stream(
+                question="继续说明第二页创新",
+                conversation_id="conv-alpha",
+                document_ids=["doc-alpha"],
+                strict_scope=True,
+                user_id="user-a",
+                history_messages=[],
+            )
+        ]
+
+        events = parse_sse_frames(frames)
+        scope = loop_runtime.states[0].scope
+        assert events[0]["event"] == "progress"
+        assert captured["conversation_id"] == "conv-alpha"
+        assert captured["limit"] == 6
+        assert "doc-alpha" in captured["scope_key"]
+        assert scope["prior_evidence"][0]["snippet"] == "上一轮第二页证据。"
+        assert scope["evidence_pack"][0]["tool_name"] == "get_page_content"
+        assert scope["observations"][0]["kind"] == "reuse"
+        assert scope["observations"][0]["evidence_sufficient"] is True
 
     asyncio.run(run())
 

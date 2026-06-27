@@ -199,11 +199,19 @@ export const settingsApi = {
     api.delete(`/settings/model-providers/${providerId}`),
   listModelProviderModels: (providerId: string) =>
     api.get(`/settings/model-providers/${providerId}/models`),
-  testModelProvider: (providerId: string, model: string) =>
-    api.post(`/settings/model-providers/${providerId}/test`, { model }),
+  testModelProvider: (providerId: string, model?: string) =>
+    api.post(`/settings/model-providers/${providerId}/test`, model ? { model } : {}),
   listModelRoutes: () => api.get('/settings/model-routes'),
   saveModelRoutes: (routes: ModelRouteMapping[]) =>
     api.put('/settings/model-routes', { routes }),
+  listOcrEngines: () => api.get('/settings/ocr-engines'),
+  saveOcrEngine: (payload: Record<string, any>) =>
+    api.post('/settings/ocr-engines', payload),
+  updateOcrEngine: (profileId: string, payload: Record<string, any>) =>
+    api.patch(`/settings/ocr-engines/${profileId}`, payload),
+  listOcrRoutes: () => api.get('/settings/ocr-routes'),
+  saveOcrRoutes: (routes: Record<string, string | null>) =>
+    api.put('/settings/ocr-routes', { routes }),
 }
 
 export default api

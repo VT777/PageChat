@@ -44,11 +44,20 @@ const target = computed(() => {
 const resultCount = computed(() => {
   if (typeof props.tool.resultsCount === 'number') return props.tool.resultsCount
   const result = props.tool.result || {}
+  if (typeof result.result_count === 'number') return result.result_count
   for (const key of ['documents', 'matches', 'pages', 'results', 'items']) {
     const value = result[key]
     if (Array.isArray(value)) return value.length
   }
   return null
+})
+
+const resultLabel = computed(() => {
+  const result = props.tool.result || {}
+  if (typeof result.result_label === 'string' && result.result_label.trim()) {
+    return result.result_label
+  }
+  return resultCount.value !== null ? `${resultCount.value} results` : ''
 })
 
 function formatJSON(value: unknown): string {
@@ -78,7 +87,7 @@ function formatJSON(value: unknown): string {
       <ChevronDown v-if="expanded" class="tool-chevron" />
       <ChevronRight v-else class="tool-chevron" />
       <span v-if="target" class="tool-target">{{ target }}</span>
-      <span v-if="resultCount !== null" class="tool-meta">{{ resultCount }} results</span>
+      <span v-if="resultLabel" class="tool-meta">{{ resultLabel }}</span>
       <span v-if="tool.elapsedMs !== undefined" class="tool-meta">
         <Clock3 />
         {{ tool.elapsedMs }}ms

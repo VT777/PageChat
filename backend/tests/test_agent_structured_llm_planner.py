@@ -135,7 +135,7 @@ def test_structured_planner_prompt_keeps_visible_notes_natural() -> None:
     asyncio.run(run())
 
 
-def test_structured_planner_payload_includes_compact_document_registry() -> None:
+def test_structured_planner_payload_hides_document_registry_and_keeps_scope_summary() -> None:
     async def run() -> None:
         calls = []
 
@@ -167,20 +167,27 @@ def test_structured_planner_payload_includes_compact_document_registry() -> None
                     }
                 ],
                 "available_document_ids": ["doc-alpha"],
+                "selected_scope_summary": {
+                    "type": "folder",
+                    "folder_id": "folder-a",
+                    "folder_name": "Reports",
+                    "include_subfolders": True,
+                    "document_count": 3,
+                },
             },
         )
 
         await planner.next_action(state)
 
         payload = json.loads(calls[0]["messages"][1]["content"])
-        assert payload["document_registry"] == [
-            {
-                "document_id": "doc-alpha",
-                "document_name": "alpha.pdf",
-                "folder_id": "folder-a",
-                "path": "root / reports / alpha.pdf",
-            }
-        ]
+        assert "document_registry" not in payload
+        assert payload["scope"]["selected_scope_summary"] == {
+            "type": "folder",
+            "folder_id": "folder-a",
+            "folder_name": "Reports",
+            "include_subfolders": True,
+            "document_count": 3,
+        }
         assert "available_document_ids" not in payload["scope"]
         assert "local_file_path" not in json.dumps(payload, ensure_ascii=False)
 

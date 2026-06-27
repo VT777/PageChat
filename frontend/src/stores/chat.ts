@@ -963,6 +963,15 @@ export const useChatStore = defineStore('chat', () => {
         flushDisplayBuffer(last.id)
         const base = messages.value[lastIndex] || last
         const nextProgressSteps = [...(base.progressSteps || [])]
+        if (data.kind === 'plan_retract' && typeof data.step === 'number') {
+          messages.value[lastIndex] = {
+            ...base,
+            progressSteps: nextProgressSteps.filter((step) => !(
+              step.kind === (data.target_kind || 'plan') && step.step === data.step
+            )),
+          }
+          break
+        }
         const progressStep: ProgressStep = {
           message: data.message,
           kind: data.kind,

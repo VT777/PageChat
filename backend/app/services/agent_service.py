@@ -23,6 +23,7 @@ from app.services.web_search_settings_service import (
     WebSearchSettingsService,
 )
 from app.services.web_search_tool import WEB_SEARCH_TOOL, execute_web_search_tool
+from app.services.conversation_evidence_repository import ConversationEvidenceRepository
 from app.services.retrieval_planner import RetrievalPlanner
 from app.core.config import CHAT_ATTACHMENT_MAX_PER_MESSAGE
 from app.services.retrieval_policy import (
@@ -305,6 +306,16 @@ class AgentService:
         )
         return any(hint in q for hint in library_question_hints)
 
+    @staticmethod
+    def _prior_evidence_is_sufficient(evidence: Dict[str, Any]) -> bool:
+        return evidence.get("tool_name") in {
+            "get_page_content",
+            "get_page_image",
+            "get_document_image",
+            "search_within_document",
+            "web_search",
+        }
+
     async def _stream_graph_answer(self, state):
         messages = [{"role": "system", "content": QA_SYSTEM_PROMPT}]
         for item in state.history[-6:]:
@@ -533,6 +544,8 @@ class AgentService:
         user_id: str = None,
         max_steps: int = 8,
         history_messages: Optional[List[Dict[str, Any]]] = None,
+        run_id: str = "",
+        message_id: str = "",
     ) -> AsyncGenerator[str, None]:
         """
         Agent 流式执行 - 基于 PageIndex 官方流程
@@ -611,6 +624,39 @@ class AgentService:
             elif folder_allowed_doc_ids is not None:
                 executor_allowed_doc_ids = folder_allowed_doc_ids
 
+        selected_scope_summary: Dict[str, Any] | None = None
+        if folder_id and folder_allowed_doc_ids is not None:
+            selected_scope_summary = {
+                "type": "folder",
+                "folder_id": folder_id,
+                "include_subfolders": bool(include_subfolders),
+                "document_count": len(folder_allowed_doc_ids),
+            }
+        elif document_ids is not None:
+            selected_scope_summary = {
+                "type": "documents",
+                "document_count": len(document_ids),
+            }
+
+        evidence_scope_key = self._scope_cache_key(
+            user_id,
+            document_ids,
+            folder_id=folder_id,
+            include_subfolders=include_subfolders,
+            strict_scope=effective_strict_scope,
+        )
+        prior_evidence: List[Dict[str, Any]] = []
+        if conversation_id and self.db is not None:
+            try:
+                prior_evidence = await ConversationEvidenceRepository(self.db).list_relevant(
+                    conversation_id=conversation_id,
+                    scope_key=evidence_scope_key,
+                    question=question,
+                    limit=6,
+                )
+            except Exception as exc:
+                agent_logger.warning("Failed to load prior conversation evidence: %s", exc)
+
         # 将当前请求允许访问的文档范围注入工具执行器（防止越权）
         tool_executor = ToolExecutor(
             self.pageindex_service,
@@ -660,6 +706,24 @@ class AgentService:
                 visible_document_ids=executor_allowed_doc_ids,
             ),
         }
+        if selected_scope_summary:
+            scope["selected_scope_summary"] = selected_scope_summary
+        if prior_evidence:
+            scope["prior_evidence"] = prior_evidence
+            scope["evidence_pack"] = list(prior_evidence)
+            scope["observations"] = [
+                {
+                    "kind": "reuse",
+                    "tool_name": "prior_evidence",
+                    "message": f"Using {len(prior_evidence)} previous evidence item(s).",
+                    "evidence_sufficient": any(
+                        self._prior_evidence_is_sufficient(item)
+                        for item in prior_evidence
+                        if isinstance(item, dict)
+                    ),
+                    "reused": True,
+                }
+            ]
         runtime = self.build_agent_loop_runtime(
             tool_executor=tool_executor,
             web_search_settings=web_search_settings,
@@ -671,8 +735,8 @@ class AgentService:
         state = AgentRunState(
             question=question,
             conversation_id=conversation_id or "",
-            run_id="",
-            message_id="",
+            run_id=run_id or "",
+            message_id=message_id or "",
             scope=scope,
             history=history_messages or [],
         )

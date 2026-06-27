@@ -8,6 +8,7 @@ import json
 import re
 import uuid
 import asyncio
+import logging
 from typing import AsyncGenerator, List, Optional
 import aiosqlite
 
@@ -21,16 +22,20 @@ from app.agent.events import (
     parse_sse_frame,
     sse_frame,
 )
-from app.agent.citations import citation_dedupe_key, dedupe_citations
+from app.agent.citations import citation_dedupe_key, dedupe_citations, normalize_citation
 from app.agent.nodes import compact_tool_result
 from app.agent.provider_adapter import CHAT_COMPLETIONS_PROTOCOL
 from app.services.chat_run_repository import ChatRunRepository
+from app.services.conversation_evidence_repository import ConversationEvidenceRepository
 from app.services.tool_executor import AGENT_TOOLS
 from app.services.web_search_tool import WEB_SEARCH_TOOL
 from app.services.folder_service import FolderService
 from app.services.retrieval_policy import normalize_folder_id
 from app.services.citation_binding_service import has_document_citation
 from app.prompts import build_tool_catalog
+
+
+chat_logger = logging.getLogger("chat")
 
 
 class ChatService:
@@ -42,6 +47,7 @@ class ChatService:
         self.document_service = DocumentService(db)
         self.folder_service = FolderService(db)
         self.run_repository = ChatRunRepository(db)
+        self.evidence_repository = ConversationEvidenceRepository(db)
 
     def _get_agent_service(self):
         if self.agent_service is None:
@@ -86,6 +92,40 @@ class ChatService:
             )
             tools.append(web_tool)
         return tools
+
+    async def _record_tool_evidence(
+        self,
+        *,
+        conversation_id: str,
+        run_id: str,
+        tool_name: str,
+        tool_arguments: dict,
+        compact_result: dict,
+        scope_key: str,
+    ) -> None:
+        try:
+            await self.evidence_repository.record_tool_result(
+                conversation_id=conversation_id,
+                run_id=run_id,
+                tool_name=tool_name,
+                tool_arguments=tool_arguments,
+                compact_result=compact_result,
+                scope_key=scope_key,
+            )
+        except Exception as exc:
+            chat_logger.warning("Failed to record conversation evidence: %s", exc)
+
+    def _compact_tool_result_for_client(self, result: dict, tool_name: str) -> dict:
+        if self._looks_like_compact_tool_result(result):
+            return result
+        return compact_tool_result(result, tool_name=tool_name)
+
+    def _looks_like_compact_tool_result(self, result: object) -> bool:
+        if not isinstance(result, dict):
+            return False
+        if any(key in result for key in ("page_image_base64", "image_base64", "data")):
+            return False
+        return any(key in result for key in ("items", "citations", "structure", "next_steps"))
 
     async def _resolve_valid_folder_id(
         self, folder_id: Optional[str], user_id: Optional[str]
@@ -233,6 +273,15 @@ class ChatService:
                 return f" [[{display_label}]]"
         return ""
 
+    @staticmethod
+    def _tool_result_can_cite_answer(tool_name: str) -> bool:
+        return tool_name in {
+            "get_page_content",
+            "get_page_image",
+            "get_document_image",
+            "web_search",
+        }
+
     async def update_message(
         self,
         message_id: str,
@@ -337,6 +386,7 @@ class ChatService:
         pending_citations = []
         emitted_citation_keys: set[str] = set()
         last_tool_name = ""
+        last_tool_arguments: dict = {}
         assistant_message_id: Optional[str] = None
         emitter: Optional[PageChatEventEmitter] = None
         run_created = False
@@ -528,6 +578,19 @@ class ChatService:
             yield await fail_current_run(str(e))
             return
 
+        from app.services.agent_service import AgentService
+
+        effective_strict_scope = (
+            strict_scope if strict_scope is not None else bool(document_ids or folder_id)
+        )
+        evidence_scope_key = AgentService._scope_cache_key(
+            user_id,
+            document_ids,
+            folder_id=folder_id,
+            include_subfolders=include_subfolders,
+            strict_scope=effective_strict_scope,
+        )
+
         # 累积的内容
         full_content = ""
         # 上次保存的时间
@@ -550,6 +613,8 @@ class ChatService:
                     suppress_user_library_fallback=suppress_user_library_fallback,
                     user_id=user_id,
                     history_messages=history,
+                    run_id=run_id,
+                    message_id=assistant_message_id or "",
                 ):
                     yield agent_event
             except asyncio.CancelledError:
@@ -598,6 +663,7 @@ class ChatService:
                     elif event_type == "tool_started":
                         last_tool_name = data.get("tool_name", "")
                         arguments = data.get("arguments", {})
+                        last_tool_arguments = dict(arguments or {})
                         tool_steps.append(
                             {
                                 "toolName": last_tool_name,
@@ -615,16 +681,31 @@ class ChatService:
                         )
                     elif event_type == "tool_completed":
                         result = data.get("result", {})
-                        compact_result = compact_tool_result(result)
                         elapsed_ms = data.get("elapsed_ms")
                         tool_name = data.get("tool_name") or last_tool_name
+                        tool_arguments = data.get("arguments")
+                        if not isinstance(tool_arguments, dict):
+                            tool_arguments = last_tool_arguments
+                        compact_result = self._compact_tool_result_for_client(
+                            result,
+                            str(tool_name or ""),
+                        )
                         if tool_steps:
                             tool_steps[-1]["status"] = "done"
                             tool_steps[-1]["result"] = compact_result
                             tool_steps[-1]["elapsedMs"] = elapsed_ms
-                        pending_citations = dedupe_citations(
-                            pending_citations
-                            + citation_events_from_tool_result(result)
+                        if self._tool_result_can_cite_answer(str(tool_name or "")):
+                            pending_citations = dedupe_citations(
+                                pending_citations
+                                + citation_events_from_tool_result(result)
+                            )
+                        await self._record_tool_evidence(
+                            conversation_id=conversation_id,
+                            run_id=run_id,
+                            tool_name=str(tool_name or ""),
+                            tool_arguments=dict(tool_arguments or {}),
+                            compact_result=compact_result,
+                            scope_key=evidence_scope_key,
                         )
                         yield await emit(
                             "tool_completed",
@@ -637,6 +718,7 @@ class ChatService:
                     elif event_type == "citation_added":
                         citation = data.get("citation")
                         if isinstance(citation, dict):
+                            citation = normalize_citation(citation)
                             previous_count = len(pending_citations)
                             pending_citations = dedupe_citations(
                                 pending_citations + [citation]

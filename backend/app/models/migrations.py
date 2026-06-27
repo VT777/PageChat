@@ -329,6 +329,48 @@ async def _add_agent_run_storage(db: aiosqlite.Connection) -> None:
             )
 
 
+async def _add_conversation_evidence_table(db: aiosqlite.Connection) -> None:
+    await db.execute(
+        """
+        CREATE TABLE IF NOT EXISTS conversation_evidence (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            conversation_id TEXT NOT NULL,
+            run_id TEXT,
+            tool_name TEXT NOT NULL,
+            tool_arguments_json TEXT NOT NULL,
+            doc_id TEXT,
+            doc_name TEXT,
+            page INTEGER,
+            snippet TEXT,
+            citations_json TEXT NOT NULL DEFAULT '[]',
+            payload_json TEXT NOT NULL,
+            scope_key TEXT NOT NULL,
+            document_updated_at TIMESTAMP,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (conversation_id) REFERENCES conversations(id)
+        )
+        """
+    )
+    await db.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_conversation_evidence_scope_created
+        ON conversation_evidence(conversation_id, scope_key, created_at)
+        """
+    )
+    await db.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_conversation_evidence_doc
+        ON conversation_evidence(doc_id, document_updated_at)
+        """
+    )
+    await db.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_conversation_evidence_run
+        ON conversation_evidence(run_id)
+        """
+    )
+
+
 MIGRATIONS: tuple[Migration, ...] = (
     ("20260610_001_add_documents_last_reindex_at", _add_documents_last_reindex_at),
     ("20260610_002_add_core_indexes", _add_core_indexes),
@@ -342,6 +384,7 @@ MIGRATIONS: tuple[Migration, ...] = (
     ),
     ("20260626_008_add_agent_runs_events_citations", _add_agent_run_storage),
     ("20260626_009_add_model_route_capabilities", _add_model_route_capabilities),
+    ("20260627_010_add_conversation_evidence", _add_conversation_evidence_table),
 )
 
 

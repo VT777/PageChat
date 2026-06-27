@@ -25,4 +25,14 @@ describe('RunTimeline contract', () => {
     expect(source).not.toContain('progress-dot')
     expect(source).not.toContain('Circle')
   })
+
+  it('collapses thought details once answer streaming starts', () => {
+    const source = readFileSync(
+      new URL('./RunTimeline.vue', import.meta.url),
+      'utf8',
+    )
+
+    expect(source).toContain('isAnswering')
+    expect(source).toContain('props.isLoading && !props.isAnswering')
+  })
 })

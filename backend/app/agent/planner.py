@@ -100,9 +100,6 @@ class StructuredLLMPlanner:
             "question": state.question,
             "history": self._compact_history(state.history),
             "scope": self._compact_scope(state.scope),
-            "document_registry": self._compact_document_registry(
-                state.scope.get("document_registry")
-            ),
             "available_tools": tools,
             "observations": list(state.scope.get("observations") or [])[-8:],
             "evidence_pack": list(state.scope.get("evidence_pack") or [])[-6:],
@@ -128,8 +125,13 @@ class StructuredLLMPlanner:
             "Do not draft the final answer unless action.type is answer. "
             "For evidence-backed document answers, prefer action.type=answer with empty content "
             "so PageChat can stream the final answer from the answer generator. "
-            "For simple library inventory questions, prefer one decisive browse_documents call "
-            "with recursive=true when the root or current folder may contain subfolders. "
+            "For simple selected-scope inventory or count questions, answer directly when "
+            "scope.selected_scope_summary already provides the requested count. "
+            "If observations or evidence_pack contain reused prior evidence that answers the question, "
+            "choose answer instead of calling the same tool again. "
+            "Do not repeat a tool call with the same arguments unless the prior evidence has an explicit gap. "
+            "Only browse documents when the user needs a document list or content selection "
+            "that is not already covered by the selected scope summary. "
             "Use the same language as the user's question when possible. "
             "Choose tools freely from available_tools; policy will validate safety and evidence."
         )
@@ -279,32 +281,6 @@ class StructuredLLMPlanner:
             "web_search_requested",
             "web_search_enabled",
             "suppress_user_library_fallback",
+            "selected_scope_summary",
         }
         return {key: value for key, value in scope.items() if key in allowed}
-
-    def _compact_document_registry(self, registry: Any) -> list[dict[str, Any]]:
-        if not isinstance(registry, list):
-            return []
-        compact: list[dict[str, Any]] = []
-        for item in registry[:80]:
-            if not isinstance(item, dict):
-                continue
-            document_id = item.get("document_id") or item.get("doc_id") or item.get("id")
-            document_name = (
-                item.get("document_name")
-                or item.get("doc_name")
-                or item.get("name")
-                or item.get("original_name")
-            )
-            if not document_id or not document_name:
-                continue
-            entry: dict[str, Any] = {
-                "document_id": str(document_id),
-                "document_name": str(document_name),
-            }
-            for key in ("folder_id", "path"):
-                value = item.get(key)
-                if value not in (None, ""):
-                    entry[key] = value
-            compact.append(entry)
-        return compact

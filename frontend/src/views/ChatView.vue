@@ -372,19 +372,6 @@ function documentPreviewFromCitation(binding: BoundInlineCitation): ActiveSource
   }
 }
 
-function webPreviewFromSource(source: EvidenceItem): ActiveSourcePreview {
-  return {
-    sourceType: 'web',
-    documentName: source.domain || source.url || 'Web source',
-    displayLabel: source.displayLabel || source.title || source.domain || source.url || 'Web source',
-    fileType: '.web',
-    url: source.url,
-    domain: source.domain,
-    snippet: source.snippet,
-    contentPreview: source.contentPreview,
-  }
-}
-
 async function resolveCitationDocument(binding: BoundInlineCitation): Promise<ActiveSourcePreview> {
   if (binding.docId) return documentPreviewFromCitation(binding)
   try {
@@ -418,7 +405,10 @@ async function handleAssistantContentClick(event: MouseEvent, message: Message) 
   if (target.dataset.webSourceIndex !== undefined) {
     const sourceIndex = Number(target.dataset.webSourceIndex)
     const source = webSourcesForMessage(message)[sourceIndex]
-    if (source) activeCitation.value = webPreviewFromSource(source)
+    if (source?.url) {
+      activeCitation.value = null
+      window.open(source.url, '_blank', 'noopener,noreferrer')
+    }
     return
   }
   const citationIndex = Number(target.dataset.citationIndex)
@@ -609,6 +599,7 @@ onBeforeUnmount(() => {
                   :progress-steps="message.progressSteps"
                   :tool-steps="message.toolSteps"
                   :is-loading="message.isLoading"
+                  :is-answering="Boolean(message.content)"
                 />
 
                 <div

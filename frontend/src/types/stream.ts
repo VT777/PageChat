@@ -33,6 +33,7 @@ export interface ProgressEvent extends PageChatEventMeta {
   message: string
   step?: number
   status?: string
+  target_kind?: string
 }
 
 export interface ToolStarted extends PageChatEventMeta {

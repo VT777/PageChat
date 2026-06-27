@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { buildModelProviderRows } from './modelProviderRows'
+import { buildModelProviderRows, filterModelProviderRows } from './modelProviderRows'
 import type { ModelProviderConfig, ModelProviderPreset } from '@/types/modelSettings'
 
 const presets: ModelProviderPreset[] = [
@@ -49,5 +49,20 @@ describe('model provider rows', () => {
       configured: false,
       validation: 'Not configured',
     })
+  })
+
+  it('filters providers by label, provider id, and base URL', () => {
+    const rows = buildModelProviderRows([], presets, (provider) => provider)
+
+    expect(filterModelProviderRows(rows, 'ali').map((row) => row.provider)).toEqual(['dashscope'])
+    expect(filterModelProviderRows(rows, 'deepseek').map((row) => row.provider)).toEqual(['deepseek'])
+    expect(filterModelProviderRows(rows, 'dashscope.aliyuncs').map((row) => row.provider)).toEqual([
+      'dashscope',
+    ])
+    expect(filterModelProviderRows(rows, '').map((row) => row.provider)).toEqual([
+      'openai',
+      'dashscope',
+      'deepseek',
+    ])
   })
 })

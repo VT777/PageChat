@@ -232,7 +232,7 @@ def test_policy_guided_planner_starts_selected_document_with_structure() -> None
     asyncio.run(run())
 
 
-def test_loop_runtime_emits_guardrail_and_replans_invalid_action() -> None:
+def test_loop_runtime_retracts_plan_and_replans_invalid_action() -> None:
     class GuardrailPlanner:
         def __init__(self):
             self.calls = 0
@@ -277,8 +277,89 @@ def test_loop_runtime_emits_guardrail_and_replans_invalid_action() -> None:
             "answer_delta",
         ]
         assert events[0].payload["message"] == "我想先尝试一个不可用工具。"
-        assert events[1].payload["kind"] == "guardrail"
+        assert events[1].payload == {
+            "kind": "plan_retract",
+            "message": "",
+            "step": 1,
+            "target_kind": "plan",
+        }
         assert events[2].payload["message"] == "不可用工具已被拦截，我改为直接说明限制。"
+        assert state.scope["observations"][0]["kind"] == "guardrail"
+        assert planner.calls == 2
+
+    asyncio.run(run())
+
+
+def test_loop_runtime_retracts_streamed_thought_when_policy_rejects_action() -> None:
+    class RejectedStreamingPlanner:
+        def __init__(self):
+            self.calls = 0
+
+        async def stream_next_action(self, state: AgentRunState):
+            self.calls += 1
+            if self.calls == 1:
+                yield {"type": "thought", "message": "I will use a risky tool."}
+                yield PlannerAction.call_tool(
+                    "delete_everything",
+                    {},
+                    thought="I will use a risky tool.",
+                )
+                return
+            assert state.scope["observations"][-1]["kind"] == "guardrail"
+            yield {"type": "thought", "message": "I will answer without that tool."}
+            yield PlannerAction.answer(
+                "I cannot use that tool.",
+                thought="I will answer without that tool.",
+            )
+
+    async def run() -> None:
+        planner = RejectedStreamingPlanner()
+        runtime = AgentLoopRuntime(
+            planner=planner,
+            tool_runner=RecordingToolRunner(),
+            policy=AgentPolicy(
+                tools=[{"type": "function", "function": {"name": "view_folder_structure"}}]
+            ),
+            max_steps=3,
+        )
+        state = AgentRunState(
+            question="Delete everything",
+            conversation_id="conv-alpha",
+            run_id="run-alpha",
+            message_id="msg-alpha",
+        )
+
+        events = [event async for event in runtime.stream(state)]
+
+        assert [event.event_type for event in events] == [
+            "progress",
+            "progress",
+            "progress",
+            "answer_delta",
+        ]
+        assert events[0].payload == {
+            "kind": "plan",
+            "message": "I will use a risky tool.",
+            "step": 1,
+            "status": "streaming",
+        }
+        assert events[1].payload == {
+            "kind": "plan_retract",
+            "message": "",
+            "step": 1,
+            "target_kind": "plan",
+        }
+        assert events[2].payload == {
+            "kind": "plan",
+            "message": "I will answer without that tool.",
+            "step": 2,
+            "status": "streaming",
+        }
+        assert not any(
+            event.payload.get("kind") == "guardrail"
+            for event in events
+            if event.event_type == "progress"
+        )
         assert planner.calls == 2
 
     asyncio.run(run())
@@ -338,15 +419,194 @@ def test_loop_runtime_blocks_document_answer_until_page_evidence() -> None:
 
         events = [event async for event in runtime.stream(state)]
         answer_events = [event for event in events if event.event_type == "answer_delta"]
-        guardrail_events = [
+        visible_guardrail_events = [
             event
             for event in events
             if event.event_type == "progress" and event.payload.get("kind") == "guardrail"
         ]
+        retract_events = [
+            event
+            for event in events
+            if event.event_type == "progress" and event.payload.get("kind") == "plan_retract"
+        ]
 
         assert len(answer_events) == 1
         assert answer_events[0].payload["content"] == "这是基于页面证据的答案。"
-        assert guardrail_events
+        assert visible_guardrail_events == []
+        assert retract_events
+        assert state.scope["observations"][0]["kind"] == "guardrail"
+
+    asyncio.run(run())
+
+
+def test_loop_runtime_requires_image_after_visual_only_page_content() -> None:
+    class VisualEvidencePlanner:
+        def __init__(self):
+            self.calls = 0
+
+        async def next_action(self, state: AgentRunState) -> PlannerAction:
+            self.calls += 1
+            if self.calls == 1:
+                return PlannerAction.call_tool(
+                    "get_page_content",
+                    {"doc_id": "doc-alpha", "pages": "1"},
+                    thought="I will read page content first.",
+                )
+            if self.calls == 2:
+                return PlannerAction.answer(
+                    "This answer should not pass before image evidence.",
+                    thought="I can answer from the page metadata.",
+                )
+            if self.calls == 3:
+                assert state.scope["observations"][-1]["kind"] == "guardrail"
+                return PlannerAction.call_tool(
+                    "get_page_image",
+                    {"doc_id": "doc-alpha", "page": 1},
+                    thought="The page requires visual evidence, so I will inspect the image.",
+                )
+            return PlannerAction.answer(
+                "The image shows the cover page.",
+                thought="The page image is enough to answer.",
+            )
+
+    class VisualToolRunner:
+        def __init__(self):
+            self.calls = []
+
+        async def execute(self, tool_name: str, arguments: dict):
+            self.calls.append((tool_name, arguments))
+            if tool_name == "get_page_content":
+                return {
+                    "success": True,
+                    "data": {
+                        "doc_id": "doc-alpha",
+                        "doc_name": "alpha.pdf",
+                        "content": [
+                            {
+                                "page": 1,
+                                "visual_evidence_required": True,
+                                "text_omitted_reason": "visual_evidence_required",
+                            }
+                        ],
+                    },
+                }
+            if tool_name == "get_page_image":
+                return {
+                    "success": True,
+                    "doc_id": "doc-alpha",
+                    "page": 1,
+                    "image_ref": "page-1.png",
+                }
+            raise AssertionError(f"unexpected tool {tool_name}")
+
+    async def run() -> None:
+        planner = VisualEvidencePlanner()
+        tool_runner = VisualToolRunner()
+        runtime = AgentLoopRuntime(
+            planner=planner,
+            tool_runner=tool_runner,
+            policy=AgentPolicy(
+                tools=[
+                    {"type": "function", "function": {"name": "get_page_content"}},
+                    {"type": "function", "function": {"name": "get_page_image"}},
+                ]
+            ),
+            max_steps=5,
+        )
+        state = AgentRunState(
+            question="What is on the first page?",
+            conversation_id="conv-alpha",
+            run_id="run-alpha",
+            message_id="msg-alpha",
+            scope={"document_ids": ["doc-alpha"], "strict_scope": True},
+        )
+
+        events = [event async for event in runtime.stream(state)]
+        tool_names = [
+            event.payload["tool_name"]
+            for event in events
+            if event.event_type == "tool_started"
+        ]
+        retract_events = [
+            event
+            for event in events
+            if event.event_type == "progress" and event.payload.get("kind") == "plan_retract"
+        ]
+
+        assert tool_names == ["get_page_content", "get_page_image"]
+        assert retract_events
+        assert events[-1].payload["content"] == "The image shows the cover page."
+
+    asyncio.run(run())
+
+
+def test_loop_runtime_reuses_prior_evidence_for_same_tool_arguments() -> None:
+    class RepeatToolPlanner:
+        def __init__(self):
+            self.calls = 0
+
+        async def next_action(self, state: AgentRunState) -> PlannerAction:
+            self.calls += 1
+            if self.calls == 1:
+                return PlannerAction.call_tool(
+                    "get_page_content",
+                    {"doc_id": "doc-alpha", "pages": "2"},
+                    thought="I will read the same page again.",
+                )
+            assert state.scope["observations"][-1]["kind"] == "reuse"
+            return PlannerAction.answer("复用上一轮证据回答。")
+
+    class ExplodingToolRunner:
+        def __init__(self):
+            self.calls = []
+
+        async def execute(self, tool_name: str, arguments: dict):
+            self.calls.append((tool_name, arguments))
+            raise AssertionError("cached prior evidence should avoid executing the tool")
+
+    async def run() -> None:
+        planner = RepeatToolPlanner()
+        tool_runner = ExplodingToolRunner()
+        runtime = AgentLoopRuntime(
+            planner=planner,
+            tool_runner=tool_runner,
+            max_steps=3,
+        )
+        state = AgentRunState(
+            question="继续说第二页的创新。",
+            conversation_id="conv-alpha",
+            run_id="run-alpha",
+            message_id="msg-alpha",
+            scope={
+                "prior_evidence": [
+                    {
+                        "tool_name": "get_page_content",
+                        "arguments": {"doc_id": "doc-alpha", "pages": "2"},
+                        "doc_id": "doc-alpha",
+                        "doc_name": "alpha.pdf",
+                        "page": 2,
+                        "snippet": "上一轮已经读取过的页面证据。",
+                        "result": {
+                            "doc_id": "doc-alpha",
+                            "doc_name": "alpha.pdf",
+                            "items": [{"page": 2, "text": "上一轮已经读取过的页面证据。"}],
+                            "citations": [],
+                        },
+                    }
+                ]
+            },
+        )
+
+        events = [event async for event in runtime.stream(state)]
+        reuse_events = [
+            event for event in events if event.event_type == "progress" and event.payload.get("kind") == "reuse"
+        ]
+
+        assert tool_runner.calls == []
+        assert len(reuse_events) == 1
+        assert reuse_events[0].payload["message"] == "Using previous evidence."
+        assert state.scope["observations"][-1]["evidence_sufficient"] is True
+        assert events[-1].event_type == "answer_delta"
 
     asyncio.run(run())
 

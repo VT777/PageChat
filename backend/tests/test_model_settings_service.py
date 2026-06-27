@@ -7,7 +7,7 @@ import aiosqlite
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from app.models.migrations import run_migrations
-from app.services.model_settings_service import ModelSettingsService
+from app.services.model_settings_service import ModelSettingsService, _normalize_provider_models
 
 
 async def _create_bootstrap_schema(db: aiosqlite.Connection) -> None:
@@ -86,6 +86,54 @@ def test_save_and_read_provider_config_masks_api_key() -> None:
             assert configs[0]["api_key_mask"] == "sk-...3456"
             assert "api_key" not in configs[0]
             assert "sk-secret-123456" not in str(configs[0])
+        finally:
+            await db.close()
+
+    asyncio.run(run())
+
+
+def test_normalize_provider_models_adds_capabilities() -> None:
+    models = _normalize_provider_models(
+        {
+            "data": [
+                {"id": "qwen-plus", "owned_by": "dashscope"},
+                {"id": "qwen-vl-ocr-2025"},
+                {"id": "text-embedding-v3"},
+            ]
+        }
+    )
+
+    assert models == [
+        {
+            "id": "qwen-plus",
+            "owned_by": "dashscope",
+            "capabilities": ["llm", "tool_calling"],
+        },
+        {"id": "qwen-vl-ocr-2025", "capabilities": ["llm", "vision", "ocr"]},
+        {"id": "text-embedding-v3", "capabilities": ["embedding"]},
+    ]
+
+
+def test_update_provider_validation_status_persists() -> None:
+    async def run() -> None:
+        db, service = await _service()
+        try:
+            saved = await service.save_provider_config(
+                user_id="user-a",
+                provider="openai_compatible",
+                base_url="https://example.test/v1",
+                api_key="sk-secret-123456",
+            )
+
+            updated = await service.update_provider_validation_status(
+                user_id="user-a",
+                provider_id=saved["provider_id"],
+                validation_status="valid",
+            )
+
+            assert updated["validation_status"] == "valid"
+            configs = await service.list_provider_configs("user-a")
+            assert configs[0]["validation_status"] == "valid"
         finally:
             await db.close()
 

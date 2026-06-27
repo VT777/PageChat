@@ -324,6 +324,10 @@ async def delete_conversation(
         (conversation_id,),
     )
     await db.execute(
+        "DELETE FROM conversation_evidence WHERE conversation_id = ?",
+        (conversation_id,),
+    )
+    await db.execute(
         "DELETE FROM agent_runs WHERE conversation_id = ?",
         (conversation_id,),
     )

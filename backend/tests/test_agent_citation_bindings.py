@@ -9,6 +9,7 @@ import aiosqlite
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from app.models.migrations import run_migrations
+from app.agent.citations import citation_events_from_tool_result
 from app.services.chat_service import ChatService
 from app.services.citation_binding_service import (
     bind_answer_citations,
@@ -127,6 +128,24 @@ def test_chat_service_missing_inline_citation_suffix_ignores_document_inventory_
     ]
 
     assert ChatService._missing_inline_citation_suffix("当前库中有 alpha.pdf。", citations) == ""
+
+
+def test_citation_events_ignore_document_inventory_without_page_anchor() -> None:
+    citations = citation_events_from_tool_result(
+        {
+            "status": "success",
+            "documents": [
+                {
+                    "doc_id": "doc-a",
+                    "name": "alpha.pdf",
+                    "file_type": ".pdf",
+                    "page_count": 12,
+                }
+            ],
+        }
+    )
+
+    assert citations == []
 
 
 def test_chat_stream_repairs_missing_inline_citation_and_emits_bindings() -> None:
@@ -253,6 +272,113 @@ def test_chat_stream_repairs_missing_inline_citation_and_emits_bindings() -> Non
                     ensure_ascii=False,
                 ),
             )
+        ]
+
+    asyncio.run(run())
+
+
+def test_chat_stream_uses_page_evidence_not_structure_ranges_for_citations() -> None:
+    class FakeDocumentService:
+        async def get_indexed_documents(self, user_id=None):
+            return [SimpleNamespace(id="doc-cq")]
+
+    class StructureThenPageAgent:
+        async def run_agent_stream(self, **kwargs):
+            yield sse_frame(
+                "tool_completed",
+                {
+                    "tool_name": "get_document_structure",
+                    "result": {
+                        "status": "success",
+                        "doc_id": "doc-cq",
+                        "doc_name": "重庆案例.pdf",
+                        "structure": [
+                            {
+                                "title": "案例分类",
+                                "source_anchor": {
+                                    "format": "pdf",
+                                    "unit_type": "page",
+                                    "start_page": 3,
+                                    "end_page": 16,
+                                },
+                            }
+                        ],
+                    },
+                },
+            )
+            yield sse_frame(
+                "tool_completed",
+                {
+                    "tool_name": "get_page_content",
+                    "result": {
+                        "status": "success",
+                        "doc_id": "doc-cq",
+                        "doc_name": "重庆案例.pdf",
+                        "page_num": 12,
+                        "text_content": "重庆智慧交通案例提到信号灯优化。",
+                    },
+                },
+            )
+            yield sse_frame(
+                "answer_delta",
+                {"content": "重庆智慧交通案例提到信号灯优化。"},
+            )
+
+    async def run() -> None:
+        async with aiosqlite.connect(":memory:") as db:
+            await create_chat_history_schema(db)
+            await run_migrations(db)
+            await db.execute(
+                """
+                INSERT INTO conversations (id, title, user_id)
+                VALUES ('conv-page-citation', 'Page citation', 'user-a')
+                """
+            )
+            await db.commit()
+
+            service = ChatService(db)
+            service.document_service = FakeDocumentService()
+            service._get_agent_service = lambda: StructureThenPageAgent()
+
+            frames = [
+                frame
+                async for frame in service.stream_chat(
+                    question="重庆智慧交通案例说了什么？",
+                    conversation_id="conv-page-citation",
+                    document_ids=["doc-cq"],
+                    strict_scope=True,
+                    user_id="user-a",
+                )
+            ]
+
+        events = parse_sse_frames(frames)
+        answer_text = "".join(
+            event["data"].get("content", "")
+            for event in events
+            if event["event"] == "answer_delta"
+        )
+        citation_events = [
+            event["data"]["citation"]
+            for event in events
+            if event["event"] == "citation_added"
+        ]
+
+        assert answer_text.endswith("[[重庆案例 p.12]]")
+        assert citation_events == [
+            {
+                "id": citation_events[0]["id"],
+                "citation_key": citation_events[0]["citation_key"],
+                "document_id": "doc-cq",
+                "document_name": "重庆案例.pdf",
+                "source_anchor": {
+                    "format": "pdf",
+                    "unit_type": "page",
+                    "start_page": 12,
+                    "end_page": 12,
+                },
+                "display_label": "重庆案例 p.12",
+                "preview_kind": "pdf",
+            }
         ]
 
     asyncio.run(run())

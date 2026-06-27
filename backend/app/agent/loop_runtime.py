@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 import inspect
+import json
 import time
 from typing import Any, Literal
 
@@ -76,6 +77,7 @@ class AgentLoopRuntime:
 
         for step in range(1, self.max_steps + 1):
             action, streamed_thought = None, ""
+            emitted_plan = False
             stream_next_action = getattr(self.planner, "stream_next_action", None)
             if callable(stream_next_action):
                 async for planner_event in stream_next_action(state):
@@ -99,6 +101,7 @@ class AgentLoopRuntime:
                             "status": "streaming",
                         },
                     )
+                    emitted_plan = True
             else:
                 action = await self.planner.next_action(state)
 
@@ -110,6 +113,7 @@ class AgentLoopRuntime:
                     "progress",
                     {"kind": "plan", "message": action.thought, "step": step},
                 )
+                emitted_plan = True
 
             if self.policy is not None:
                 validation = self.policy.validate(action, state)
@@ -122,7 +126,16 @@ class AgentLoopRuntime:
                         "The planner action was rejected by policy.",
                     )
                     state.scope["observations"].append(observation)
-                    yield PageChatRuntimeEvent("progress", observation)
+                    if emitted_plan:
+                        yield PageChatRuntimeEvent(
+                            "progress",
+                            {
+                                "kind": "plan_retract",
+                                "message": "",
+                                "step": step,
+                                "target_kind": "plan",
+                            },
+                        )
                     continue
                 if validation.action is not None:
                     action = validation.action
@@ -186,6 +199,31 @@ class AgentLoopRuntime:
         action: PlannerAction,
         step: int,
     ):
+        cached_evidence = self._matching_prior_evidence(state, action)
+        if cached_evidence:
+            result = cached_evidence.get("result")
+            if not isinstance(result, dict):
+                result = {
+                    key: value
+                    for key, value in cached_evidence.items()
+                    if key not in {"arguments", "result", "reused"}
+                }
+            evidence_pack_item = {
+                "tool_name": action.tool_name,
+                "arguments": action.arguments,
+                **result,
+            }
+            if evidence_pack_item not in state.scope["evidence_pack"]:
+                state.scope["evidence_pack"].append(evidence_pack_item)
+            observation = self._reuse_observation(
+                action=action,
+                cached_evidence=cached_evidence,
+                step=step,
+            )
+            state.scope["observations"].append(observation)
+            yield PageChatRuntimeEvent("progress", observation)
+            return
+
         yield PageChatRuntimeEvent(
             "tool_started",
             {
@@ -230,6 +268,53 @@ class AgentLoopRuntime:
         )
         state.scope["observations"].append(observation)
         yield PageChatRuntimeEvent("progress", observation)
+
+    def _matching_prior_evidence(
+        self,
+        state: AgentRunState,
+        action: PlannerAction,
+    ) -> dict[str, Any] | None:
+        action_signature = self._tool_signature(action.tool_name, action.arguments)
+        for evidence in state.scope.get("prior_evidence") or []:
+            if not isinstance(evidence, dict):
+                continue
+            if self._tool_signature(
+                str(evidence.get("tool_name") or ""),
+                dict(evidence.get("arguments") or {}),
+            ) == action_signature:
+                return evidence
+        return None
+
+    def _reuse_observation(
+        self,
+        *,
+        action: PlannerAction,
+        cached_evidence: dict[str, Any],
+        step: int,
+    ) -> dict[str, Any]:
+        doc_id = cached_evidence.get("doc_id")
+        page = cached_evidence.get("page")
+        return {
+            "kind": "reuse",
+            "tool_name": action.tool_name,
+            "arguments": dict(action.arguments or {}),
+            "message": "Using previous evidence.",
+            "step": step,
+            "reused": True,
+            "candidate_document_ids": [str(doc_id)] if doc_id else [],
+            "candidate_pages": [int(page)] if isinstance(page, int) else [],
+            "evidence_sufficient": action.tool_name
+            in {
+                "get_page_content",
+                "get_page_image",
+                "get_document_image",
+                "search_within_document",
+                "web_search",
+            },
+        }
+
+    def _tool_signature(self, tool_name: str, arguments: dict[str, Any]) -> str:
+        return f"{tool_name}:{json.dumps(arguments or {}, ensure_ascii=False, sort_keys=True, default=str)}"
 
 
 class ObservationBuilder:
@@ -335,10 +420,36 @@ class ObservationBuilder:
         return pages[:5]
 
     def _evidence_sufficient(self, tool_name: str, result: dict[str, Any]) -> bool:
-        if tool_name in {"get_page_content", "get_page_image", "get_document_image"}:
+        if tool_name == "get_page_content":
+            compact = compact_tool_result(result, tool_name=tool_name)
+            return self._page_content_has_readable_evidence(compact)
+        if tool_name in {"get_page_image", "get_document_image"}:
             return not result.get("error")
         if tool_name == "web_search":
             return bool(result.get("results") or result.get("items"))
+        return False
+
+    def _page_content_has_readable_evidence(self, compact: dict[str, Any]) -> bool:
+        items = compact.get("items")
+        if isinstance(items, list) and items:
+            return any(self._page_item_has_readable_evidence(item) for item in items)
+        if compact.get("visual_evidence_required") is True:
+            return False
+        return not compact.get("error")
+
+    def _page_item_has_readable_evidence(self, item: Any) -> bool:
+        if not isinstance(item, dict):
+            return bool(str(item or "").strip())
+        for key in ("text", "snippet", "markdown", "structured_content"):
+            value = item.get(key)
+            if isinstance(value, str) and value.strip():
+                return True
+            if isinstance(value, (list, dict)) and value:
+                return True
+        if item.get("visual_evidence_required") is True:
+            return False
+        if item.get("text_omitted_reason") == "visual_evidence_required":
+            return False
         return False
 
 

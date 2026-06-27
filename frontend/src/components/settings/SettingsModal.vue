@@ -15,15 +15,21 @@ import {
   Search,
   Settings2,
   SlidersHorizontal,
-  TestTube2,
   User,
   X,
 } from 'lucide-vue-next'
 import { settingsApi } from '@/api'
 import { useUserStore } from '@/stores/user'
-import type { ModelProviderConfig, ModelProviderModel, ModelProviderPreset } from '@/types/modelSettings'
-import { buildAvailableModelOptions, resolveProviderTestModel } from '@/utils/modelProviderModels'
-import { buildModelProviderRows } from '@/utils/modelProviderRows'
+import type { ModelProviderConfig, ModelProviderModel, ModelProviderPreset, ModelRouteMapping } from '@/types/modelSettings'
+import {
+  buildAvailableModelOptions,
+  buildOcrModelOptions,
+  buildParsingModelOptions,
+  buildQaModelOptions,
+  inferModelCapabilities,
+  modelCapabilityBadges,
+} from '@/utils/modelProviderModels'
+import { buildModelProviderRows, filterModelProviderRows } from '@/utils/modelProviderRows'
 import {
   defaultWebSearchSettings,
   type WebSearchContentType,
@@ -59,11 +65,18 @@ const loadingProviders = ref(false)
 const savingProvider = ref(false)
 const testingProviderId = ref<string | null>(null)
 const loadingModelProviderId = ref<string | null>(null)
+const providerSearchQuery = ref('')
 const providerMessage = ref('')
 const providerError = ref('')
 const expandedProviderId = ref<string | null>(null)
 const providerModels = ref<Record<string, ModelProviderModel[]>>({})
 const providerModelErrors = ref<Record<string, string>>({})
+const providerTestMessages = ref<Record<string, string>>({})
+const functionalRoutes = ref<Record<string, ModelRouteMapping>>({})
+const loadingFunctionalRoutes = ref(false)
+const savingFunctionalRoutes = ref(false)
+const functionalRouteMessage = ref('')
+const functionalRouteError = ref('')
 const webSearchSettings = ref<WebSearchSettings>(defaultWebSearchSettings())
 const webSearchApiKey = ref('')
 const loadingWebSearchSettings = ref(false)
@@ -77,7 +90,6 @@ const providerForm = ref({
   provider: 'openai_compatible',
   baseUrl: 'https://api.openai.com/v1',
   apiKey: '',
-  testModel: '',
 })
 
 const ocrSettings = ref({
@@ -114,12 +126,40 @@ const providerRows = computed(() => {
   )
 })
 
+const filteredProviderRows = computed(() =>
+  filterModelProviderRows(providerRows.value, providerSearchQuery.value),
+)
+
 const availableModels = computed(() => {
   const base = providers.value.length > 0
     ? buildAvailableModelOptions(providers.value, providerModels.value, providerLabel)
     : ['OpenAI Compatible: gpt-4.1', 'OpenAI Compatible: gpt-4.1-mini', 'Local: qwen2.5-vl']
   return Array.from(new Set(base))
 })
+
+const ocrModelOptions = computed(() =>
+  ensureModelOptions(
+    buildOcrModelOptions(providers.value, providerModels.value, providerLabel),
+    ocrSettings.value.model,
+    ['OpenAI Compatible: gpt-4o', 'Alibaba Cloud Bailian / Tongyi: qwen-vl-ocr-2025'],
+  ),
+)
+
+const parsingModelOptions = computed(() =>
+  ensureModelOptions(
+    buildParsingModelOptions(providers.value, providerModels.value, providerLabel),
+    parsingSettings.value.model,
+    availableModels.value,
+  ),
+)
+
+const qaModelOptions = computed(() =>
+  ensureModelOptions(
+    buildQaModelOptions(providers.value, providerModels.value, providerLabel),
+    qaSettings.value.model,
+    availableModels.value,
+  ),
+)
 
 function navIcon(icon: string) {
   return iconMap[icon as keyof typeof iconMap] || Settings2
@@ -182,6 +222,36 @@ function defaultProviders(): ModelProviderPreset[] {
     { provider: 'ollama', label: 'Ollama', base_url: 'http://localhost:11434/v1', icon_url: '/provider-logos/ollama.svg', supports_custom_base_url: true },
     { provider: 'openai_compatible', label: 'OpenAI Compatible', base_url: 'https://api.openai.com/v1', icon_url: '/provider-logos/openai_compatible.svg', supports_custom_base_url: true },
   ]
+}
+
+function ensureModelOptions(options: string[], selected: string, fallback: string[]): string[] {
+  const base = options.length > 0 ? options : fallback
+  const unique = Array.from(new Set(base.filter(Boolean)))
+  if (selected && !unique.includes(selected)) {
+    return [selected, ...unique]
+  }
+  return unique
+}
+
+function providerKeyMask(providerId: string): string {
+  return providerRows.value.find((provider) => provider.id === providerId)?.keyMask || ''
+}
+
+function apiKeyPlaceholder(providerId: string): string {
+  const mask = providerKeyMask(providerId)
+  return mask ? `Saved key ${mask}` : 'Paste API key'
+}
+
+function providerKeyHint(providerId: string): string {
+  const mask = providerKeyMask(providerId)
+  return mask
+    ? `Saved key: ${mask}. Leave empty to keep it.`
+    : 'Key is encrypted after saving. Saving also runs a connection test.'
+}
+
+function testingStateForProvider(providerId: string): string {
+  if (testingProviderId.value === providerId) return 'Testing connection...'
+  return providerTestMessages.value[providerId] || ''
 }
 
 async function loadProviders() {
@@ -271,16 +341,12 @@ async function saveWebSearchSettings() {
 }
 
 function startConfigure(provider: string, baseUrl: string, providerId = '') {
-  const selectedModel = providerId
-    ? resolveProviderTestModel(providerForm.value.testModel, modelsForProvider(providerId))
-    : ''
   providerForm.value = {
     providerId,
     credentialName: `${providerLabel(provider)} credential`,
     provider,
     baseUrl,
     apiKey: '',
-    testModel: selectedModel,
   }
   expandedProviderId.value = providerId || provider
 }
@@ -289,9 +355,9 @@ function modelsForProvider(providerId: string): ModelProviderModel[] {
   return providerModels.value[providerId] || []
 }
 
-async function fetchProviderModels(providerId: string) {
+async function fetchProviderModels(providerId: string, options: { silent?: boolean } = {}) {
   if (!providerId) return
-  loadingModelProviderId.value = providerId
+  if (!options.silent) loadingModelProviderId.value = providerId
   providerModelErrors.value = {
     ...providerModelErrors.value,
     [providerId]: '',
@@ -303,16 +369,22 @@ async function fetchProviderModels(providerId: string) {
       ...providerModels.value,
       [providerId]: models,
     }
-    const selectedModel = resolveProviderTestModel(providerForm.value.testModel, models)
-    if (selectedModel) providerForm.value.testModel = selectedModel
   } catch (error: any) {
     providerModelErrors.value = {
       ...providerModelErrors.value,
       [providerId]: error?.response?.data?.detail || 'Failed to fetch models.',
     }
   } finally {
-    loadingModelProviderId.value = null
+    if (!options.silent) loadingModelProviderId.value = null
   }
+}
+
+async function fetchAllConfiguredProviderModels() {
+  await Promise.allSettled(
+    providers.value.map((provider) =>
+      fetchProviderModels(provider.provider_id, { silent: true }),
+    ),
+  )
 }
 
 async function toggleProvider(provider: { id: string; configured: boolean }) {
@@ -328,22 +400,32 @@ async function saveProvider() {
   providerError.value = ''
   providerMessage.value = ''
   try {
+    let savedProviderId = providerForm.value.providerId
     if (providerForm.value.providerId) {
-      await settingsApi.updateModelProvider(providerForm.value.providerId, {
+      const response = await settingsApi.updateModelProvider(providerForm.value.providerId, {
         provider: providerForm.value.provider,
         base_url: providerForm.value.baseUrl,
         ...(providerForm.value.apiKey ? { api_key: providerForm.value.apiKey } : {}),
       })
+      savedProviderId = response.data?.provider_id || savedProviderId
     } else {
-      await settingsApi.saveModelProvider({
+      const response = await settingsApi.saveModelProvider({
         provider: providerForm.value.provider,
         base_url: providerForm.value.baseUrl,
         api_key: providerForm.value.apiKey,
       })
+      savedProviderId = response.data?.provider_id || ''
+      providerForm.value.providerId = savedProviderId
     }
-    providerMessage.value = '模型供应商已保存。'
+    providerMessage.value = 'Provider saved. Testing connection...'
     providerForm.value.apiKey = ''
     await loadProviders()
+    if (savedProviderId) {
+      expandedProviderId.value = savedProviderId
+      await fetchProviderModels(savedProviderId, { silent: true })
+      await autoTestSavedProvider(savedProviderId)
+      await loadProviders()
+    }
   } catch (error: any) {
     providerError.value = error?.response?.data?.detail || '保存模型供应商失败。'
   } finally {
@@ -351,22 +433,132 @@ async function saveProvider() {
   }
 }
 
+async function autoTestSavedProvider(providerId: string) {
+  providerTestMessages.value = {
+    ...providerTestMessages.value,
+    [providerId]: 'Testing connection...',
+  }
+  await testProvider(providerId)
+}
+
 async function testProvider(providerId: string) {
   testingProviderId.value = providerId
   providerError.value = ''
   providerMessage.value = ''
   try {
-    const model = resolveProviderTestModel(providerForm.value.testModel, modelsForProvider(providerId))
-    if (!model) {
-      providerError.value = '请先刷新模型列表，或手动填写一个可用的测试模型。'
-      return
+    const response = await settingsApi.testModelProvider(providerId)
+    const testedModel = response.data?.tested_model
+    const message = testedModel
+      ? `Connection test passed with ${testedModel}.`
+      : 'Connection test passed.'
+    providerMessage.value = message
+    providerTestMessages.value = {
+      ...providerTestMessages.value,
+      [providerId]: message,
     }
-    await settingsApi.testModelProvider(providerId, model)
-    providerMessage.value = '连接测试通过。'
+    await loadProviders()
   } catch (error: any) {
-    providerError.value = error?.response?.data?.detail || '连接测试失败。'
+    const message = error?.response?.data?.detail || 'Connection test failed.'
+    providerError.value = message
+    providerTestMessages.value = {
+      ...providerTestMessages.value,
+      [providerId]: message,
+    }
   } finally {
     testingProviderId.value = null
+  }
+}
+
+async function loadFunctionalRoutes() {
+  loadingFunctionalRoutes.value = true
+  functionalRouteError.value = ''
+  try {
+    const [routeResponse] = await Promise.all([
+      settingsApi.listModelRoutes(),
+      settingsApi.listOcrRoutes().catch(() => ({ data: [] })),
+    ])
+    functionalRoutes.value = Object.fromEntries(
+      (routeResponse.data || []).map((route: ModelRouteMapping) => [route.route_slot, route]),
+    )
+    applySavedRoute('indexing', (value) => {
+      parsingSettings.value.model = value
+    })
+    applySavedRoute('document_qa', (value) => {
+      qaSettings.value.model = value
+    })
+    applySavedRoute('vision', (value) => {
+      ocrSettings.value.model = value
+    })
+  } catch (error: any) {
+    functionalRouteError.value = error?.response?.data?.detail || 'Failed to load model routes.'
+  } finally {
+    loadingFunctionalRoutes.value = false
+  }
+}
+
+async function saveFunctionalRoutes() {
+  savingFunctionalRoutes.value = true
+  functionalRouteMessage.value = ''
+  functionalRouteError.value = ''
+  try {
+    const routes = [
+      buildRoutePayload('indexing', parsingSettings.value.model),
+      buildRoutePayload('document_qa', qaSettings.value.model),
+      buildRoutePayload('vision', ocrSettings.value.model, true),
+    ].filter((route): route is ModelRouteMapping => Boolean(route))
+    await settingsApi.saveModelRoutes(routes)
+    functionalRouteMessage.value = 'Model routing saved.'
+    await loadFunctionalRoutes()
+  } catch (error: any) {
+    functionalRouteError.value = error?.response?.data?.detail || 'Failed to save model routing.'
+  } finally {
+    savingFunctionalRoutes.value = false
+  }
+}
+
+function applySavedRoute(slot: string, setter: (value: string) => void) {
+  const route = functionalRoutes.value[slot]
+  const option = route ? modelOptionForRoute(route) : ''
+  if (option) setter(option)
+}
+
+function modelOptionForRoute(route: ModelRouteMapping): string {
+  const provider = providers.value.find((item) => item.provider_id === route.provider_id)
+  const label = provider ? providerLabel(provider.provider) : route.provider_id
+  return `${label}: ${route.model}`
+}
+
+function buildRoutePayload(
+  routeSlot: string,
+  modelOption: string,
+  forceVision = false,
+): ModelRouteMapping | null {
+  const resolved = resolveModelOption(modelOption)
+  if (!resolved) return null
+  return {
+    route_slot: routeSlot,
+    provider_id: resolved.provider.provider_id,
+    model: resolved.modelId,
+    supports_streaming: true,
+    supports_tool_calling: resolved.capabilities.includes('tool_calling'),
+    supports_vision: forceVision || resolved.capabilities.includes('vision'),
+    supports_structured_output: false,
+    supports_responses_api: Boolean(resolved.provider.supports_responses_api),
+  }
+}
+
+function resolveModelOption(modelOption: string) {
+  const separator = modelOption.indexOf(': ')
+  if (separator < 0) return null
+  const label = modelOption.slice(0, separator)
+  const modelId = modelOption.slice(separator + 2).trim()
+  const provider = providers.value.find((item) => providerLabel(item.provider) === label)
+  if (!provider || !modelId || modelId === 'models not loaded') return null
+  const model = modelsForProvider(provider.provider_id).find((item) => item.id === modelId)
+  return {
+    provider,
+    modelId,
+    capabilities: inferModelCapabilities(model || { id: modelId }),
   }
 }
 
@@ -380,9 +572,10 @@ function close() {
   emit('update:open', false)
 }
 
-onMounted(() => {
-  loadProviders()
-  loadWebSearchSettings()
+onMounted(async () => {
+  await Promise.all([loadProviders(), loadWebSearchSettings()])
+  await fetchAllConfiguredProviderModels()
+  await loadFunctionalRoutes()
 })
 </script>
 
@@ -437,12 +630,12 @@ onMounted(() => {
             </div>
             <div class="provider-search">
               <Search />
-              <input placeholder="Search providers" />
+              <input v-model="providerSearchQuery" placeholder="Search providers" />
             </div>
           </div>
 
           <div class="provider-list">
-            <article v-for="provider in providerRows" :key="provider.id" class="provider-row">
+            <article v-for="provider in filteredProviderRows" :key="provider.id" class="provider-row">
               <div class="provider-main">
                 <div class="provider-logo">
                   <img :src="provider.iconUrl" :alt="provider.label" @error="hideBrokenLogo" />
@@ -454,12 +647,6 @@ onMounted(() => {
                     <span>{{ provider.configured ? 'Configured' : 'Not configured' }}</span>
                   </div>
                   <p>{{ provider.baseUrl }}</p>
-                  <div class="capability-row">
-                    <span>LLM</span>
-                    <span>Vision</span>
-                    <span>Embedding</span>
-                    <span>Tool Calling</span>
-                  </div>
                 </div>
               </div>
 
@@ -486,7 +673,7 @@ onMounted(() => {
               <div v-if="expandedProviderId === provider.id" class="provider-expanded">
                 <div class="model-list">
                   <div class="model-list-header">
-                    <strong>Available models</strong>
+                    <strong>Available models · {{ modelsForProvider(provider.id).length }}</strong>
                     <button
                       v-if="provider.configured"
                       type="button"
@@ -498,23 +685,32 @@ onMounted(() => {
                       Refresh
                     </button>
                   </div>
-                  <div v-if="!provider.configured" class="model-empty">
-                    Configure this provider to fetch available models.
-                  </div>
-                  <div v-else-if="loadingModelProviderId === provider.id" class="model-empty">
-                    Fetching models...
-                  </div>
-                  <div v-else-if="providerModelErrors[provider.id]" class="model-empty error">
-                    {{ providerModelErrors[provider.id] }}
-                  </div>
-                  <div v-else-if="modelsForProvider(provider.id).length === 0" class="model-empty">
-                    No models returned yet.
-                  </div>
-                  <div v-for="model in modelsForProvider(provider.id).slice(0, 8)" :key="model.id" class="model-row">
-                    <span>{{ model.id }}</span>
-                    <div>
-                      <small>{{ model.owned_by || provider.label }}</small>
-                      <span>Remote</span>
+                  <div class="model-list-body">
+                    <div v-if="!provider.configured" class="model-empty">
+                      Configure this provider to fetch available models.
+                    </div>
+                    <div v-else-if="loadingModelProviderId === provider.id" class="model-empty">
+                      Fetching models...
+                    </div>
+                    <div v-else-if="providerModelErrors[provider.id]" class="model-empty error">
+                      {{ providerModelErrors[provider.id] }}
+                    </div>
+                    <div v-else-if="modelsForProvider(provider.id).length === 0" class="model-empty">
+                      No models returned yet.
+                    </div>
+                    <div v-for="model in modelsForProvider(provider.id)" :key="model.id" class="model-row">
+                      <span>{{ model.id }}</span>
+                      <div>
+                        <small>{{ model.owned_by || provider.label }}</small>
+                        <span>Remote</span>
+                        <span
+                          v-for="capability in modelCapabilityBadges(model)"
+                          :key="capability"
+                          class="model-capabilities"
+                        >
+                          {{ capability }}
+                        </span>
+                      </div>
                     </div>
                   </div>
                 </div>
@@ -527,18 +723,19 @@ onMounted(() => {
                   </label>
                   <label>
                     API Key
-                    <input v-model="providerForm.apiKey" type="password" placeholder="sk-..." autocomplete="new-password" />
+                    <input
+                      v-model="providerForm.apiKey"
+                      type="password"
+                      :placeholder="apiKeyPlaceholder(provider.id)"
+                      autocomplete="new-password"
+                    />
                   </label>
                   <label>
                     自定义 API endpoint 地址
                     <input v-model="providerForm.baseUrl" />
                   </label>
-                  <label>
-                    测试模型
-                    <input v-model="providerForm.testModel" />
-                  </label>
                   <div class="credential-actions">
-                    <span>密钥会以加密形式存储，保存后仅显示脱敏值。</span>
+                    <span>{{ testingStateForProvider(provider.id) || providerKeyHint(provider.id) }}</span>
                     <button type="button" :disabled="savingProvider || !providerForm.baseUrl" @click="saveProvider">
                       <Loader2 v-if="savingProvider" class="spin" />
                       <CheckCircle2 v-else />
@@ -551,8 +748,8 @@ onMounted(() => {
                       @click="testProvider(provider.id)"
                     >
                       <Loader2 v-if="testingProviderId === provider.id" class="spin" />
-                      <TestTube2 v-else />
-                      Test
+                      <RefreshCw v-else />
+                      Retest
                     </button>
                   </div>
                 </div>
@@ -578,7 +775,7 @@ onMounted(() => {
             <label>
               OCR 模型
               <select v-model="ocrSettings.model">
-                <option v-for="model in availableModels" :key="model" :value="model">{{ model }}</option>
+                <option v-for="model in ocrModelOptions" :key="model" :value="model">{{ model }}</option>
               </select>
             </label>
             <label>
@@ -589,6 +786,17 @@ onMounted(() => {
               VLM 提示词
               <textarea v-model="ocrSettings.vlmPrompt" rows="6" />
             </label>
+            <div class="wide settings-actions">
+              <span>
+                <template v-if="loadingFunctionalRoutes">Loading model routes...</template>
+                <template v-else>{{ functionalRouteMessage || 'OCR/VLM uses the selected vision-capable model route.' }}</template>
+              </span>
+              <button type="button" :disabled="savingFunctionalRoutes" @click="saveFunctionalRoutes">
+                <Loader2 v-if="savingFunctionalRoutes" class="spin" />
+                <CheckCircle2 v-else />
+                Save model routing
+              </button>
+            </div>
           </div>
         </section>
 
@@ -603,7 +811,7 @@ onMounted(() => {
             <label class="wide">
               解析模型
               <select v-model="parsingSettings.model">
-                <option v-for="model in availableModels" :key="model" :value="model">{{ model }}</option>
+                <option v-for="model in parsingModelOptions" :key="model" :value="model">{{ model }}</option>
               </select>
             </label>
             <label class="wide">
@@ -631,6 +839,14 @@ onMounted(() => {
                 </button>
               </div>
             </div>
+            <div class="wide settings-actions">
+              <span>{{ functionalRouteMessage || 'Parsing uses the indexing route.' }}</span>
+              <button type="button" :disabled="savingFunctionalRoutes" @click="saveFunctionalRoutes">
+                <Loader2 v-if="savingFunctionalRoutes" class="spin" />
+                <CheckCircle2 v-else />
+                Save model routing
+              </button>
+            </div>
           </div>
         </section>
 
@@ -645,9 +861,17 @@ onMounted(() => {
             <label class="wide">
               问答模型
               <select v-model="qaSettings.model">
-                <option v-for="model in availableModels" :key="model" :value="model">{{ model }}</option>
+                <option v-for="model in qaModelOptions" :key="model" :value="model">{{ model }}</option>
               </select>
             </label>
+            <div class="wide settings-actions">
+              <span>{{ functionalRouteMessage || 'Document Q&A uses the selected answer model route.' }}</span>
+              <button type="button" :disabled="savingFunctionalRoutes" @click="saveFunctionalRoutes">
+                <Loader2 v-if="savingFunctionalRoutes" class="spin" />
+                <CheckCircle2 v-else />
+                Save model routing
+              </button>
+            </div>
             <div class="wide">
               <div class="field-label">Web Search</div>
               <div class="mode-options two">
@@ -931,9 +1155,14 @@ onMounted(() => {
 
 .section-header {
   display: flex;
+  min-width: 0;
   align-items: flex-start;
   justify-content: space-between;
   gap: 16px;
+}
+
+.section-header > div:first-child {
+  min-width: 0;
 }
 
 .section-header h2,
@@ -956,10 +1185,12 @@ onMounted(() => {
 
 .provider-search {
   display: flex;
+  min-width: 180px;
   align-items: center;
   gap: 8px;
-  width: 260px;
+  width: min(260px, 36%);
   height: 34px;
+  flex: 0 1 260px;
   border: 1px solid var(--kc-border);
   border-radius: var(--kc-radius-md);
   background: #fff;
@@ -1070,13 +1301,6 @@ onMounted(() => {
   white-space: nowrap;
 }
 
-.capability-row {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 5px;
-}
-
-.capability-row span,
 .model-row span {
   border: 1px solid var(--kc-border-soft);
   border-radius: 999px;
@@ -1145,6 +1369,16 @@ onMounted(() => {
   display: grid;
   align-content: start;
   gap: 8px;
+  min-height: 0;
+}
+
+.model-list-body {
+  display: grid;
+  max-height: 280px;
+  gap: 8px;
+  overflow: auto;
+  padding-right: 4px;
+  scrollbar-width: thin;
 }
 
 .model-list-header {
@@ -1219,7 +1453,15 @@ onMounted(() => {
 .model-row div {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
+  justify-content: flex-end;
   gap: 5px;
+}
+
+.model-row .model-capabilities {
+  border-color: rgba(47, 128, 237, 0.18);
+  background: #edf6ff;
+  color: #145eb8;
 }
 
 .model-row small {

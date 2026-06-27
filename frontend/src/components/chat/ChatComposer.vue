@@ -16,11 +16,10 @@ import {
   Presentation,
   X,
 } from 'lucide-vue-next'
-import { useDocumentStore } from '@/stores/document'
 import type { Document } from '@/stores/document'
 import { useFolderStore } from '@/stores/folder'
 import { useChatStore } from '@/stores/chat'
-import { chatApi } from '@/api'
+import { chatApi, documentApi } from '@/api'
 import type { Folder as FolderModel } from '@/api/folders'
 import type { ChatAttachmentMetadata, ComposerImageAttachment } from '@/types/chatAttachments'
 import {
@@ -59,7 +58,6 @@ const emit = defineEmits<{
   submit: [payload: ComposerSubmitPayload]
 }>()
 
-const documentStore = useDocumentStore()
 const folderStore = useFolderStore()
 const chatStore = useChatStore()
 
@@ -69,6 +67,8 @@ const pickerMode = ref<'file' | 'folder' | null>(null)
 const webSearch = ref(false)
 const selectedDocumentIds = ref<string[]>([])
 const selectedFolderIds = ref<string[]>([])
+const pickerDocumentOptions = ref<Document[]>([])
+const pickerDocumentsLoading = ref(false)
 const images = ref<ComposerImageAttachment[]>([])
 const imageInputRef = ref<HTMLInputElement | null>(null)
 const textareaRef = ref<HTMLTextAreaElement | null>(null)
@@ -83,7 +83,7 @@ const selectedDocumentChips = computed(() =>
 )
 const isDraftChat = computed(() => !chatStore.currentSessionId)
 const pickerDocuments = computed<Document[]>(() =>
-  documentStore.documents
+  pickerDocumentOptions.value
 )
 const pickerFolders = computed<FolderModel[]>(() =>
   folderStore.folders
@@ -124,6 +124,9 @@ function triggerAction(actionId: string) {
   }
   pickerMode.value = actionId === 'file' ? 'file' : 'folder'
   showMenu.value = false
+  if (pickerMode.value === 'file') {
+    void loadPickerDocuments()
+  }
 }
 
 function toContextArray(context: InitialDocumentContext | InitialDocumentContext[] | null) {
@@ -277,6 +280,27 @@ function fileIconFor(fileType?: string) {
   return fileIconMap[documentPresentationForType(fileType).icon as keyof typeof fileIconMap] || File
 }
 
+async function loadPickerDocuments() {
+  pickerDocumentsLoading.value = true
+  try {
+    const folderId = selectedFolderIds.value[0] || null
+    const { data } = await documentApi.list({
+      page: 1,
+      page_size: 100,
+      folder_id: folderId,
+      include_subfolders: true,
+    })
+    pickerDocumentOptions.value = (data.items || []).filter(
+      (document: Document) => document.status === 'completed'
+    )
+  } catch (error) {
+    console.error('Failed to load selectable documents:', error)
+    pickerDocumentOptions.value = []
+  } finally {
+    pickerDocumentsLoading.value = false
+  }
+}
+
 function folderDetail(folder: FolderModel) {
   return [
     '文件夹',
@@ -346,9 +370,6 @@ watch(text, (value) => {
 })
 
 onMounted(() => {
-  if (documentStore.documents.length === 0) {
-    documentStore.fetchDocuments(1, undefined, null, false, 20)
-  }
   if (folderStore.folders.length === 0) {
     folderStore.fetchFolders()
   }
@@ -380,29 +401,34 @@ onBeforeUnmount(() => {
       </div>
 
       <div v-if="pickerMode === 'file'" class="scope-picker-list">
-        <button
-          v-for="document in pickerDocuments.slice(0, 12)"
-          :key="document.id"
-          :class="['scope-picker-row', { selected: selectedDocumentIds.includes(document.id) }]"
-          type="button"
-          @click="toggleDocument(document.id)"
-        >
-          <span :class="['scope-picker-icon', documentPresentationForType(document.file_type).tone]">
-            <component :is="fileIconFor(document.file_type)" />
-          </span>
-          <span class="scope-picker-main">
-            <strong>{{ document.original_name || document.name }}</strong>
-            <small>
-              {{ formatDocumentTypeLabel(document.file_type) }}
-              <template v-if="document.file_size"> · {{ formatDocumentSize(document.file_size) }}</template>
-              <template v-if="document.folder_path"> · {{ document.folder_path }}</template>
-            </small>
-          </span>
-          <Check v-if="selectedDocumentIds.includes(document.id)" class="scope-picker-check" />
-        </button>
-        <div v-if="pickerDocuments.length === 0" class="scope-picker-empty">
-          暂无可选择文件
+        <div v-if="pickerDocumentsLoading" class="scope-picker-empty">
+          正在加载文件...
         </div>
+        <template v-else>
+          <button
+            v-for="document in pickerDocuments.slice(0, 12)"
+            :key="document.id"
+            :class="['scope-picker-row', { selected: selectedDocumentIds.includes(document.id) }]"
+            type="button"
+            @click="toggleDocument(document.id)"
+          >
+            <span :class="['scope-picker-icon', documentPresentationForType(document.file_type).tone]">
+              <component :is="fileIconFor(document.file_type)" />
+            </span>
+            <span class="scope-picker-main">
+              <strong>{{ document.original_name || document.name }}</strong>
+              <small>
+                {{ formatDocumentTypeLabel(document.file_type) }}
+                <template v-if="document.file_size"> · {{ formatDocumentSize(document.file_size) }}</template>
+                <template v-if="document.folder_path"> · {{ document.folder_path }}</template>
+              </small>
+            </span>
+            <Check v-if="selectedDocumentIds.includes(document.id)" class="scope-picker-check" />
+          </button>
+          <div v-if="pickerDocuments.length === 0" class="scope-picker-empty">
+            暂无可选择文件
+          </div>
+        </template>
       </div>
 
       <div v-else class="scope-picker-list">

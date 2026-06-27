@@ -759,6 +759,65 @@ describe('chat rollback', () => {
     }
   })
 
+  it('removes a streamed planner thought when the backend retracts it', () => {
+    const store = useChatStore()
+    store.addAssistantMessage()
+
+    store.handleEnvelope({
+      event: 'progress',
+      data: {
+        run_id: 'run-a',
+        conversation_id: 'conv-a',
+        message_id: 'a1',
+        seq: 1,
+        ts: '2026-06-26T10:00:00Z',
+        kind: 'plan',
+        step: 1,
+        status: 'streaming',
+        message: 'I will answer from structure only.',
+      },
+    } as any)
+    store.handleEnvelope({
+      event: 'progress',
+      data: {
+        run_id: 'run-a',
+        conversation_id: 'conv-a',
+        message_id: 'a1',
+        seq: 2,
+        ts: '2026-06-26T10:00:01Z',
+        kind: 'plan_retract',
+        step: 1,
+        target_kind: 'plan',
+        message: '',
+      },
+    } as any)
+    store.handleEnvelope({
+      event: 'progress',
+      data: {
+        run_id: 'run-a',
+        conversation_id: 'conv-a',
+        message_id: 'a1',
+        seq: 3,
+        ts: '2026-06-26T10:00:02Z',
+        kind: 'plan',
+        step: 2,
+        status: 'streaming',
+        message: 'I will read the page evidence first.',
+      },
+    } as any)
+
+    expect(store.messages[0].progressSteps).toEqual([
+      {
+        message: 'I will read the page evidence first.',
+        kind: 'plan',
+        step: 2,
+        status: 'streaming',
+        seq: 3,
+        ts: '2026-06-26T10:00:02Z',
+      },
+    ])
+  })
+
   it('collects web source bindings from tool results as preview evidence', () => {
     const store = useChatStore()
     store.addAssistantMessage()

@@ -111,7 +111,17 @@ def test_migrations_create_history_and_are_idempotent() -> None:
                 "20260626_007_add_model_provider_response_capabilities",
                 "20260626_008_add_agent_runs_events_citations",
                 "20260626_009_add_model_route_capabilities",
+                "20260627_010_add_conversation_evidence",
             ]
+            evidence_columns = await _column_names(db, "conversation_evidence")
+            assert {
+                "conversation_id",
+                "run_id",
+                "tool_name",
+                "tool_arguments_json",
+                "scope_key",
+                "payload_json",
+            }.issubset(evidence_columns)
 
     asyncio.run(run())
 

@@ -275,6 +275,8 @@ def compact_tool_result(result: Any, tool_name: str | None = None) -> dict[str, 
         compact["success"] = bool(success)
     if error:
         compact["error"] = _truncate(str(error))
+    display = _result_display_metadata(tool_name, result, compact["items"])
+    compact.update(display)
     next_steps = _compact_next_steps(result.get("next_steps"))
     if next_steps:
         compact["next_steps"] = next_steps
@@ -325,6 +327,11 @@ def _compact_document_structure_result(
             compact[key] = result.get(key)
     if isinstance(result.get("structure"), list):
         compact["structure"] = result["structure"]
+    page_count = _coerce_positive_int(result.get("total_pages") or result.get("page_count"))
+    section_count = _count_structure_sections(result.get("structure"))
+    if page_count or section_count:
+        compact["result_count"] = page_count or section_count
+        compact["result_label"] = _structure_result_label(page_count, section_count)
     return compact
 
 
@@ -346,7 +353,102 @@ def _compact_page_content_result(
             for page in pages[:5]
             if isinstance(page, dict)
         ]
+    page_count = _page_content_result_count(result, data, compact.get("items") or [])
+    if page_count:
+        compact["result_count"] = page_count
+        compact["result_label"] = _plural(page_count, "page")
     return compact
+
+
+def _result_display_metadata(
+    tool_name: str | None,
+    result: dict[str, Any],
+    items: list[dict[str, Any]],
+) -> dict[str, Any]:
+    if tool_name == "browse_documents":
+        document_count = _list_count(result.get("documents"))
+        folder_count = _list_count(result.get("folders"))
+        total = document_count + folder_count
+        if total:
+            return {
+                "result_count": total,
+                "result_label": " / ".join(
+                    part
+                    for part in (
+                        _plural(document_count, "document") if document_count else "",
+                        _plural(folder_count, "folder") if folder_count else "",
+                    )
+                    if part
+                ),
+            }
+    if tool_name == "search_within_document":
+        count = _list_count(result.get("matches")) or len(items)
+        if count:
+            return {"result_count": count, "result_label": _plural(count, "match", "matches")}
+    if tool_name == "web_search":
+        count = _list_count(result.get("results")) or _list_count(result.get("items")) or len(items)
+        if count:
+            return {"result_count": count, "result_label": _plural(count, "result")}
+    if tool_name in {"get_page_image", "get_document_image"} and not result.get("error"):
+        count = _list_count(result.get("images")) or 1
+        return {"result_count": count, "result_label": _plural(count, "image")}
+    count = len(items)
+    if count:
+        return {"result_count": count, "result_label": _plural(count, "result")}
+    return {}
+
+
+def _page_content_result_count(
+    result: dict[str, Any],
+    data: dict[str, Any],
+    items: list[dict[str, Any]],
+) -> int:
+    returned_pages = data.get("returned_pages") or result.get("returned_pages")
+    if isinstance(returned_pages, list):
+        return len(returned_pages)
+    value = _coerce_positive_int(returned_pages)
+    if value:
+        return value
+    requested_pages = data.get("requested_pages") or result.get("requested_pages")
+    if isinstance(requested_pages, list):
+        return len(requested_pages)
+    return len(items)
+
+
+def _count_structure_sections(value: Any) -> int:
+    if isinstance(value, list):
+        return sum(_count_structure_sections(item) for item in value)
+    if not isinstance(value, dict):
+        return 0
+    children = value.get("children")
+    return 1 + _count_structure_sections(children)
+
+
+def _structure_result_label(page_count: int, section_count: int) -> str:
+    parts = []
+    if page_count:
+        parts.append(_plural(page_count, "page"))
+    if section_count:
+        parts.append(_plural(section_count, "section"))
+    return " / ".join(parts)
+
+
+def _list_count(value: Any) -> int:
+    return len(value) if isinstance(value, list) else 0
+
+
+def _coerce_positive_int(value: Any) -> int:
+    try:
+        count = int(value)
+    except (TypeError, ValueError):
+        return 0
+    return count if count > 0 else 0
+
+
+def _plural(count: int, singular: str, plural: str | None = None) -> str:
+    if count == 1:
+        return f"1 {singular}"
+    return f"{count} {plural or singular + 's'}"
 
 
 def _compact_evidence_item(item: Any) -> dict[str, Any]:

@@ -63,3 +63,15 @@ export function buildModelProviderRows(
 
   return [...rows, ...customProviders]
 }
+
+export function filterModelProviderRows(
+  rows: ModelProviderRow[],
+  query: string,
+): ModelProviderRow[] {
+  const normalized = query.trim().toLowerCase()
+  if (!normalized) return rows
+  return rows.filter((row) =>
+    [row.label, row.provider, row.baseUrl]
+      .some((value) => value.toLowerCase().includes(normalized)),
+  )
+}

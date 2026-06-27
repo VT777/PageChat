@@ -184,8 +184,8 @@ def test_list_provider_models_uses_openai_compatible_models_endpoint(
 
     assert response.status_code == 200
     assert response.json()["models"] == [
-        {"id": "qwen-plus"},
-        {"id": "qwen-vl-max"},
+        {"id": "qwen-plus", "capabilities": ["llm", "tool_calling"]},
+        {"id": "qwen-vl-max", "capabilities": ["llm", "vision", "tool_calling"]},
     ]
     assert calls[0][0] == "https://example.test/v1/models"
     assert calls[0][1]["Authorization"] == "Bearer sk-secret-123456"
@@ -409,6 +409,92 @@ def test_provider_connection_test_uses_adapter(monkeypatch, tmp_path: Path) -> N
     assert response.status_code == 200
     assert response.json()["success"] is True
     assert calls[0]["provider_config"]["model"] == "custom-chat"
+
+
+def test_provider_connection_test_can_auto_select_model_and_mark_valid(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    calls = []
+
+    class FakeResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"data": [{"id": "qwen-plus"}, {"id": "qwen-vl-max"}]}
+
+    def fake_get(url, headers=None, timeout=None):
+        calls.append(("models", url, headers, timeout))
+        return FakeResponse()
+
+    class FakeAdapter:
+        async def acompletion(self, **kwargs):
+            calls.append(("completion", kwargs))
+            return {"choices": [{"message": {"content": "ok"}}]}
+
+    monkeypatch.setattr(model_settings_service.requests, "get", fake_get)
+    monkeypatch.setattr(settings, "LiteLLMAdapter", lambda: FakeAdapter())
+    client = _client(tmp_path)
+    provider = client.post(
+        "/api/settings/model-providers",
+        json={
+            "provider": "openai_compatible",
+            "base_url": "https://example.test/v1",
+            "api_key": "sk-secret-123456",
+        },
+    ).json()
+
+    response = client.post(
+        f"/api/settings/model-providers/{provider['provider_id']}/test",
+        json={},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["tested_model"] == "qwen-plus"
+    completion_call = [call for call in calls if call[0] == "completion"][0][1]
+    assert completion_call["provider_config"]["model"] == "qwen-plus"
+    listed = client.get("/api/settings/model-providers").json()
+    assert listed[0]["validation_status"] == "valid"
+
+
+def test_provider_connection_test_marks_invalid_and_redacts_secret(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    class FakeResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"data": [{"id": "qwen-plus"}]}
+
+    class FakeAdapter:
+        async def acompletion(self, **kwargs):
+            raise RuntimeError("bad key sk-secret-123456")
+
+    monkeypatch.setattr(model_settings_service.requests, "get", lambda *args, **kwargs: FakeResponse())
+    monkeypatch.setattr(settings, "LiteLLMAdapter", lambda: FakeAdapter())
+    client = _client(tmp_path)
+    provider = client.post(
+        "/api/settings/model-providers",
+        json={
+            "provider": "openai_compatible",
+            "base_url": "https://example.test/v1",
+            "api_key": "sk-secret-123456",
+        },
+    ).json()
+
+    response = client.post(
+        f"/api/settings/model-providers/{provider['provider_id']}/test",
+        json={},
+    )
+
+    assert response.status_code == 400
+    assert "sk-secret-123456" not in response.text
+    assert "[redacted-api-key]" in response.text
+    listed = client.get("/api/settings/model-providers").json()
+    assert listed[0]["validation_status"] == "invalid"
 
 
 def test_user_cannot_read_another_users_settings(tmp_path: Path) -> None:
