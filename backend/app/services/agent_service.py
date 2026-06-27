@@ -161,6 +161,7 @@ class AgentService:
         from app.agent.loop_runtime import AgentLoopRuntime
         from app.agent.planner import StructuredLLMPlanner
         from app.agent.policy import AgentPolicy
+        from app.core import config as app_config
 
         generator = answer_generator or self._stream_graph_answer
         tools = list(
@@ -168,6 +169,21 @@ class AgentService:
             if runtime_tools is not None
             else self._tools_for_request(bool(web_search_settings.get("enabled")))
         )
+        if getattr(app_config, "AGENT_RUNTIME_MODE", "legacy_loop") == "flat_tool_loop":
+            from app.agent.model_tool_loop import ModelToolLoopRuntime
+            from app.agent.runtime_boundary_policy import RuntimeBoundaryPolicy
+            from app.agent.tool_calling_model_adapter import ToolCallingModelAdapter
+
+            return ModelToolLoopRuntime(
+                model=ToolCallingModelAdapter(),
+                tool_runner=AgentLoopToolRunner(
+                    tool_executor=tool_executor,
+                    web_search_settings=web_search_settings,
+                ),
+                tools=tools,
+                boundary_policy=RuntimeBoundaryPolicy(tools=tools),
+                max_steps=max_steps,
+            )
         planner = StructuredLLMPlanner(
             completion_fn=chat_by_scenario,
             tools=tools,
@@ -741,7 +757,10 @@ class AgentService:
             history=history_messages or [],
         )
         async for runtime_event in runtime.stream(state):
-            yield self._format_sse(runtime_event.event_type, runtime_event.payload)
+            event_type = getattr(runtime_event, "event_type", None) or getattr(
+                runtime_event, "type", None
+            )
+            yield self._format_sse(event_type, runtime_event.payload)
         return
 
     def _build_tool_content(self, tool_name: str, result: dict) -> str:

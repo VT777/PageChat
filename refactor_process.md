@@ -135,6 +135,27 @@ Completion status:
   - `D:\projects\page_chat\backend\venv\Scripts\python.exe -m pytest backend/tests/test_model_turn.py backend/tests/test_tool_messages.py backend/tests/test_runtime_boundary_policy.py backend/tests/test_model_tool_loop_runtime.py backend/tests/test_tool_calling_model_adapter.py -q` -> `17 passed`.
 - Next phase: wire the new runtime behind an explicit runtime mode flag.
 
+### Flat Tool Loop Phase 6 - Service runtime flag wiring
+
+Start status:
+- Started Phase 6 after commit `7010baf`.
+- Goal: wire `ModelToolLoopRuntime` into `AgentService` behind `AGENT_RUNTIME_MODE=flat_tool_loop`, preserving legacy runtime as default rollback.
+- TDD: add `backend/tests/test_agent_service_flat_loop_runtime.py` first and verify service still builds legacy runtime before config wiring.
+- Scope: builder/stream event compatibility only; do not make flat loop default yet.
+
+Completion status:
+- RED test run:
+  - `D:\projects\page_chat\backend\venv\Scripts\python.exe -m pytest backend/tests/test_agent_service_flat_loop_runtime.py -q`
+  - failed as expected because flat mode still returned `AgentLoopRuntime` and stream formatting only accepted legacy `event_type`.
+- Added `AGENT_RUNTIME_MODE` config defaulting to `legacy_loop`.
+- `AgentService.build_agent_loop_runtime` now returns `ModelToolLoopRuntime` when `AGENT_RUNTIME_MODE == "flat_tool_loop"` and keeps `AgentLoopRuntime` otherwise.
+- `run_agent_stream` accepts both legacy `runtime_event.event_type` and flat `runtime_event.type` event shapes.
+- Verification:
+  - `D:\projects\page_chat\backend\venv\Scripts\python.exe -m pytest backend/tests/test_agent_service_flat_loop_runtime.py -q` -> `3 passed, 9 warnings`.
+  - `D:\projects\page_chat\backend\venv\Scripts\python.exe -m pytest backend/tests/test_agent_service_flat_loop_runtime.py backend/tests/test_agent_service_loop_runtime.py -q` -> `10 passed, 9 warnings`.
+  - `D:\projects\page_chat\backend\venv\Scripts\python.exe -m pytest backend/tests/test_model_turn.py backend/tests/test_tool_messages.py backend/tests/test_runtime_boundary_policy.py backend/tests/test_model_tool_loop_runtime.py backend/tests/test_tool_calling_model_adapter.py backend/tests/test_agent_service_flat_loop_runtime.py -q` -> `20 passed, 9 warnings`.
+- Next phase: move route guidance into flat runtime prompt/tool contracts and remove hidden route-forcing behavior from the new path.
+
 ## Phase Log
 
 ### Phase 1 - Architecture Audit And Production Path Confirmation
