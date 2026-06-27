@@ -34,7 +34,7 @@ AGENT_TOOLS = [
         "type": "function",
         "function": {
             "name": "view_folder_structure",
-            "description": "View the current user's folder structure before browsing scoped documents. Returns folder metadata only, never document text.",
+            "description": "View the current user's folder tree when folder location or available subfolders matter. Returns folder metadata only, never document text.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -50,7 +50,7 @@ AGENT_TOOLS = [
         "type": "function",
         "function": {
             "name": "browse_documents",
-            "description": "Browse or search documents in a folder/library scope. Returns compact document metadata only; use get_document_structure and get_page_content for evidence.",
+            "description": "Browse or search documents in a folder/library scope when the user asks about available files or candidate documents. Returns compact metadata only, not document evidence.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -557,14 +557,11 @@ class ToolExecutor:
             "has_more_parts": has_more_parts,
             "structure": paged_toc,
             "cache_hit": False,
-            "next_steps": {
-                "summary": "Document structure retrieved successfully.",
-                "options": (
-                    ["Use get_document_structure() with the next part before reading pages."]
-                    if has_more_parts
-                    else ["Use get_page_content() to read specific source pages."]
-                ),
-            },
+            "next_steps": (
+                "Structure part retrieved; request the next part only if missing sections matter."
+                if has_more_parts
+                else "Structure retrieved; choose page, search, or image tools only if the question needs more source evidence."
+            ),
         }
         if compact:
             result["structure_format"] = "compact_tree"
@@ -669,31 +666,18 @@ class ToolExecutor:
 
         # 构建 next_steps
         if has_visual_pages:
-            next_steps = {
-                "options": [
-                    f"第 {has_visual_pages} 页包含视觉内容，页面文本已省略",
-                    "优先使用 get_document_image(image_path) 查看嵌入图片；若 image_path 为 page:// 或没有嵌入图，使用 get_page_image",
-                ],
-                "auto_retry": "调用图片工具获取视觉证据",
-                "summary": f"获取成功，{len(has_visual_pages)} 页需要视觉证据",
-            }
+            next_steps = (
+                f"Pages {has_visual_pages} need visual evidence; use get_document_image(image_path) "
+                "when an image_path exists, otherwise get_page_image for the page."
+            )
         else:
-            next_steps = {
-                "options": [
-                    "页面文本内容已获取，可直接基于文本回答",
-                    "如需查看更多页面，继续调用 get_page_content",
-                ],
-                "auto_retry": "基于当前页面内容组织答案",
-                "summary": "文本内容获取成功",
-            }
+            next_steps = (
+                "Page text retrieved; answer if evidence is enough, or read/search only for a specific remaining gap."
+            )
         if request_truncated:
-            next_steps["options"].append(
-                f"本次最多返回 {MAX_PAGE_CONTENT_PAGES} 页，请继续请求后续页"
+            next_steps = (
+                f"{next_steps} Returned at most {MAX_PAGE_CONTENT_PAGES} pages; 继续 request later pages separately if needed."
             )
-            next_steps["continuation_hint"] = (
-                f"继续调用 get_page_content(pages={page_numbers[-1] + 1}-...)"
-            )
-            next_steps["summary"] += "，请求页范围已截断"
 
         return {
             "status": "success",
@@ -1165,10 +1149,10 @@ class ToolExecutor:
             "depth": self._folder_tree_depth(folders),
             "truncated": False,
             "total_folders": total_folders,
-            "next_steps": {
-                "summary": f"{total_folders} folder(s), {self._folder_tree_depth(folders)} level(s) deep",
-                "options": ["Browse folders with documents using browse_documents(folder_id=...)"],
-            },
+            "next_steps": (
+                f"{total_folders} folder(s), {self._folder_tree_depth(folders)} level(s) deep. "
+                "Use a folder id with browse_documents only if folder contents matter."
+            ),
         }
 
     async def _browse_documents(
@@ -1309,13 +1293,11 @@ class ToolExecutor:
             "documents": document_items,
             "has_more": has_more,
             "next_offset": str(current_page + 1) if has_more else "",
-            "next_steps": {
-                "summary": f"Showing {len(folders)} folder(s) and {len(document_items)} document(s)",
-                "options": [
-                    "Use get_document_structure() before reading pages",
-                    "If results do not match the user's intent, retry with recursive=true or a refined query",
-                ],
-            },
+            "next_steps": (
+                f"Showing {len(folders)} folder(s) and {len(document_items)} document(s). "
+                "If contents matter, choose structure, search, page, or image tools based on the information gap; "
+                "retry with recursive=true or a refined query if candidates miss the intent."
+            ),
         }
 
     async def _web_search(self, query: str, **_kwargs) -> dict:

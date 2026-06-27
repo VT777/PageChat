@@ -156,6 +156,28 @@ Completion status:
   - `D:\projects\page_chat\backend\venv\Scripts\python.exe -m pytest backend/tests/test_model_turn.py backend/tests/test_tool_messages.py backend/tests/test_runtime_boundary_policy.py backend/tests/test_model_tool_loop_runtime.py backend/tests/test_tool_calling_model_adapter.py backend/tests/test_agent_service_flat_loop_runtime.py -q` -> `20 passed, 9 warnings`.
 - Next phase: move route guidance into flat runtime prompt/tool contracts and remove hidden route-forcing behavior from the new path.
 
+### Flat Tool Loop Phase 7 - Tool guidance without hidden routing
+
+Start status:
+- Started Phase 7 after commit `6cdb460`.
+- Goal: keep the flat runtime model-driven while improving the system prompt, tool descriptions, and compact `next_steps` guidance.
+- TDD: add `backend/tests/test_flat_loop_tool_guidance.py` first; expected initial failures should come from the current short flat-loop prompt and remaining fixed-route wording in tool contracts.
+- Scope: no new planner, no evidence-sufficiency policy, and no forced tool chain.
+
+Completion status:
+- RED test run:
+  - `D:\projects\page_chat\backend\venv\Scripts\python.exe -m pytest backend/tests/test_flat_loop_tool_guidance.py -q`
+  - failed as expected for the short flat runtime prompt, fixed-route folder description, and nested route-like `next_steps`.
+- Updated `ModelToolLoopRuntime` default prompt with model-driven principles: dynamic tool choice, information gaps, same-language answer, inline citations, concise progress, and no internal mechanics.
+- Reworded key document tools so descriptions are affordances rather than fixed chains.
+- Simplified `view_folder_structure`, `browse_documents`, `get_document_structure`, and `get_page_content` result `next_steps` into compact model guidance strings.
+- Verification:
+  - `D:\projects\page_chat\backend\venv\Scripts\python.exe -m pytest backend/tests/test_flat_loop_tool_guidance.py -q` -> `4 passed, 11 warnings`.
+  - `D:\projects\page_chat\backend\venv\Scripts\python.exe -m pytest backend/tests/test_flat_loop_tool_guidance.py backend/tests/test_agent_navigation_tools_contract.py -q` -> `28 passed, 69 warnings`.
+  - `D:\projects\page_chat\backend\venv\Scripts\python.exe -m pytest backend/tests/test_model_turn.py backend/tests/test_tool_messages.py backend/tests/test_runtime_boundary_policy.py backend/tests/test_model_tool_loop_runtime.py backend/tests/test_tool_calling_model_adapter.py backend/tests/test_agent_service_flat_loop_runtime.py backend/tests/test_flat_loop_tool_guidance.py -q` -> `24 passed, 11 warnings`.
+- Static scan for old route wording in `backend/app` found no new flat-runtime route text; remaining `Return JSON` / `action.type` matches are legacy planner/classification/parsing prompts outside the flat runtime path.
+- Next phase: adapt SSE/frontend timeline if current frontend still needs event contract changes for flat loop events.
+
 ## Phase Log
 
 ### Phase 1 - Architecture Audit And Production Path Confirmation
