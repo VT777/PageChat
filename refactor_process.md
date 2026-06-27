@@ -224,6 +224,29 @@ Completion status:
   - `D:\projects\page_chat\backend\venv\Scripts\python.exe -m pytest backend/tests/test_flat_tool_loop_e2e.py backend/tests/test_agent_run_event_protocol.py backend/tests/test_chat_service_persistence.py backend/tests/test_chat_stream_api.py backend/tests/test_agent_service_flat_loop_runtime.py backend/tests/test_model_tool_loop_runtime.py -q` -> `29 passed, 160 warnings`.
 - Next phase: browser validation with the current worktree backend/frontend, then default switch if validation is acceptable.
 
+### Flat Tool Loop Phase 10 - Browser/runtime validation
+
+Start status:
+- Started Phase 10 after commit `b0f0751`.
+- Goal: validate the current worktree backend/frontend can run with flat-loop changes and that the browser-facing stream contract is no longer blocked by unsupported events.
+- Scope: first confirm launched process source per `codex.md`; then run health/API smoke checks. Full manual browser validation may remain pending if login/model credentials or parsed document fixtures are not available in this automated pass.
+
+Completion status:
+- Checked existing ports:
+  - `5173` was already running from `C:\Users\TT_WT\.codex\worktrees\pagechat-ui-agent-runtime-integration\frontend`.
+  - `8000` was healthy but command-line source was ambiguous because it used the legacy venv/env fallback.
+- Stopped existing `8000` / `5173` listeners and restarted:
+  - frontend from current worktree on `http://localhost:5173`.
+  - backend from current worktree backend directory using legacy Python/env fallback, with `AGENT_RUNTIME_MODE=flat_tool_loop`, on `http://localhost:8000`.
+- Smoke checks:
+  - `Invoke-RestMethod http://127.0.0.1:8000/health` -> `{"status":"ok"}`.
+  - `Invoke-WebRequest http://127.0.0.1:5173/` -> HTTP `200`.
+- Notes:
+  - Backend log contains an older failed PowerShell launch attempt followed by successful app initialization.
+  - Full manual browser scenarios from the plan were not completed in this automated pass because they require an authenticated browser session, configured model provider credentials, and known parsed document fixtures.
+  - Do not switch the default runtime yet; keep `flat_tool_loop` explicit until manual browser/model validation is complete.
+- Next phase: after manual validation, decide whether to make `flat_tool_loop` the default or fix remaining runtime issues first.
+
 ## Phase Log
 
 ### Phase 1 - Architecture Audit And Production Path Confirmation
