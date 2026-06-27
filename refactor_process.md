@@ -201,6 +201,29 @@ Completion status:
   - `npm.cmd run build` in `frontend` -> completed successfully.
 - Next phase: add API E2E tests for flat loop scenarios.
 
+### Flat Tool Loop Phase 9 - API E2E scenarios
+
+Start status:
+- Started Phase 9 after commit `352a926`.
+- Goal: add end-to-end coverage for flat tool loop behavior at the service/API stream boundary without relying on real external model calls.
+- TDD: inspect existing API/service fixtures, then add failing E2E tests for greeting/no-tool, selected-scope inventory, and web/document tool event propagation before implementation if gaps are found.
+- Scope: prefer deterministic fake model/tool execution; do not require live model provider credentials.
+
+Completion status:
+- Added `backend/tests/test_flat_tool_loop_e2e.py`.
+- Covered:
+  - ChatService forwarding of `processing_delta`, `tool_call_delta`, `tool_started`, `tool_completed`, `answer_delta`, and `run_completed`.
+  - AgentService flat mode using a fake native tool-calling model to call `browse_documents` once for a selected folder inventory question, then stream the final answer.
+- RED E2E run:
+  - `D:\projects\page_chat\backend\venv\Scripts\python.exe -m pytest backend/tests/test_flat_tool_loop_e2e.py -q`
+  - failed as expected because ChatService turned `processing_delta` into `run_failed` via unsupported PageChat event validation.
+- Updated PageChat event contract to include `processing_delta` and `tool_call_delta`.
+- Updated ChatService to forward `processing_delta` / `tool_call_delta` and preserve `tool_call_id` through started/completed events.
+- Verification:
+  - `D:\projects\page_chat\backend\venv\Scripts\python.exe -m pytest backend/tests/test_flat_tool_loop_e2e.py -q` -> `2 passed, 11 warnings`.
+  - `D:\projects\page_chat\backend\venv\Scripts\python.exe -m pytest backend/tests/test_flat_tool_loop_e2e.py backend/tests/test_agent_run_event_protocol.py backend/tests/test_chat_service_persistence.py backend/tests/test_chat_stream_api.py backend/tests/test_agent_service_flat_loop_runtime.py backend/tests/test_model_tool_loop_runtime.py -q` -> `29 passed, 160 warnings`.
+- Next phase: browser validation with the current worktree backend/frontend, then default switch if validation is acceptable.
+
 ## Phase Log
 
 ### Phase 1 - Architecture Audit And Production Path Confirmation

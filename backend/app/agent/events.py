@@ -6,6 +6,8 @@ from app.agent.citations import citation_events_from_tool_result
 
 PAGECHAT_EVENT_TYPES = {
     "run_started",
+    "processing_delta",
+    "tool_call_delta",
     "progress",
     "tool_started",
     "tool_completed",

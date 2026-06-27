@@ -386,6 +386,7 @@ class ChatService:
         pending_citations = []
         emitted_citation_keys: set[str] = set()
         last_tool_name = ""
+        last_tool_call_id = ""
         last_tool_arguments: dict = {}
         assistant_message_id: Optional[str] = None
         emitter: Optional[PageChatEventEmitter] = None
@@ -645,6 +646,31 @@ class ChatService:
                         error_message = data.get("error") or "Agent stream failed"
                         yield await fail_current_run(error_message)
                         return
+                    elif event_type == "processing_delta":
+                        processing_payload = dict(data)
+                        for metadata_key in (
+                            "run_id",
+                            "conversation_id",
+                            "message_id",
+                            "seq",
+                            "ts",
+                        ):
+                            processing_payload.pop(metadata_key, None)
+                        content_delta = str(processing_payload.get("content") or "")
+                        if content_delta:
+                            full_thinking += content_delta
+                        yield await emit("processing_delta", processing_payload)
+                    elif event_type == "tool_call_delta":
+                        tool_delta_payload = dict(data)
+                        for metadata_key in (
+                            "run_id",
+                            "conversation_id",
+                            "message_id",
+                            "seq",
+                            "ts",
+                        ):
+                            tool_delta_payload.pop(metadata_key, None)
+                        yield await emit("tool_call_delta", tool_delta_payload)
                     elif event_type == "progress":
                         progress_payload = dict(data)
                         for metadata_key in (
@@ -662,10 +688,12 @@ class ChatService:
                         yield await emit("answer_delta", {"content": content_delta})
                     elif event_type == "tool_started":
                         last_tool_name = data.get("tool_name", "")
+                        last_tool_call_id = data.get("tool_call_id", "") or last_tool_call_id
                         arguments = data.get("arguments", {})
                         last_tool_arguments = dict(arguments or {})
                         tool_steps.append(
                             {
+                                "toolCallId": last_tool_call_id or None,
                                 "toolName": last_tool_name,
                                 "arguments": arguments,
                                 "status": "calling",
@@ -675,6 +703,7 @@ class ChatService:
                         yield await emit(
                             "tool_started",
                             {
+                                "tool_call_id": last_tool_call_id or None,
                                 "tool_name": last_tool_name,
                                 "arguments": arguments,
                             },
@@ -683,6 +712,7 @@ class ChatService:
                         result = data.get("result", {})
                         elapsed_ms = data.get("elapsed_ms")
                         tool_name = data.get("tool_name") or last_tool_name
+                        tool_call_id = data.get("tool_call_id") or last_tool_call_id
                         tool_arguments = data.get("arguments")
                         if not isinstance(tool_arguments, dict):
                             tool_arguments = last_tool_arguments
@@ -694,6 +724,8 @@ class ChatService:
                             tool_steps[-1]["status"] = "done"
                             tool_steps[-1]["result"] = compact_result
                             tool_steps[-1]["elapsedMs"] = elapsed_ms
+                            if tool_call_id:
+                                tool_steps[-1]["toolCallId"] = tool_call_id
                         if self._tool_result_can_cite_answer(str(tool_name or "")):
                             pending_citations = dedupe_citations(
                                 pending_citations
@@ -710,7 +742,9 @@ class ChatService:
                         yield await emit(
                             "tool_completed",
                             {
+                                "tool_call_id": tool_call_id or None,
                                 "tool_name": tool_name,
+                                "arguments": tool_arguments,
                                 "result": compact_result,
                                 "elapsed_ms": elapsed_ms,
                             },
