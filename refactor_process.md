@@ -86,6 +86,32 @@ Completion status:
   - `D:\projects\page_chat\backend\venv\Scripts\python.exe -m pytest backend/tests/test_model_turn.py backend/tests/test_tool_messages.py backend/tests/test_runtime_boundary_policy.py -q` -> `11 passed`.
 - Next phase: implement `ModelToolLoopRuntime` using a fake model and fake tool runner.
 
+### Flat Tool Loop Phase 4 - ModelToolLoopRuntime foundation
+
+Start status:
+- Started Phase 4 after commit `0247e48`.
+- Goal: implement the first real flat loop skeleton with fake model/tool runner tests.
+- TDD: add `backend/tests/test_model_tool_loop_runtime.py` first; expected initial failure is missing `app.agent.model_tool_loop`.
+- Scope: no provider integration yet; the runtime should operate on `ModelTurn`/`ModelToolCall` and append native assistant/tool messages.
+
+Completion status:
+- RED test run:
+  - `D:\projects\page_chat\backend\venv\Scripts\python.exe -m pytest backend/tests/test_model_tool_loop_runtime.py -q`
+  - failed as expected with `ModuleNotFoundError: No module named 'app.agent.model_tool_loop'`.
+- Added `backend/app/agent/model_tool_loop.py` with `ModelToolLoopRuntime` and `RuntimeStreamEvent`.
+- Runtime now:
+  - builds one flat message history with system/history/user messages,
+  - accepts model-emitted `ModelToolCall`s,
+  - validates them with `RuntimeBoundaryPolicy`,
+  - executes tools through the injected runner,
+  - appends native assistant `tool_calls` and `role="tool"` messages,
+  - continues the same loop until final text is emitted as `answer_delta`.
+- Tests cover one tool call then answer, greeting without tools, and multiple same-turn tool calls in model-provided order.
+- Verification:
+  - `D:\projects\page_chat\backend\venv\Scripts\python.exe -m pytest backend/tests/test_model_tool_loop_runtime.py -q` -> `3 passed`.
+  - `D:\projects\page_chat\backend\venv\Scripts\python.exe -m pytest backend/tests/test_model_turn.py backend/tests/test_tool_messages.py backend/tests/test_runtime_boundary_policy.py backend/tests/test_model_tool_loop_runtime.py -q` -> `14 passed`.
+- Next phase: add native tool-calling model adapter.
+
 ## Phase Log
 
 ### Phase 1 - Architecture Audit And Production Path Confirmation
