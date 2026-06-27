@@ -1219,7 +1219,7 @@ export const useChatStore = defineStore('chat', () => {
     const seen = new Set<string>()
     const result: Citation[] = []
     for (const item of items) {
-      const key = item.citation_key || `${item.document_id || ''}:${item.display_label}`
+      const key = citationIdentityKey(item)
       if (!key || seen.has(key)) continue
       seen.add(key)
       result.push(item)
@@ -1233,13 +1233,96 @@ export const useChatStore = defineStore('chat', () => {
     for (const item of items) {
       const key = item.type === 'web'
         ? item.url || item.sourceId || item.displayLabel || ''
-        : item.displayLabel || `${item.documentName || ''}:${JSON.stringify(item.sourceAnchor || {})}`
+        : documentEvidenceIdentityKey(item)
       if (!key || seen.has(key)) continue
       seen.add(key)
       result.push(item)
       if (result.length >= 8) break
     }
     return result
+  }
+
+  function citationIdentityKey(item: Citation): string {
+    const anchor = recordFromAnchor(item.source_anchor)
+    const previewKind = String(item.preview_kind || anchor.format || '').toLowerCase()
+    const url = safeWebUrlFromCitation(item)
+    if (previewKind === 'web' || url) return `web:${url || item.citation_key || item.document_id || ''}`
+    return documentEvidenceIdentityKey({
+      type: 'document',
+      docId: item.document_id,
+      documentName: item.document_name,
+      displayLabel: item.display_label,
+      sourceAnchor: item.source_anchor as SourceAnchor,
+    }) || item.citation_key || `${item.document_id || ''}:${item.display_label}`
+  }
+
+  function documentEvidenceIdentityKey(item: EvidenceItem): string {
+    const anchorKey = sourceAnchorIdentityKey(item.sourceAnchor)
+    if (item.docId && anchorKey) return `document-id:${item.docId}:${anchorKey}`
+    const name = normalizeSourceName(item.documentName || item.displayLabel || '')
+    return name || anchorKey ? `document-name:${name}:${anchorKey}` : ''
+  }
+
+  function sourceAnchorIdentityKey(anchor?: SourceAnchor | null): string {
+    if (!anchor || typeof anchor !== 'object') return ''
+    const record = anchor as unknown as Record<string, unknown>
+    const format = String(record.format || '').toLowerCase()
+    const startPage = firstFiniteNumber(record.start_page, record.page)
+    if (startPage !== null) {
+      const endPage = firstFiniteNumber(record.end_page) ?? startPage
+      return stableJson({
+        format: format || 'pdf',
+        unit_type: 'page',
+        start_page: String(startPage),
+        end_page: String(endPage),
+      })
+    }
+
+    for (const unit of [
+      ['line', 'start_line', 'end_line'],
+      ['row', 'start_row', 'end_row'],
+      ['paragraph', 'start_paragraph', 'end_paragraph'],
+      ['slide', 'start_slide', 'end_slide'],
+    ] as const) {
+      const start = firstFiniteNumber(record[unit[1]])
+      if (start === null) continue
+      const end = firstFiniteNumber(record[unit[2]]) ?? start
+      const identity: Record<string, unknown> = {
+        format,
+        unit_type: unit[0],
+        [unit[1]]: String(start),
+        [unit[2]]: String(end),
+      }
+      if (unit[0] === 'row' && record.sheet) identity.sheet = String(record.sheet)
+      return stableJson(identity)
+    }
+
+    return stableJson(record)
+  }
+
+  function firstFiniteNumber(...values: unknown[]): number | null {
+    for (const value of values) {
+      const number = Number(value)
+      if (Number.isFinite(number)) return number
+    }
+    return null
+  }
+
+  function stableJson(value: Record<string, unknown>): string {
+    const sorted: Record<string, unknown> = {}
+    Object.keys(value).sort().forEach((key) => {
+      const item = value[key]
+      if (item !== undefined && item !== null && item !== '') sorted[key] = item
+    })
+    return JSON.stringify(sorted)
+  }
+
+  function normalizeSourceName(value: string): string {
+    return String(value || '')
+      .toLowerCase()
+      .replace(/\.(pdf|docx|xlsx|csv|tsv|pptx|md|markdown|txt)\b/g, '')
+      .replace(/\s+/g, ' ')
+      .trim()
   }
 
   function clearMessages() {

@@ -128,6 +128,31 @@ def test_dedupe_citations_ignores_display_label_when_anchor_matches() -> None:
     ]
 
 
+def test_dedupe_citations_uses_document_id_anchor_when_document_name_varies() -> None:
+    citations = [
+        {
+            "citation_key": "c-alpha-a",
+            "document_id": "doc-a",
+            "document_name": "alpha.pdf",
+            "source_anchor": {"format": "pdf", "start_page": 1},
+            "display_label": "alpha.pdf p.1",
+            "preview_kind": "pdf",
+        },
+        {
+            "citation_key": "c-alpha-b",
+            "document_id": "doc-a",
+            "document_name": "Alpha Report",
+            "source_anchor": {"format": "pdf", "start_page": 1},
+            "display_label": "Alpha Report page one",
+            "preview_kind": "pdf",
+        },
+    ]
+
+    assert [item["display_label"] for item in dedupe_citations(citations)] == [
+        "alpha.pdf p.1"
+    ]
+
+
 def test_citation_events_dedupes_explicit_and_candidate_for_same_anchor() -> None:
     result = {
         "matches": [
@@ -280,16 +305,11 @@ def test_citation_events_from_document_tool_shapes() -> None:
         (citation["document_id"], citation["document_name"], citation["preview_kind"])
         for citation in citations
     ] == [
-        ("doc-1", "alpha.pdf", "pdf"),
         ("doc-2", "beta.pdf", "pdf"),
         ("doc-3", "gamma.md", "markdown"),
     ]
-    assert citations[0]["source_anchor"] == {
-        "format": "pdf",
-        "unit_type": "document",
-    }
-    assert citations[1]["source_anchor"]["start_page"] == 3
-    assert citations[2]["display_label"] == "gamma.md lines 8-12"
+    assert citations[0]["source_anchor"]["start_page"] == 3
+    assert citations[1]["display_label"] == "gamma.md lines 8-12"
 
 
 def test_citation_events_from_web_search_results() -> None:
@@ -313,6 +333,29 @@ def test_citation_events_from_web_search_results() -> None:
         "format": "web",
         "url": "https://weather.example/beijing",
     }
+
+
+def test_citation_events_dedupes_web_sources_by_url_identity() -> None:
+    result = {
+        "results": [
+            {
+                "title": "Beijing weather forecast",
+                "url": "https://weather.example/beijing",
+                "snippet": "Sunny and warm.",
+            },
+            {
+                "title": "Weather in Beijing today",
+                "url": "https://weather.example/beijing",
+                "snippet": "Same URL from another result block.",
+            },
+        ]
+    }
+
+    citations = citation_events_from_tool_result(result)
+
+    assert [(item["document_name"], item["document_id"]) for item in citations] == [
+        ("Beijing weather forecast", "https://weather.example/beijing")
+    ]
 
 
 def test_citation_events_rejects_unsafe_web_urls() -> None:

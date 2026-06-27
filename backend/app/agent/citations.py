@@ -325,14 +325,25 @@ def dedupe_citations(citations: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 
 def citation_dedupe_key(citation: dict[str, Any]) -> str:
-    anchor_json = _citation_anchor_identity(citation.get("source_anchor") or {})
-    return "|".join(
-        [
-            str(citation.get("document_id") or ""),
-            str(citation.get("document_name") or ""),
-            anchor_json,
-        ]
+    source_anchor = citation.get("source_anchor") or {}
+    if not isinstance(source_anchor, dict):
+        source_anchor = {}
+
+    preview_kind = str(citation.get("preview_kind") or "").lower()
+    source_format = str(source_anchor.get("format") or "").lower()
+    web_url = _safe_web_url(
+        _first_present(source_anchor.get("url"), citation.get("url"), citation.get("document_id"))
     )
+    if preview_kind == "web" or source_format == "web" or web_url:
+        return f"web|{web_url}"
+
+    anchor_json = _citation_anchor_identity(source_anchor)
+    document_id = str(citation.get("document_id") or "")
+    if document_id:
+        return f"document_id|{document_id}|{anchor_json}"
+
+    document_name = _strip_extension(str(citation.get("document_name") or "")).casefold()
+    return f"document_name|{document_name}|{anchor_json}"
 
 
 def _citation_anchor_identity(source_anchor: Any) -> str:

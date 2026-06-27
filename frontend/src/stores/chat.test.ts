@@ -1001,6 +1001,70 @@ describe('chat rollback', () => {
     ])
   })
 
+  it('dedupes document preview evidence by source identity instead of display label', () => {
+    const store = useChatStore()
+    store.addAssistantMessage()
+
+    store.handleEnvelope({
+      event: 'tool_started',
+      data: {
+        run_id: 'run-a',
+        conversation_id: 'conv-a',
+        message_id: 'a1',
+        seq: 1,
+        ts: '2026-06-26T10:00:00Z',
+        tool_name: 'get_page_content',
+        arguments: { doc_id: 'doc-cq', pages: '12' },
+      },
+    } as any)
+    store.handleEnvelope({
+      event: 'tool_completed',
+      data: {
+        run_id: 'run-a',
+        conversation_id: 'conv-a',
+        message_id: 'a1',
+        seq: 2,
+        ts: '2026-06-26T10:00:01Z',
+        tool_name: 'get_page_content',
+        result: {
+          citations: [
+            {
+              document_id: 'doc-cq',
+              document_name: '重庆统计年鉴.pdf',
+              display_label: '重庆统计年鉴.pdf p.12',
+              source_anchor: {
+                format: 'pdf',
+                unit_type: 'page',
+                start_page: 12,
+                end_page: 12,
+              },
+            },
+            {
+              document_id: 'doc-cq',
+              document_name: '重庆统计年鉴',
+              display_label: '重庆统计年鉴 page 12',
+              source_anchor: {
+                format: 'pdf',
+                unit_type: 'page',
+                start_page: 12,
+                end_page: 12,
+              },
+            },
+          ],
+        },
+      },
+    } as any)
+
+    expect(store.messages[0].evidenceItems).toEqual([
+      expect.objectContaining({
+        docId: 'doc-cq',
+        documentName: '重庆统计年鉴.pdf',
+        displayLabel: '重庆统计年鉴.pdf p.12',
+        sourceAnchor: expect.objectContaining({ start_page: 12 }),
+      }),
+    ])
+  })
+
   it('keeps web citation events as web preview evidence', () => {
     const store = useChatStore()
     store.addAssistantMessage()

@@ -12,10 +12,10 @@ This file is the handoff log for the LLM-driven Agent Loop refactor. Read it bef
 
 ## Current Status
 
-- Current phase: Phase 5 - Native tool calling adapter.
-- Status: Completed.
+- Current phase: Phase 9 - Regression and acceptance.
+- Status: Ready to start.
 - Started at: 2026-06-27.
-- Notes: Phase 5 completed. Next phase is Phase 8 answer and citation behavior.
+- Notes: Phase 8 completed; next step is final regression/manual acceptance pass.
 
 ## Phase Log
 
@@ -222,3 +222,40 @@ Completion status:
   - `D:\projects\page_chat\backend\venv\Scripts\python.exe -m pytest backend/tests/test_agent_structured_llm_planner.py backend/tests/test_tools_prompt_catalog.py backend/tests/test_tree_first_retrieval_policy.py backend/tests/test_agent_policy.py backend/tests/test_agent_loop_runtime.py backend/tests/test_agent_navigation_tools_contract.py backend/tests/test_provider_protocol_selection.py backend/tests/test_model_gateway_settings.py backend/tests/test_llm_timeout_defaults.py backend/tests/test_litellm_adapter.py -q`
 - Backend provider/agent regression result:
   - `99 passed, 67 warnings`
+
+### Phase 8 - Answer And Citation Behavior
+
+Start status:
+- Started Phase 8 after committing Phase 5 checkpoint `aaba058`.
+- Goal: tighten citation identity and preview behavior without overbuilding citation generation.
+- First focus:
+  - audit backend citation/source binding and frontend citation click handling.
+  - ensure repeated same source can reuse citation identity.
+  - ensure web citations open URLs directly rather than document preview.
+  - avoid forced citations when no evidence source exists.
+
+Resume status:
+- Resumed Phase 8 on branch `codex/pagechat-ui-agent-runtime-integration`.
+- Confirmed `codex.md` still points to this worktree as the correct integration branch.
+- Audit notes:
+  - backend already ignores web citations when appending a missing document citation suffix.
+  - frontend already opens web citations with `window.open(...)` instead of the preview drawer.
+  - remaining gap: backend/frontend citation dedupe still depends too much on display labels or document names, so the same source can become multiple numbered references when labels differ.
+
+Completion status:
+- Backend citation identity now dedupes by web URL or document id + source anchor before falling back to document name.
+- Document inventory/list records without a precise page/line/row/slide/paragraph anchor remain non-citation evidence and do not create inline references.
+- Frontend inline citation numbering now reuses the same number when labels differ only by file extension, such as `report.pdf p.3` and `report p.3`.
+- Chat store citation/evidence dedupe now uses source identity instead of display label where possible.
+- Updated stale event-protocol test expectations for the current native tool-calling planner prompt/flags.
+- RED tests initially failed for backend citation identity and frontend numbering/evidence dedupe, then passed after implementation.
+- Verification:
+  - `D:\projects\page_chat\backend\venv\Scripts\python.exe -m pytest backend/tests/test_agent_structured_llm_planner.py backend/tests/test_tools_prompt_catalog.py backend/tests/test_tree_first_retrieval_policy.py backend/tests/test_agent_policy.py backend/tests/test_agent_loop_runtime.py backend/tests/test_agent_navigation_tools_contract.py backend/tests/test_provider_protocol_selection.py backend/tests/test_model_gateway_settings.py backend/tests/test_llm_timeout_defaults.py backend/tests/test_litellm_adapter.py backend/tests/test_agent_citation_bindings.py backend/tests/test_agent_run_event_protocol.py backend/tests/test_chat_run_repository.py backend/tests/test_citation_binding.py -q` -> `138 passed, 67 warnings`
+  - `npm.cmd test` in `frontend` -> `20 passed test files, 130 passed tests`
+  - `npm.cmd run build` in `frontend` -> completed successfully
+
+### Phase 9 - Regression And Acceptance
+
+Start status:
+- Ready to start after Phase 8 checkpoint.
+- Goal: run final acceptance scenarios and inspect any remaining product-level gaps before finishing the refactor branch.

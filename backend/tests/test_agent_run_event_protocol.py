@@ -345,7 +345,7 @@ def _is_planner_request(kwargs: dict) -> bool:
     messages = kwargs.get("messages") or []
     if not messages:
         return False
-    return "Choose the next single PageChat agent action" in str(
+    return "Choose the next PageChat agent turn" in str(
         messages[0].get("content", "")
     )
 
@@ -384,8 +384,8 @@ def test_agent_service_emits_loop_runtime_tool_events_without_initial_retrieval(
         ]
 
         async def fake_chat_by_scenario(**_kwargs):
-            assert "allow_deterministic_tools" not in _kwargs
             if _is_planner_request(_kwargs):
+                assert _kwargs.get("allow_deterministic_tools") is True
                 return _planner_response(
                     json.dumps(planner_actions.pop(0), ensure_ascii=False)
                 )

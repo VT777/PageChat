@@ -121,7 +121,7 @@ export function assignInlineSourceNumbers(content: string, webSourceUrls: string
       kind: 'document',
       index: citation.index,
       start: citation.start,
-      key: `document:${normalizeComparable(citation.label)}`,
+      key: documentCitationIdentity(citation),
     })
   })
   webSourceUrls.forEach((url, index) => {
@@ -199,6 +199,16 @@ function normalizeComparable(value?: string): string {
 
 function stripExtension(value: string): string {
   return normalizeComparable(value).replace(/\.(pdf|docx|xlsx|csv|tsv|pptx|md|markdown|txt)\b/g, '')
+}
+
+function documentCitationIdentity(citation: InlineCitation): string {
+  if (!citation.positionType) return `document:${normalizeComparable(citation.label)}`
+  return [
+    'document',
+    stripExtension(citation.documentName),
+    citation.positionType,
+    citation.position.replace(/\s+/g, ''),
+  ].join(':')
 }
 
 function sameDocumentName(a?: string, b?: string): boolean {
