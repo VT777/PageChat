@@ -12,10 +12,10 @@ This file is the handoff log for the LLM-driven Agent Loop refactor. Read it bef
 
 ## Current Status
 
-- Current phase: Phase 3 - Policy as boundary guardrails.
+- Current phase: Phase 6 - Tool contract cleanup.
 - Status: Completed.
 - Started at: 2026-06-27.
-- Notes: Phase 3 completed. Next phase is Phase 6 tool contract cleanup.
+- Notes: Phase 6 completed. Next phase is Phase 7 UI processing/thinking area.
 
 ## Phase Log
 
@@ -107,3 +107,38 @@ Start status:
   - `backend/app/agent/nodes.py`
   - tool schemas wherever defined.
   - relevant backend tool tests.
+
+Completion status:
+- Added RED tests for:
+  - `get_page_content` accepting official-style multi-segment pages such as `1-3,8,10-12`.
+  - invalid page ranges returning structured, friendly errors.
+  - compact page results preserving `total_pages` and accurate `result_count/result_label`.
+  - tool descriptions acting as agent affordances instead of fixed routes.
+- Implemented:
+  - multi-segment page parser with comma/range support.
+  - compressed page range labels such as `1-3,8,10-12`.
+  - friendly page parsing errors with `next_steps`.
+  - compact result page counting from `returned_pages` labels rather than truncated items.
+  - removed `Use it before reading pages` from `get_document_structure` schema description.
+- Targeted tool contract command:
+  - `D:\projects\page_chat\backend\venv\Scripts\python.exe -m pytest backend/tests/test_agent_navigation_tools_contract.py -q`
+- Result:
+  - `24 passed, 67 warnings`
+- Backend agent targeted regression command:
+  - `D:\projects\page_chat\backend\venv\Scripts\python.exe -m pytest backend/tests/test_agent_structured_llm_planner.py backend/tests/test_tools_prompt_catalog.py backend/tests/test_tree_first_retrieval_policy.py backend/tests/test_agent_policy.py backend/tests/test_agent_loop_runtime.py backend/tests/test_agent_navigation_tools_contract.py -q`
+- Result:
+  - `67 passed, 67 warnings`
+
+### Phase 7 - UI Processing / Thinking Area
+
+Start status:
+- Started Phase 7.
+- Goal: render model processing and tool calls in one coherent area, default to stable runtime statuses when provider processing deltas are absent.
+- First focus:
+  - preserve existing frontend behavior while preparing event types for `processing_delta` / `tool_call_delta`.
+  - ensure tool rows prefer action labels/result labels and do not show misleading `0 results`.
+- Files expected:
+  - `frontend/src/components/chat/RunTimeline.vue`
+  - `frontend/src/components/chat/ToolTimelineItem.vue`
+  - `frontend/src/views/ChatView.vue`
+  - frontend contract tests.

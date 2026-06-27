@@ -341,7 +341,7 @@ def _compact_page_content_result(
 ) -> dict[str, Any]:
     compact = _compact_base_result(result, citations)
     data = result.get("data") if isinstance(result.get("data"), dict) else {}
-    for key in ("doc_id", "doc_name", "requested_pages", "returned_pages"):
+    for key in ("doc_id", "doc_name", "requested_pages", "returned_pages", "total_pages"):
         value = data.get(key) or result.get(key)
         if value not in (None, ""):
             compact[key] = value
@@ -406,13 +406,44 @@ def _page_content_result_count(
     returned_pages = data.get("returned_pages") or result.get("returned_pages")
     if isinstance(returned_pages, list):
         return len(returned_pages)
+    if isinstance(returned_pages, str):
+        label_count = _count_pages_in_label(returned_pages)
+        if label_count:
+            return label_count
     value = _coerce_positive_int(returned_pages)
     if value:
         return value
     requested_pages = data.get("requested_pages") or result.get("requested_pages")
     if isinstance(requested_pages, list):
         return len(requested_pages)
+    if isinstance(requested_pages, str):
+        label_count = _count_pages_in_label(requested_pages)
+        if label_count:
+            return label_count
     return len(items)
+
+
+def _count_pages_in_label(value: str) -> int:
+    count = 0
+    for segment in (part.strip() for part in value.split(",")):
+        if not segment:
+            continue
+        if "-" in segment:
+            left, right = segment.split("-", 1)
+            try:
+                start = int(left.strip())
+                end = int(right.strip())
+            except ValueError:
+                continue
+            if end >= start:
+                count += end - start + 1
+            continue
+        try:
+            int(segment)
+        except ValueError:
+            continue
+        count += 1
+    return count
 
 
 def _count_structure_sections(value: Any) -> int:

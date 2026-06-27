@@ -88,7 +88,7 @@ AGENT_TOOLS = [
         "type": "function",
         "function": {
             "name": "get_document_structure",
-            "description": "Read the document structure, including section titles, page ranges, and summaries. Use it before reading pages. Prefer doc_id; doc_name + folder_id is supported when unique.",
+            "description": "Read the document structure, including section titles, page ranges, and summaries, when section/page-range context is useful. Prefer doc_id; doc_name + folder_id is supported when unique.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -120,7 +120,7 @@ AGENT_TOOLS = [
         "type": "function",
         "function": {
             "name": "get_page_content",
-            "description": "Read specific pages. Text pages return text; visual pages return image references only so the model can inspect images with get_document_image or get_page_image.",
+            "description": "Read specific source pages. Text pages return text; visual pages return image references only so the model can inspect images with get_document_image or get_page_image.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -137,7 +137,7 @@ AGENT_TOOLS = [
                         "description": "Folder ID used with doc_name disambiguation.",
                     },
                     "pages": {
-                        "description": "1-based pages as a string range like 28-36, a number, or a list of numbers.",
+                        "description": "1-based pages as a string such as 1-3,8,10-12, a number, or a list of numbers.",
                     },
                     "page_nums": {
                         "type": "array",
@@ -399,17 +399,21 @@ class ToolExecutor:
         if isinstance(raw, int):
             values = [raw]
         elif isinstance(raw, str):
-            text = raw.strip()
-            if "-" in text:
-                left, right = text.split("-", 1)
-                start = int(left.strip())
-                end = int(right.strip())
-                step = 1 if end >= start else -1
-                values = list(range(start, end + step, step))
-            elif "," in text:
-                values = [int(part.strip()) for part in text.split(",") if part.strip()]
-            elif text:
-                values = [int(text)]
+            text = raw.strip().replace("，", ",").replace("–", "-").replace("—", "-")
+            for part in (segment.strip() for segment in text.split(",")):
+                if not part:
+                    continue
+                if "-" in part:
+                    left, right = part.split("-", 1)
+                    if not left.strip() or not right.strip():
+                        raise ValueError(f"Invalid page range: {part}")
+                    start = int(left.strip())
+                    end = int(right.strip())
+                    if end < start:
+                        raise ValueError(f"Invalid descending page range: {part}")
+                    values.extend(range(start, end + 1))
+                else:
+                    values.append(int(part))
         elif isinstance(raw, list):
             values = [int(item) for item in raw]
         else:
@@ -427,9 +431,17 @@ class ToolExecutor:
             return ""
         if len(pages) == 1:
             return str(pages[0])
-        if pages == list(range(pages[0], pages[-1] + 1)):
-            return f"{pages[0]}-{pages[-1]}"
-        return ",".join(str(page) for page in pages)
+        parts: List[str] = []
+        start = pages[0]
+        previous = pages[0]
+        for page in pages[1:]:
+            if page == previous + 1:
+                previous = page
+                continue
+            parts.append(str(start) if start == previous else f"{start}-{previous}")
+            start = previous = page
+        parts.append(str(start) if start == previous else f"{start}-{previous}")
+        return ",".join(parts)
 
     @staticmethod
     def _compact_document_item(doc) -> Dict[str, Any]:
@@ -595,12 +607,27 @@ class ToolExecutor:
         folder_id: Optional[str] = None,
     ) -> dict:
         """读取页面内容。图片页只返回图片引用，不返回 OCR/正文全文。"""
-        requested_page_numbers = self._parse_page_request(
-            page_nums=page_nums, pages=pages, limit=False
-        )
+        try:
+            requested_page_numbers = self._parse_page_request(
+                page_nums=page_nums, pages=pages, limit=False
+            )
+        except (TypeError, ValueError) as exc:
+            return {
+                "success": False,
+                "status": "error",
+                "data": {},
+                "error": f"Invalid pages: {exc}",
+                "next_steps": ['Use pages like "1-3,8,10-12".'],
+            }
         page_numbers = requested_page_numbers[:MAX_PAGE_CONTENT_PAGES]
         if not page_numbers:
-            return {"status": "error", "data": {}, "error": "pages is required"}
+            return {
+                "success": False,
+                "status": "error",
+                "data": {},
+                "error": "Invalid pages: pages is required",
+                "next_steps": ['Use pages like "1-3,8,10-12".'],
+            }
         request_truncated = len(requested_page_numbers) > len(page_numbers)
 
         doc, error = await self._resolve_document(doc_id, doc_name, folder_id)

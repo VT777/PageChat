@@ -10,6 +10,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from app.models.schemas import DocumentResponse
+from app.agent.nodes import compact_tool_result
 from app.services.search_service import search_service
 from app.services.tool_executor import AGENT_TOOLS, ToolExecutor
 
@@ -103,6 +104,18 @@ def test_navigation_tool_catalog_exposes_official_style_tools() -> None:
     }.isdisjoint(names)
     assert _tool_schema("get_document_image")["parameters"]["required"] == ["image_path"]
     assert _tool_schema("get_page_image")["parameters"]["required"] == ["page"]
+
+
+def test_tool_descriptions_are_agent_affordances_not_fixed_routes() -> None:
+    structure_description = _tool_schema("get_document_structure")["description"]
+    page_content_schema = _tool_schema("get_page_content")
+    page_content_description = page_content_schema["description"]
+    pages_description = page_content_schema["parameters"]["properties"]["pages"]["description"]
+
+    assert "Use it before reading pages" not in structure_description
+    assert "when section/page-range context is useful" in structure_description
+    assert "Read specific source pages" in page_content_description
+    assert "1-3,8,10-12" in pages_description
 
 
 def test_legacy_document_tools_are_not_executable() -> None:
@@ -630,6 +643,61 @@ def test_get_page_content_reports_truncated_page_ranges() -> None:
         assert result["data"]["returned_pages"] == "1-10"
         assert result["data"]["request_truncated"] is True
         assert "继续" in str(result["next_steps"])
+
+    asyncio.run(run())
+
+
+def test_get_page_content_accepts_multi_segment_page_ranges() -> None:
+    async def run() -> None:
+        structure = [
+            {
+                "node_id": f"n-{idx}",
+                "title": f"Page {idx}",
+                "start_index": idx,
+                "end_index": idx,
+                "text": f"text {idx}",
+            }
+            for idx in range(1, 13)
+        ]
+        pages = [{"page": idx, "text": f"text {idx}", "images": []} for idx in range(1, 13)]
+
+        result = await _executor(
+            {"structure": structure, "pages": pages},
+            docs=[_doc(page_count=12)],
+        ).execute("get_page_content", {"doc_id": "doc-a", "pages": "1-3,8,10-12"})
+
+        assert result["status"] == "success"
+        assert result["data"]["requested_pages"] == "1-3,8,10-12"
+        assert result["data"]["returned_pages"] == "1-3,8,10-12"
+        assert [item["page"] for item in result["data"]["content"]] == [
+            1,
+            2,
+            3,
+            8,
+            10,
+            11,
+            12,
+        ]
+
+        compact = compact_tool_result(result, tool_name="get_page_content")
+        assert compact["total_pages"] == 12
+        assert compact["result_count"] == 7
+        assert compact["result_label"] == "7 pages"
+
+    asyncio.run(run())
+
+
+def test_get_page_content_returns_friendly_error_for_invalid_page_range() -> None:
+    async def run() -> None:
+        result = await _executor(
+            {"structure": [], "pages": []},
+            docs=[_doc(page_count=12)],
+        ).execute("get_page_content", {"doc_id": "doc-a", "pages": "1-foo"})
+
+        assert result["status"] == "error"
+        assert result["success"] is False
+        assert "Invalid pages" in result["error"]
+        assert result["next_steps"] == ['Use pages like "1-3,8,10-12".']
 
     asyncio.run(run())
 
