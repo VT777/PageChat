@@ -65,6 +65,91 @@ class RecordingToolRunner:
         return {"success": True}
 
 
+def test_loop_runtime_executes_multiple_tool_calls_from_one_model_turn() -> None:
+    class MultiToolPlanner:
+        def __init__(self):
+            self.calls = []
+
+        async def next_action(self, state: AgentRunState) -> PlannerAction:
+            self.calls.append(
+                [
+                    observation.get("tool_name")
+                    for observation in state.scope.get("observations", [])
+                ]
+            )
+            if len(self.calls) == 1:
+                return PlannerAction.call_tools(
+                    [
+                        ("get_document_structure", {"doc_id": "doc-a"}),
+                        ("get_document_structure", {"doc_id": "doc-b"}),
+                    ],
+                    thought="I will compare both selected document structures.",
+                )
+            return PlannerAction.answer(
+                "Both document structures are available.",
+                thought="The needed structure observations are ready.",
+            )
+
+    class StructureToolRunner:
+        def __init__(self):
+            self.calls = []
+
+        async def execute(self, tool_name: str, arguments: dict):
+            self.calls.append((tool_name, arguments))
+            return {
+                "success": True,
+                "doc_id": arguments["doc_id"],
+                "doc_name": f"{arguments['doc_id']}.pdf",
+                "total_pages": 12,
+                "toc": [{"title": "Overview", "page": 1}],
+            }
+
+    async def run() -> None:
+        planner = MultiToolPlanner()
+        tool_runner = StructureToolRunner()
+        runtime = AgentLoopRuntime(
+            planner=planner,
+            tool_runner=tool_runner,
+            policy=AgentPolicy(
+                tools=[{"type": "function", "function": {"name": "get_document_structure"}}]
+            ),
+            max_steps=3,
+        )
+        state = AgentRunState(
+            question="Give an overview of the selected reports.",
+            conversation_id="conv-alpha",
+            run_id="run-alpha",
+            message_id="msg-alpha",
+            scope={
+                "document_ids": ["doc-a", "doc-b"],
+                "available_document_ids": ["doc-a", "doc-b"],
+                "strict_scope": True,
+            },
+        )
+
+        events = [event async for event in runtime.stream(state)]
+
+        assert [call[1]["doc_id"] for call in tool_runner.calls] == ["doc-a", "doc-b"]
+        assert [event.event_type for event in events] == [
+            "progress",
+            "tool_started",
+            "tool_completed",
+            "progress",
+            "tool_started",
+            "tool_completed",
+            "progress",
+            "progress",
+            "answer_delta",
+        ]
+        assert planner.calls == [
+            [],
+            ["get_document_structure", "get_document_structure"],
+        ]
+        assert events[-1].payload["content"] == "Both document structures are available."
+
+    asyncio.run(run())
+
+
 def test_loop_runtime_interleaves_plan_tool_observation_until_answer() -> None:
     async def run() -> None:
         planner = RecordingPlanner()

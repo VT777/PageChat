@@ -17,7 +17,7 @@ class PlannerAdapter(Protocol):
 
 
 class StructuredLLMPlanner:
-    """LLM-driven planner that asks the model for one visible thought and action."""
+    """LLM-driven planner that asks the model for one visible turn decision."""
 
     def __init__(
         self,
@@ -115,8 +115,12 @@ class StructuredLLMPlanner:
             "Return JSON only with this schema:\n"
             "{\"thought\": string, \"action\": {\"type\": "
             "\"call_tool|answer|ask_clarification|fail\", \"tool_name\": "
-            "string|null, \"arguments\": object, \"content\": string|null}}\n"
+            "string|null, \"arguments\": object, \"tool_calls\": "
+            "[{\"tool_name\": string, \"arguments\": object}]|null, "
+            "\"content\": string|null}}\n"
             "You decide whether to answer, ask for clarification, or call tools. "
+            "When several independent tools are useful in the same turn, put them in "
+            "action.tool_calls instead of forcing extra planning rounds. "
             "Policy only enforces boundaries such as available tools, scope, citations, "
             "and unsafe or unsupported final answers; it does not plan the route for you. "
             "The thought is a short user-visible decision note, not hidden chain-of-thought. "
@@ -159,6 +163,9 @@ class StructuredLLMPlanner:
 
         action_type = str(raw_action.get("type") or "").strip()
         if action_type == "call_tool":
+            tool_calls = raw_action.get("tool_calls")
+            if isinstance(tool_calls, list) and tool_calls:
+                return PlannerAction.call_tools(tool_calls, thought=thought)
             tool_name = str(raw_action.get("tool_name") or "").strip()
             arguments = raw_action.get("arguments") or {}
             if not isinstance(arguments, dict):

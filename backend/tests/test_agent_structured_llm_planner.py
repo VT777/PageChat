@@ -102,6 +102,50 @@ def test_structured_planner_parses_model_generated_call_tool_action() -> None:
     asyncio.run(run())
 
 
+def test_structured_planner_parses_multiple_tool_calls_from_one_turn() -> None:
+    async def run() -> None:
+        async def fake_completion(**_kwargs):
+            return _response(
+                """
+                {
+                  "thought": "I will inspect both selected reports before comparing them.",
+                  "action": {
+                    "type": "call_tool",
+                    "tool_calls": [
+                      {
+                        "tool_name": "get_document_structure",
+                        "arguments": {"doc_id": "doc-a"}
+                      },
+                      {
+                        "tool_name": "get_document_structure",
+                        "arguments": {"doc_id": "doc-b"}
+                      }
+                    ]
+                  }
+                }
+                """
+            )
+
+        planner = StructuredLLMPlanner(completion_fn=fake_completion, tools=_tools())
+        state = AgentRunState(
+            question="Compare both selected reports.",
+            conversation_id="conv-a",
+            run_id="run-a",
+            message_id="msg-a",
+        )
+
+        action = await planner.next_action(state)
+
+        assert action.action_type == "call_tool"
+        assert action.thought == "I will inspect both selected reports before comparing them."
+        assert [(item.tool_name, item.arguments) for item in action.tool_calls] == [
+            ("get_document_structure", {"doc_id": "doc-a"}),
+            ("get_document_structure", {"doc_id": "doc-b"}),
+        ]
+
+    asyncio.run(run())
+
+
 def test_structured_planner_prompt_keeps_visible_notes_natural() -> None:
     async def run() -> None:
         calls = []

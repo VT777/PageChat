@@ -12,10 +12,10 @@ This file is the handoff log for the LLM-driven Agent Loop refactor. Read it bef
 
 ## Current Status
 
-- Current phase: Phase 7 - UI Processing / Thinking Area.
+- Current phase: Phase 4 - Multi-tool model turn support.
 - Status: Completed.
 - Started at: 2026-06-27.
-- Notes: Phase 7 completed. Next phase is Phase 4 multi-tool model turn support.
+- Notes: Phase 4 completed. Next phase is Phase 5 native tool calling adapter.
 
 ## Phase Log
 
@@ -166,3 +166,30 @@ Completion status:
   - `npm.cmd run build`
 - Frontend build result:
   - `vue-tsc && vite build` completed successfully.
+
+### Phase 4 - Multi-tool Model Turn Support
+
+Start status:
+- Started Phase 4 after committing Phase 7 checkpoint `a7a7dce`.
+- Goal: allow one model turn to return multiple tool calls while keeping the existing single-action path compatible.
+- First focus:
+  - inspect current `PlannerAction` / runtime execution shape.
+  - add failing backend tests before changing runtime behavior.
+  - keep policy as per-tool boundary validation, not a route planner.
+
+Completion status:
+- Added `ToolCallRequest` and `PlannerAction.call_tools(...)` while keeping `PlannerAction.call_tool(...)` compatible.
+- Runtime now expands one model `call_tool` turn into one or more tool actions.
+- Each tool action is validated independently by policy, then executed sequentially in model-provided order.
+- Rejected tool calls become internal guardrail observations for the next model turn; they are not emitted as user-visible guardrail rows.
+- Planner JSON parser now accepts `action.tool_calls[]` for independent same-turn tool calls and preserves the old `tool_name` / `arguments` path.
+- Prompt schema now tells the model it may put independent tools in `action.tool_calls` rather than forcing extra planning rounds.
+- RED tests initially failed because `PlannerAction.call_tools` / `action.tool_calls` did not exist.
+- Targeted backend test command:
+  - `D:\projects\page_chat\backend\venv\Scripts\python.exe -m pytest backend/tests/test_agent_loop_runtime.py backend/tests/test_agent_structured_llm_planner.py -q`
+- Targeted result:
+  - `20 passed`
+- Backend agent regression command:
+  - `D:\projects\page_chat\backend\venv\Scripts\python.exe -m pytest backend/tests/test_agent_structured_llm_planner.py backend/tests/test_tools_prompt_catalog.py backend/tests/test_tree_first_retrieval_policy.py backend/tests/test_agent_policy.py backend/tests/test_agent_loop_runtime.py backend/tests/test_agent_navigation_tools_contract.py -q`
+- Backend agent regression result:
+  - `69 passed, 67 warnings`
