@@ -12,10 +12,21 @@ This file is the handoff log for the LLM-driven Agent Loop refactor. Read it bef
 
 ## Current Status
 
-- Current phase: Phase 9 - Regression and acceptance.
-- Status: Completed.
+- Current phase: Flat Tool Loop Phase 0 - Baseline and plan registration.
+- Status: In progress.
 - Started at: 2026-06-27.
-- Notes: All planned refactor phases are complete; ready for human browser validation or branch finishing.
+- Notes: A previous LLM-driven pass improved prompts/native tool-call parsing but kept the planner-shaped runtime. The new target is a true flat native tool-use loop: model turn -> tool calls -> tool results -> same model loop answer.
+
+## Flat Tool Loop Refactor - 2026-06-27
+
+Plan:
+- `docs/superpowers/plans/2026-06-27-pagechat-flat-llm-tool-loop-refactor-plan.zh.md`
+
+Start status:
+- Branch confirmed: `codex/pagechat-ui-agent-runtime-integration`.
+- Worktree confirmed: `C:\Users\TT_WT\.codex\worktrees\pagechat-ui-agent-runtime-integration`.
+- Execution rule: update this section at the start and completion of every phase.
+- Current task: register the new plan, then start Phase 1 with failing tests first.
 
 ## Phase Log
 
