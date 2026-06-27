@@ -66,6 +66,26 @@ Completion status:
   - `D:\projects\page_chat\backend\venv\Scripts\python.exe -m pytest backend/tests/test_tool_messages.py backend/tests/test_agent_run_event_protocol.py -q` -> `14 passed, 9 warnings`.
 - Next phase: add boundary-only runtime policy.
 
+### Flat Tool Loop Phase 3 - Boundary-only runtime policy
+
+Start status:
+- Started Phase 3 after commit `695ba2a`.
+- Goal: create `RuntimeBoundaryPolicy` for tool availability, scope, web-search enablement, and argument repair only.
+- Explicit non-goal: do not validate final-answer evidence sufficiency or prescribe retrieval routes.
+- TDD: add `backend/tests/test_runtime_boundary_policy.py` first and verify missing-module failure.
+
+Completion status:
+- RED test run:
+  - `D:\projects\page_chat\backend\venv\Scripts\python.exe -m pytest backend/tests/test_runtime_boundary_policy.py -q`
+  - failed as expected with `ModuleNotFoundError: No module named 'app.agent.runtime_boundary_policy'`.
+- Added `backend/app/agent/runtime_boundary_policy.py`.
+- The new policy validates tool availability, disabled Web Search, document name/id repair, selected-scope document boundaries, and root folder normalization.
+- It intentionally has no final-answer evidence sufficiency API.
+- Verification:
+  - `D:\projects\page_chat\backend\venv\Scripts\python.exe -m pytest backend/tests/test_runtime_boundary_policy.py -q` -> `5 passed`.
+  - `D:\projects\page_chat\backend\venv\Scripts\python.exe -m pytest backend/tests/test_model_turn.py backend/tests/test_tool_messages.py backend/tests/test_runtime_boundary_policy.py -q` -> `11 passed`.
+- Next phase: implement `ModelToolLoopRuntime` using a fake model and fake tool runner.
+
 ## Phase Log
 
 ### Phase 1 - Architecture Audit And Production Path Confirmation
