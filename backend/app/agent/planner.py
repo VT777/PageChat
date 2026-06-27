@@ -42,7 +42,11 @@ class StructuredLLMPlanner:
                 stream=False,
                 user_id=self.user_id or state.scope.get("user_id"),
                 disable_thinking=True,
+                **self._native_tool_kwargs(),
             )
+            native_tool_calls = self._extract_response_tool_calls(response)
+            if native_tool_calls:
+                return PlannerAction.call_tools(native_tool_calls)
             content = self._extract_response_content(response)
             try:
                 return self._parse_action(content)
@@ -58,14 +62,41 @@ class StructuredLLMPlanner:
             stream=True,
             user_id=self.user_id or state.scope.get("user_id"),
             disable_thinking=True,
+            **self._native_tool_kwargs(),
         )
         if not hasattr(response, "__aiter__"):
+            native_tool_calls = self._extract_response_tool_calls(response)
+            if native_tool_calls:
+                yield PlannerAction.call_tools(native_tool_calls)
+                return
             yield self._parse_action(self._extract_response_content(response))
             return
 
         content = ""
         last_thought = ""
+        tool_call_buffers: dict[int, dict[str, Any]] = {}
         async for chunk in response:
+            for tool_delta in self._extract_chunk_tool_call_deltas(chunk):
+                index = int(tool_delta.get("index") or 0)
+                current = tool_call_buffers.setdefault(
+                    index,
+                    {"tool_call_id": "", "tool_name": "", "arguments": ""},
+                )
+                if tool_delta.get("tool_call_id"):
+                    current["tool_call_id"] = tool_delta["tool_call_id"]
+                if tool_delta.get("tool_name"):
+                    current["tool_name"] = tool_delta["tool_name"]
+                if tool_delta.get("arguments_delta"):
+                    current["arguments"] = (
+                        str(current.get("arguments") or "")
+                        + str(tool_delta.get("arguments_delta") or "")
+                    )
+                yield {
+                    "type": "tool_call_delta",
+                    "tool_call_id": current.get("tool_call_id") or "",
+                    "tool_name": current.get("tool_name") or "",
+                    "arguments_delta": str(tool_delta.get("arguments_delta") or ""),
+                }
             delta = self._extract_chunk_content(chunk)
             if not delta:
                 continue
@@ -74,6 +105,21 @@ class StructuredLLMPlanner:
             if thought and thought != last_thought:
                 last_thought = thought
                 yield {"type": "thought", "message": thought}
+
+        if tool_call_buffers:
+            yield PlannerAction.call_tools(
+                [
+                    {
+                        "tool_name": str(item.get("tool_name") or ""),
+                        "arguments": self._parse_tool_arguments(
+                            str(item.get("arguments") or "")
+                        ),
+                    }
+                    for _, item in sorted(tool_call_buffers.items())
+                    if item.get("tool_name")
+                ]
+            )
+            return
 
         try:
             action = self._parse_action(content)
@@ -85,6 +131,15 @@ class StructuredLLMPlanner:
         from app.core.llm import chat_by_scenario
 
         return await chat_by_scenario(**kwargs)
+
+    def _native_tool_kwargs(self) -> dict[str, Any]:
+        if not self.tools:
+            return {}
+        return {
+            "tools": self.tools,
+            "tool_choice": "auto",
+            "allow_deterministic_tools": True,
+        }
 
     def _messages(self, state: AgentRunState, *, retry_error: str = "") -> list[dict[str, str]]:
         tools = [
@@ -231,6 +286,29 @@ class StructuredLLMPlanner:
                 return str(getattr(delta, "content", "") or "")
         return str(getattr(response, "content", "") or getattr(response, "output_text", "") or "")
 
+    def _extract_response_tool_calls(self, response: Any) -> list[dict[str, Any]]:
+        choices = self._get_value(response, "choices") or []
+        if not choices:
+            return []
+        first = choices[0]
+        message = self._get_value(first, "message") or {}
+        raw_tool_calls = self._get_value(message, "tool_calls") or []
+        tool_calls: list[dict[str, Any]] = []
+        for raw_call in raw_tool_calls:
+            function = self._get_value(raw_call, "function") or {}
+            tool_name = str(self._get_value(function, "name") or "").strip()
+            if not tool_name:
+                continue
+            tool_calls.append(
+                {
+                    "tool_name": tool_name,
+                    "arguments": self._parse_tool_arguments(
+                        str(self._get_value(function, "arguments") or "")
+                    ),
+                }
+            )
+        return tool_calls
+
     def _extract_chunk_content(self, chunk: Any) -> str:
         if isinstance(chunk, dict):
             choices = chunk.get("choices") or []
@@ -246,6 +324,40 @@ class StructuredLLMPlanner:
         if delta is None:
             return ""
         return str(getattr(delta, "content", "") or "")
+
+    def _extract_chunk_tool_call_deltas(self, chunk: Any) -> list[dict[str, Any]]:
+        choices = self._get_value(chunk, "choices") or []
+        if not choices:
+            return []
+        first = choices[0]
+        delta = self._get_value(first, "delta") or {}
+        raw_tool_calls = self._get_value(delta, "tool_calls") or []
+        deltas: list[dict[str, Any]] = []
+        for position, raw_call in enumerate(raw_tool_calls):
+            function = self._get_value(raw_call, "function") or {}
+            deltas.append(
+                {
+                    "index": self._get_value(raw_call, "index") or position,
+                    "tool_call_id": self._get_value(raw_call, "id") or "",
+                    "tool_name": self._get_value(function, "name") or "",
+                    "arguments_delta": self._get_value(function, "arguments") or "",
+                }
+            )
+        return deltas
+
+    def _parse_tool_arguments(self, text: str) -> dict[str, Any]:
+        if not text:
+            return {}
+        try:
+            value = json.loads(text)
+        except Exception:
+            return {}
+        return value if isinstance(value, dict) else {}
+
+    def _get_value(self, value: Any, key: str) -> Any:
+        if isinstance(value, dict):
+            return value.get(key)
+        return getattr(value, key, None)
 
     def _extract_partial_thought(self, content: str) -> str:
         key_index = content.find('"thought"')

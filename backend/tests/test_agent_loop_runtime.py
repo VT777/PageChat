@@ -242,6 +242,54 @@ def test_loop_runtime_streams_planner_thought_updates_before_tool_call() -> None
     asyncio.run(run())
 
 
+def test_loop_runtime_forwards_native_tool_call_deltas_before_tool_started() -> None:
+    class StreamingToolCallPlanner:
+        def __init__(self):
+            self.calls = 0
+
+        async def stream_next_action(self, state: AgentRunState):
+            self.calls += 1
+            if self.calls > 1:
+                yield PlannerAction.answer("Done.")
+                return
+            yield {
+                "type": "tool_call_delta",
+                "tool_call_id": "call-1",
+                "tool_name": "view_folder_structure",
+                "arguments_delta": '{"folder_id"',
+            }
+            yield PlannerAction.call_tool(
+                "view_folder_structure",
+                {"folder_id": "root"},
+            )
+
+    async def run() -> None:
+        runtime = AgentLoopRuntime(
+            planner=StreamingToolCallPlanner(),
+            tool_runner=RecordingToolRunner(),
+            max_steps=2,
+        )
+        state = AgentRunState(
+            question="What documents are available?",
+            conversation_id="conv-alpha",
+            run_id="run-alpha",
+            message_id="msg-alpha",
+        )
+
+        events = [event async for event in runtime.stream(state)]
+
+        assert events[0].event_type == "tool_call_delta"
+        assert events[0].payload == {
+            "tool_call_id": "call-1",
+            "tool_name": "view_folder_structure",
+            "arguments_delta": '{"folder_id"',
+            "step": 1,
+        }
+        assert events[1].event_type == "tool_started"
+
+    asyncio.run(run())
+
+
 def test_loop_runtime_streams_answer_generator_chunks() -> None:
     class AnswerPlanner:
         async def next_action(self, state: AgentRunState) -> PlannerAction:

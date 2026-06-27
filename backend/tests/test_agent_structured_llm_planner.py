@@ -37,6 +37,27 @@ def _tools():
     ]
 
 
+def _native_tool_call_response(*, tool_name: str, arguments: str):
+    return SimpleNamespace(
+        choices=[
+            SimpleNamespace(
+                message=SimpleNamespace(
+                    content="",
+                    tool_calls=[
+                        SimpleNamespace(
+                            id="call-1",
+                            function=SimpleNamespace(
+                                name=tool_name,
+                                arguments=arguments,
+                            ),
+                        )
+                    ],
+                )
+            )
+        ]
+    )
+
+
 class _ChunkStream:
     def __init__(self, chunks):
         self.chunks = list(chunks)
@@ -54,6 +75,19 @@ class _ChunkStream:
                 )
             ]
         )
+
+
+class _ToolCallChunkStream:
+    def __init__(self, chunks):
+        self.chunks = list(chunks)
+
+    def __aiter__(self):
+        return self
+
+    async def __anext__(self):
+        if not self.chunks:
+            raise StopAsyncIteration
+        return self.chunks.pop(0)
 
 
 def test_structured_planner_parses_model_generated_call_tool_action() -> None:
@@ -98,6 +132,38 @@ def test_structured_planner_parses_model_generated_call_tool_action() -> None:
         assert calls[0]["stream"] is False
         assert calls[0]["user_id"] == "user-a"
         assert calls[0]["disable_thinking"] is True
+
+    asyncio.run(run())
+
+
+def test_structured_planner_prefers_native_tool_calls_when_returned() -> None:
+    async def run() -> None:
+        calls = []
+
+        async def fake_completion(**kwargs):
+            calls.append(kwargs)
+            return _native_tool_call_response(
+                tool_name="browse_documents",
+                arguments='{"query":"AI cases"}',
+            )
+
+        planner = StructuredLLMPlanner(completion_fn=fake_completion, tools=_tools())
+        state = AgentRunState(
+            question="Find AI cases.",
+            conversation_id="conv-a",
+            run_id="run-a",
+            message_id="msg-a",
+        )
+
+        action = await planner.next_action(state)
+
+        assert calls[0]["tools"] == _tools()
+        assert calls[0]["tool_choice"] == "auto"
+        assert calls[0]["allow_deterministic_tools"] is True
+        assert action.action_type == "call_tool"
+        assert [(item.tool_name, item.arguments) for item in action.tool_calls] == [
+            ("browse_documents", {"query": "AI cases"}),
+        ]
 
     asyncio.run(run())
 
@@ -303,6 +369,84 @@ def test_structured_planner_streams_thought_before_final_action() -> None:
         assert events[2] == {"type": "thought", "message": "我先查看资料库目录。"}
         assert events[-1].action_type == "call_tool"
         assert events[-1].tool_name == "view_folder_structure"
+
+    asyncio.run(run())
+
+
+def test_structured_planner_streams_native_tool_call_deltas() -> None:
+    async def run() -> None:
+        async def fake_completion(**kwargs):
+            assert kwargs["stream"] is True
+            assert kwargs["tools"] == _tools()
+            return _ToolCallChunkStream(
+                [
+                    SimpleNamespace(
+                        choices=[
+                            SimpleNamespace(
+                                delta=SimpleNamespace(
+                                    content=None,
+                                    tool_calls=[
+                                        SimpleNamespace(
+                                            index=0,
+                                            id="call-1",
+                                            function=SimpleNamespace(
+                                                name="browse_documents",
+                                                arguments='{"query"',
+                                            ),
+                                        )
+                                    ],
+                                )
+                            )
+                        ]
+                    ),
+                    SimpleNamespace(
+                        choices=[
+                            SimpleNamespace(
+                                delta=SimpleNamespace(
+                                    content=None,
+                                    tool_calls=[
+                                        SimpleNamespace(
+                                            index=0,
+                                            id=None,
+                                            function=SimpleNamespace(
+                                                name=None,
+                                                arguments=':"AI cases"}',
+                                            ),
+                                        )
+                                    ],
+                                )
+                            )
+                        ]
+                    ),
+                ]
+            )
+
+        planner = StructuredLLMPlanner(completion_fn=fake_completion, tools=_tools())
+        state = AgentRunState(
+            question="Find AI cases.",
+            conversation_id="conv-a",
+            run_id="run-a",
+            message_id="msg-a",
+        )
+
+        events = [event async for event in planner.stream_next_action(state)]
+
+        assert events[0] == {
+            "type": "tool_call_delta",
+            "tool_call_id": "call-1",
+            "tool_name": "browse_documents",
+            "arguments_delta": '{"query"',
+        }
+        assert events[1] == {
+            "type": "tool_call_delta",
+            "tool_call_id": "call-1",
+            "tool_name": "browse_documents",
+            "arguments_delta": ':"AI cases"}',
+        }
+        assert events[-1].action_type == "call_tool"
+        assert [(item.tool_name, item.arguments) for item in events[-1].tool_calls] == [
+            ("browse_documents", {"query": "AI cases"}),
+        ]
 
     asyncio.run(run())
 

@@ -130,7 +130,26 @@ class AgentLoopRuntime:
                         continue
                     if not isinstance(planner_event, dict):
                         continue
-                    if planner_event.get("type") != "thought":
+                    event_type = planner_event.get("type")
+                    if event_type == "tool_call_delta":
+                        payload = {
+                            key: value
+                            for key, value in planner_event.items()
+                            if key != "type" and value not in (None, "")
+                        }
+                        payload["step"] = step
+                        yield PageChatRuntimeEvent("tool_call_delta", payload)
+                        continue
+                    if event_type == "processing_delta":
+                        payload = {
+                            key: value
+                            for key, value in planner_event.items()
+                            if key != "type" and value not in (None, "")
+                        }
+                        payload["step"] = step
+                        yield PageChatRuntimeEvent("processing_delta", payload)
+                        continue
+                    if event_type != "thought":
                         continue
                     message = str(planner_event.get("message") or "").strip()
                     if not message or message == streamed_thought:

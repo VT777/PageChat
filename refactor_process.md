@@ -12,10 +12,10 @@ This file is the handoff log for the LLM-driven Agent Loop refactor. Read it bef
 
 ## Current Status
 
-- Current phase: Phase 4 - Multi-tool model turn support.
+- Current phase: Phase 5 - Native tool calling adapter.
 - Status: Completed.
 - Started at: 2026-06-27.
-- Notes: Phase 4 completed. Next phase is Phase 5 native tool calling adapter.
+- Notes: Phase 5 completed. Next phase is Phase 8 answer and citation behavior.
 
 ## Phase Log
 
@@ -193,3 +193,32 @@ Completion status:
   - `D:\projects\page_chat\backend\venv\Scripts\python.exe -m pytest backend/tests/test_agent_structured_llm_planner.py backend/tests/test_tools_prompt_catalog.py backend/tests/test_tree_first_retrieval_policy.py backend/tests/test_agent_policy.py backend/tests/test_agent_loop_runtime.py backend/tests/test_agent_navigation_tools_contract.py -q`
 - Backend agent regression result:
   - `69 passed, 67 warnings`
+
+### Phase 5 - Native Tool Calling Adapter
+
+Start status:
+- Started Phase 5 after committing Phase 4 checkpoint `5e6cc80`.
+- Goal: introduce a minimal native tool-calling adapter path when provider capability is available, while preserving JSON fallback for providers that do not support it.
+- First focus:
+  - audit current LLM/provider integration and capability storage.
+  - identify where tools schema can be passed safely.
+  - add tests before changing provider/planner behavior.
+
+Completion status:
+- Audited current provider path:
+  - `chat_by_scenario` / `async_chat_completion` already support `tools`, `tool_choice`, and provider capability checks.
+  - JSON planner fallback was the production planner path before this phase.
+- Structured planner now passes native tools with `tool_choice=auto` and `allow_deterministic_tools=True`.
+- If a provider returns native `message.tool_calls`, planner converts them to `PlannerAction.call_tools(...)`.
+- If a provider streams `delta.tool_calls`, planner emits `tool_call_delta` events and reconstructs the final tool action.
+- Runtime forwards planner `tool_call_delta` / `processing_delta` events to SSE-compatible runtime events.
+- If native tool calls are absent, planner keeps the existing JSON fallback behavior.
+- RED tests initially failed because tools were not forwarded, native tool calls were not parsed, and runtime ignored `tool_call_delta`.
+- Targeted backend test command:
+  - `D:\projects\page_chat\backend\venv\Scripts\python.exe -m pytest backend/tests/test_agent_loop_runtime.py backend/tests/test_agent_structured_llm_planner.py -q`
+- Targeted result:
+  - `23 passed`
+- Backend provider/agent regression command:
+  - `D:\projects\page_chat\backend\venv\Scripts\python.exe -m pytest backend/tests/test_agent_structured_llm_planner.py backend/tests/test_tools_prompt_catalog.py backend/tests/test_tree_first_retrieval_policy.py backend/tests/test_agent_policy.py backend/tests/test_agent_loop_runtime.py backend/tests/test_agent_navigation_tools_contract.py backend/tests/test_provider_protocol_selection.py backend/tests/test_model_gateway_settings.py backend/tests/test_llm_timeout_defaults.py backend/tests/test_litellm_adapter.py -q`
+- Backend provider/agent regression result:
+  - `99 passed, 67 warnings`
