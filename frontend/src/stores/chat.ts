@@ -411,8 +411,59 @@ export const useChatStore = defineStore('chat', () => {
     }
   }
 
+  function isLocalSessionId(sessionId: string): boolean {
+    return sessionId.startsWith('session-')
+  }
+
+  function timestampFromBackend(value: unknown, fallback = Date.now()): number {
+    if (typeof value !== 'string' || !value.trim()) return fallback
+    const parsed = Date.parse(value)
+    return Number.isFinite(parsed) ? parsed : fallback
+  }
+
+  function normalizeBackendConversation(raw: any): Conversation {
+    const id = String(raw?.id || '')
+    const title = String(raw?.title || 'New chat')
+    return {
+      id,
+      title,
+      firstMessage: String(raw?.first_message || raw?.firstMessage || title),
+      timestamp: timestampFromBackend(raw?.updated_at || raw?.created_at),
+      messageCount: Number(raw?.message_count || raw?.messageCount || 0),
+    }
+  }
+
   function writeSessionsData(data: StoredChatSessions) {
     setStorageItem(SESSIONS_DATA_KEY, JSON.stringify(data))
+  }
+
+  async function hydrateConversationsFromBackend(options: { restoreLastActive?: boolean } = {}): Promise<boolean> {
+    try {
+      const response = await chatApi.getConversations()
+      const rows = Array.isArray(response.data) ? response.data : []
+      conversations.value = rows
+        .map(normalizeBackendConversation)
+        .filter((conversation) => conversation.id)
+      saveConversationsToStorage()
+
+      const restoreLastActive = options.restoreLastActive ?? false
+      if (restoreLastActive && conversations.value.length > 0) {
+        const stored = getStorageItem(SESSIONS_DATA_KEY, LEGACY_SESSIONS_DATA_KEY)
+        const lastActiveSessionId = stored ? parseSessionsData(stored).lastActiveSessionId : null
+        const candidateId = (
+          lastActiveSessionId && conversations.value.some((item) => item.id === lastActiveSessionId)
+            ? lastActiveSessionId
+            : conversations.value[0]?.id
+        )
+        if (candidateId) {
+          await loadConversation(candidateId)
+        }
+      }
+      return true
+    } catch (error) {
+      console.error('Failed to hydrate backend conversations:', error)
+      return false
+    }
   }
 
   // 从localStorage加载会话历史
@@ -1489,6 +1540,40 @@ export const useChatStore = defineStore('chat', () => {
       saveCurrentSession()
     }
 
+    if (!isLocalSessionId(sessionId)) {
+      try {
+        const response = await chatApi.getMessages(sessionId)
+        const backendMessages = Array.isArray(response.data)
+          ? response.data.map(normalizeBackendMessage)
+          : []
+        currentSessionId.value = sessionId
+        messages.value = backendMessages
+        conversationId.value = sessionId
+        const session = loadStoredSession(sessionId)
+        documentContexts.value = Array.isArray(session?.documentContexts)
+          ? normalizeDocumentContexts(session.documentContexts)
+          : []
+        saveCurrentSession()
+        console.log('Hydrated backend conversation:', sessionId, 'with', messages.value.length, 'messages')
+        return true
+      } catch {
+        conversations.value = conversations.value.filter((item) => item.id !== sessionId)
+        saveConversationsToStorage()
+        try {
+          const sessionsData = getStorageItem(SESSIONS_DATA_KEY, LEGACY_SESSIONS_DATA_KEY)
+          if (sessionsData) {
+            const data = parseSessionsData(sessionsData)
+            delete data.sessions[sessionId]
+            if (data.lastActiveSessionId === sessionId) data.lastActiveSessionId = null
+            writeSessionsData(data)
+          }
+        } catch (storageError) {
+          console.error('Failed to remove inaccessible conversation cache:', storageError)
+        }
+        return false
+      }
+    }
+
     // 加载新对话
     currentSessionId.value = sessionId
 
@@ -1713,6 +1798,7 @@ export const useChatStore = defineStore('chat', () => {
     setDraftComposerText,
     clearDraftComposerText,
     handleEnvelope,
+    hydrateConversationsFromBackend,
     deleteMessage,
     editMessage,
     regenerateMessage,

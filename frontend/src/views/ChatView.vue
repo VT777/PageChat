@@ -496,14 +496,20 @@ watch(() => route.query, (query) => {
   syncRouteDocumentContexts(query)
 }, { immediate: true })
 
-onMounted(() => {
+onMounted(async () => {
   const hasRouteDocumentContext = parseDocumentChatRouteQuery(route.query as Record<string, unknown>).length > 0
   const hasRouteFolderContext = parseFolderChatRouteContexts(route.query as Record<string, unknown>).length > 0
   const shouldOpenDraftChat = isDraftChatIntent()
-  chatStore.loadConversationsFromStorage({
-    restoreLastActive: !shouldOpenDraftChat && !hasRouteDocumentContext && !hasRouteFolderContext,
-    restoreDraft: !shouldOpenDraftChat && !hasRouteDocumentContext && !hasRouteFolderContext,
-  })
+  const shouldRestoreStoredChat = !shouldOpenDraftChat && !hasRouteDocumentContext && !hasRouteFolderContext
+  const hydratedBackend = shouldRestoreStoredChat
+    ? await chatStore.hydrateConversationsFromBackend({ restoreLastActive: true })
+    : false
+  if (!hydratedBackend) {
+    chatStore.loadConversationsFromStorage({
+      restoreLastActive: shouldRestoreStoredChat,
+      restoreDraft: shouldRestoreStoredChat,
+    })
+  }
   if (shouldOpenDraftChat) {
     chatStore.openDraftChat()
   }

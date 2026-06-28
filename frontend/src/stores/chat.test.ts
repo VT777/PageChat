@@ -7,6 +7,7 @@ import { useChatStore, type Message } from './chat'
 vi.mock('@/api', () => ({
   chatApi: {
     stream: vi.fn(),
+    getConversations: vi.fn(),
     getMessages: vi.fn(),
   },
 }))
@@ -54,8 +55,10 @@ describe('chat rollback', () => {
     installLocalStorage()
     setActivePinia(createPinia())
     vi.mocked(chatApi.stream).mockReset()
+    vi.mocked(chatApi.getConversations).mockReset()
     vi.mocked(chatApi.getMessages).mockReset()
     vi.mocked(chatApi.stream).mockResolvedValue(streamResponse())
+    vi.mocked(chatApi.getConversations).mockResolvedValue({ data: [] } as any)
     vi.mocked(chatApi.getMessages).mockResolvedValue({ data: [] } as any)
   })
 
@@ -479,6 +482,111 @@ describe('chat rollback', () => {
 
     expect(restored.currentSessionId).toBe('backend-a')
     expect(restored.messages.map((item) => item.content)).toEqual(['question', 'answer'])
+  })
+
+  it('hydrates conversation rows from the backend instead of stale local history', async () => {
+    localStorage.setItem('pagechat_chat_sessions', JSON.stringify([
+      {
+        id: 'old-local',
+        title: 'Old local chat',
+        firstMessage: 'old',
+        timestamp: 1,
+        messageCount: 1,
+      },
+    ]))
+    vi.mocked(chatApi.getConversations).mockResolvedValueOnce({
+      data: [
+        {
+          id: 'backend-a',
+          title: 'Backend chat',
+          created_at: '2026-06-25T00:00:00Z',
+          updated_at: '2026-06-25T00:00:03Z',
+        },
+      ],
+    } as any)
+
+    const store = useChatStore()
+
+    await store.hydrateConversationsFromBackend()
+
+    expect(chatApi.getConversations).toHaveBeenCalled()
+    expect(store.conversations.map((item) => item.id)).toEqual(['backend-a'])
+    expect(store.conversations[0]).toMatchObject({
+      title: 'Backend chat',
+      firstMessage: 'Backend chat',
+      messageCount: 0,
+    })
+  })
+
+  it('prefers backend messages over a stale partial local session', async () => {
+    localStorage.setItem('pagechat_chat_sessions', JSON.stringify([{
+      id: 'backend-a',
+      title: 'Backend chat',
+      firstMessage: 'stale question',
+      timestamp: 1,
+      messageCount: 1,
+    }]))
+    localStorage.setItem('pagechat_sessions_data', JSON.stringify({
+      lastActiveSessionId: 'backend-a',
+      sessions: {
+        'backend-a': {
+          messages: [message('stale-u', 'user', 'stale question')],
+          conversationId: 'backend-a',
+          documentContexts: [],
+          timestamp: 1,
+        },
+      },
+    }))
+    vi.mocked(chatApi.getMessages).mockResolvedValueOnce({
+      data: [
+        {
+          id: 'u1',
+          role: 'user',
+          content: 'fresh question',
+          thinking_content: '',
+          agent_steps: [],
+          attachments: [],
+          created_at: '2026-06-25T00:00:00Z',
+        },
+        {
+          id: 'a1',
+          role: 'assistant',
+          content: 'fresh answer',
+          thinking_content: '',
+          agent_steps: [],
+          attachments: [],
+          created_at: '2026-06-25T00:00:01Z',
+        },
+      ],
+    } as any)
+
+    const store = useChatStore()
+    store.loadConversationsFromStorage({ restoreLastActive: false, restoreDraft: false })
+
+    await expect(store.loadConversation('backend-a')).resolves.toBe(true)
+
+    expect(chatApi.getMessages).toHaveBeenCalledWith('backend-a')
+    expect(store.messages.map((item) => item.content)).toEqual(['fresh question', 'fresh answer'])
+  })
+
+  it('does not recreate an inaccessible backend conversation from firstMessage', async () => {
+    localStorage.setItem('pagechat_chat_sessions', JSON.stringify([{
+      id: 'backend-denied',
+      title: 'Denied chat',
+      firstMessage: 'should not appear',
+      timestamp: 1,
+      messageCount: 1,
+    }]))
+    vi.mocked(chatApi.getMessages).mockRejectedValueOnce(new Error('404'))
+
+    const store = useChatStore()
+    store.loadConversationsFromStorage({ restoreLastActive: false, restoreDraft: false })
+
+    await expect(store.loadConversation('backend-denied')).resolves.toBe(false)
+
+    expect(store.currentSessionId).toBeNull()
+    expect(store.messages).toEqual([])
+    expect(store.conversations).toEqual([])
   })
 
   it('keeps persisted chat sessions isolated by storage user id', () => {
