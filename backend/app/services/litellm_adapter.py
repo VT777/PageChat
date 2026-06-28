@@ -13,6 +13,24 @@ class ModelProviderError(RuntimeError):
     pass
 
 
+_LITELLM_PROVIDER_PREFIX = {
+    "dashscope": "dashscope",
+    "openai": "openai",
+    "openai_compatible": "openai",
+    "environment": "openai",
+    "deepseek": "openai",
+    "moonshot": "openai",
+    "zhipuai": "openai",
+    "siliconflow": "openai",
+    "volcengine_ark": "openai",
+    "google_gemini": "openai",
+    "ollama": "openai",
+    "openrouter": "openrouter",
+    "anthropic": "anthropic",
+    "azure_openai": "azure",
+}
+
+
 class LiteLLMAdapter:
     def completion(
         self,
@@ -75,7 +93,7 @@ class LiteLLMAdapter:
         extra: dict[str, Any],
     ) -> dict[str, Any]:
         params = {
-            "model": provider_config["model"],
+            "model": _model_for_litellm(provider_config),
             "messages": messages,
             "temperature": temperature,
             "stream": stream,
@@ -94,3 +112,12 @@ class LiteLLMAdapter:
         if api_key:
             message = message.replace(str(api_key), "[redacted-api-key]")
         return message
+
+
+def _model_for_litellm(provider_config: dict[str, Any]) -> str:
+    model = str(provider_config["model"]).strip()
+    provider = str(provider_config.get("provider") or "openai_compatible").strip().lower()
+    prefix = _LITELLM_PROVIDER_PREFIX.get(provider)
+    if not prefix or model.startswith(f"{prefix}/"):
+        return model
+    return f"{prefix}/{model}"
