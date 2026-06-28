@@ -11,9 +11,9 @@ This file is the compact handoff log for model routing, LiteLLM provider normali
 
 ## Current Status
 
-- Phase: 1 - LiteLLM provider normalization
+- Phase: 2 - Provider test route coverage
 - Status: Complete
-- Notes: LiteLLM adapter now prefixes DashScope/OpenAI-compatible models at boundary. Phase 2 next.
+- Notes: Provider test API coverage added; Phase 3 frontend provider identity next.
 
 ## Phase Log
 
@@ -37,3 +37,13 @@ End:
 - RED: `test_dashscope_model_is_prefixed_for_litellm` and `test_openai_compatible_model_is_prefixed_for_litellm` failed on bare model ids.
 - GREEN: added adapter normalization and updated expectations.
 - Verification: `test_litellm_adapter.py` -> 7 passed; `test_llm_timeout_defaults.py test_model_settings_api.py` -> 23 passed.
+
+### Phase 2 - Provider Test Route Coverage
+
+Start:
+- Goal: ensure `POST /model-providers/{id}/test` uses the same LiteLLM normalization path.
+- RED target: `backend/tests/test_model_settings_api.py`.
+
+End:
+- Added DashScope provider-test coverage through real `LiteLLMAdapter` path.
+- Verification: `test_model_settings_api.py test_litellm_adapter.py` -> 23 passed.

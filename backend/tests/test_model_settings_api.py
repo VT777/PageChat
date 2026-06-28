@@ -411,6 +411,40 @@ def test_provider_connection_test_uses_adapter(monkeypatch, tmp_path: Path) -> N
     assert calls[0]["provider_config"]["model"] == "custom-chat"
 
 
+def test_provider_connection_test_normalizes_dashscope_model_for_litellm(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    calls = []
+
+    async def fake_acompletion(**kwargs):
+        calls.append(kwargs)
+        return {"choices": [{"message": {"content": "ok"}}]}
+
+    monkeypatch.setattr(
+        "app.services.litellm_adapter.litellm.acompletion",
+        fake_acompletion,
+    )
+    client = _client(tmp_path)
+    provider = client.post(
+        "/api/settings/model-providers",
+        json={
+            "provider": "dashscope",
+            "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+            "api_key": "sk-secret-123456",
+        },
+    ).json()
+
+    response = client.post(
+        f"/api/settings/model-providers/{provider['provider_id']}/test",
+        json={"model": "qwen3.7-max-2026-06-08"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["success"] is True
+    assert calls[0]["model"] == "dashscope/qwen3.7-max-2026-06-08"
+
+
 def test_provider_connection_test_can_auto_select_model_and_mark_valid(
     monkeypatch,
     tmp_path: Path,
