@@ -11,9 +11,9 @@ This file is the compact handoff log for model routing, LiteLLM provider normali
 
 ## Current Status
 
-- Phase: 4 - Disable silent environment fallback
+- Phase: 5 - Missing route chat/API errors
 - Status: Complete
-- Notes: Missing user routes now fail by default; env fallback requires `ALLOW_ENV_MODEL_FALLBACK=true`.
+- Notes: Chat stream now emits `MODEL_ROUTE_NOT_CONFIGURED`; frontend shows actionable settings guidance.
 
 ## Phase Log
 
@@ -69,3 +69,14 @@ End:
 - RED: missing `ModelRouteNotConfiguredError` and fallback gate caused target tests to fail.
 - GREEN: added explicit route-missing exception and `ALLOW_ENV_MODEL_FALLBACK` gate.
 - Verification: `test_model_settings_service.py test_llm_timeout_defaults.py` -> 19 passed.
+
+### Phase 5 - Missing Model Route Chat/API Errors
+
+Start:
+- Goal: chat stream surfaces `MODEL_ROUTE_NOT_CONFIGURED` instead of stack traces or silent fallback.
+- RED target: `backend/tests/test_chat_stream_api.py` and `frontend/src/stores/chat.test.ts`.
+
+End:
+- RED: missing-route SSE lacked `error_code`; frontend showed raw English exception.
+- GREEN: added stable missing-route payload and store display mapping.
+- Verification: `test_chat_stream_api.py` -> 8 passed; `chat.test.ts` -> 36 passed.

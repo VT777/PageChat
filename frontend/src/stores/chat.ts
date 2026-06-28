@@ -1195,10 +1195,11 @@ export const useChatStore = defineStore('chat', () => {
         const data = envelope.data as unknown as RunFailed
         const base = messages.value[lastIndex] || last
         flushDisplayBuffer(base.id, true)
+        const errorContent = runFailedDisplayMessage(data)
         messages.value[lastIndex] = {
           ...base,
-          content: base.content || data.error || '抱歉，处理请求时发生错误。',
-          displayContent: base.content || data.error || '抱歉，处理请求时发生错误。',
+          content: base.content || errorContent,
+          displayContent: base.content || errorContent,
           isLoading: false,
         }
         break
@@ -1213,6 +1214,29 @@ export const useChatStore = defineStore('chat', () => {
         break
       }
     }
+  }
+
+  function runFailedDisplayMessage(data: RunFailed): string {
+    if (data.error_code === 'MODEL_ROUTE_NOT_CONFIGURED') {
+      return data.message || modelRouteMissingMessage(data.route_slot)
+    }
+    return data.error || data.message || '抱歉，处理请求时发生错误。'
+  }
+
+  function modelRouteMissingMessage(routeSlot?: string): string {
+    if (routeSlot === 'document_qa' || routeSlot === 'query_expansion') {
+      return '请先在设置页配置问答模型。'
+    }
+    if (routeSlot === 'indexing') {
+      return '请先在设置页配置解析模型。'
+    }
+    if (routeSlot === 'vision') {
+      return '请先在设置页配置 OCR/VLM 模型。'
+    }
+    if (routeSlot === 'general_chat') {
+      return '请先在设置页配置聊天模型。'
+    }
+    return '请先在设置页配置所需模型。'
   }
 
   function dedupeCitations(items: Citation[]): Citation[] {

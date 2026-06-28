@@ -39,6 +39,28 @@ class ModelRouteNotConfiguredError(RuntimeError):
         )
         self.route_slot = route_slot
 
+
+MODEL_ROUTE_NOT_CONFIGURED_ERROR_CODE = "MODEL_ROUTE_NOT_CONFIGURED"
+
+
+def model_route_not_configured_payload(
+    error: ModelRouteNotConfiguredError,
+) -> dict[str, str]:
+    message = {
+        "general_chat": "请先在设置页配置聊天模型。",
+        "document_qa": "请先在设置页配置问答模型。",
+        "query_expansion": "请先在设置页配置问答模型。",
+        "indexing": "请先在设置页配置解析模型。",
+        "vision": "请先在设置页配置 OCR/VLM 模型。",
+    }.get(error.route_slot, "请先在设置页配置所需模型。")
+    return {
+        "status": "failed",
+        "error_code": MODEL_ROUTE_NOT_CONFIGURED_ERROR_CODE,
+        "route_slot": error.route_slot,
+        "message": message,
+        "error": message,
+    }
+
 def _provider_preset(
     provider: str,
     label: str,

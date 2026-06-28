@@ -32,6 +32,10 @@ from app.services.web_search_tool import WEB_SEARCH_TOOL
 from app.services.folder_service import FolderService
 from app.services.retrieval_policy import normalize_folder_id
 from app.services.citation_binding_service import has_document_citation
+from app.services.model_settings_service import (
+    ModelRouteNotConfiguredError,
+    model_route_not_configured_payload,
+)
 from app.prompts import build_tool_catalog
 
 
@@ -435,11 +439,23 @@ class ChatService:
             data["seq"] = seq
             return sse_frame(built_event_type, data)
 
-        async def fail_current_run(error_message: str) -> str:
+        async def fail_current_run(
+            error_message: str,
+            error_payload: Optional[dict] = None,
+        ) -> str:
             try:
                 await self.db.rollback()
             except Exception:
                 pass
+            payload = {
+                "status": "failed",
+                "error": error_message,
+            }
+            if error_payload:
+                payload.update(error_payload)
+            persisted_error = str(
+                payload.get("message") or payload.get("error") or error_message
+            )
             await ensure_run(run_protocol)
             await self.update_message(
                 assistant_message_id,
@@ -451,23 +467,17 @@ class ChatService:
             try:
                 frame = await emit(
                     "run_failed",
-                    {
-                        "status": "failed",
-                        "error": error_message,
-                    },
+                    payload,
                 )
             except Exception:
                 if emitter is None:
                     raise
                 built_event_type, data = emitter.build(
                     "run_failed",
-                    {
-                        "status": "failed",
-                        "error": error_message,
-                    },
+                    payload,
                 )
                 frame = sse_frame(built_event_type, data)
-            await self.run_repository.fail_run(run_id, error_message)
+            await self.run_repository.fail_run(run_id, persisted_error)
             return frame
 
         def citation_identity(citation: dict) -> str:
@@ -633,6 +643,11 @@ class ChatService:
                     pass
                 await self.run_repository.cancel_run(run_id)
                 raise
+            except ModelRouteNotConfiguredError as exc:
+                yield sse_frame(
+                    "__agent_error__",
+                    model_route_not_configured_payload(exc),
+                )
             except Exception as e:
                 yield sse_frame("__agent_error__", {"error": str(e)})
 
@@ -644,8 +659,12 @@ class ChatService:
 
                     # 根据事件类型更新累积内容并转为 PageChat 标准事件。
                     if event_type == "__agent_error__":
-                        error_message = data.get("error") or "Agent stream failed"
-                        yield await fail_current_run(error_message)
+                        error_message = (
+                            data.get("message")
+                            or data.get("error")
+                            or "Agent stream failed"
+                        )
+                        yield await fail_current_run(error_message, dict(data))
                         return
                     elif event_type == "processing_delta":
                         processing_payload = dict(data)

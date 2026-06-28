@@ -14,6 +14,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from app.api import chat  # noqa: E402
 from app.models.migrations import run_migrations  # noqa: E402
 from app.services.chat_service import ChatService  # noqa: E402
+from app.services.model_settings_service import ModelRouteNotConfiguredError  # noqa: E402
 from phase0_chat_helpers import (  # noqa: E402
     create_chat_history_schema,
     parse_sse_frames,
@@ -350,6 +351,65 @@ def test_chat_stream_api_history_error_does_not_create_transport_duplicate(
         assert [row[0] for row in event_rows] == ["run_failed"]
 
     asyncio.run(assert_single_failed_run())
+
+
+def test_chat_stream_api_missing_model_route_uses_stable_error_payload(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    db_path = tmp_path / "stream-missing-model-route.db"
+
+    async def setup() -> None:
+        async with aiosqlite.connect(db_path) as db:
+            await create_chat_history_schema(db)
+            await run_migrations(db)
+
+    asyncio.run(setup())
+
+    async def fake_documents(self, user_id=None):
+        return []
+
+    class MissingRouteAgent:
+        async def run_agent_stream(self, **_kwargs):
+            raise ModelRouteNotConfiguredError("document_qa")
+            yield ""  # pragma: no cover
+
+    monkeypatch.setattr(chat, "DB_PATH", db_path)
+    monkeypatch.setattr(
+        "app.services.document_service.DocumentService.get_indexed_documents",
+        fake_documents,
+    )
+    monkeypatch.setattr(ChatService, "_get_agent_service", lambda self: MissingRouteAgent())
+
+    response = _client(db_path).post("/api/chat/stream", json={"question": "你好"})
+    events = _parse_response_sse(response.text)
+
+    assert response.status_code == 200
+    assert [event["event"] for event in events] == ["run_started", "run_failed"]
+    failure = events[-1]["data"]
+    assert failure["status"] == "failed"
+    assert failure["error_code"] == "MODEL_ROUTE_NOT_CONFIGURED"
+    assert failure["route_slot"] == "document_qa"
+    assert "问答模型" in failure["message"]
+    assert "LiteLLM" not in failure["message"]
+
+    async def assert_persisted_failure() -> None:
+        async with aiosqlite.connect(db_path) as db:
+            cursor = await db.execute(
+                """
+                SELECT status, error, protocol
+                FROM agent_runs
+                ORDER BY started_at DESC
+                LIMIT 1
+                """
+            )
+            run_row = await cursor.fetchone()
+
+        assert run_row[0] == "failed"
+        assert "问答模型" in run_row[1]
+        assert run_row[2] == "chat_completions"
+
+    asyncio.run(assert_persisted_failure())
 
 
 def test_chat_stream_api_periodic_save_error_does_not_create_transport_duplicate(

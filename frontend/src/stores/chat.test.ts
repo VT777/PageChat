@@ -809,6 +809,30 @@ describe('chat rollback', () => {
     ])
   })
 
+  it('shows missing model route failures as actionable settings guidance', () => {
+    const store = useChatStore()
+    store.addAssistantMessage()
+
+    store.handleEnvelope({
+      event: 'run_failed',
+      data: {
+        run_id: 'run-a',
+        conversation_id: 'conv-a',
+        message_id: 'a1',
+        seq: 2,
+        ts: '2026-06-26T10:00:01Z',
+        status: 'failed',
+        error_code: 'MODEL_ROUTE_NOT_CONFIGURED',
+        route_slot: 'document_qa',
+        error: "Model route 'document_qa' is not configured. Configure it in Settings.",
+        message: '请先在设置页配置问答模型。',
+      },
+    } as any)
+
+    expect(store.messages[0].content).toBe('请先在设置页配置问答模型。')
+    expect(store.messages[0].isLoading).toBe(false)
+  })
+
   it('uses tool call deltas as the same pending tool row that tool_started completes', () => {
     const store = useChatStore()
     store.addAssistantMessage()

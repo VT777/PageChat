@@ -10,6 +10,10 @@ from app.models.schemas import ChatRequest
 from app.services.chat_attachment_service import ChatAttachmentService
 from app.services.chat_run_repository import ChatRunRepository
 from app.services.chat_service import ChatService
+from app.services.model_settings_service import (
+    ModelRouteNotConfiguredError,
+    model_route_not_configured_payload,
+)
 from app.api.auth import require_auth
 from app.agent.events import PageChatEventEmitter, sse_frame, utc_now_iso
 
@@ -106,7 +110,15 @@ async def chat_stream(
                         await queue.put(event)
         except Exception as e:
             if stream_state["active"]:
-                error_message = str(e)
+                if isinstance(e, ModelRouteNotConfiguredError):
+                    failure_payload = model_route_not_configured_payload(e)
+                    error_message = failure_payload["message"]
+                else:
+                    error_message = str(e)
+                    failure_payload = {
+                        "status": "failed",
+                        "error": error_message,
+                    }
                 try:
                     async with aiosqlite.connect(str(DB_PATH)) as db:
                         db.row_factory = aiosqlite.Row
@@ -139,7 +151,7 @@ async def chat_stream(
                         )
                         event_type, payload = emitter.build(
                             "run_failed",
-                            {"status": "failed", "error": error_message},
+                            failure_payload,
                         )
                         await repository.append_run_event(
                             transport_run_id,
@@ -149,18 +161,18 @@ async def chat_stream(
                         await repository.fail_run(transport_run_id, error_message)
                         await queue.put(sse_frame(event_type, payload))
                 except Exception:
+                    fallback_payload = {
+                        "run_id": f"transport_{run_id}",
+                        "conversation_id": request.conversation_id or "transport_error",
+                        "message_id": "transport_error",
+                        "seq": 1,
+                        "ts": utc_now_iso(),
+                        **failure_payload,
+                    }
                     await queue.put(
                         sse_frame(
                             "run_failed",
-                            {
-                                "run_id": f"transport_{run_id}",
-                                "conversation_id": request.conversation_id or "transport_error",
-                                "message_id": "transport_error",
-                                "seq": 1,
-                                "ts": utc_now_iso(),
-                                "status": "failed",
-                                "error": error_message,
-                            },
+                            fallback_payload,
                         )
                     )
         finally:

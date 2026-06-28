@@ -92,6 +92,9 @@ export interface RunCompleted extends PageChatEventMeta {
 export interface RunFailed extends PageChatEventMeta {
   status: 'failed'
   error: string
+  error_code?: string
+  route_slot?: string
+  message?: string
 }
 
 export interface RunCancelled extends PageChatEventMeta {
