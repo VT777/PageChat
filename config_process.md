@@ -11,9 +11,9 @@ This file is the compact handoff log for model routing, LiteLLM provider normali
 
 ## Current Status
 
-- Phase: 6 - PageIndex and ModelGateway route enforcement
+- Phase: 7 - Config residue cleanup
 - Status: Complete
-- Notes: Non-chat gateway paths now preserve missing-route errors and explicit env fallback behavior.
+- Notes: Removed unused evidence/PageIndex residue; retained `BIGMODEL_*` aliases for compatibility.
 
 ## Phase Log
 
@@ -91,3 +91,14 @@ End:
 - RED: user ModelGateway fell back without settings; PageIndex swallowed missing-route errors and dropped env routes.
 - GREEN: enforced missing-route propagation and allowed explicit env route passthrough.
 - Verification: `test_model_gateway_settings.py test_pageindex_model_routes.py` -> 16 passed.
+
+### Phase 7 - Config Residue Cleanup
+
+Start:
+- Goal: remove only confirmed unused model fallback residue from `backend/app/core/config.py`.
+- Scan target: suspicious model/evidence/PageIndex compatibility variables.
+
+End:
+- Scan: only candidate definitions existed in `config.py`; `BIGMODEL_*` aliases intentionally retained.
+- Removed: `MULTITURN_MAX_EVIDENCE`, `EVIDENCE_REUSE_SIMILARITY_MIN`, `ALLOW_CROSS_SESSION_EVIDENCE_REUSE`, `PAGE_TEXT_SHORT_THRESHOLD`, `EFFECTIVE_PAGEINDEX_CONFIG`.
+- Verification: `test_runtime_settings_service.py test_pageindex_model_routes.py test_model_gateway_settings.py` -> 20 passed.

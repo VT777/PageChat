@@ -86,9 +86,6 @@ SSE_SLA_WINDOW_SECONDS = 300
 SSE_SLA_MIN_SAMPLES = 100
 CITATION_MIN_CONFIDENCE = 0.65
 MULTITURN_MAX_USER_ROUNDS = 6
-MULTITURN_MAX_EVIDENCE = 20
-EVIDENCE_REUSE_SIMILARITY_MIN = 0.72
-ALLOW_CROSS_SESSION_EVIDENCE_REUSE = False
 AGENT_RUNTIME_MODE = os.getenv("AGENT_RUNTIME_MODE", "flat_tool_loop").strip().lower()
 
 # OCR 閰嶇疆锛堜娇鐢?DashScope qwen3.5-ocr锛?
@@ -166,9 +163,6 @@ MODEL_CONFIG = {
         "max_tokens": 100,
     },
 }
-
-# 椤甸潰鏂囨湰澶煭鏃惰嚜鍔ㄨ幏鍙栭〉闈㈠浘鐗囪妯″瀷鐪嬪浘鐨勯槇鍊硷紙瀛楃鏁帮級
-PAGE_TEXT_SHORT_THRESHOLD = int(os.getenv("PAGE_TEXT_SHORT_THRESHOLD", "200"))
 
 # PageIndex 閰嶇疆锛堜紭鍖栫増锛?
 PAGEINDEX_CONFIG = {
@@ -306,9 +300,6 @@ def build_effective_pageindex_config(mode: str | None = None) -> dict:
         }
     )
     return cfg
-
-
-EFFECTIVE_PAGEINDEX_CONFIG = build_effective_pageindex_config()
 
 # 鏂囦欢涓婁紶闄愬埗
 MAX_FILE_SIZE = 50 * 1024 * 1024  # 50MB
