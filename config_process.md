@@ -11,9 +11,9 @@ This file is the compact handoff log for model routing, LiteLLM provider normali
 
 ## Current Status
 
-- Phase: 7 - Config residue cleanup
+- Phase: 8 - Regression and docs
 - Status: Complete
-- Notes: Removed unused evidence/PageIndex residue; retained `BIGMODEL_*` aliases for compatibility.
+- Notes: Regression/build passed; backend restarted from integration worktree and `/health` is OK.
 
 ## Phase Log
 
@@ -102,3 +102,15 @@ End:
 - Scan: only candidate definitions existed in `config.py`; `BIGMODEL_*` aliases intentionally retained.
 - Removed: `MULTITURN_MAX_EVIDENCE`, `EVIDENCE_REUSE_SIMILARITY_MIN`, `ALLOW_CROSS_SESSION_EVIDENCE_REUSE`, `PAGE_TEXT_SHORT_THRESHOLD`, `EFFECTIVE_PAGEINDEX_CONFIG`.
 - Verification: `test_runtime_settings_service.py test_pageindex_model_routes.py test_model_gateway_settings.py` -> 20 passed.
+
+### Phase 8 - Regression And Docs
+
+Start:
+- Goal: run model-routing regressions, build frontend, document fallback behavior, and restart backend from the integration worktree.
+- Verification target: backend model/chat tests, frontend test/build, lightweight runtime checks.
+
+End:
+- Backend regression: model/settings/gateway/PageIndex/chat tests -> 66 passed.
+- Frontend regression: `npm test` -> 133 passed; `npm run build` -> success.
+- Docs: `codex.md` now documents `ALLOW_ENV_MODEL_FALLBACK=false`, local fallback opt-in, and LiteLLM boundary normalization.
+- Runtime: backend restarted on port 8000; `/health` returned `{"status":"ok"}`. Unauthenticated presets check returns 401, so authenticated UI validation is still a manual follow-up.

@@ -187,6 +187,58 @@ npm.cmd test
 npm.cmd run build
 ```
 
+## 模型路由与本地 Fallback
+
+当前产品行为要求用户在设置页显式配置模型供应商和功能模型路由：
+
+- 问答模型：`document_qa`
+- 聊天模型：`general_chat`
+- 解析模型：`indexing`
+- 视觉/OCR 模型：`vision`
+- 查询扩展：`query_expansion`
+
+默认配置：
+
+```text
+ALLOW_ENV_MODEL_FALLBACK=false
+```
+
+这表示如果当前用户没有配置对应 route，后端会返回稳定错误：
+
+```text
+MODEL_ROUTE_NOT_CONFIGURED
+```
+
+前端应显示“请先在设置页配置问答模型/解析模型”等可行动提示，而不是继续使用 `.env` 里的默认模型。
+
+只有本地调试旧流程时，才临时打开环境模型 fallback：
+
+```text
+ALLOW_ENV_MODEL_FALLBACK=true
+```
+
+打开后，`LLM_FLASH_MODEL` / `LLM_PLUS_MODEL` 会继续作为开发兜底模型使用。不要把这个开关当成正式产品路径。
+
+## LiteLLM Provider Normalization
+
+数据库和前端里保存的模型名保持用户看到的原始模型 id，例如：
+
+```text
+qwen3.7-max-2026-06-08
+```
+
+调用 LiteLLM 时才在 adapter 边界转换为 provider-aware model：
+
+```text
+dashscope/qwen3.7-max-2026-06-08
+openai/<model>
+openrouter/<model>
+anthropic/<model>
+azure/<model>
+```
+
+不要把 `dashscope/`、`openai/` 这类 LiteLLM 前缀写回数据库或设置页。设置页下拉框的保存值必须保留 `provider_id`，避免两个同类型供应商账号因为显示名相同而保存错 route。
+
 ## Agent Runtime Mode
 
 Current default backend runtime:
