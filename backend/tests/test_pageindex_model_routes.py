@@ -6,6 +6,7 @@ from types import SimpleNamespace
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from app.services.pageindex_service import PageIndexService
+from app.services.model_settings_service import ModelRouteNotConfiguredError
 
 
 def _response(text: str = "ok"):
@@ -72,6 +73,83 @@ def test_indexing_completion_falls_back_without_user_route(monkeypatch) -> None:
 
         assert calls[0]["model"] == "fallback-model"
         assert "provider_config" not in calls[0]
+
+    asyncio.run(run())
+
+
+def test_resolve_model_route_propagates_missing_user_route(monkeypatch) -> None:
+    async def run() -> None:
+        import aiosqlite
+        from app.services import model_settings_service
+
+        class FakeConnection:
+            row_factory = None
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, exc_type, exc, traceback):
+                return None
+
+        class FakeModelSettingsService:
+            def __init__(self, db):
+                self.db = db
+
+            async def resolve_route(self, user_id, route_slot):
+                raise ModelRouteNotConfiguredError(route_slot)
+
+        monkeypatch.setattr(aiosqlite, "connect", lambda *_args, **_kwargs: FakeConnection())
+        monkeypatch.setattr(model_settings_service, "ModelSettingsService", FakeModelSettingsService)
+
+        service = PageIndexService(user_id="user-a")
+
+        try:
+            await service._resolve_model_route("indexing")
+            assert False, "Expected missing route to fail"
+        except ModelRouteNotConfiguredError as exc:
+            assert exc.route_slot == "indexing"
+
+    asyncio.run(run())
+
+
+def test_resolve_model_route_uses_environment_route_when_enabled(monkeypatch) -> None:
+    async def run() -> None:
+        import aiosqlite
+        from app.services import model_settings_service
+
+        class FakeConnection:
+            row_factory = None
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, exc_type, exc, traceback):
+                return None
+
+        class FakeModelSettingsService:
+            def __init__(self, db):
+                self.db = db
+
+            async def resolve_route(self, user_id, route_slot):
+                return {
+                    "route_slot": route_slot,
+                    "provider": "environment",
+                    "base_url": "https://env.example/v1",
+                    "api_key": "env-secret",
+                    "model": "env-index",
+                    "source": "environment",
+                    "route_version": "env-index-v1",
+                }
+
+        monkeypatch.setattr(aiosqlite, "connect", lambda *_args, **_kwargs: FakeConnection())
+        monkeypatch.setattr(model_settings_service, "ModelSettingsService", FakeModelSettingsService)
+
+        service = PageIndexService(user_id="user-a")
+
+        route = await service._resolve_model_route("indexing")
+
+        assert route["source"] == "environment"
+        assert route["model"] == "env-index"
 
     asyncio.run(run())
 

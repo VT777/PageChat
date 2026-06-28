@@ -183,15 +183,20 @@ class PageIndexService:
             import aiosqlite
 
             from app.models.database import DB_PATH
-            from app.services.model_settings_service import ModelSettingsService
+            from app.services.model_settings_service import (
+                ModelRouteNotConfiguredError,
+                ModelSettingsService,
+            )
 
             async with aiosqlite.connect(str(DB_PATH)) as db:
                 db.row_factory = aiosqlite.Row
                 route = await ModelSettingsService(db).resolve_route(
                     self.user_id, route_slot
                 )
-                if route.get("source") != "user":
+                if route.get("source") not in {"user", "environment"}:
                     route = None
+        except ModelRouteNotConfiguredError:
+            raise
         except Exception as exc:
             print(
                 f"[TOC-MODEL] fallback route_slot={route_slot} user_id={self.user_id} error_type={type(exc).__name__}"

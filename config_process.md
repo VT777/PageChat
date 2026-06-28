@@ -11,9 +11,9 @@ This file is the compact handoff log for model routing, LiteLLM provider normali
 
 ## Current Status
 
-- Phase: 5 - Missing route chat/API errors
+- Phase: 6 - PageIndex and ModelGateway route enforcement
 - Status: Complete
-- Notes: Chat stream now emits `MODEL_ROUTE_NOT_CONFIGURED`; frontend shows actionable settings guidance.
+- Notes: Non-chat gateway paths now preserve missing-route errors and explicit env fallback behavior.
 
 ## Phase Log
 
@@ -80,3 +80,14 @@ End:
 - RED: missing-route SSE lacked `error_code`; frontend showed raw English exception.
 - GREEN: added stable missing-route payload and store display mapping.
 - Verification: `test_chat_stream_api.py` -> 8 passed; `chat.test.ts` -> 36 passed.
+
+### Phase 6 - PageIndex / ModelGateway Route Enforcement
+
+Start:
+- Goal: PageIndex/model gateway fails clearly without a configured route unless env fallback is enabled.
+- RED target: `backend/tests/test_model_gateway_settings.py` and `backend/tests/test_pageindex_model_routes.py`.
+
+End:
+- RED: user ModelGateway fell back without settings; PageIndex swallowed missing-route errors and dropped env routes.
+- GREEN: enforced missing-route propagation and allowed explicit env route passthrough.
+- Verification: `test_model_gateway_settings.py test_pageindex_model_routes.py` -> 16 passed.

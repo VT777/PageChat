@@ -5,6 +5,7 @@ import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from app.services.model_gateway import ModelGateway
+from app.services.model_settings_service import ModelRouteNotConfiguredError
 
 
 class FakeSettingsService:
@@ -27,6 +28,54 @@ def test_default_route_equals_current_behavior_without_settings() -> None:
         reasoning_complexity="light",
     ) == "flash"
     assert gateway._model_for("flash").endswith("flash")
+
+
+def test_user_gateway_requires_settings_route_by_default(monkeypatch) -> None:
+    async def run() -> None:
+        async def fake_completion(**_kwargs):
+            return {"ok": True}
+
+        monkeypatch.setattr(
+            "app.services.model_gateway.config.ALLOW_ENV_MODEL_FALLBACK",
+            False,
+            raising=False,
+        )
+        gateway = ModelGateway(completion_fn=fake_completion, user_id="user-a")
+
+        try:
+            await gateway.classify_intent("hello")
+            assert False, "Expected missing route to fail"
+        except ModelRouteNotConfiguredError as exc:
+            assert exc.route_slot == "general_chat"
+
+    asyncio.run(run())
+
+
+def test_user_gateway_allows_environment_route_when_enabled(monkeypatch) -> None:
+    async def run() -> None:
+        calls = []
+
+        async def fake_completion(**kwargs):
+            calls.append(kwargs)
+            return {"ok": True}
+
+        monkeypatch.setattr(
+            "app.services.model_gateway.config.ALLOW_ENV_MODEL_FALLBACK",
+            True,
+            raising=False,
+        )
+        monkeypatch.setattr(
+            "app.services.model_gateway.config.LLM_FLASH_MODEL",
+            "env-flash",
+        )
+        gateway = ModelGateway(completion_fn=fake_completion, user_id="user-a")
+
+        await gateway.classify_intent("hello")
+
+        assert calls[0]["model"] == "env-flash"
+        assert "provider_config" not in calls[0]
+
+    asyncio.run(run())
 
 
 def test_general_chat_uses_configured_route() -> None:

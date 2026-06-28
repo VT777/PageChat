@@ -19,6 +19,7 @@ from typing import Any, Callable, Sequence
 from app.core import config
 from app.core.llm import async_chat_completion
 from app.agent.provider_adapter import ProviderCapabilityError, apply_provider_protocol
+from app.services.model_settings_service import ModelRouteNotConfiguredError
 
 
 CompletionFn = Callable[..., Any]
@@ -267,9 +268,13 @@ class ModelGateway:
         requires_vision: bool = False,
         requires_structured_output: bool = False,
     ) -> dict[str, Any] | None:
+        route_slot = self._route_slot_for_task(task, route)
+        if self._user_id and not self._model_settings_service:
+            if not config.ALLOW_ENV_MODEL_FALLBACK:
+                raise ModelRouteNotConfiguredError(route_slot)
+            return None
         if not self._model_settings_service or not self._user_id:
             return None
-        route_slot = self._route_slot_for_task(task, route)
         provider_config = await self._model_settings_service.resolve_route(
             self._user_id, route_slot
         )
