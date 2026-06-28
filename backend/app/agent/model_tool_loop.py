@@ -6,7 +6,13 @@ import json
 import time
 from typing import Any
 
-from app.agent.model_turn import ModelTextDelta, ModelToolCall, ModelToolCallDelta, ModelTurn
+from app.agent.model_turn import (
+    ModelReasoningDelta,
+    ModelTextDelta,
+    ModelToolCall,
+    ModelToolCallDelta,
+    ModelTurn,
+)
 from app.agent.runtime_boundary_policy import RuntimeBoundaryPolicy
 from app.agent.state import AgentRunState
 from app.agent.tool_messages import build_tool_result_message
@@ -46,6 +52,12 @@ class ModelToolLoopRuntime:
                 tools=self.tools,
                 user_id=state.scope.get("user_id"),
             ):
+                if isinstance(model_event, ModelReasoningDelta):
+                    yield RuntimeStreamEvent(
+                        "reasoning_delta",
+                        {"content": model_event.delta, "status": "streaming"},
+                    )
+                    continue
                 if isinstance(model_event, ModelTextDelta):
                     streamed_content += model_event.delta
                     state.answer += model_event.delta
@@ -131,15 +143,6 @@ class ModelToolLoopRuntime:
     ) -> AsyncIterator[RuntimeStreamEvent]:
         validation = self.boundary_policy.validate_tool_call(call, scope=state.scope)
         repaired = validation.repaired_call
-        yield RuntimeStreamEvent(
-            "processing_delta",
-            {
-                "content": _processing_note_for_tool(repaired.name, state.question),
-                "tool_call_id": repaired.id,
-                "tool_name": repaired.name,
-                "status": "streaming",
-            },
-        )
         yield RuntimeStreamEvent(
             "tool_started",
             {

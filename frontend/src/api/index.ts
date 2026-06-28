@@ -1,6 +1,6 @@
 import axios from 'axios'
 import type { ChatScopeRequest } from '@/types/retrieval'
-import type { ModelProviderInput, ModelProviderUpdateInput, ModelRouteMapping } from '@/types/modelSettings'
+import type { ModelProviderCustomModelInput, ModelProviderInput, ModelProviderUpdateInput, ModelRouteMapping } from '@/types/modelSettings'
 import type { WebSearchSettingsUpdate } from '@/types/webSearchSettings'
 
 export interface ProcessingStep {
@@ -131,6 +131,8 @@ export const chatApi = {
     document_ids?: string[]
     attachment_ids?: string[]
     conversation_id?: string
+    regenerate_from_message_id?: string
+    thinking_enabled?: boolean
   } & ChatScopeRequest, options?: { signal?: AbortSignal }) => {
     const token = localStorage.getItem('token')
     const headers: Record<string, string> = { 'Content-Type': 'application/json' }
@@ -202,6 +204,8 @@ export const settingsApi = {
     api.delete(`/settings/model-providers/${providerId}`),
   listModelProviderModels: (providerId: string) =>
     api.get(`/settings/model-providers/${providerId}/models`),
+  saveModelProviderCustomModel: (providerId: string, payload: ModelProviderCustomModelInput) =>
+    api.post(`/settings/model-providers/${providerId}/models`, payload),
   testModelProvider: (providerId: string, model?: string) =>
     api.post(`/settings/model-providers/${providerId}/test`, model ? { model } : {}),
   listModelRoutes: () => api.get('/settings/model-routes'),

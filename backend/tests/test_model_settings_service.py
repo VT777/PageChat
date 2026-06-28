@@ -9,6 +9,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from app.models.migrations import run_migrations
 from app.services.model_settings_service import (
+    ModelProviderInvalidError,
     ModelRouteNotConfiguredError,
     ModelSettingsService,
     _normalize_provider_models,
@@ -101,22 +102,41 @@ def test_normalize_provider_models_adds_capabilities() -> None:
     models = _normalize_provider_models(
         {
             "data": [
-                {"id": "qwen-plus", "owned_by": "dashscope"},
-                {"id": "qwen-vl-ocr-2025"},
+                {
+                    "id": "qwen3.7-max-2026-06-08",
+                    "owned_by": "dashscope",
+                    "context_window": 129024,
+                    "max_output_tokens": 8192,
+                },
+                {
+                    "id": "qwen-vl-ocr-2025",
+                    "capabilities": ["llm", "vision"],
+                    "context_length": 65536,
+                },
                 {"id": "text-embedding-v3"},
             ]
         }
     )
 
-    assert models == [
-        {
-            "id": "qwen-plus",
-            "owned_by": "dashscope",
-            "capabilities": ["llm", "tool_calling"],
-        },
-        {"id": "qwen-vl-ocr-2025", "capabilities": ["llm", "vision", "ocr"]},
-        {"id": "text-embedding-v3", "capabilities": ["embedding"]},
-    ]
+    assert models[0]["id"] == "qwen3.7-max-2026-06-08"
+    assert models[0]["owned_by"] == "dashscope"
+    assert models[0]["capabilities"] == ["llm", "tool_calling", "reasoning"]
+    assert models[0]["supports_reasoning"] is True
+    assert models[0]["supports_tool_calling"] is True
+    assert models[0]["context_window"] == 129024
+    assert models[0]["max_output_tokens"] == 8192
+
+    assert models[1]["id"] == "qwen-vl-ocr-2025"
+    assert models[1]["capabilities"] == ["llm", "vision", "ocr"]
+    assert models[1]["supports_vision"] is True
+    assert models[1]["supports_ocr"] is True
+    assert models[1]["context_window"] == 65536
+    assert models[1]["max_output_tokens"] is None
+
+    assert models[2]["id"] == "text-embedding-v3"
+    assert models[2]["capabilities"] == ["embedding"]
+    assert models[2]["supports_embedding"] is True
+    assert models[2]["context_window"] is None
 
 
 def test_update_provider_validation_status_persists() -> None:
@@ -334,6 +354,141 @@ def test_save_route_mapping_rejects_missing_provider_or_model() -> None:
     asyncio.run(run())
 
 
+def test_save_route_mapping_rejects_cross_user_provider() -> None:
+    async def run() -> None:
+        db, service = await _service()
+        try:
+            provider = await service.save_provider_config(
+                user_id="user-a",
+                provider="openai_compatible",
+                base_url="https://example.test/v1",
+                api_key="sk-secret-123456",
+            )
+
+            try:
+                await service.save_route_mapping(
+                    user_id="user-b",
+                    route_slot="general_chat",
+                    provider_id=provider["provider_id"],
+                    model="model-a",
+                )
+                assert False, "Expected cross-user provider route to fail"
+            except ValueError as exc:
+                assert "provider" in str(exc).lower()
+
+            assert await service.list_route_mappings("user-b") == []
+        finally:
+            await db.close()
+
+    asyncio.run(run())
+
+
+def test_save_route_mapping_rejects_unknown_model_when_provider_has_known_models() -> None:
+    async def run() -> None:
+        db, service = await _service()
+        try:
+            provider = await service.save_provider_config(
+                user_id="user-a",
+                provider="openai_compatible",
+                base_url="https://example.test/v1",
+                api_key="sk-secret-123456",
+            )
+            await service.save_custom_provider_model(
+                user_id="user-a",
+                provider_id=provider["provider_id"],
+                model="known-model",
+                capabilities=["llm"],
+            )
+
+            try:
+                await service.save_route_mapping(
+                    user_id="user-a",
+                    route_slot="general_chat",
+                    provider_id=provider["provider_id"],
+                    model="unknown-model",
+                )
+                assert False, "Expected unknown model to fail"
+            except ValueError as exc:
+                assert "model" in str(exc).lower()
+
+            saved = await service.save_route_mapping(
+                user_id="user-a",
+                route_slot="general_chat",
+                provider_id=provider["provider_id"],
+                model="known-model",
+            )
+            assert saved["model"] == "known-model"
+        finally:
+            await db.close()
+
+    asyncio.run(run())
+
+
+def test_resolve_route_blocks_invalid_provider_config() -> None:
+    async def run() -> None:
+        db, service = await _service()
+        try:
+            provider = await service.save_provider_config(
+                user_id="user-a",
+                provider="openai_compatible",
+                base_url="https://example.test/v1",
+                api_key="sk-secret-123456",
+            )
+            await service.save_route_mapping(
+                user_id="user-a",
+                route_slot="general_chat",
+                provider_id=provider["provider_id"],
+                model="model-a",
+            )
+            await service.update_provider_validation_status(
+                user_id="user-a",
+                provider_id=provider["provider_id"],
+                validation_status="invalid",
+            )
+
+            with pytest.raises(ModelProviderInvalidError) as exc_info:
+                await service.resolve_route("user-a", "general_chat")
+
+            assert exc_info.value.provider_id == provider["provider_id"]
+            assert exc_info.value.route_slot == "general_chat"
+        finally:
+            await db.close()
+
+    asyncio.run(run())
+
+
+
+def test_save_route_mapping_rejects_invalid_provider_config() -> None:
+    async def run() -> None:
+        db, service = await _service()
+        try:
+            provider = await service.save_provider_config(
+                user_id="user-a",
+                provider="openai_compatible",
+                base_url="https://example.test/v1",
+                api_key="sk-secret-123456",
+            )
+            await service.update_provider_validation_status(
+                user_id="user-a",
+                provider_id=provider["provider_id"],
+                validation_status="invalid",
+            )
+
+            with pytest.raises(ModelProviderInvalidError) as exc_info:
+                await service.save_route_mapping(
+                    user_id="user-a",
+                    route_slot="document_qa",
+                    provider_id=provider["provider_id"],
+                    model="model-a",
+                )
+
+            assert exc_info.value.provider_id == provider["provider_id"]
+            assert exc_info.value.route_slot == "document_qa"
+            assert await service.list_route_mappings("user-a") == []
+        finally:
+            await db.close()
+
+    asyncio.run(run())
 def test_save_route_mapping_persists_provider_capabilities() -> None:
     async def run() -> None:
         db, service = await _service()

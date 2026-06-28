@@ -11,6 +11,8 @@ import aiosqlite
 
 from app.core import config
 from app.services.model_settings_service import (
+    ModelRouteNotConfiguredError,
+    ModelSettingsService,
     _protect_api_key,
     _unprotect_api_key,
     mask_api_key,
@@ -18,6 +20,19 @@ from app.services.model_settings_service import (
 
 
 OCR_TASKS = {"page_text"}
+OCR_ROUTE_NOT_CONFIGURED_ERROR_CODE = "OCR_ROUTE_NOT_CONFIGURED"
+OCR_ROUTE_NOT_CONFIGURED_MESSAGE = (
+    "请先在设置页配置 OCR/VLM 模型后再解析图片型文档。"
+)
+
+
+class OCRRouteNotConfiguredError(RuntimeError):
+    def __init__(self, task: str):
+        super().__init__(
+            f"{OCR_ROUTE_NOT_CONFIGURED_ERROR_CODE}: {OCR_ROUTE_NOT_CONFIGURED_MESSAGE}"
+        )
+        self.task = task
+        self.error_code = OCR_ROUTE_NOT_CONFIGURED_ERROR_CODE
 
 
 class OCRSettingsService:
@@ -253,7 +268,49 @@ class OCRSettingsService:
                 public = _resolved_profile(default_profile, source="default_profile")
                 if task in set(public.get("capabilities") or []):
                     return public
+            route_fallback = await self._model_route_for_task(user_id, task)
+            if route_fallback:
+                return route_fallback
+            raise OCRRouteNotConfiguredError(task)
         return ocr_task_default_route(task)
+
+    async def _model_route_for_task(self, user_id: str, task: str) -> Optional[Dict[str, Any]]:
+        if task != "page_text":
+            return None
+        try:
+            route = await ModelSettingsService(self.db).resolve_route(user_id, "vision")
+        except ModelRouteNotConfiguredError:
+            return None
+        if not route.get("supports_vision"):
+            return None
+        endpoint = str(route.get("base_url") or "").rstrip("/")
+        model = str(route.get("model") or "")
+        provider = str(route.get("provider") or "")
+        api_key = str(route.get("api_key") or "")
+        if not endpoint or not model or not provider or not api_key:
+            return None
+        engine_type = "openai_compatible_ocr"
+        return {
+            "profile_id": None,
+            "user_id": user_id,
+            "name": "OCR/VLM model route",
+            "engine_type": engine_type,
+            "provider": provider,
+            "endpoint": endpoint,
+            "model": model,
+            "api_key": api_key,
+            "api_key_mask": mask_api_key(api_key),
+            "capabilities": [task],
+            "options": {},
+            "profile_version": str(
+                route.get("route_version")
+                or _profile_version(engine_type, provider, endpoint, model, task, "{}")
+            ),
+            "is_default": False,
+            "validation_status": "model_route",
+            "source": "model_route:vision",
+        }
+
     async def _profile_for_task_override(self, user_id: str, task: str) -> Optional[Dict[str, Any]]:
         cursor = await self.db.execute(
             """

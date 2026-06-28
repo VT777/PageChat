@@ -25,6 +25,11 @@ class ModelTextDelta:
 
 
 @dataclass(slots=True)
+class ModelReasoningDelta:
+    delta: str
+
+
+@dataclass(slots=True)
 class ModelTurn:
     content: str = ""
     tool_calls: list[ModelToolCall] = field(default_factory=list)

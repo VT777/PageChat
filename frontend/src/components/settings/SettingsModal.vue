@@ -20,6 +20,7 @@ import {
 } from 'lucide-vue-next'
 import { settingsApi } from '@/api'
 import { useUserStore } from '@/stores/user'
+import { useI18n } from '@/i18n/messages'
 import type { ModelProviderConfig, ModelProviderModel, ModelProviderPreset, ModelRouteMapping } from '@/types/modelSettings'
 import {
   buildOcrModelOptions,
@@ -29,9 +30,10 @@ import {
   legacyModelSelectOption,
   modelCapabilityBadges,
   modelOptionValue,
+  providerCapabilityBadges,
   type ModelSelectOption,
 } from '@/utils/modelProviderModels'
-import { buildModelProviderRows, filterModelProviderRows } from '@/utils/modelProviderRows'
+import { buildModelProviderRows, filterModelProviderRows, type ModelProviderRow } from '@/utils/modelProviderRows'
 import {
   defaultWebSearchSettings,
   type WebSearchContentType,
@@ -49,7 +51,6 @@ import {
 } from '@/ui/pagechatContracts'
 
 type SectionId = typeof SETTINGS_NAV_SECTIONS.primary[number]['id'] | typeof SETTINGS_NAV_SECTIONS.footer[number]['id']
-type QaThinkingMode = 'off' | 'auto' | 'on'
 
 defineProps<{
   open: boolean
@@ -61,6 +62,7 @@ const emit = defineEmits<{
 
 const router = useRouter()
 const userStore = useUserStore()
+const { t, settingsNavLabel, language, languageOptions, setLanguage } = useI18n()
 const activeSection = ref<SectionId>('providers')
 const providers = ref<ModelProviderConfig[]>([])
 const presets = ref<ModelProviderPreset[]>([])
@@ -71,7 +73,10 @@ const loadingModelProviderId = ref<string | null>(null)
 const providerSearchQuery = ref('')
 const providerMessage = ref('')
 const providerError = ref('')
-const expandedProviderId = ref<string | null>(null)
+const providerCredentialDialogOpen = ref(false)
+const compatibleModelDialogOpen = ref(false)
+const selectedProviderRow = ref<ModelProviderRow | null>(null)
+const collapsedProviderModels = ref<Set<string>>(new Set())
 const providerModels = ref<Record<string, ModelProviderModel[]>>({})
 const providerModelErrors = ref<Record<string, string>>({})
 const providerTestMessages = ref<Record<string, string>>({})
@@ -86,17 +91,19 @@ const loadingWebSearchSettings = ref(false)
 const savingWebSearchSettings = ref(false)
 const webSearchMessage = ref('')
 const webSearchError = ref('')
-const loadingQaSettings = ref(false)
-const savingQaSettings = ref(false)
-const qaSettingsMessage = ref('')
-const qaSettingsError = ref('')
-
 const providerForm = ref({
   providerId: '',
   credentialName: 'Default credential',
   provider: 'openai_compatible',
   baseUrl: 'https://api.openai.com/v1',
   apiKey: '',
+})
+
+const compatibleModelForm = ref({
+  modelName: '',
+  modelType: 'LLM',
+  displayName: '',
+  endpointModelName: '',
 })
 
 const ocrSettings = ref({
@@ -113,26 +120,7 @@ const parsingSettings = ref({
 
 const qaSettings = ref({
   model: '',
-  thinkingMode: 'off' as QaThinkingMode,
 })
-
-const qaThinkingOptions: Array<{ id: QaThinkingMode; label: string; description: string }> = [
-  {
-    id: 'off',
-    label: '关闭',
-    description: '默认关闭模型原生 thinking，优先保持响应轻快、输出干净。',
-  },
-  {
-    id: 'auto',
-    label: '自动',
-    description: '允许支持的供应商自行启用 thinking，适合复杂文档推理。',
-  },
-  {
-    id: 'on',
-    label: '开启',
-    description: '明确允许原生 thinking；不支持的模型会按供应商兼容行为处理。',
-  },
-]
 
 const iconMap = {
   Globe,
@@ -275,8 +263,44 @@ function modelOptionForSelectedValue(value: string): ModelSelectOption {
   }
 }
 
+function formatTokenWindow(value: number | null | undefined): string {
+  if (!value || value <= 0) return ''
+  if (value >= 1000) {
+    const rounded = value % 1000 === 0 ? value / 1000 : Math.round(value / 1000)
+    return `${rounded}K`
+  }
+  return String(value)
+}
+
+function modelMetaBadges(model: ModelProviderModel): string[] {
+  const badges: string[] = []
+  const contextWindow = formatTokenWindow(model.context_window)
+  const outputWindow = formatTokenWindow(model.max_output_tokens)
+  if (contextWindow) badges.push(`Context ${contextWindow}`)
+  if (outputWindow) badges.push(`Output ${outputWindow}`)
+  if (!contextWindow && !outputWindow) badges.push('Context unknown')
+  return badges
+}
+
+function providerModelBadges(provider: ModelProviderRow): string[] {
+  return providerCapabilityBadges(modelsForProviderRow(provider))
+}
+
+function compatibleModelCapabilities() {
+  const type = compatibleModelForm.value.modelType.toLowerCase()
+  if (type === 'vision') return ['llm', 'vision', 'tool_calling'] as const
+  if (type === 'embedding') return ['embedding'] as const
+  if (type === 'ocr') return ['llm', 'vision', 'ocr'] as const
+  return ['llm', 'tool_calling'] as const
+}
+
 function providerKeyMask(providerId: string): string {
-  return providerRows.value.find((provider) => provider.id === providerId)?.keyMask || ''
+  for (const provider of providerRows.value) {
+    const credential = provider.credentials.find((item) => item.providerId === providerId)
+    if (credential) return credential.keyMask
+    if (provider.providerId === providerId) return provider.keyMask
+  }
+  return ''
 }
 
 function apiKeyPlaceholder(providerId: string): string {
@@ -296,6 +320,163 @@ function testingStateForProvider(providerId: string): string {
   return providerTestMessages.value[providerId] || ''
 }
 
+function isOpenAICompatibleProvider(provider: string): boolean {
+  const normalized = provider.toLowerCase()
+  return normalized.includes('openai') && normalized.includes('compatible')
+}
+
+function providerCredentialTitle(provider: ModelProviderRow): string {
+  return provider.configured ? provider.keyMask || 'API KEY 1' : '未配置'
+}
+
+function providerCredentialList(provider: ModelProviderRow | null): ModelProviderRow['credentials'] {
+  return provider?.credentials || []
+}
+
+function credentialStatusLabel(validation: string): string {
+  if (validation === 'valid') return 'valid'
+  if (validation === 'invalid') return 'invalid'
+  return 'untested'
+}
+
+function refreshSelectedProviderRow(providerKey: string) {
+  selectedProviderRow.value = providerRows.value.find((provider) => provider.provider === providerKey) || null
+}
+
+function modelsForProviderRow(provider: ModelProviderRow): ModelProviderModel[] {
+  const seen = new Set<string>()
+  return provider.credentials.flatMap((credential) => modelsForProvider(credential.providerId))
+    .filter((model) => {
+      if (!model.id || seen.has(model.id)) return false
+      seen.add(model.id)
+      return true
+    })
+}
+
+function providerRowLoading(provider: ModelProviderRow): boolean {
+  return provider.credentials.some((credential) => loadingModelProviderId.value === credential.providerId)
+}
+
+function providerRowError(provider: ModelProviderRow): string {
+  return provider.credentials.map((credential) => providerModelErrors.value[credential.providerId]).find(Boolean) || ''
+}
+
+function isProviderModelsCollapsed(provider: ModelProviderRow): boolean {
+  return collapsedProviderModels.value.has(provider.id)
+}
+
+function toggleProviderModels(provider: ModelProviderRow) {
+  const next = new Set(collapsedProviderModels.value)
+  if (next.has(provider.id)) next.delete(provider.id)
+  else next.add(provider.id)
+  collapsedProviderModels.value = next
+}
+
+function collapseAllProviderModels() {
+  collapsedProviderModels.value = new Set(
+    providerRows.value.filter((provider) => provider.configured).map((provider) => provider.id),
+  )
+}
+
+function fillProviderForm(provider: ModelProviderRow) {
+  providerForm.value = {
+    providerId: provider.configured ? provider.providerId : '',
+    credentialName: provider.configured ? 'API KEY 1' : `${provider.label} credential`,
+    provider: provider.provider,
+    baseUrl: provider.baseUrl,
+    apiKey: '',
+  }
+  selectedProviderRow.value = provider
+}
+
+function selectProviderCredential(credential: ModelProviderRow['credentials'][number]) {
+  providerForm.value = {
+    providerId: credential.providerId,
+    credentialName: 'API KEY 1',
+    provider: credential.provider,
+    baseUrl: credential.baseUrl,
+    apiKey: '',
+  }
+}
+
+function startAddingProviderCredential() {
+  const provider = selectedProviderRow.value
+  if (!provider) return
+  providerForm.value = {
+    providerId: '',
+    credentialName: `${provider.label} credential`,
+    provider: provider.provider,
+    baseUrl: provider.baseUrl,
+    apiKey: '',
+  }
+}
+
+async function deleteProviderCredential(credential: ModelProviderRow['credentials'][number]) {
+  if (!credential.providerId) return
+  providerError.value = ''
+  providerMessage.value = ''
+  try {
+    await settingsApi.deleteModelProvider(credential.providerId)
+    providerMessage.value = 'API Key 已删除。'
+    if (providerForm.value.providerId === credential.providerId) startAddingProviderCredential()
+    await loadProviders()
+    refreshSelectedProviderRow(credential.provider)
+    await fetchAllConfiguredProviderModels()
+  } catch (error: any) {
+    providerError.value = error?.response?.data?.detail || '删除 API Key 失败。'
+  }
+}
+
+function openProviderCredentialDialog(provider: ModelProviderRow) {
+  fillProviderForm(provider)
+  compatibleModelDialogOpen.value = false
+  providerCredentialDialogOpen.value = true
+}
+
+function openCompatibleModelDialog(provider: ModelProviderRow) {
+  fillProviderForm(provider)
+  compatibleModelForm.value = {
+    modelName: '',
+    modelType: 'LLM',
+    displayName: '',
+    endpointModelName: '',
+  }
+  providerCredentialDialogOpen.value = false
+  compatibleModelDialogOpen.value = true
+}
+
+function closeProviderConfigDialogs() {
+  providerCredentialDialogOpen.value = false
+  compatibleModelDialogOpen.value = false
+  selectedProviderRow.value = null
+  providerForm.value.apiKey = ''
+}
+
+function providerSaveDisabled(): boolean {
+  return savingProvider.value || !providerForm.value.baseUrl.trim() || (!providerForm.value.providerId && !providerForm.value.apiKey.trim())
+}
+
+async function saveProviderAndClose() {
+  const savedProviderId = await saveProvider()
+  if (!savedProviderId) return
+  if (compatibleModelDialogOpen.value && compatibleModelForm.value.modelName.trim()) {
+    try {
+      await settingsApi.saveModelProviderCustomModel(savedProviderId, {
+        model: compatibleModelForm.value.modelName.trim(),
+        display_name: compatibleModelForm.value.displayName.trim() || undefined,
+        model_type: compatibleModelForm.value.modelType.toLowerCase(),
+        endpoint_model_name: compatibleModelForm.value.endpointModelName.trim() || undefined,
+        capabilities: [...compatibleModelCapabilities()],
+      })
+      await fetchProviderModels(savedProviderId, { silent: true })
+    } catch (error: any) {
+      providerError.value = error?.response?.data?.detail || '保存自定义模型失败。'
+      return
+    }
+  }
+  closeProviderConfigDialogs()
+}
+
 async function loadProviders() {
   loadingProviders.value = true
   providerError.value = ''
@@ -306,6 +487,7 @@ async function loadProviders() {
     ])
     presets.value = presetResponse.data?.length ? presetResponse.data : defaultProviders()
     providers.value = providerResponse.data || []
+    collapseAllProviderModels()
   } catch (error: any) {
     presets.value = defaultProviders()
     providerError.value = error?.response?.data?.detail || '模型供应商配置暂时无法加载，已显示默认供应商。'
@@ -348,41 +530,6 @@ async function loadWebSearchSettings() {
   }
 }
 
-function normalizeQaThinkingMode(value: unknown): QaThinkingMode {
-  return value === 'auto' || value === 'on' ? value : 'off'
-}
-
-async function loadQaSettings() {
-  loadingQaSettings.value = true
-  qaSettingsError.value = ''
-  try {
-    const response = await settingsApi.getQaSettings()
-    qaSettings.value.thinkingMode = normalizeQaThinkingMode(response.data?.qa_thinking_mode)
-  } catch (error: any) {
-    qaSettings.value.thinkingMode = 'off'
-    qaSettingsError.value = error?.response?.data?.detail || '问答设置暂时无法加载，已使用默认值。'
-  } finally {
-    loadingQaSettings.value = false
-  }
-}
-
-async function saveQaSettings() {
-  savingQaSettings.value = true
-  qaSettingsMessage.value = ''
-  qaSettingsError.value = ''
-  try {
-    const response = await settingsApi.updateQaSettings({
-      qa_thinking_mode: qaSettings.value.thinkingMode,
-    })
-    qaSettings.value.thinkingMode = normalizeQaThinkingMode(response.data?.qa_thinking_mode)
-    qaSettingsMessage.value = '问答设置已保存。'
-  } catch (error: any) {
-    qaSettingsError.value = error?.response?.data?.detail || '保存问答设置失败。'
-  } finally {
-    savingQaSettings.value = false
-  }
-}
-
 function toggleWebSearchContentType(type: WebSearchContentType) {
   const current = webSearchSettings.value.content_types
   if (current.includes(type)) {
@@ -415,17 +562,6 @@ async function saveWebSearchSettings() {
   } finally {
     savingWebSearchSettings.value = false
   }
-}
-
-function startConfigure(provider: string, baseUrl: string, providerId = '') {
-  providerForm.value = {
-    providerId,
-    credentialName: `${providerLabel(provider)} credential`,
-    provider,
-    baseUrl,
-    apiKey: '',
-  }
-  expandedProviderId.value = providerId || provider
 }
 
 function modelsForProvider(providerId: string): ModelProviderModel[] {
@@ -464,15 +600,15 @@ async function fetchAllConfiguredProviderModels() {
   )
 }
 
-async function toggleProvider(provider: { id: string; configured: boolean }) {
-  const nextId = expandedProviderId.value === provider.id ? null : provider.id
-  expandedProviderId.value = nextId
-  if (nextId && provider.configured && !providerModels.value[provider.id]?.length) {
-    await fetchProviderModels(provider.id)
-  }
+async function fetchProviderRowModels(provider: ModelProviderRow) {
+  await Promise.allSettled(
+    provider.credentials.map((credential) =>
+      fetchProviderModels(credential.providerId),
+    ),
+  )
 }
 
-async function saveProvider() {
+async function saveProvider(): Promise<string | null> {
   savingProvider.value = true
   providerError.value = ''
   providerMessage.value = ''
@@ -498,13 +634,14 @@ async function saveProvider() {
     providerForm.value.apiKey = ''
     await loadProviders()
     if (savedProviderId) {
-      expandedProviderId.value = savedProviderId
       await fetchProviderModels(savedProviderId, { silent: true })
       await autoTestSavedProvider(savedProviderId)
       await loadProviders()
     }
+    return savedProviderId
   } catch (error: any) {
     providerError.value = error?.response?.data?.detail || '保存模型供应商失败。'
+    return null
   } finally {
     savingProvider.value = false
   }
@@ -673,7 +810,7 @@ function close() {
 }
 
 onMounted(async () => {
-  await Promise.all([loadProviders(), loadWebSearchSettings(), loadQaSettings()])
+  await Promise.all([loadProviders(), loadWebSearchSettings()])
   await fetchAllConfiguredProviderModels()
   await loadFunctionalRoutes()
 })
@@ -685,10 +822,10 @@ onMounted(async () => {
       <section class="settings-dialog" @click.stop>
         <header class="settings-dialog-header">
           <div>
-            <h2>Settings</h2>
+            <h2>{{ t('settings.title') }}</h2>
             <p>配置 PageChat 的模型、OCR、解析和问答行为</p>
           </div>
-          <button type="button" @click="close" aria-label="Close settings">
+          <button type="button" @click="close" :aria-label="t('settings.close')">
             <X />
           </button>
         </header>
@@ -704,7 +841,7 @@ onMounted(async () => {
             @click="activeSection = section.id"
           >
             <component :is="navIcon(section.icon)" />
-            <span>{{ section.label }}</span>
+            <span>{{ settingsNavLabel(section.id) }}</span>
           </button>
         </div>
         <div class="settings-nav-footer">
@@ -716,7 +853,7 @@ onMounted(async () => {
             @click="activeSection = section.id"
           >
             <component :is="navIcon(section.icon)" />
-            <span>{{ section.label }}</span>
+            <span>{{ settingsNavLabel(section.id) }}</span>
           </button>
         </div>
       </aside>
@@ -735,74 +872,98 @@ onMounted(async () => {
           </div>
 
           <div class="provider-list">
-            <article v-for="provider in filteredProviderRows" :key="provider.id" class="provider-row">
-              <div class="provider-main">
-                <div class="provider-logo">
-                  <img :src="provider.iconUrl" :alt="provider.label" @error="hideBrokenLogo" />
-                  <span>{{ providerInitial(provider.label) }}</span>
-                </div>
-                <div class="provider-title">
-                  <div>
-                    <strong>{{ provider.label }}</strong>
-                    <span>{{ provider.configured ? 'Configured' : 'Not configured' }}</span>
+            <article
+              v-for="provider in filteredProviderRows"
+              :key="provider.id"
+              :class="['provider-row', provider.configured ? 'provider-card-configured' : 'provider-card-unconfigured']"
+            >
+              <div class="provider-card-top">
+                <div class="provider-main">
+                  <div class="provider-logo">
+                    <img :src="provider.iconUrl" :alt="provider.label" @error="hideBrokenLogo" />
+                    <span>{{ providerInitial(provider.label) }}</span>
                   </div>
-                  <p>{{ provider.baseUrl }}</p>
+                  <div class="provider-title">
+                    <div>
+                      <strong>{{ provider.label }}</strong>
+                      <i v-if="provider.configured && provider.validation === 'valid'" class="provider-ready-dot" aria-label="Provider available" />
+                      <span>{{ isOpenAICompatibleProvider(provider.provider) ? 'OpenAI-API-compatible' : 'Provider' }}</span>
+                    </div>
+                    <p>{{ provider.baseUrl }}</p>
+                  </div>
+                </div>
+
+                <div v-if="provider.configured" class="provider-config-summary">
+                  <div class="provider-config-status">
+                    <i class="provider-ready-dot" aria-label="Provider available" />
+                    <strong>{{ providerCredentialTitle(provider) }}</strong>
+                    <span>{{ testingStateForProvider(provider.id) || provider.validation }}</span>
+                  </div>
+                  <button class="provider-config-button" type="button" @click="openProviderCredentialDialog(provider)">
+                    <SlidersHorizontal />
+                    配置
+                  </button>
                 </div>
               </div>
 
-              <div class="provider-actions">
-                <span :class="['provider-status', { configured: provider.configured }]">
-                  {{ provider.validation }}
-                </span>
+              <div v-if="provider.configured && providerModelBadges(provider).length" class="provider-service-tags" aria-label="Provider capabilities">
+                <span v-for="badge in providerModelBadges(provider)" :key="badge">{{ badge }}</span>
+              </div>
+
+              <div v-if="!provider.configured" class="provider-card-notice">
+                <span>请配置 API 密钥，添加模型。</span>
                 <button
                   type="button"
-                  @click="startConfigure(provider.provider, provider.baseUrl, provider.configured ? provider.id : '')"
+                  @click="isOpenAICompatibleProvider(provider.provider) ? openCompatibleModelDialog(provider) : openProviderCredentialDialog(provider)"
                 >
                   <KeyRound />
-                  {{ provider.configured ? 'Edit' : 'Configure' }}
-                </button>
-                <button
-                  class="icon-button"
-                  type="button"
-                  @click="toggleProvider(provider)"
-                >
-                  <ChevronDown />
+                  {{ isOpenAICompatibleProvider(provider.provider) ? '添加模型' : '添加 API 密钥' }}
                 </button>
               </div>
 
-              <div v-if="expandedProviderId === provider.id" class="provider-expanded">
+              <div v-else class="provider-configured-body">
                 <div class="model-list">
                   <div class="model-list-header">
-                    <strong>Available models · {{ modelsForProvider(provider.id).length }}</strong>
-                    <button
-                      v-if="provider.configured"
-                      type="button"
-                      :disabled="loadingModelProviderId === provider.id"
-                      @click="fetchProviderModels(provider.id)"
-                    >
-                      <Loader2 v-if="loadingModelProviderId === provider.id" class="spin" />
-                      <RefreshCw v-else />
-                      Refresh
+                    <button class="model-count-line" type="button" @click="toggleProviderModels(provider)">
+                      {{ modelsForProviderRow(provider).length }} 个模型
+                      <ChevronDown />
                     </button>
+                    <div class="model-list-actions">
+                      <button
+                        v-if="isOpenAICompatibleProvider(provider.provider)"
+                        type="button"
+                        @click="openCompatibleModelDialog(provider)"
+                      >
+                        添加模型
+                      </button>
+                      <button
+                        type="button"
+                        :disabled="providerRowLoading(provider)"
+                        @click="fetchProviderRowModels(provider)"
+                      >
+                        <Loader2 v-if="providerRowLoading(provider)" class="spin" />
+                        <RefreshCw v-else />
+                        刷新
+                      </button>
+                    </div>
                   </div>
-                  <div class="model-list-body">
-                    <div v-if="!provider.configured" class="model-empty">
-                      Configure this provider to fetch available models.
+                  <div v-if="!isProviderModelsCollapsed(provider)" class="model-list-body">
+                    <div v-if="providerRowLoading(provider)" class="model-empty">
+                      正在获取可用模型...
                     </div>
-                    <div v-else-if="loadingModelProviderId === provider.id" class="model-empty">
-                      Fetching models...
+                    <div v-else-if="providerRowError(provider)" class="model-empty error">
+                      {{ providerRowError(provider) }}
                     </div>
-                    <div v-else-if="providerModelErrors[provider.id]" class="model-empty error">
-                      {{ providerModelErrors[provider.id] }}
+                    <div v-else-if="modelsForProviderRow(provider).length === 0" class="model-empty">
+                      暂未返回模型。请检查 API Key 或 endpoint 后刷新。
                     </div>
-                    <div v-else-if="modelsForProvider(provider.id).length === 0" class="model-empty">
-                      No models returned yet.
-                    </div>
-                    <div v-for="model in modelsForProvider(provider.id)" :key="model.id" class="model-row">
-                      <span>{{ model.id }}</span>
-                      <div>
-                        <small>{{ model.owned_by || provider.label }}</small>
-                        <span>Remote</span>
+                    <div v-for="model in modelsForProviderRow(provider)" :key="model.id" class="model-row model-compact-row">
+                      <span class="model-provider-logo">
+                        <img :src="provider.iconUrl" :alt="provider.label" @error="hideBrokenLogo" />
+                        <small>{{ providerInitial(provider.label) }}</small>
+                      </span>
+                      <div class="model-inline-main">
+                        <strong>{{ model.id }}</strong>
                         <span
                           v-for="capability in modelCapabilityBadges(model)"
                           :key="capability"
@@ -810,47 +971,16 @@ onMounted(async () => {
                         >
                           {{ capability }}
                         </span>
+                        <span
+                          v-for="badge in modelMetaBadges(model)"
+                          :key="badge"
+                          class="model-meta-badge"
+                        >
+                          {{ badge }}
+                        </span>
                       </div>
+                      <button class="model-enabled-toggle" type="button" aria-label="Model enabled" />
                     </div>
-                  </div>
-                </div>
-
-                <div class="credential-panel">
-                  <h3>API 密钥授权配置</h3>
-                  <label>
-                    凭据名称
-                    <input v-model="providerForm.credentialName" />
-                  </label>
-                  <label>
-                    API Key
-                    <input
-                      v-model="providerForm.apiKey"
-                      type="password"
-                      :placeholder="apiKeyPlaceholder(provider.id)"
-                      autocomplete="new-password"
-                    />
-                  </label>
-                  <label>
-                    自定义 API endpoint 地址
-                    <input v-model="providerForm.baseUrl" />
-                  </label>
-                  <div class="credential-actions">
-                    <span>{{ testingStateForProvider(provider.id) || providerKeyHint(provider.id) }}</span>
-                    <button type="button" :disabled="savingProvider || !providerForm.baseUrl" @click="saveProvider">
-                      <Loader2 v-if="savingProvider" class="spin" />
-                      <CheckCircle2 v-else />
-                      保存
-                    </button>
-                    <button
-                      v-if="provider.configured"
-                      type="button"
-                      :disabled="testingProviderId === provider.id"
-                      @click="testProvider(provider.id)"
-                    >
-                      <Loader2 v-if="testingProviderId === provider.id" class="spin" />
-                      <RefreshCw v-else />
-                      Retest
-                    </button>
                   </div>
                 </div>
               </div>
@@ -988,40 +1118,6 @@ onMounted(async () => {
               </button>
             </div>
             <div class="wide">
-              <div class="field-label">模型 Thinking</div>
-              <div class="mode-options three">
-                <button
-                  v-for="option in qaThinkingOptions"
-                  :key="option.id"
-                  :class="{ active: qaSettings.thinkingMode === option.id }"
-                  type="button"
-                  @click="qaSettings.thinkingMode = option.id"
-                >
-                  <strong>{{ option.label }}</strong>
-                  <small>{{ option.description }}</small>
-                </button>
-              </div>
-            </div>
-            <div class="wide settings-actions">
-              <span>
-                <template v-if="loadingQaSettings">正在加载问答设置...</template>
-                <template v-else>{{ qaSettingsMessage || 'Thinking 默认关闭；复杂推理时可切换为自动或开启。' }}</template>
-              </span>
-              <button
-                type="button"
-                :disabled="savingQaSettings || loadingQaSettings"
-                @click="saveQaSettings"
-              >
-                <Loader2 v-if="savingQaSettings" class="spin" />
-                <CheckCircle2 v-else />
-                保存问答设置
-              </button>
-            </div>
-            <p v-if="qaSettingsError" class="wide error-message">
-              <AlertCircle />
-              {{ qaSettingsError }}
-            </p>
-            <div class="wide">
               <div class="field-label">Web Search</div>
               <div class="mode-options two">
                 <button
@@ -1122,16 +1218,17 @@ onMounted(async () => {
         <section v-else-if="activeSection === 'language'" class="settings-section narrow">
           <div class="section-header">
             <div>
-              <h2>语言</h2>
-              <p>设置界面显示语言。</p>
+              <h2>{{ t('settings.languageTitle') }}</h2>
+              <p>{{ t('settings.languageDescription') }}</p>
             </div>
           </div>
           <div class="form-grid">
             <label class="wide">
-              Interface language
-              <select>
-                <option>简体中文</option>
-                <option>English</option>
+              {{ t('settings.interfaceLanguage') }}
+              <select v-model="language" @change="setLanguage(language)">
+                <option v-for="option in languageOptions" :key="option.id" :value="option.id">
+                  {{ option.label }}
+                </option>
               </select>
             </label>
           </div>
@@ -1154,6 +1251,124 @@ onMounted(async () => {
           </div>
         </section>
       </main>
+          <div
+            v-if="providerCredentialDialogOpen || compatibleModelDialogOpen"
+            class="provider-dialog-backdrop"
+            @click.self="closeProviderConfigDialogs"
+          >
+            <section class="provider-config-dialog" @click.stop>
+              <header class="provider-config-header">
+                <div>
+                  <h3>{{ compatibleModelDialogOpen ? '添加模型' : 'API 密钥授权配置' }}</h3>
+                  <p>{{ selectedProviderRow?.label }}</p>
+                </div>
+                <button type="button" aria-label="Close provider dialog" @click="closeProviderConfigDialogs">
+                  <X />
+                </button>
+              </header>
+
+              <div class="provider-config-body">
+                <template v-if="compatibleModelDialogOpen">
+                  <label>
+                    供应商名称
+                    <input :value="selectedProviderRow?.label || providerLabel(providerForm.provider)" disabled />
+                  </label>
+                  <label>
+                    模型名称
+                    <input v-model="compatibleModelForm.modelName" placeholder="例如 gpt-4o 或 qwen-vl-max" />
+                  </label>
+                  <label>
+                    模型类型
+                    <select v-model="compatibleModelForm.modelType">
+                      <option>LLM</option>
+                      <option>Vision</option>
+                      <option>Embedding</option>
+                      <option>OCR</option>
+                    </select>
+                  </label>
+                  <label>
+                    凭据名称
+                    <input v-model="providerForm.credentialName" />
+                  </label>
+                  <label>
+                    显示名称
+                    <input v-model="compatibleModelForm.displayName" placeholder="可选，用于设置页展示" />
+                  </label>
+                  <label>
+                    API Key
+                    <input
+                      v-model="providerForm.apiKey"
+                      type="password"
+                      :placeholder="apiKeyPlaceholder(providerForm.providerId)"
+                      autocomplete="new-password"
+                    />
+                  </label>
+                  <label class="wide">
+                    API endpoint URL
+                    <input v-model="providerForm.baseUrl" placeholder="https://api.example.com/v1" />
+                  </label>
+                  <label class="wide">
+                    Endpoint model name
+                    <input v-model="compatibleModelForm.endpointModelName" placeholder="留空时使用模型名称" />
+                  </label>
+                </template>
+
+                <template v-else>
+                  <div class="wide provider-credential-list">
+                    <div class="field-label">API 密钥</div>
+                    <div
+                      v-for="credential in providerCredentialList(selectedProviderRow)"
+                      :key="credential.providerId"
+                      :class="['provider-credential-item', { active: providerForm.providerId === credential.providerId }]"
+                      @click="selectProviderCredential(credential)"
+                    >
+                      <span class="provider-credential-check">{{ providerForm.providerId === credential.providerId ? '✓' : '' }}</span>
+                      <span class="provider-credential-dot" />
+                      <strong>{{ credential.keyMask }}</strong>
+                      <small>{{ credentialStatusLabel(credential.validation) }}</small>
+                      <button class="provider-credential-delete" type="button" @click.stop="deleteProviderCredential(credential)">
+                        删除
+                      </button>
+                    </div>
+                    <button class="provider-add-credential-button" type="button" @click="startAddingProviderCredential">
+                      添加 API 密钥
+                    </button>
+                  </div>
+                  <label class="wide">
+                    凭据名称
+                    <input v-model="providerForm.credentialName" />
+                  </label>
+                  <label class="wide">
+                    API Key
+                    <input
+                      v-model="providerForm.apiKey"
+                      type="password"
+                      :placeholder="apiKeyPlaceholder(providerForm.providerId)"
+                      autocomplete="new-password"
+                    />
+                  </label>
+                  <label class="wide">
+                    API endpoint URL
+                    <input v-model="providerForm.baseUrl" />
+                  </label>
+                </template>
+              </div>
+
+              <p class="provider-security-note">
+                API Key 将使用 PKCS1_OAEP 加密后保存。保存后会自动测试连接并获取可用模型。
+              </p>
+
+              <footer class="provider-dialog-footer">
+                <span>{{ providerForm.providerId ? providerKeyHint(providerForm.providerId) : '新凭据保存后会显示加密后的密钥状态。' }}</span>
+                <button type="button" @click="closeProviderConfigDialogs">取消</button>
+                <button type="button" :disabled="providerSaveDisabled()" @click="saveProviderAndClose">
+                  <Loader2 v-if="savingProvider" class="spin" />
+                  <CheckCircle2 v-else />
+                  保存
+                </button>
+              </footer>
+            </section>
+          </div>
         </div>
       </section>
     </div>
@@ -1172,6 +1387,7 @@ onMounted(async () => {
 }
 
 .settings-dialog {
+  position: relative;
   display: grid;
   width: min(1280px, calc(100vw - 96px));
   height: calc(100vh - 80px);
@@ -1334,68 +1550,90 @@ onMounted(async () => {
 
 .provider-search {
   display: flex;
-  min-width: 180px;
+  box-sizing: border-box;
+  min-width: 220px;
   align-items: center;
   gap: 8px;
-  width: min(260px, 36%);
-  height: 34px;
-  flex: 0 1 260px;
+  width: min(320px, 100%);
+  height: 36px;
+  flex: 1 1 260px;
+  overflow: hidden;
   border: 1px solid var(--kc-border);
   border-radius: var(--kc-radius-md);
   background: #fff;
   padding: 0 10px;
+  transition: border-color 150ms ease, box-shadow 150ms ease;
+}
+
+.provider-search:focus-within {
+  border-color: rgba(47, 128, 237, 0.45);
+  box-shadow: 0 0 0 3px rgba(47, 128, 237, 0.12);
 }
 
 .provider-search input {
+  width: 100%;
   min-width: 0;
   flex: 1;
   border: 0;
+  background: transparent;
+  box-shadow: none;
+  padding: 0;
   outline: none;
-  font-size: 12.5px;
+  font-size: 13px;
+}
+
+.provider-search input:focus {
+  border: 0;
+  box-shadow: none;
 }
 
 .provider-list {
   display: grid;
-  gap: 10px;
+  gap: 12px;
 }
 
 .provider-row {
   display: grid;
   gap: 12px;
   border: 1px solid var(--kc-border);
-  border-radius: var(--kc-radius-md);
+  border-radius: 10px;
   background: #fff;
   padding: 14px;
+  box-shadow: 0 8px 22px rgba(15, 23, 42, 0.035);
 }
 
-.provider-main {
+.provider-card-top,
+.provider-main,
+.provider-card-notice,
+.model-list-header,
+.model-list-actions {
   display: flex;
-  min-width: 0;
-  align-items: flex-start;
+  align-items: center;
+}
+
+.provider-card-top {
+  justify-content: space-between;
   gap: 12px;
 }
 
-.provider-row {
-  grid-template-columns: minmax(0, 1fr) auto;
-}
-
-.provider-expanded {
-  grid-column: 1 / -1;
+.provider-main {
+  min-width: 0;
+  gap: 12px;
 }
 
 .provider-logo {
   position: relative;
   display: grid;
-  width: 40px;
-  height: 40px;
-  flex: 0 0 40px;
+  width: 38px;
+  height: 38px;
+  flex: 0 0 38px;
   place-items: center;
   border: 1px solid var(--kc-border);
-  border-radius: 10px;
-  background: linear-gradient(180deg, #fff, #f3f6fb);
+  border-radius: 9px;
+  background: linear-gradient(180deg, #fff, #f5f7fb);
   color: var(--kc-text);
-  font-size: 12px;
-  font-weight: 650;
+  font-size: 11px;
+  font-weight: 680;
 }
 
 .provider-logo img {
@@ -1409,8 +1647,8 @@ onMounted(async () => {
 .provider-logo span {
   position: absolute;
   color: var(--kc-text-tertiary);
-  font-size: 11px;
-  font-weight: 750;
+  font-size: 10.5px;
+  font-weight: 760;
 }
 
 .provider-title {
@@ -1424,11 +1662,21 @@ onMounted(async () => {
 }
 
 .provider-title strong {
-  font-size: 14px;
+  color: var(--kc-text);
+  font-size: 14.5px;
+  font-weight: 650;
 }
 
-.provider-title div:first-child span,
-.provider-status {
+.provider-ready-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  background: #22c55e;
+  box-shadow: 0 0 0 3px rgba(34, 197, 94, 0.12);
+}
+
+.provider-title div:first-child span {
   border-radius: 999px;
   background: var(--kc-surface-muted);
   padding: 3px 7px;
@@ -1436,43 +1684,26 @@ onMounted(async () => {
   font-size: 11px;
 }
 
-.provider-status.configured {
-  background: #ecfdf3;
-  color: #15803d;
-}
-
 .provider-title p {
-  margin: 4px 0 8px;
+  margin: 4px 0 0;
   overflow: hidden;
   color: var(--kc-text-tertiary);
-  font-size: 12px;
+  font-size: 12.5px;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.model-row span {
-  border: 1px solid var(--kc-border-soft);
-  border-radius: 999px;
-  background: #f8fafc;
-  padding: 3px 7px;
-  color: var(--kc-text-secondary);
-  font-size: 11px;
-}
-
-.provider-actions {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.provider-actions button,
-.credential-actions button,
+.provider-config-button,
+.provider-card-notice button,
+.model-list-header button,
+.provider-dialog-footer button,
 .settings-actions button,
 .account-card button {
   display: inline-flex;
   align-items: center;
+  justify-content: center;
   gap: 7px;
-  height: 32px;
+  min-height: 32px;
   border: 1px solid var(--kc-border);
   border-radius: var(--kc-radius-md);
   background: #fff;
@@ -1482,36 +1713,115 @@ onMounted(async () => {
   font-weight: 560;
 }
 
-.provider-actions button:hover,
-.credential-actions button:hover,
+.provider-config-summary {
+  display: grid;
+  gap: 6px;
+  min-width: 160px;
+  border: 1px solid var(--kc-border-soft);
+  border-radius: 9px;
+  background: #fff;
+  padding: 8px;
+  box-shadow: 0 6px 18px rgba(15, 23, 42, 0.045);
+}
+
+.provider-config-status {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  color: var(--kc-text);
+  font-size: 12.5px;
+}
+
+.provider-config-status .provider-ready-dot {
+  width: 8px;
+  height: 8px;
+  box-shadow: none;
+}
+
+.provider-config-status strong {
+  overflow: hidden;
+  font-weight: 620;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.provider-config-status span {
+  margin-left: auto;
+  color: var(--kc-text-tertiary);
+  font-size: 11px;
+}
+
+.provider-config-button {
+  width: 100%;
+  min-height: 30px;
+  justify-content: flex-start;
+  border-radius: 8px;
+  padding: 0 9px;
+  color: var(--kc-text-secondary);
+}
+
+.provider-card-notice button,
+.provider-dialog-footer button:last-child {
+  border-color: rgba(47, 128, 237, 0.28);
+  background: #2563eb;
+  color: #fff;
+}
+
+.provider-card-notice button {
+  min-height: 30px;
+  padding: 0 12px;
+  border-radius: 9px;
+  font-size: 12px;
+}
+
+.provider-card-notice button svg {
+  width: 15px;
+  height: 15px;
+}
+
+.provider-card-notice button:hover,
+.provider-dialog-footer button:last-child:hover {
+  background: #1d4ed8;
+}
+
+.provider-config-button:hover,
+.model-list-header button:hover,
 .settings-actions button:hover,
 .account-card button:hover {
   background: var(--kc-surface-muted);
   color: var(--kc-text);
 }
 
-.provider-actions .icon-button {
-  width: 32px;
-  justify-content: center;
-  padding: 0;
+.provider-service-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
 }
 
-.provider-expanded {
-  display: grid;
-  grid-template-columns: minmax(260px, 0.8fr) minmax(420px, 1.2fr);
-  gap: 14px;
-  border-top: 1px solid var(--kc-border-soft);
-  padding-top: 12px;
-}
-
-.model-list,
-.credential-panel,
-.form-grid,
-.account-card {
+.provider-service-tags span,
+.model-row .model-capabilities,
+.model-row .model-meta-badge {
   border: 1px solid var(--kc-border-soft);
+  border-radius: 999px;
+  background: #f8fafc;
+  padding: 3px 7px;
+  color: var(--kc-text-secondary);
+  font-size: 11px;
+}
+
+.provider-card-notice {
+  justify-content: space-between;
+  gap: 12px;
   border-radius: var(--kc-radius-md);
-  background: #fbfcfd;
-  padding: 12px;
+  background: #f8fafc;
+  padding: 10px 12px;
+  color: var(--kc-text-tertiary);
+  font-size: 12.5px;
+}
+
+.provider-configured-body {
+  display: grid;
+  gap: 12px;
 }
 
 .model-list {
@@ -1521,47 +1831,43 @@ onMounted(async () => {
   min-height: 0;
 }
 
-.model-list-body {
-  display: grid;
-  max-height: 280px;
-  gap: 8px;
-  overflow: auto;
-  padding-right: 4px;
-  scrollbar-width: thin;
-}
-
 .model-list-header {
-  display: flex;
-  align-items: center;
   justify-content: space-between;
   gap: 8px;
 }
 
-.model-list-header strong {
-  color: var(--kc-text);
-  font-size: 12.5px;
-}
-
-.model-list-header button {
-  display: inline-flex;
-  align-items: center;
+.model-list-actions {
   gap: 6px;
-  height: 28px;
-  border: 1px solid var(--kc-border);
-  border-radius: var(--kc-radius-sm);
-  background: #fff;
-  padding: 0 9px;
+}
+
+.model-list-header .model-count-line {
+  border: 0;
+  background: transparent;
+  padding: 0;
   color: var(--kc-text-secondary);
-  font-size: 11.5px;
+  font-size: 12.5px;
+  font-weight: 620;
 }
 
-.model-list-header button:disabled {
-  opacity: 0.62;
+.model-list-header button:disabled,
+.provider-dialog-footer button:disabled {
+  cursor: default;
+  opacity: 0.55;
 }
 
-.model-list-header svg {
+.model-list-header svg,
+.provider-config-button svg {
   width: 13px;
   height: 13px;
+}
+
+.model-list-body {
+  display: grid;
+  max-height: 260px;
+  gap: 0;
+  overflow: auto;
+  padding-right: 4px;
+  scrollbar-width: thin;
 }
 
 .model-empty {
@@ -1583,28 +1889,63 @@ onMounted(async () => {
 .model-row {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-  border-radius: var(--kc-radius-md);
-  background: #fff;
-  padding: 10px;
-}
-
-.model-row > span {
-  border: 0;
+  gap: 8px;
+  min-height: 34px;
+  border-bottom: 1px solid var(--kc-border-soft);
+  border-radius: 0;
   background: transparent;
-  padding: 0;
-  color: var(--kc-text);
-  font-size: 12.5px;
-  font-weight: 600;
+  padding: 7px 2px;
 }
 
-.model-row div {
+.model-row:last-child {
+  border-bottom: 0;
+}
+
+.model-provider-logo {
+  position: relative;
+  display: grid;
+  width: 24px;
+  height: 24px;
+  flex: 0 0 24px;
+  place-items: center;
+  border: 1px solid var(--kc-border);
+  border-radius: 6px;
+  background: linear-gradient(180deg, #fff, #f5f7fb);
+  color: var(--kc-text-tertiary);
+  font-size: 9.5px;
+  font-weight: 750;
+}
+
+.model-provider-logo img {
+  position: relative;
+  z-index: 1;
+  width: 16px;
+  height: 16px;
+  object-fit: contain;
+}
+
+.model-provider-logo small {
+  position: absolute;
+  color: var(--kc-text-tertiary);
+  font-size: 8.5px;
+  font-weight: 750;
+}
+
+.model-inline-main {
   display: flex;
+  min-width: 0;
+  flex: 1;
   align-items: center;
   flex-wrap: wrap;
-  justify-content: flex-end;
-  gap: 5px;
+  gap: 4px;
+}
+
+.model-inline-main strong {
+  margin-right: 2px;
+  overflow-wrap: anywhere;
+  color: var(--kc-text);
+  font-size: 12.5px;
+  font-weight: 560;
 }
 
 .model-row .model-capabilities {
@@ -1613,21 +1954,44 @@ onMounted(async () => {
   color: #145eb8;
 }
 
-.model-row small {
+.model-row .model-meta-badge {
+  border-color: rgba(100, 116, 139, 0.18);
+  background: #f8fafc;
   color: var(--kc-text-tertiary);
-  font-size: 11px;
 }
 
-.credential-panel,
+.model-enabled-toggle {
+  position: relative;
+  width: 30px;
+  height: 18px;
+  flex: 0 0 30px;
+  border: 0;
+  border-radius: 999px;
+  background: #2563eb;
+}
+
+.model-enabled-toggle::after {
+  position: absolute;
+  top: 3px;
+  right: 3px;
+  width: 12px;
+  height: 12px;
+  border-radius: 999px;
+  background: #fff;
+  content: '';
+}
+
+.form-grid,
+.account-card {
+  border: 1px solid var(--kc-border-soft);
+  border-radius: var(--kc-radius-md);
+  background: #fbfcfd;
+  padding: 12px;
+}
+
 .form-grid {
   display: grid;
   gap: 12px;
-}
-
-.credential-panel h3 {
-  margin: 0;
-  font-size: 14px;
-  font-weight: 650;
 }
 
 label,
@@ -1669,6 +2033,185 @@ select:focus,
 textarea:focus {
   border-color: rgba(47, 128, 237, 0.45);
   box-shadow: 0 0 0 3px rgba(47, 128, 237, 0.12);
+}
+
+.provider-dialog-backdrop {
+  position: absolute;
+  inset: 0;
+  z-index: 4;
+  display: grid;
+  place-items: center;
+  background: rgba(15, 23, 42, 0.2);
+  backdrop-filter: blur(4px);
+}
+
+.provider-config-dialog {
+  display: grid;
+  width: min(640px, calc(100vw - 72px));
+  max-height: min(760px, calc(100vh - 120px));
+  grid-template-rows: auto minmax(0, 1fr) auto auto;
+  overflow: hidden;
+  border: 1px solid rgba(226, 232, 240, 0.9);
+  border-radius: 12px;
+  background: #fff;
+  box-shadow: 0 24px 64px rgba(15, 23, 42, 0.22);
+}
+
+.provider-config-header,
+.provider-dialog-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 16px 18px;
+}
+
+.provider-config-header {
+  border-bottom: 1px solid var(--kc-border-soft);
+}
+
+.provider-config-header h3,
+.provider-config-header p,
+.provider-security-note {
+  margin: 0;
+}
+
+.provider-config-header h3 {
+  color: var(--kc-text);
+  font-size: 17px;
+  font-weight: 680;
+}
+
+.provider-config-header p {
+  margin-top: 3px;
+  color: var(--kc-text-tertiary);
+  font-size: 12.5px;
+}
+
+.provider-config-header button {
+  display: grid;
+  width: 30px;
+  height: 30px;
+  place-items: center;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--kc-text-tertiary);
+}
+
+.provider-config-header button:hover {
+  background: var(--kc-surface-muted);
+  color: var(--kc-text);
+}
+
+.provider-config-header svg {
+  width: 16px;
+  height: 16px;
+}
+
+.provider-config-body {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  overflow: auto;
+  padding: 16px 18px;
+}
+
+.provider-config-body .wide {
+  grid-column: 1 / -1;
+}
+
+.provider-config-body input:disabled {
+  background: #f8fafc;
+  color: var(--kc-text-tertiary);
+}
+
+.provider-credential-list {
+  display: grid;
+  gap: 8px;
+}
+
+.provider-credential-item {
+  display: grid;
+  grid-template-columns: 20px 8px minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 8px;
+  min-height: 40px;
+  border-radius: var(--kc-radius-md);
+  background: #f8fafc;
+  padding: 0 10px;
+  cursor: pointer;
+}
+
+.provider-credential-item.active {
+  background: #f1f5f9;
+}
+
+.provider-credential-check {
+  color: #2563eb;
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.provider-credential-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  background: #22c55e;
+}
+
+.provider-credential-item strong {
+  overflow: hidden;
+  color: var(--kc-text);
+  font-size: 13px;
+  font-weight: 620;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.provider-credential-item small {
+  color: var(--kc-text-tertiary);
+  font-size: 11.5px;
+}
+
+.provider-credential-delete,
+.provider-add-credential-button {
+  border: 1px solid var(--kc-border);
+  border-radius: var(--kc-radius-md);
+  background: #fff;
+  color: var(--kc-text-secondary);
+  font-size: 12px;
+}
+
+.provider-credential-delete {
+  height: 28px;
+  padding: 0 9px;
+}
+
+.provider-add-credential-button {
+  height: 36px;
+}
+
+.provider-security-note {
+  border-top: 1px solid var(--kc-border-soft);
+  background: #fbfcfd;
+  padding: 10px 18px;
+  color: var(--kc-text-tertiary);
+  font-size: 11.5px;
+  line-height: 17px;
+}
+
+.provider-dialog-footer {
+  border-top: 1px solid var(--kc-border-soft);
+  background: #fff;
+}
+
+.provider-dialog-footer span {
+  min-width: 0;
+  flex: 1;
+  color: var(--kc-text-tertiary);
+  font-size: 11.5px;
+  line-height: 17px;
 }
 
 .credential-actions {
@@ -1868,7 +2411,7 @@ textarea:focus {
     grid-template-columns: 210px minmax(0, 1fr);
   }
 
-  .provider-expanded {
+  .provider-config-body {
     grid-template-columns: 1fr;
   }
 }

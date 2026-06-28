@@ -25,6 +25,16 @@ class FakeSettingsService:
         return dict(self.resolved) if self.resolved.get("profile_id") == profile_id else None
 
 
+class FailingSettingsService:
+    def __init__(self, error):
+        self.error = error
+        self.calls = []
+
+    async def resolve_task(self, user_id, task):
+        self.calls.append((user_id, task))
+        raise self.error
+
+
 def _route(**overrides):
     route = {
         "profile_id": "profile-a",
@@ -126,6 +136,22 @@ def test_environment_fallback_resolution(monkeypatch) -> None:
         assert resolved.route["source"] == "task_default"
         assert resolved.route["endpoint"] == "https://env.example/v1"
         assert resolved.route["model"] == "env-vision-model"
+
+    asyncio.run(run())
+
+
+def test_authenticated_resolution_propagates_missing_ocr_configuration() -> None:
+    async def run() -> None:
+        error = RuntimeError("OCR_ROUTE_NOT_CONFIGURED: 请先配置 OCR/VLM 模型")
+        service = FailingSettingsService(error)
+        resolver = OCREngineResolver(settings_service=service)
+
+        try:
+            await resolver.resolve("user-a", "page_text")
+            assert False, "Expected missing OCR configuration to propagate"
+        except RuntimeError as exc:
+            assert exc is error
+            assert service.calls == [("user-a", "page_text")]
 
     asyncio.run(run())
 

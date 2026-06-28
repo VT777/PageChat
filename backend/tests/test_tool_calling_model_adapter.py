@@ -3,7 +3,12 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from app.agent.model_turn import ModelTextDelta, ModelToolCallDelta, ModelTurn
+from app.agent.model_turn import (
+    ModelReasoningDelta,
+    ModelTextDelta,
+    ModelToolCallDelta,
+    ModelTurn,
+)
 from app.agent.tool_calling_model_adapter import ToolCallingModelAdapter
 
 
@@ -163,3 +168,27 @@ def test_adapter_streams_text_deltas_and_final_text_turn():
     ]
     assert [event.delta for event in events[:-1]] == ["Hello", " world"]
     assert events[-1].content == "Hello world"
+
+
+def test_adapter_streams_native_reasoning_deltas_without_answer_pollution():
+    async def stream_response():
+        yield {"choices": [{"delta": {"reasoning_content": "I should inspect docs."}}]}
+        yield {"choices": [{"delta": {"content": "Final"}}]}
+
+    async def fake_completion(**kwargs):
+        return stream_response()
+
+    adapter = ToolCallingModelAdapter(completion_fn=fake_completion, disable_thinking=False)
+
+    import asyncio
+
+    events = asyncio.run(_collect(adapter))
+
+    assert [type(event) for event in events] == [
+        ModelReasoningDelta,
+        ModelTextDelta,
+        ModelTurn,
+    ]
+    assert events[0].delta == "I should inspect docs."
+    assert events[1].delta == "Final"
+    assert events[-1].content == "Final"

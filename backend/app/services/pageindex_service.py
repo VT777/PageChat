@@ -491,6 +491,17 @@ class PageIndexService:
         return {key: value for key, value in merged.items() if value is not None}
 
     @staticmethod
+    def _is_non_recoverable_ocr_error(exc: Exception) -> bool:
+        message = str(exc or "")
+        return any(
+            marker in message
+            for marker in (
+                "OCR_ROUTE_NOT_CONFIGURED",
+                "MODEL_ROUTE_NOT_CONFIGURED",
+            )
+        )
+
+    @staticmethod
     def _record_ocr_call(
         analysis: Optional[Dict[str, Any]],
         call_diagnostics: Dict[str, Any],
@@ -1405,6 +1416,8 @@ class PageIndexService:
                         image_mime_type=str(image_input.get("image_mime_type") or "image/jpeg"),
                     )
                 except Exception as exc:
+                    if self._is_non_recoverable_ocr_error(exc):
+                        raise
                     self._record_ocr_call(
                         analysis,
                         {

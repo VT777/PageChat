@@ -3,10 +3,12 @@ from pathlib import Path
 import sys
 
 import aiosqlite
+import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from app.models.migrations import run_migrations  # noqa: E402
+from app.services.model_settings_service import ModelSettingsService  # noqa: E402
 from app.services.ocr_settings_service import OCRSettingsService  # noqa: E402
 
 
@@ -194,15 +196,61 @@ def test_task_override_resolution_prefers_override_then_default() -> None:
     asyncio.run(run())
 
 
-def test_env_fallback_when_no_user_profile(monkeypatch) -> None:
+def test_authenticated_user_without_ocr_profile_must_configure_ocr() -> None:
     async def run() -> None:
         db, service = await _service()
         try:
-            monkeypatch.setattr(
-                "app.services.ocr_settings_service.config.OCR_DEFAULT_ENGINE_TYPE",
-                "openai_compatible_ocr",
-                raising=False,
+            with pytest.raises(RuntimeError) as exc_info:
+                await service.resolve_task("user-a", "page_text")
+
+            assert "OCR_ROUTE_NOT_CONFIGURED" in str(exc_info.value)
+            assert "OCR/VLM" in str(exc_info.value)
+        finally:
+            await db.close()
+
+    asyncio.run(run())
+
+
+def test_vision_model_route_can_back_ocr_page_text_when_no_ocr_profile() -> None:
+    async def run() -> None:
+        db, service = await _service()
+        model_service = ModelSettingsService(db)
+        try:
+            provider = await model_service.save_provider_config(
+                user_id="user-a",
+                provider="dashscope",
+                base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
+                api_key="dash-secret-123456",
             )
+            await model_service.save_route_mapping(
+                user_id="user-a",
+                route_slot="vision",
+                provider_id=provider["provider_id"],
+                model="qwen3.5-ocr",
+                supports_streaming=True,
+                supports_tool_calling=True,
+                supports_vision=True,
+            )
+
+            resolved = await service.resolve_task("user-a", "page_text")
+
+            assert resolved["source"] == "model_route:vision"
+            assert resolved["engine_type"] == "openai_compatible_ocr"
+            assert resolved["provider"] == "dashscope"
+            assert resolved["endpoint"] == "https://dashscope.aliyuncs.com/compatible-mode/v1"
+            assert resolved["model"] == "qwen3.5-ocr"
+            assert resolved["api_key"] == "dash-secret-123456"
+            assert resolved["capabilities"] == ["page_text"]
+        finally:
+            await db.close()
+
+    asyncio.run(run())
+
+
+def test_env_fallback_is_only_for_internal_no_user_resolution(monkeypatch) -> None:
+    async def run() -> None:
+        db, service = await _service()
+        try:
             monkeypatch.setattr(
                 "app.services.ocr_settings_service.config.OCR_OPENAI_BASE_URL",
                 "https://env.example/v1",
@@ -219,45 +267,13 @@ def test_env_fallback_when_no_user_profile(monkeypatch) -> None:
                 raising=False,
             )
 
-            resolved = await service.resolve_task("user-a", "page_text")
+            resolved = await service.resolve_task(None, "page_text")
 
             assert resolved["source"] == "task_default"
             assert resolved["engine_type"] == "openai_compatible_ocr"
             assert resolved["endpoint"] == "https://env.example/v1"
             assert resolved["model"] == "env-ocr-model"
             assert resolved["api_key"] == "env-secret"
-        finally:
-            await db.close()
-
-    asyncio.run(run())
-
-
-def test_default_env_fallback_uses_qwen35_ocr(monkeypatch) -> None:
-    async def run() -> None:
-        db, service = await _service()
-        try:
-            from app.core import config
-
-            monkeypatch.setattr(
-                "app.services.ocr_settings_service.config.OCR_DEFAULT_ENGINE_TYPE",
-                "openai_compatible_ocr",
-                raising=False,
-            )
-            monkeypatch.setattr(
-                "app.services.ocr_settings_service.config.OCR_BASE_URL",
-                "https://dashscope.aliyuncs.com/compatible-mode/v1",
-                raising=False,
-            )
-            monkeypatch.setattr(
-                "app.services.ocr_settings_service.config.OCR_MODEL",
-                config.OCR_MODEL,
-                raising=False,
-            )
-
-            resolved = await service.resolve_task("user-a", "page_text")
-
-            assert resolved["source"] == "task_default"
-            assert resolved["model"] == "qwen3.5-ocr"
         finally:
             await db.close()
 

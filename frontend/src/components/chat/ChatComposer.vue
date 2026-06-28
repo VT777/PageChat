@@ -1,38 +1,32 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import {
   ArrowUp,
+  Brain,
   Check,
-  File,
-  FileCode,
-  FileImage,
-  FileSpreadsheet,
   FileText,
-  FileType,
   Folder,
   Globe,
   ImagePlus,
   Plus,
-  Presentation,
   X,
 } from 'lucide-vue-next'
 import type { Document } from '@/stores/document'
-import { useFolderStore } from '@/stores/folder'
 import { useChatStore } from '@/stores/chat'
-import { chatApi, documentApi } from '@/api'
+import { chatApi } from '@/api'
 import type { Folder as FolderModel } from '@/api/folders'
 import type { ChatAttachmentMetadata, ComposerImageAttachment } from '@/types/chatAttachments'
 import {
   COMPOSER_ACTIONS,
   documentOnlyChatContexts,
-  documentPresentationForType,
   resolveDocumentChatContext,
 } from '@/ui/pagechatContracts'
-import { formatDocumentSize, formatDocumentTypeLabel } from '@/utils/documentWorkbench'
+import { useI18n } from '@/i18n/messages'
 
 interface ComposerSubmitPayload {
   text: string
   webSearch: boolean
+  thinkingEnabled: boolean
   documentIds: string[]
   folderIds: string[]
   attachments: ChatAttachmentMetadata[]
@@ -58,17 +52,19 @@ const emit = defineEmits<{
   submit: [payload: ComposerSubmitPayload]
 }>()
 
-const folderStore = useFolderStore()
 const chatStore = useChatStore()
+const { t, composerActionLabel } = useI18n()
 
 const text = ref('')
 const showMenu = ref(false)
-const pickerMode = ref<'file' | 'folder' | null>(null)
+const showLibraryPicker = ref(false)
 const webSearch = ref(false)
+const THINKING_STORAGE_KEY = 'pagechat_thinking_enabled'
+const thinkingEnabled = ref(readStoredThinkingPreference())
 const selectedDocumentIds = ref<string[]>([])
 const selectedFolderIds = ref<string[]>([])
-const pickerDocumentOptions = ref<Document[]>([])
-const pickerDocumentsLoading = ref(false)
+const selectedPickerDocuments = ref<Document[]>([])
+const selectedPickerFolders = ref<FolderModel[]>([])
 const images = ref<ComposerImageAttachment[]>([])
 const imageInputRef = ref<HTMLInputElement | null>(null)
 const textareaRef = ref<HTMLTextAreaElement | null>(null)
@@ -82,12 +78,6 @@ const selectedDocumentChips = computed(() =>
   selectedDocumentIds.value.map(documentContextForId)
 )
 const isDraftChat = computed(() => !chatStore.currentSessionId)
-const pickerDocuments = computed<Document[]>(() =>
-  pickerDocumentOptions.value
-)
-const pickerFolders = computed<FolderModel[]>(() =>
-  folderStore.folders
-)
 const initialFolderContexts = computed(() => {
   return toFolderContexts(props.initialFolderContext)
 })
@@ -101,14 +91,16 @@ const actionIconMap = {
   FileText,
   Folder,
 }
-const fileIconMap = {
-  File,
-  FileCode,
-  FileImage,
-  FileSpreadsheet,
-  FileText,
-  FileType,
-  Presentation,
+function readStoredThinkingPreference() {
+  if (typeof localStorage === 'undefined') return false
+  return localStorage.getItem(THINKING_STORAGE_KEY) === 'true'
+}
+
+function toggleThinking() {
+  thinkingEnabled.value = !thinkingEnabled.value
+  if (typeof localStorage !== 'undefined') {
+    localStorage.setItem(THINKING_STORAGE_KEY, String(thinkingEnabled.value))
+  }
 }
 
 function triggerAction(actionId: string) {
@@ -122,10 +114,9 @@ function triggerAction(actionId: string) {
     showMenu.value = false
     return
   }
-  pickerMode.value = actionId === 'file' ? 'file' : 'folder'
-  showMenu.value = false
-  if (pickerMode.value === 'file') {
-    void loadPickerDocuments()
+  if (actionId === 'library') {
+    showLibraryPicker.value = true
+    showMenu.value = false
   }
 }
 
@@ -175,23 +166,33 @@ async function removeImage(localId: string) {
   images.value = images.value.filter((item) => item.localId !== localId)
 }
 
-function toggleDocument(id: string) {
-  if (selectedDocumentIds.value.includes(id)) {
-    selectedDocumentIds.value = selectedDocumentIds.value.filter((item) => item !== id)
+function toggleLibraryDocument(document: Document) {
+  if (selectedDocumentIds.value.includes(document.id)) {
+    selectedDocumentIds.value = selectedDocumentIds.value.filter((item) => item !== document.id)
+    selectedPickerDocuments.value = selectedPickerDocuments.value.filter((item) => item.id !== document.id)
     syncDocumentContextsToStore()
     return
   }
-  selectedDocumentIds.value = [...selectedDocumentIds.value, id]
+  selectedDocumentIds.value = [...selectedDocumentIds.value, document.id]
+  selectedPickerDocuments.value = [
+    ...selectedPickerDocuments.value.filter((item) => item.id !== document.id),
+    document,
+  ]
   syncDocumentContextsToStore()
 }
 
-function selectFolder(id: string) {
-  if (selectedFolderIds.value.includes(id)) {
-    selectedFolderIds.value = selectedFolderIds.value.filter((item) => item !== id)
+function toggleLibraryFolder(folder: FolderModel) {
+  if (selectedFolderIds.value.includes(folder.id)) {
+    selectedFolderIds.value = selectedFolderIds.value.filter((item) => item !== folder.id)
+    selectedPickerFolders.value = selectedPickerFolders.value.filter((item) => item.id !== folder.id)
     syncFolderContextsToStore()
     return
   }
-  selectedFolderIds.value = [...selectedFolderIds.value, id]
+  selectedFolderIds.value = [...selectedFolderIds.value, folder.id]
+  selectedPickerFolders.value = [
+    ...selectedPickerFolders.value.filter((item) => item.id !== folder.id),
+    folder,
+  ]
   syncFolderContextsToStore()
 }
 
@@ -255,6 +256,7 @@ async function submit() {
   emit('submit', {
     text: text.value.trim(),
     webSearch: webSearch.value,
+    thinkingEnabled: thinkingEnabled.value,
     documentIds: selectedDocumentIds.value,
     folderIds: selectedFolderIds.value,
     attachments,
@@ -265,47 +267,15 @@ async function submit() {
 }
 
 function documentContextForId(id: string) {
-  return resolveDocumentChatContext(id, initialDocumentContexts.value, pickerDocuments.value)
+  return resolveDocumentChatContext(id, initialDocumentContexts.value, selectedPickerDocuments.value)
 }
 
 function folderContextForId(id: string) {
-  const folder = pickerFolders.value.find((item) => item.id === id)
+  const folder = selectedPickerFolders.value.find((item) => item.id === id)
   if (folder) return { id: folder.id, label: folder.name, type: 'folder' as const }
   const initialContext = initialFolderContexts.value.find((item) => item.id === id)
   if (initialContext) return { ...initialContext, type: 'folder' as const }
   return { id, label: id, type: 'folder' as const }
-}
-
-function fileIconFor(fileType?: string) {
-  return fileIconMap[documentPresentationForType(fileType).icon as keyof typeof fileIconMap] || File
-}
-
-async function loadPickerDocuments() {
-  pickerDocumentsLoading.value = true
-  try {
-    const folderId = selectedFolderIds.value[0] || null
-    const { data } = await documentApi.list({
-      page: 1,
-      page_size: 100,
-      folder_id: folderId,
-      include_subfolders: true,
-    })
-    pickerDocumentOptions.value = (data.items || []).filter(
-      (document: Document) => document.status === 'completed'
-    )
-  } catch (error) {
-    console.error('Failed to load selectable documents:', error)
-    pickerDocumentOptions.value = []
-  } finally {
-    pickerDocumentsLoading.value = false
-  }
-}
-
-function folderDetail(folder: FolderModel) {
-  return [
-    '文件夹',
-    folder.path || 'root',
-  ].join(' · ')
 }
 
 function syncDocumentContextsToStore() {
@@ -369,12 +339,6 @@ watch(text, (value) => {
   }
 })
 
-onMounted(() => {
-  if (folderStore.folders.length === 0) {
-    folderStore.fetchFolders()
-  }
-})
-
 onBeforeUnmount(() => {
   images.value.forEach((image) => {
     URL.revokeObjectURL(image.previewUrl)
@@ -389,70 +353,14 @@ onBeforeUnmount(() => {
 
 <template>
   <div class="composer-shell">
-    <div v-if="pickerMode" class="scope-picker">
-      <div class="scope-picker-header">
-        <div>
-          <strong>{{ pickerMode === 'file' ? '选择文件' : '选择文件夹' }}</strong>
-          <span>{{ pickerMode === 'file' ? '限定这次回答使用的文档' : '限定这次回答使用的文件夹' }}</span>
-        </div>
-        <button type="button" @click="pickerMode = null">
-          <X />
-        </button>
-      </div>
-
-      <div v-if="pickerMode === 'file'" class="scope-picker-list">
-        <div v-if="pickerDocumentsLoading" class="scope-picker-empty">
-          正在加载文件...
-        </div>
-        <template v-else>
-          <button
-            v-for="document in pickerDocuments.slice(0, 12)"
-            :key="document.id"
-            :class="['scope-picker-row', { selected: selectedDocumentIds.includes(document.id) }]"
-            type="button"
-            @click="toggleDocument(document.id)"
-          >
-            <span :class="['scope-picker-icon', documentPresentationForType(document.file_type).tone]">
-              <component :is="fileIconFor(document.file_type)" />
-            </span>
-            <span class="scope-picker-main">
-              <strong>{{ document.original_name || document.name }}</strong>
-              <small>
-                {{ formatDocumentTypeLabel(document.file_type) }}
-                <template v-if="document.file_size"> · {{ formatDocumentSize(document.file_size) }}</template>
-                <template v-if="document.folder_path"> · {{ document.folder_path }}</template>
-              </small>
-            </span>
-            <Check v-if="selectedDocumentIds.includes(document.id)" class="scope-picker-check" />
-          </button>
-          <div v-if="pickerDocuments.length === 0" class="scope-picker-empty">
-            暂无可选择文件
-          </div>
-        </template>
-      </div>
-
-      <div v-else class="scope-picker-list">
-        <button
-          v-for="folder in pickerFolders.slice(0, 12)"
-          :key="folder.id"
-          :class="['scope-picker-row', { selected: selectedFolderIds.includes(folder.id) }]"
-          type="button"
-          @click="selectFolder(folder.id)"
-        >
-          <span class="scope-picker-icon folder">
-            <Folder />
-          </span>
-          <span class="scope-picker-main">
-            <strong>{{ folder.name }}</strong>
-            <small>{{ folderDetail(folder) }}</small>
-          </span>
-          <Check v-if="selectedFolderIds.includes(folder.id)" class="scope-picker-check" />
-        </button>
-        <div v-if="pickerFolders.length === 0" class="scope-picker-empty">
-          暂无可选择文件夹
-        </div>
-      </div>
-    </div>
+    <LibraryScopePicker
+      v-if="showLibraryPicker"
+      :selected-document-ids="selectedDocumentIds"
+      :selected-folder-ids="selectedFolderIds"
+      @close="showLibraryPicker = false"
+      @toggle-document="toggleLibraryDocument"
+      @toggle-folder="toggleLibraryFolder"
+    />
 
     <div class="composer-card">
       <div v-if="images.length > 0" class="image-strip">
@@ -476,7 +384,7 @@ onBeforeUnmount(() => {
         v-model="text"
         :disabled="disabled"
         rows="1"
-        placeholder="Ask PageChat about your documents..."
+        :placeholder="t('composer.placeholder')"
         @keydown="handleKeydown"
         @paste="handlePaste"
       />
@@ -486,7 +394,7 @@ onBeforeUnmount(() => {
           <button
             :class="['composer-plus', { active: showMenu }]"
             type="button"
-            aria-label="Add context"
+            :aria-label="t('composer.addContext')"
             @click="showMenu = !showMenu"
           >
             <Plus />
@@ -501,7 +409,7 @@ onBeforeUnmount(() => {
               @click="triggerAction(action.id)"
             >
               <component :is="actionIconMap[action.icon as keyof typeof actionIconMap]" />
-              <span>{{ action.label }}</span>
+              <span>{{ composerActionLabel(action.id) }}</span>
               <Check v-if="action.id === 'web-search' && webSearch" class="menu-check" />
             </button>
           </div>
@@ -509,6 +417,16 @@ onBeforeUnmount(() => {
           <button v-if="webSearch" class="context-chip active" type="button" @click="webSearch = false">
             <span class="chip-icon"><Globe /></span>
             <span>搜索</span>
+          </button>
+          <button
+            :class="['thinking-toggle', { active: thinkingEnabled }]"
+            type="button"
+            :aria-pressed="thinkingEnabled"
+            :title="t('composer.reasoningTitle')"
+            @click="toggleThinking"
+          >
+            <Brain />
+            <span>{{ t('composer.thinking') }}</span>
           </button>
           <button
             v-for="document in selectedDocumentChips"
@@ -638,6 +556,7 @@ textarea:focus {
 .composer-plus svg,
 .send-button svg,
 .composer-menu svg,
+.thinking-toggle svg,
 .context-chip svg,
 .scope-picker svg,
 .image-chip button svg {
@@ -711,6 +630,30 @@ textarea:focus {
   padding: 0 10px 0 6px;
   color: var(--kc-text-secondary);
   font-size: 12px;
+}
+
+.thinking-toggle {
+  display: inline-flex;
+  height: 28px;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid var(--kc-border);
+  border-radius: 999px;
+  background: #fff;
+  padding: 0 9px;
+  color: var(--kc-text-tertiary);
+  font-size: 12px;
+  transition: background 150ms ease, border-color 150ms ease, color 150ms ease;
+}
+
+.thinking-toggle.active {
+  border-color: rgba(47, 128, 237, 0.28);
+  background: #eaf3ff;
+  color: #145eb8;
+}
+
+.thinking-toggle:hover {
+  color: var(--kc-text);
 }
 
 .context-chip.active {

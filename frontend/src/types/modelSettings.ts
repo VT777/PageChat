@@ -35,9 +35,17 @@ export interface ModelProviderModel {
   created?: number
   object?: string
   capabilities?: ModelCapability[]
+  features?: ModelCapability[]
+  supports_vision?: boolean
+  supports_tool_calling?: boolean
+  supports_reasoning?: boolean
+  supports_embedding?: boolean
+  supports_ocr?: boolean
+  context_window?: number | null
+  max_output_tokens?: number | null
 }
 
-export type ModelCapability = 'llm' | 'vision' | 'embedding' | 'tool_calling' | 'ocr'
+export type ModelCapability = 'llm' | 'vision' | 'embedding' | 'tool_calling' | 'reasoning' | 'ocr'
 
 export interface ModelProviderModelsResponse {
   provider_id: string
@@ -57,6 +65,16 @@ export interface ModelProviderUpdateInput {
   provider: string
   base_url: string
   api_key?: string
+}
+
+export interface ModelProviderCustomModelInput {
+  model: string
+  display_name?: string
+  model_type?: string
+  endpoint_model_name?: string
+  capabilities?: ModelCapability[]
+  context_window?: number | null
+  max_output_tokens?: number | null
 }
 
 export interface ModelRouteMapping {

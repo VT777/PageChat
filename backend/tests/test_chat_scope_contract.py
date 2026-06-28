@@ -41,6 +41,14 @@ def test_chat_request_defaults_web_search_to_false() -> None:
 def test_chat_request_accepts_attachment_ids() -> None:
     request = ChatRequest(question="look at this screenshot", attachment_ids=["att-a"])
     assert request.attachment_ids == ["att-a"]
+def test_chat_request_accepts_regenerate_boundary() -> None:
+    request = ChatRequest(
+        question="redo this answer",
+        conversation_id="conv-a",
+        regenerate_from_message_id="msg-user-a",
+    )
+
+    assert request.regenerate_from_message_id == "msg-user-a"
 
 
 def test_agent_injects_folder_scope_into_browse_documents() -> None:
@@ -257,6 +265,40 @@ def _chat_service_with_agent_and_attachments(
     return service
 
 
+
+def test_chat_service_truncates_conversation_before_regenerate_stream() -> None:
+    async def run() -> None:
+        agent = CapturingAgent()
+        service = _chat_service_with_agent(agent)
+        calls = []
+
+        async def truncate(conversation_id, user_id, message_id):
+            calls.append({
+                "conversation_id": conversation_id,
+                "user_id": user_id,
+                "message_id": message_id,
+            })
+
+        service.truncate_conversation_from_message = truncate
+
+        events = [
+            event
+            async for event in service.stream_chat(
+                question="redo this answer",
+                conversation_id="conv-a",
+                regenerate_from_message_id="msg-user-a",
+                user_id="user-a",
+            )
+        ]
+
+        assert events
+        assert calls == [{
+            "conversation_id": "conv-a",
+            "user_id": "user-a",
+            "message_id": "msg-user-a",
+        }]
+
+    asyncio.run(run())
 def test_chat_service_keeps_selected_documents_as_strict_agent_scope() -> None:
     async def run() -> None:
         agent = CapturingAgent()

@@ -91,14 +91,12 @@ describe('PageChat UI contracts', () => {
     expect(COMPOSER_ACTIONS.map((action) => action.id)).toEqual([
       'image',
       'web-search',
-      'file',
-      'folder',
+      'library',
     ])
     expect(COMPOSER_ACTIONS.map((action) => action.label)).toEqual([
       '添加图片',
       '网页搜索',
-      '选择文件',
-      '选择文件夹',
+      '选择文件/文件夹',
     ])
   })
 

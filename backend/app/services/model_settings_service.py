@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import json
 import os
 import uuid
 import asyncio
@@ -40,6 +41,16 @@ class ModelRouteNotConfiguredError(RuntimeError):
         self.route_slot = route_slot
 
 
+class ModelProviderInvalidError(RuntimeError):
+    def __init__(self, route_slot: str, provider_id: str):
+        super().__init__(
+            f"Model provider '{provider_id}' for route '{route_slot}' is invalid. "
+            "Reconfigure or retest it in Settings."
+        )
+        self.route_slot = route_slot
+        self.provider_id = provider_id
+
+
 MODEL_ROUTE_NOT_CONFIGURED_ERROR_CODE = "MODEL_ROUTE_NOT_CONFIGURED"
 
 
@@ -60,6 +71,7 @@ def model_route_not_configured_payload(
         "message": message,
         "error": message,
     }
+
 
 def _provider_preset(
     provider: str,
@@ -161,6 +173,7 @@ PROVIDER_PRESETS = [
 @dataclass(frozen=True)
 class ResolvedModelRoute:
     route_slot: str
+    provider_id: str | None
     provider: str
     base_url: str
     api_key: str | None
@@ -178,6 +191,7 @@ class ResolvedModelRoute:
     def as_dict(self) -> dict[str, Any]:
         return {
             "route_slot": self.route_slot,
+            "provider_id": self.provider_id,
             "provider": self.provider,
             "base_url": self.base_url,
             "api_key": self.api_key,
@@ -260,7 +274,14 @@ def _sanitize_provider_error(exc: Exception, api_key: str | None) -> str:
     return message
 
 
-MODEL_CAPABILITY_ORDER = ("llm", "vision", "tool_calling", "ocr", "embedding")
+MODEL_CAPABILITY_ORDER = (
+    "llm",
+    "vision",
+    "tool_calling",
+    "reasoning",
+    "ocr",
+    "embedding",
+)
 
 
 def _infer_model_capabilities(model_id: str, raw: dict[str, Any] | None = None) -> list[str]:
@@ -268,28 +289,141 @@ def _infer_model_capabilities(model_id: str, raw: dict[str, Any] | None = None) 
     for key in ("capabilities", "supported_capabilities", "features"):
         value = (raw or {}).get(key)
         if isinstance(value, list):
-            raw_capabilities.extend(str(item).lower() for item in value)
+            raw_capabilities.extend(_normalize_capability_alias(str(item)) for item in value)
     explicit = [item for item in raw_capabilities if item in MODEL_CAPABILITY_ORDER]
-    if explicit:
-        return _ordered_capabilities(explicit)
 
     normalized = model_id.lower()
+    inferred: list[str] = []
     if "embedding" in normalized or "embed" in normalized or "bge-" in normalized:
         return ["embedding"]
-    if "ocr" in normalized:
-        return ["llm", "vision", "ocr"]
-    if any(
+    is_ocr_model = "ocr" in normalized
+    if is_ocr_model:
+        inferred.extend(["llm", "vision", "ocr"])
+    if not is_ocr_model and any(
         marker in normalized
         for marker in ("vl", "vision", "gpt-4o", "gemini", "claude-3", "qvq")
     ):
-        return ["llm", "vision", "tool_calling"]
-    return ["llm", "tool_calling"]
+        inferred.extend(["llm", "vision", "tool_calling"])
+    if any(
+        marker in normalized
+        for marker in ("qwen3", "qwen-3", "qvq", "qwq", "r1", "reason", "thinking", "o1", "o3")
+    ):
+        inferred.extend(["llm", "tool_calling", "reasoning"])
+    if not explicit and not inferred:
+        inferred.extend(["llm", "tool_calling"])
+    return _ordered_capabilities([*explicit, *inferred])
+
+
+def _normalize_capability_alias(value: str) -> str:
+    normalized = value.strip().lower().replace("-", "_").replace(" ", "_")
+    aliases = {
+        "function_calling": "tool_calling",
+        "tools": "tool_calling",
+        "tool": "tool_calling",
+        "image": "vision",
+        "visual": "vision",
+        "reason": "reasoning",
+        "thinking": "reasoning",
+        "text_embedding": "embedding",
+    }
+    return aliases.get(normalized, normalized)
+
+
+def _first_int(raw: dict[str, Any], keys: tuple[str, ...]) -> int | None:
+    for key in keys:
+        value = raw.get(key)
+        if value is None and isinstance(raw.get("model_properties"), dict):
+            value = raw["model_properties"].get(key)
+        if value is None and isinstance(raw.get("metadata"), dict):
+            value = raw["metadata"].get(key)
+        if isinstance(value, bool):
+            continue
+        if isinstance(value, int):
+            return value
+        if isinstance(value, float) and value.is_integer():
+            return int(value)
+        if isinstance(value, str):
+            compact = value.strip().lower().replace(",", "")
+            multiplier = 1
+            if compact.endswith("k"):
+                compact = compact[:-1]
+                multiplier = 1000
+            try:
+                number = float(compact)
+            except ValueError:
+                continue
+            return int(number * multiplier)
+    return None
 
 
 def _ordered_capabilities(capabilities: list[str]) -> list[str]:
     selected = set(capabilities)
     return [item for item in MODEL_CAPABILITY_ORDER if item in selected]
 
+
+
+_UNSUITABLE_PROVIDER_TEST_MODEL_MARKERS = (
+    "image",
+    "img",
+    "asr",
+    "audio",
+    "tts",
+    "embedding",
+    "embed",
+    "bge",
+    "rerank",
+    "ocr",
+    "sre",
+    "test",
+)
+
+_PROVIDER_TEST_MODEL_PREFERENCE_MARKERS = (
+    "qwen3.7-max",
+    "qwen3-max",
+    "qwen-plus",
+    "qwen-max",
+    "qwen-turbo",
+    "gpt-4",
+    "gpt-3.5",
+    "claude",
+    "deepseek-chat",
+    "kimi",
+)
+
+
+def _is_suitable_provider_test_model(model: dict[str, Any]) -> bool:
+    model_id = str(model.get("id") or "").strip().lower()
+    if not model_id:
+        return False
+    if any(marker in model_id for marker in _UNSUITABLE_PROVIDER_TEST_MODEL_MARKERS):
+        return False
+    capabilities = set(model.get("capabilities") or [])
+    if "embedding" in capabilities or "ocr" in capabilities:
+        return False
+    return "llm" in capabilities and "tool_calling" in capabilities
+
+
+def select_provider_test_model(models: list[dict[str, Any]]) -> str:
+    suitable = [model for model in models if _is_suitable_provider_test_model(model)]
+    if suitable:
+        for marker in _PROVIDER_TEST_MODEL_PREFERENCE_MARKERS:
+            for model in suitable:
+                model_id = str(model.get("id") or "").strip()
+                if marker in model_id.lower():
+                    return model_id
+        return str(suitable[0].get("id") or "").strip()
+
+    fallback = next(
+        (
+            str(model.get("id") or "").strip()
+            for model in models
+            if model.get("id")
+            and "embedding" not in set(model.get("capabilities") or [])
+            and "ocr" not in set(model.get("capabilities") or [])
+        ),
+        "",
+    )
+    return fallback
 
 def _normalize_provider_models(payload: Any) -> list[dict[str, Any]]:
     if isinstance(payload, dict):
@@ -315,9 +449,96 @@ def _normalize_provider_models(payload: Any) -> list[dict[str, Any]]:
         for key in ("owned_by", "created", "object"):
             if raw.get(key) is not None:
                 model[key] = raw[key]
-        model["capabilities"] = _infer_model_capabilities(model_id, raw)
+        capabilities = _infer_model_capabilities(model_id, raw)
+        context_window = _first_int(
+            raw,
+            (
+                "context_window",
+                "context_length",
+                "max_context_length",
+                "max_input_tokens",
+                "input_token_limit",
+            ),
+        )
+        max_output_tokens = _first_int(
+            raw,
+            (
+                "max_output_tokens",
+                "max_completion_tokens",
+                "output_token_limit",
+                "max_tokens",
+            ),
+        )
+        model["capabilities"] = capabilities
+        model["features"] = capabilities
+        model["supports_vision"] = "vision" in capabilities
+        model["supports_tool_calling"] = "tool_calling" in capabilities
+        model["supports_reasoning"] = "reasoning" in capabilities
+        model["supports_embedding"] = "embedding" in capabilities
+        model["supports_ocr"] = "ocr" in capabilities
+        model["context_window"] = context_window
+        model["max_output_tokens"] = max_output_tokens
         models.append(model)
     return models
+
+
+def _normalize_custom_model(
+    *,
+    model: str,
+    display_name: str | None = None,
+    model_type: str = "llm",
+    endpoint_model_name: str | None = None,
+    capabilities: list[str] | None = None,
+    context_window: int | None = None,
+    max_output_tokens: int | None = None,
+) -> dict[str, Any]:
+    model_id = (endpoint_model_name or model or "").strip()
+    if not model_id:
+        raise ValueError("model is required")
+    normalized_type = (model_type or "llm").strip().lower()
+    explicit = [_normalize_capability_alias(str(item)) for item in capabilities or []]
+    if normalized_type == "vision":
+        explicit.extend(["llm", "vision", "tool_calling"])
+    elif normalized_type == "embedding":
+        explicit.append("embedding")
+    elif normalized_type == "ocr":
+        explicit.extend(["llm", "vision", "ocr"])
+    else:
+        explicit.extend(["llm", "tool_calling"])
+    normalized_capabilities = _ordered_capabilities(
+        [item for item in explicit if item in MODEL_CAPABILITY_ORDER]
+        or _infer_model_capabilities(model_id)
+    )
+    return {
+        "id": model_id,
+        "display_name": display_name or None,
+        "model_type": normalized_type,
+        "capabilities": normalized_capabilities,
+        "features": normalized_capabilities,
+        "supports_vision": "vision" in normalized_capabilities,
+        "supports_tool_calling": "tool_calling" in normalized_capabilities,
+        "supports_reasoning": "reasoning" in normalized_capabilities,
+        "supports_embedding": "embedding" in normalized_capabilities,
+        "supports_ocr": "ocr" in normalized_capabilities,
+        "context_window": context_window,
+        "max_output_tokens": max_output_tokens,
+        "source": "custom",
+    }
+
+
+def _merge_provider_models(
+    remote_models: list[dict[str, Any]],
+    custom_models: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    merged: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for model in [*remote_models, *custom_models]:
+        model_id = str(model.get("id") or "").strip()
+        if not model_id or model_id in seen:
+            continue
+        seen.add(model_id)
+        merged.append(model)
+    return merged
 
 
 def _route_version(*parts: str) -> str:
@@ -431,6 +652,100 @@ class ModelSettingsService:
         row = await cursor.fetchone()
         return self._provider_row_to_dict(row) if row else None
 
+    async def save_custom_provider_model(
+        self,
+        *,
+        user_id: str,
+        provider_id: str,
+        model: str,
+        display_name: str | None = None,
+        model_type: str = "llm",
+        endpoint_model_name: str | None = None,
+        capabilities: list[str] | None = None,
+        context_window: int | None = None,
+        max_output_tokens: int | None = None,
+    ) -> dict[str, Any]:
+        provider = await self.get_provider_config(user_id, provider_id)
+        if not provider:
+            raise ValueError("provider config not found")
+        normalized = _normalize_custom_model(
+            model=model,
+            display_name=display_name,
+            model_type=model_type,
+            endpoint_model_name=endpoint_model_name,
+            capabilities=capabilities,
+            context_window=context_window,
+            max_output_tokens=max_output_tokens,
+        )
+        model_config_id = str(uuid.uuid4())
+        await self.db.execute(
+            """
+            INSERT INTO model_provider_custom_models (
+                model_config_id, user_id, provider_id, model, display_name,
+                model_type, endpoint_model_name, capabilities_json,
+                context_window, max_output_tokens, created_at, updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+            ON CONFLICT(user_id, provider_id, model) DO UPDATE SET
+                display_name = excluded.display_name,
+                model_type = excluded.model_type,
+                endpoint_model_name = excluded.endpoint_model_name,
+                capabilities_json = excluded.capabilities_json,
+                context_window = excluded.context_window,
+                max_output_tokens = excluded.max_output_tokens,
+                updated_at = CURRENT_TIMESTAMP
+            """,
+            (
+                model_config_id,
+                user_id,
+                provider_id,
+                model.strip(),
+                display_name,
+                (model_type or "llm").strip().lower(),
+                endpoint_model_name,
+                json.dumps(normalized["capabilities"], ensure_ascii=False),
+                context_window,
+                max_output_tokens,
+            ),
+        )
+        await self.db.commit()
+        return normalized
+
+    async def list_custom_provider_models(
+        self,
+        *,
+        user_id: str,
+        provider_id: str,
+    ) -> list[dict[str, Any]]:
+        cursor = await self.db.execute(
+            """
+            SELECT model, display_name, model_type, endpoint_model_name,
+                   capabilities_json, context_window, max_output_tokens
+            FROM model_provider_custom_models
+            WHERE user_id = ? AND provider_id = ?
+            ORDER BY updated_at DESC, created_at DESC
+            """,
+            (user_id, provider_id),
+        )
+        models = []
+        for row in await cursor.fetchall():
+            try:
+                capabilities = json.loads(row["capabilities_json"] or "[]")
+            except json.JSONDecodeError:
+                capabilities = []
+            models.append(
+                _normalize_custom_model(
+                    model=row["model"],
+                    display_name=row["display_name"],
+                    model_type=row["model_type"],
+                    endpoint_model_name=row["endpoint_model_name"],
+                    capabilities=capabilities,
+                    context_window=row["context_window"],
+                    max_output_tokens=row["max_output_tokens"],
+                )
+            )
+        return models
+
     async def list_provider_models(
         self,
         *,
@@ -442,6 +757,10 @@ class ModelSettingsService:
         if not provider:
             raise ValueError("provider config not found")
 
+        custom_models = await self.list_custom_provider_models(
+            user_id=user_id,
+            provider_id=provider_id,
+        )
         api_key = _unprotect_api_key(provider["api_key_ciphertext"])
         url = _models_url(provider["base_url"])
 
@@ -456,15 +775,27 @@ class ModelSettingsService:
 
         try:
             payload = await asyncio.to_thread(fetch)
+            remote_models = _normalize_provider_models(payload)
         except Exception as exc:
-            raise RuntimeError(_sanitize_provider_error(exc, api_key)) from exc
+            if not custom_models:
+                raise RuntimeError(_sanitize_provider_error(exc, api_key)) from exc
+            return {
+                "provider_id": provider_id,
+                "provider": provider["provider"],
+                "base_url": provider["base_url"],
+                "models": custom_models,
+                "source": "custom",
+            }
+
+        models = _merge_provider_models(remote_models, custom_models)
+        source = "remote+custom" if custom_models else "remote"
 
         return {
             "provider_id": provider_id,
             "provider": provider["provider"],
             "base_url": provider["base_url"],
-            "models": _normalize_provider_models(payload),
-            "source": "remote",
+            "models": models,
+            "source": source,
         }
 
     async def update_provider_config_fields(
@@ -596,6 +927,14 @@ class ModelSettingsService:
         provider = await self._get_provider_config_with_secret(user_id, provider_id)
         if not provider:
             raise ValueError("provider config not found")
+        if str(provider.get("validation_status") or "").lower() == "invalid":
+            raise ModelProviderInvalidError(route_slot, provider_id)
+        known_models = await self.list_custom_provider_models(
+            user_id=user_id,
+            provider_id=provider_id,
+        )
+        if known_models and model not in {item["id"] for item in known_models}:
+            raise ValueError("model is not available for this provider")
         route_supports_responses_api = (
             bool(provider.get("supports_responses_api"))
             if supports_responses_api is None
@@ -704,11 +1043,12 @@ class ModelSettingsService:
         if user_id:
             cursor = await self.db.execute(
                 """
-                SELECT m.route_slot, m.model, m.supports_streaming,
+                SELECT m.route_slot, m.provider_id, m.model, m.supports_streaming,
                        m.supports_tool_calling, m.supports_vision,
                        m.supports_structured_output, m.supports_responses_api,
                        m.route_version,
                        p.provider, p.base_url, p.api_key_ciphertext,
+                       p.validation_status,
                        p.supports_reasoning_effort,
                        p.supports_reasoning_summary
                 FROM model_route_mappings m
@@ -719,8 +1059,11 @@ class ModelSettingsService:
             )
             row = await cursor.fetchone()
             if row:
+                if str(row["validation_status"] or "").lower() == "invalid":
+                    raise ModelProviderInvalidError(route_slot, row["provider_id"])
                 return ResolvedModelRoute(
                     route_slot=route_slot,
+                    provider_id=row["provider_id"],
                     provider=row["provider"],
                     base_url=row["base_url"],
                     api_key=_unprotect_api_key(row["api_key_ciphertext"]),
@@ -743,6 +1086,7 @@ class ModelSettingsService:
         env_capabilities = response_provider_capabilities("environment", config.LLM_BASE_URL)
         return ResolvedModelRoute(
             route_slot=route_slot,
+            provider_id=None,
             provider="environment",
             base_url=config.LLM_BASE_URL,
             api_key=config.LLM_API_KEY,

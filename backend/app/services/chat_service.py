@@ -33,6 +33,7 @@ from app.services.folder_service import FolderService
 from app.services.retrieval_policy import normalize_folder_id
 from app.services.citation_binding_service import has_document_citation
 from app.services.model_settings_service import (
+    ModelSettingsService,
     ModelRouteNotConfiguredError,
     model_route_not_configured_payload,
 )
@@ -141,6 +142,22 @@ class ChatService:
         if not folder:
             return None, True
         return normalized, False
+
+    async def _run_model_metadata(
+        self,
+        user_id: str | None,
+        route_slot: str = "document_qa",
+    ) -> tuple[str | None, str | None]:
+        if not user_id:
+            return None, None
+        try:
+            route = await ModelSettingsService(self.db).resolve_route(user_id, route_slot)
+        except ModelRouteNotConfiguredError:
+            return None, None
+        except Exception as exc:
+            chat_logger.warning("Failed to resolve run model metadata: %s", exc)
+            return None, None
+        return route.get("provider_id"), route.get("model")
 
     async def get_history_messages(
         self, conversation_id: str, limit: int = 20
@@ -328,6 +345,80 @@ class ChatService:
         else:
             await self.db.commit()
 
+    async def truncate_conversation_from_message(
+        self,
+        conversation_id: str,
+        user_id: Optional[str],
+        message_id: str,
+    ) -> None:
+        if not conversation_id or not message_id:
+            return
+        cursor = await self.db.execute(
+            """
+            SELECT m.sequence
+            FROM messages m
+            JOIN conversations c ON c.id = m.conversation_id
+            WHERE m.id = ? AND m.conversation_id = ?
+              AND (? IS NULL OR c.user_id = ?)
+            """,
+            (message_id, conversation_id, user_id, user_id),
+        )
+        row = await cursor.fetchone()
+        if not row:
+            raise ValueError("regenerate boundary message not found")
+        sequence = int(row[0] or 0)
+
+        cursor = await self.db.execute(
+            """
+            SELECT id, run_id
+            FROM messages
+            WHERE conversation_id = ? AND sequence >= ?
+            """,
+            (conversation_id, sequence),
+        )
+        rows = await cursor.fetchall()
+        message_ids = [row[0] for row in rows]
+        run_ids = [row[1] for row in rows if row[1]]
+        if not message_ids:
+            return
+
+        message_placeholders = ",".join("?" for _ in message_ids)
+        await self.db.execute(
+            f"""
+            UPDATE chat_attachments
+            SET conversation_id = NULL,
+                message_id = NULL,
+                status = 'uploaded',
+                updated_at = CURRENT_TIMESTAMP
+            WHERE message_id IN ({message_placeholders})
+            """,
+            message_ids,
+        )
+        await self.db.execute(
+            f"DELETE FROM message_citations WHERE message_id IN ({message_placeholders})",
+            message_ids,
+        )
+
+        if run_ids:
+            run_placeholders = ",".join("?" for _ in run_ids)
+            await self.db.execute(
+                f"DELETE FROM agent_run_events WHERE run_id IN ({run_placeholders})",
+                run_ids,
+            )
+            await self.db.execute(
+                f"DELETE FROM conversation_evidence WHERE run_id IN ({run_placeholders})",
+                run_ids,
+            )
+            await self.db.execute(
+                f"DELETE FROM agent_runs WHERE id IN ({run_placeholders})",
+                run_ids,
+            )
+
+        await self.db.execute(
+            "DELETE FROM messages WHERE conversation_id = ? AND sequence >= ?",
+            (conversation_id, sequence),
+        )
+        await self.run_repository.touch_conversation(conversation_id)
     async def stream_chat(
         self,
         question: str,
@@ -339,7 +430,9 @@ class ChatService:
         web_search: bool = False,
         web_search_requested: bool = False,
         web_search_enabled: bool = False,
+        thinking_enabled: bool | None = None,
         attachment_ids: Optional[List[str]] = None,
+        regenerate_from_message_id: Optional[str] = None,
         user_id: str = None,
     ) -> AsyncGenerator[str, None]:
         """
@@ -358,6 +451,10 @@ class ChatService:
         )
         web_search_requested = bool(web_search_requested or web_search)
         web_search_enabled = bool(web_search_enabled or web_search)
+        if regenerate_from_message_id:
+            await self.truncate_conversation_from_message(
+                conversation_id, user_id, regenerate_from_message_id
+            )
 
         request_attachments = []
         attachment_error: Optional[str] = None
@@ -412,11 +509,14 @@ class ChatService:
                     run_id=run_id,
                 )
             if not run_created:
+                provider_id, model = await self._run_model_metadata(user_id)
                 await self.run_repository.create_run(
                     run_id=run_id,
                     conversation_id=conversation_id,
                     user_message_id=user_message_id,
                     assistant_message_id=assistant_message_id,
+                    provider_id=provider_id,
+                    model=model,
                     protocol=protocol,
                 )
                 run_created = True
@@ -493,7 +593,7 @@ class ChatService:
         if attachment_error:
             try:
                 await ensure_run("attachment_validation")
-                yield await emit("run_started", {"status": "running"})
+                yield await emit("run_started", {"status": "running", "user_message_id": user_message_id})
                 yield await fail_current_run(f"图片附件不可用：{attachment_error}")
             except asyncio.CancelledError:
                 raise
@@ -516,7 +616,7 @@ class ChatService:
             content = "当前可用工具如下：\n" + build_tool_catalog(runtime_tools)
             try:
                 await ensure_run("deterministic")
-                yield await emit("run_started", {"status": "running"})
+                yield await emit("run_started", {"status": "running", "user_message_id": user_message_id})
                 full_content = content
                 yield await emit("answer_delta", {"content": content})
                 await self.run_repository.complete_run(
@@ -548,7 +648,7 @@ class ChatService:
 
         try:
             await ensure_run(CHAT_COMPLETIONS_PROTOCOL)
-            yield await emit("run_started", {"status": "running"})
+            yield await emit("run_started", {"status": "running", "user_message_id": user_message_id})
 
             folder_id, invalid_folder_scope = await self._resolve_valid_folder_id(
                 folder_id, user_id
@@ -621,6 +721,7 @@ class ChatService:
                     strict_scope=strict_scope,
                     web_search_requested=web_search_requested,
                     web_search_enabled=web_search_enabled,
+                    thinking_enabled=thinking_enabled,
                     request_attachments=request_attachments,
                     suppress_user_library_fallback=suppress_user_library_fallback,
                     user_id=user_id,
@@ -666,6 +767,20 @@ class ChatService:
                         )
                         yield await fail_current_run(error_message, dict(data))
                         return
+                    elif event_type == "reasoning_delta":
+                        reasoning_payload = dict(data)
+                        for metadata_key in (
+                            "run_id",
+                            "conversation_id",
+                            "message_id",
+                            "seq",
+                            "ts",
+                        ):
+                            reasoning_payload.pop(metadata_key, None)
+                        content_delta = str(reasoning_payload.get("content") or "")
+                        if content_delta:
+                            full_thinking += content_delta
+                        yield await emit("reasoning_delta", reasoning_payload)
                     elif event_type == "processing_delta":
                         processing_payload = dict(data)
                         for metadata_key in (
@@ -677,8 +792,6 @@ class ChatService:
                         ):
                             processing_payload.pop(metadata_key, None)
                         content_delta = str(processing_payload.get("content") or "")
-                        if content_delta:
-                            full_thinking += content_delta
                         yield await emit("processing_delta", processing_payload)
                     elif event_type == "tool_call_delta":
                         tool_delta_payload = dict(data)

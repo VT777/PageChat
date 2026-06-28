@@ -23,6 +23,7 @@ import { parseDocumentChatRouteQuery, parseFolderChatRouteContexts } from '@/ui/
 interface ComposerPayload {
   text: string
   webSearch: boolean
+  thinkingEnabled?: boolean
   documentIds: string[]
   folderIds: string[]
   attachments: ChatAttachmentMetadata[]
@@ -137,6 +138,7 @@ async function handleSubmit(payload: ComposerPayload) {
   await chatStore.sendMessage(payload.text, {
     ...buildScope(payload),
     web_search: payload.webSearch,
+    thinking_enabled: Boolean(payload.thinkingEnabled),
     attachment_ids: payload.attachments.map((item) => item.attachment_id),
     attachments: payload.attachments,
   })
@@ -305,6 +307,7 @@ function usePrompt(prompt: string) {
   handleSubmit({
     text: prompt,
     webSearch: false,
+    thinkingEnabled: false,
     documentIds: [],
     folderIds: [],
     attachments: [],
@@ -466,18 +469,17 @@ async function restoreRollback() {
 
 async function regenerateUserMessage(message: Message) {
   if (chatStore.isLoading) return
-  const index = chatStore.messages.findIndex((item) => item.id === message.id)
-  if (index === -1) return
-  const content = message.content
-  chatStore.messages.splice(index)
-  await chatStore.sendMessage(content)
+  await chatStore.regenerateFromUserMessage(message.id)
+  await nextTick()
+  scrollToLatestAnswerStart()
 }
 
 async function regenerateAssistantMessage(message: Message) {
   if (chatStore.isLoading) return
-  await chatStore.regenerateMessage(message.id)
+  await chatStore.regenerateFromAssistantMessage(message.id)
+  await nextTick()
+  scrollToLatestAnswerStart()
 }
-
 watch(messageSignature, async () => {
   ensureAttachmentPreviews()
   await nextTick()
@@ -602,6 +604,7 @@ onBeforeUnmount(() => {
 
               <template v-else>
                 <RunTimeline
+                  :reasoning-content="message.thinking"
                   :progress-steps="message.progressSteps"
                   :tool-steps="message.toolSteps"
                   :is-loading="message.isLoading"

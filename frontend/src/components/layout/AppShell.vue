@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import {
   Download,
@@ -13,6 +13,8 @@ import {
 import { useChatStore } from '@/stores/chat'
 import SettingsModal from '@/components/settings/SettingsModal.vue'
 import { APP_NAV_ITEMS, PRODUCT_NAME } from '@/ui/pagechatContracts'
+import { calculatePopoverPosition } from '@/ui/popoverPosition'
+import { useI18n } from '@/i18n/messages'
 
 const props = withDefaults(defineProps<{
   title: string
@@ -24,8 +26,15 @@ const props = withDefaults(defineProps<{
 const router = useRouter()
 const route = useRoute()
 const chatStore = useChatStore()
+const { t, navLabel } = useI18n()
 const showSettings = ref(false)
 const openChatMenuId = ref<string | null>(null)
+const chatMenuPosition = ref({ top: 0, left: 0, maxHeight: 220 })
+const chatMenuStyle = computed(() => ({
+  top: `${chatMenuPosition.value.top}px`,
+  left: `${chatMenuPosition.value.left}px`,
+  maxHeight: `${chatMenuPosition.value.maxHeight}px`,
+}))
 
 const navIconMap = {
   MessageSquare,
@@ -74,28 +83,53 @@ function exportConversation(conversationId: string, title: string) {
 
 function deleteConversation(conversationId: string) {
   openChatMenuId.value = null
-  if (!window.confirm('删除这条对话历史？此操作不可撤销。')) return
+  if (!window.confirm(t('nav.deleteConfirm'))) return
   chatStore.deleteConversation(conversationId)
   if (chatStore.currentSessionId === null && route.path === '/') {
     router.push({ path: '/', query: { draft: String(Date.now()) } })
   }
 }
 
-function toggleChatMenu(conversationId: string) {
-  openChatMenuId.value = openChatMenuId.value === conversationId ? null : conversationId
+function toggleChatMenu(conversationId: string, event: MouseEvent) {
+  if (openChatMenuId.value === conversationId) {
+    openChatMenuId.value = null
+    return
+  }
+
+  const trigger = event.currentTarget as HTMLElement | null
+  const rect = trigger?.getBoundingClientRect()
+  if (rect) {
+    chatMenuPosition.value = calculatePopoverPosition({
+      anchorRect: { top: rect.top, right: rect.right, bottom: rect.bottom },
+      popoverSize: { width: 148, height: 78 },
+      viewportSize: { width: window.innerWidth, height: window.innerHeight },
+      gutter: 6,
+    })
+  }
+  openChatMenuId.value = conversationId
 }
 
 function closeChatMenu() {
   openChatMenuId.value = null
 }
 
+function handleMenuKeydown(event: KeyboardEvent) {
+  if (event.key === 'Escape') closeChatMenu()
+}
+
+watch(() => route.fullPath, closeChatMenu)
+
 onMounted(() => {
   chatStore.loadConversationsFromStorage({ restoreLastActive: false, restoreDraft: false })
   document.addEventListener('click', closeChatMenu)
+  window.addEventListener('scroll', closeChatMenu, true)
+  window.addEventListener('keydown', handleMenuKeydown)
 })
 
 onBeforeUnmount(() => {
   document.removeEventListener('click', closeChatMenu)
+  window.removeEventListener('scroll', closeChatMenu, true)
+  window.removeEventListener('keydown', handleMenuKeydown)
 })
 </script>
 
@@ -118,18 +152,18 @@ onBeforeUnmount(() => {
           <span class="pc-icon-cell">
             <component :is="navIconMap[item.icon as keyof typeof navIconMap]" class="pc-icon" />
           </span>
-          <span>{{ item.label }}</span>
+          <span>{{ navLabel(item.id) }}</span>
           <Plus v-if="item.id === 'new-chat'" class="pc-nav-plus" />
         </button>
       </nav>
 
       <div class="pc-sidebar-section">
-        <div class="pc-sidebar-label">Chats</div>
+        <div class="pc-sidebar-label">{{ t('nav.chats') }}</div>
         <div class="pc-chat-list">
           <div
             v-for="conversation in chatStore.conversations"
             :key="conversation.id"
-            :class="['pc-chat-item', { active: chatStore.currentSessionId === conversation.id }]"
+            :class="['pc-chat-item', { active: chatStore.currentSessionId === conversation.id, 'menu-open': openChatMenuId === conversation.id }]"
             @click="openConversation(conversation.id)"
           >
             <MessageSquare class="pc-chat-icon" />
@@ -139,27 +173,13 @@ onBeforeUnmount(() => {
               type="button"
               title="More"
               aria-label="More chat actions"
-              @click.stop="toggleChatMenu(conversation.id)"
+              @click.stop="toggleChatMenu(conversation.id, $event)"
             >
               <MoreHorizontal class="pc-chat-more" />
             </button>
-            <div
-              v-if="openChatMenuId === conversation.id"
-              class="pc-chat-menu"
-              @click.stop
-            >
-              <button type="button" @click="exportConversation(conversation.id, conversation.title)">
-                <Download />
-                <span>导出对话</span>
-              </button>
-              <button class="danger" type="button" @click="deleteConversation(conversation.id)">
-                <Trash2 />
-                <span>删除对话</span>
-              </button>
-            </div>
           </div>
           <div v-if="chatStore.conversations.length === 0" class="pc-empty-chats">
-            No chats yet
+            {{ t('nav.noChats') }}
           </div>
         </div>
       </div>
@@ -170,10 +190,10 @@ onBeforeUnmount(() => {
         :class="['pc-settings-entry', { active: showSettings }]"
         type="button"
         @click="showSettings = true"
-        title="Settings"
+        :title="t('nav.settings')"
       >
         <SlidersHorizontal class="pc-icon" />
-        <span>Settings</span>
+        <span>{{ t('nav.settings') }}</span>
       </button>
     </aside>
 
@@ -189,6 +209,27 @@ onBeforeUnmount(() => {
         <slot />
       </section>
     </main>
+
+    <Teleport to="body">
+      <div
+        v-if="openChatMenuId"
+        class="pc-chat-menu pc-chat-menu-layer"
+        :style="chatMenuStyle"
+        @click.stop
+      >
+        <button
+          type="button"
+          @click="exportConversation(openChatMenuId, chatStore.conversations.find((item) => item.id === openChatMenuId)?.title || 'PageChat conversation')"
+        >
+          <Download />
+          <span>{{ t('nav.exportConversation') }}</span>
+        </button>
+        <button class="danger" type="button" @click="deleteConversation(openChatMenuId)">
+          <Trash2 />
+          <span>{{ t('nav.exportConversation') }}</span>
+        </button>
+      </div>
+    </Teleport>
 
     <SettingsModal v-model:open="showSettings" />
   </div>
@@ -355,7 +396,7 @@ onBeforeUnmount(() => {
 }
 
 .pc-chat-more-button:hover,
-.pc-chat-item:has(.pc-chat-menu) .pc-chat-more-button {
+.pc-chat-item.menu-open .pc-chat-more-button {
   background: rgba(15, 23, 42, 0.06);
   color: var(--kc-text);
 }
@@ -367,14 +408,12 @@ onBeforeUnmount(() => {
 }
 
 .pc-chat-item:hover .pc-chat-more,
-.pc-chat-item:has(.pc-chat-menu) .pc-chat-more {
+.pc-chat-item.menu-open .pc-chat-more {
   opacity: 1;
 }
 
 .pc-chat-menu {
-  position: absolute;
-  top: 28px;
-  right: 4px;
+  position: fixed;
   z-index: 30;
   display: grid;
   width: 136px;

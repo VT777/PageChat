@@ -2,6 +2,7 @@ import type { SourceAnchor } from './preview'
 
 export type StreamEventName =
   | 'run_started'
+  | 'reasoning_delta'
   | 'processing_delta'
   | 'tool_call_delta'
   | 'progress'
@@ -28,6 +29,7 @@ export interface PageChatEventMeta {
 
 export interface RunStarted extends PageChatEventMeta {
   status: 'running'
+  user_message_id?: string
 }
 
 export interface ProgressEvent extends PageChatEventMeta {
@@ -42,6 +44,11 @@ export interface ProcessingDelta extends PageChatEventMeta {
   content: string
   kind?: string
   step?: number
+  status?: string
+}
+
+export interface ReasoningDelta extends PageChatEventMeta {
+  content: string
   status?: string
 }
 
@@ -103,6 +110,7 @@ export interface RunCancelled extends PageChatEventMeta {
 
 export type PageChatStreamData =
   | RunStarted
+  | ReasoningDelta
   | ProcessingDelta
   | ToolCallDelta
   | ProgressEvent

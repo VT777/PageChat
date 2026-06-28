@@ -140,6 +140,8 @@ def _parse_error_code(status: str) -> Optional[str]:
 
 def _extract_failure_status_code(error_message: str) -> str:
     message = str(error_message or "")
+    if "OCR_ROUTE_NOT_CONFIGURED" in message:
+        return "ocr_not_configured"
     if ":" in message:
         prefix = message.split(":", 1)[0].strip()
         if re.fullmatch(r"[A-Z_]+", prefix):

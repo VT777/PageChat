@@ -19,6 +19,13 @@ def test_extract_failure_status_code_fallback_to_indexing() -> None:
     assert code == "indexing"
 
 
+def test_extract_failure_status_code_for_missing_ocr_route() -> None:
+    code = _extract_failure_status_code(
+        "OCR_ROUTE_NOT_CONFIGURED: 请先在设置页配置 OCR/VLM 模型后再解析图片型文档。"
+    )
+    assert code == "ocr_not_configured"
+
+
 def test_mark_document_failed_sync_updates_status(tmp_path: Path) -> None:
     db_path = tmp_path / "test.db"
     conn = sqlite3.connect(db_path)

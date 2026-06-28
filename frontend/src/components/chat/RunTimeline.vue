@@ -5,6 +5,7 @@ import type { ProgressStep, ToolStep } from '@/stores/chat'
 import ToolTimelineItem from './ToolTimelineItem.vue'
 
 const props = defineProps<{
+  reasoningContent?: string
   progressSteps?: ProgressStep[]
   toolSteps?: ToolStep[]
   isLoading?: boolean
@@ -51,6 +52,8 @@ const timelineEntries = computed<TimelineEntry[]>(() => {
   return [...progressEntries.value, ...tools].sort((a, b) => a.seq - b.seq || a.order - b.order)
 })
 
+const hasReasoningContent = computed(() => Boolean(props.reasoningContent?.trim()))
+
 const thoughtLabel = computed(() => (
   props.isLoading && !props.isAnswering ? 'Processing...' : 'Processing details'
 ))
@@ -62,7 +65,7 @@ const showThoughtDetails = computed(() => (
 
 <template>
   <div
-    v-if="timelineEntries.length"
+    v-if="hasReasoningContent || timelineEntries.length"
     class="run-timeline"
     data-testid="run-timeline"
   >
@@ -79,6 +82,9 @@ const showThoughtDetails = computed(() => (
     </button>
 
     <div v-if="showThoughtDetails" class="thought-details">
+      <div v-if="hasReasoningContent" class="reasoning-block">
+        {{ props.reasoningContent }}
+      </div>
       <div
         v-for="entry in timelineEntries"
         :key="entry.key"
@@ -143,6 +149,13 @@ const showThoughtDetails = computed(() => (
 
 .progress-row p {
   margin: 5px 0 8px;
+  white-space: pre-wrap;
+}
+
+.reasoning-block {
+  color: var(--kc-text);
+  font-size: 13.5px;
+  line-height: 1.65;
   white-space: pre-wrap;
 }
 

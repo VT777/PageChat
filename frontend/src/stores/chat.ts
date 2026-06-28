@@ -9,6 +9,7 @@ import type {
   CitationAdded,
   ProcessingDelta,
   ProgressEvent,
+  ReasoningDelta,
   RunCompleted,
   RunFailed,
   RunStarted,
@@ -116,6 +117,8 @@ interface StoredChatSessions {
 interface ChatSendOptions extends ChatScopeRequest {
   attachment_ids?: string[]
   attachments?: ChatAttachmentMetadata[]
+  thinking_enabled?: boolean
+  regenerate_from_message_id?: string
 }
 
 const STORAGE_KEY = 'pagechat_chat_sessions'
@@ -690,33 +693,52 @@ export const useChatStore = defineStore('chat', () => {
     }
   }
 
-  async function regenerateMessage(messageId: string) {
+  function truncateMessagesFrom(index: number) {
+    if (index < 0 || index >= messages.value.length) return
+    messages.value.slice(index).forEach((message) => disposeDisplayBuffer(message.id))
+    messages.value = messages.value.slice(0, index)
+    const currentConv = conversations.value.find(c => c.id === currentSessionId.value)
+    if (currentConv) {
+      currentConv.messageCount = messages.value.length
+      currentConv.timestamp = Date.now()
+      saveConversationsToStorage()
+    }
+    saveCurrentSession()
+  }
+
+  async function regenerateFromUserMessage(messageId: string) {
     const index = messages.value.findIndex((m) => m.id === messageId)
     if (index === -1) return
+    const msg = messages.value[index]
+    if (msg.role !== 'user') return
 
+    const content = msg.content
+    const attachments = sanitizeAttachmentMetadata(msg.attachments)
+    truncateMessagesFrom(index)
+    await sendMessage(content, {
+      regenerate_from_message_id: messageId,
+      attachment_ids: attachments.map((item) => item.attachment_id),
+      attachments,
+    })
+  }
+
+  async function regenerateFromAssistantMessage(messageId: string) {
+    const index = messages.value.findIndex((m) => m.id === messageId)
+    if (index === -1) return
     const msg = messages.value[index]
     if (msg.role !== 'assistant') return
 
-    // 找到前一条用户消息
     let userIndex = index - 1
     while (userIndex >= 0 && messages.value[userIndex].role !== 'user') {
       userIndex--
     }
-
     if (userIndex < 0) return
-
-    const userMsg = messages.value[userIndex]
-    
-    // 删除当前 AI 消息和后续消息
-    messages.value.splice(index)
-    
-    // 重新发送
-    await sendMessage(userMsg.content, {
-      attachment_ids: userMsg.attachments?.map((item) => item.attachment_id),
-      attachments: userMsg.attachments,
-    })
+    await regenerateFromUserMessage(messages.value[userIndex].id)
   }
 
+  async function regenerateMessage(messageId: string) {
+    await regenerateFromAssistantMessage(messageId)
+  }
   function addAssistantMessage() {
     const msg: Message = {
       id: _generateMsgID(),
@@ -1065,6 +1087,18 @@ export const useChatStore = defineStore('chat', () => {
         if (data.conversation_id) {
           syncBackendConversationId(data.conversation_id)
         }
+        const backendUserMessageId = data.user_message_id || ''
+        if (backendUserMessageId) {
+          for (let i = lastIndex - 1; i >= 0; i--) {
+            if (messages.value[i].role === 'user') {
+              messages.value[i] = {
+                ...messages.value[i],
+                id: backendUserMessageId,
+              }
+              break
+            }
+          }
+        }
         const nextMessageId = data.message_id || last.id
         messages.value[lastIndex] = {
           ...last,
@@ -1104,6 +1138,19 @@ export const useChatStore = defineStore('chat', () => {
           ...base,
           progressSteps: nextProgressSteps,
         }
+        break
+      }
+      case 'reasoning_delta': {
+        const data = envelope.data as unknown as ReasoningDelta
+        const content = data.content || ''
+        if (!content) break
+        flushDisplayBuffer(last.id)
+        const base = messages.value[lastIndex] || last
+        messages.value[lastIndex] = {
+          ...base,
+          thinking: `${base.thinking || ''}${content}`,
+        }
+        saveCurrentSession()
         break
       }
       case 'progress': {
@@ -1802,6 +1849,8 @@ export const useChatStore = defineStore('chat', () => {
     deleteMessage,
     editMessage,
     regenerateMessage,
+    regenerateFromUserMessage,
+    regenerateFromAssistantMessage,
     rollbackToMessage,
     restoreRollback,
     clearRollbackHistory,

@@ -7,6 +7,7 @@ from app.models.database import get_db
 from app.services.litellm_adapter import LiteLLMAdapter
 from app.services.model_settings_service import (
     ModelSettingsService,
+    select_provider_test_model,
     _sanitize_provider_error,
     _unprotect_api_key,
 )
@@ -42,6 +43,16 @@ class ModelProviderUpdateIn(BaseModel):
 
 class ModelProviderTestIn(BaseModel):
     model: str | None = None
+
+
+class ModelProviderCustomModelIn(BaseModel):
+    model: str
+    display_name: str | None = None
+    model_type: str = "llm"
+    endpoint_model_name: str | None = None
+    capabilities: list[str] = Field(default_factory=list)
+    context_window: int | None = None
+    max_output_tokens: int | None = None
 
 
 class ModelRouteIn(BaseModel):
@@ -281,16 +292,7 @@ async def test_model_provider(
                 provider_id=provider_id,
                 timeout=5,
             )
-            model = str(
-                next(
-                    (
-                        item.get("id")
-                        for item in models_payload.get("models", [])
-                        if item.get("id")
-                    ),
-                    "",
-                )
-            ).strip()
+            model = select_provider_test_model(models_payload.get("models", []))
         if not model:
             raise ValueError("No available model returned by provider")
         provider_config = {
@@ -336,6 +338,30 @@ async def list_model_provider_models(
         raise HTTPException(status_code=404, detail=str(exc))
     except RuntimeError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
+
+
+@router.post("/model-providers/{provider_id}/models")
+async def save_model_provider_custom_model(
+    provider_id: str,
+    payload: ModelProviderCustomModelIn,
+    db: aiosqlite.Connection = Depends(get_db),
+    current_user: dict = Depends(require_auth),
+):
+    service = _model_settings_service(db)
+    try:
+        return await service.save_custom_provider_model(
+            user_id=current_user["id"],
+            provider_id=provider_id,
+            model=payload.model,
+            display_name=payload.display_name,
+            model_type=payload.model_type,
+            endpoint_model_name=payload.endpoint_model_name,
+            capabilities=payload.capabilities,
+            context_window=payload.context_window,
+            max_output_tokens=payload.max_output_tokens,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
 
 
 @router.get("/model-routes")

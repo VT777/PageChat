@@ -5,6 +5,7 @@ import json
 from typing import Any
 
 from app.agent.model_turn import (
+    ModelReasoningDelta,
     ModelTextDelta,
     ModelToolCall,
     ModelToolCallDelta,
@@ -33,7 +34,7 @@ class ToolCallingModelAdapter:
         messages: list[dict],
         tools: list[dict],
         user_id: str | None = None,
-    ) -> AsyncIterator[ModelTextDelta | ModelToolCallDelta | ModelTurn]:
+    ) -> AsyncIterator[ModelReasoningDelta | ModelTextDelta | ModelToolCallDelta | ModelTurn]:
         response = await self.completion_fn(
             scenario=self.scenario,
             messages=messages,
@@ -51,6 +52,10 @@ class ToolCallingModelAdapter:
         content_parts: list[str] = []
         tool_call_buffers: dict[int, dict[str, str]] = {}
         async for chunk in response:
+            reasoning_delta = self._extract_chunk_reasoning(chunk)
+            if reasoning_delta:
+                yield ModelReasoningDelta(delta=reasoning_delta)
+
             for delta in self._extract_chunk_tool_call_deltas(chunk):
                 index = int(delta.index)
                 current = tool_call_buffers.setdefault(
@@ -156,6 +161,17 @@ class ToolCallingModelAdapter:
             return ""
         delta = self._get_value(choices[0], "delta") or {}
         return str(self._get_value(delta, "content") or "")
+
+    def _extract_chunk_reasoning(self, chunk: Any) -> str:
+        choices = self._get_value(chunk, "choices") or []
+        if not choices:
+            return ""
+        delta = self._get_value(choices[0], "delta") or {}
+        for key in ("reasoning_content", "reasoning", "thinking"):
+            value = self._get_value(delta, key)
+            if value:
+                return str(value)
+        return ""
 
     def _parse_arguments(self, text: str) -> dict[str, Any]:
         if not text:

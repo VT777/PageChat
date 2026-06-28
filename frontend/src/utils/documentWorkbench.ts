@@ -70,6 +70,43 @@ export function isFailedStatus(status?: string): boolean {
   return Boolean(status?.startsWith('failed'))
 }
 
+type DocumentFailureLike = {
+  status?: string
+  parse_error_code?: string | null
+  error_message?: string | null
+}
+
+const OCR_NOT_CONFIGURED_GUIDANCE = '未配置 OCR/VLM 模型。请先在设置页配置 OCR 设置后重新解析。'
+
+function compactFailureText(message?: string | null): string {
+  const firstLine = String(message || '')
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .find(Boolean)
+
+  if (!firstLine) return '解析失败，请重新解析。'
+  return firstLine.length > 160 ? `${firstLine.slice(0, 157)}...` : firstLine
+}
+
+export function documentFailureMessage(document?: DocumentFailureLike | null): string {
+  if (!document || !isFailedStatus(document.status)) return ''
+
+  const status = String(document.status || '')
+  const code = String(document.parse_error_code || '')
+  const message = String(document.error_message || '')
+  const failureText = `${status}\n${code}\n${message}`
+
+  if (
+    status.includes('ocr_not_configured') ||
+    code === 'ocr_not_configured' ||
+    failureText.includes('OCR_ROUTE_NOT_CONFIGURED')
+  ) {
+    return OCR_NOT_CONFIGURED_GUIDANCE
+  }
+
+  return compactFailureText(document.error_message)
+}
+
 export function statusLabel(status?: string): string {
   if (!status) return 'Unknown'
   if (status === 'completed') return 'Completed'

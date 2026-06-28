@@ -5,7 +5,13 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from app.agent.model_tool_loop import ModelToolLoopRuntime
-from app.agent.model_turn import ModelTextDelta, ModelToolCall, ModelToolCallDelta, ModelTurn
+from app.agent.model_turn import (
+    ModelReasoningDelta,
+    ModelTextDelta,
+    ModelToolCall,
+    ModelToolCallDelta,
+    ModelTurn,
+)
 from app.agent.state import AgentRunState
 
 
@@ -69,6 +75,27 @@ class StreamingToolCallThenAnswerModel:
                         id="call_1",
                         name="browse_documents",
                         arguments={"folder_id": "root", "recursive": True},
+                    )
+                ]
+            )
+        else:
+            yield ModelTurn(content="There are three documents.")
+
+
+class ReasoningThenToolCallModel:
+    def __init__(self):
+        self.calls = 0
+
+    async def stream_turn(self, *, messages, tools, user_id=None):
+        self.calls += 1
+        if self.calls == 1:
+            yield ModelReasoningDelta("I need to inspect the document library.")
+            yield ModelTurn(
+                tool_calls=[
+                    ModelToolCall(
+                        id="call_1",
+                        name="browse_documents",
+                        arguments={"folder_id": "root"},
                     )
                 ]
             )
@@ -167,7 +194,7 @@ def test_flat_loop_executes_tool_and_returns_final_answer():
     asyncio.run(run())
 
 
-def test_flat_loop_emits_concise_processing_note_before_tool_start():
+def test_flat_loop_does_not_emit_hardcoded_processing_note_before_tool_start():
     async def run() -> None:
         runtime = ModelToolLoopRuntime(
             model=ToolThenAnswerModel(),
@@ -178,6 +205,9 @@ def test_flat_loop_emits_concise_processing_note_before_tool_start():
         events = [event async for event in runtime.stream(_state("现在有哪些文件夹？"))]
 
         event_types = [event.type for event in events]
+        assert "processing_delta" not in event_types
+        assert "tool_started" in event_types
+        return
         assert event_types.index("processing_delta") < event_types.index("tool_started")
         processing = [event for event in events if event.type == "processing_delta"]
         assert [event.payload for event in processing] == [
@@ -189,6 +219,27 @@ def test_flat_loop_emits_concise_processing_note_before_tool_start():
             }
         ]
         assert "There are three documents." not in processing[0].payload["content"]
+
+    asyncio.run(run())
+
+
+def test_flat_loop_forwards_native_reasoning_delta_before_tool_start():
+    async def run() -> None:
+        runtime = ModelToolLoopRuntime(
+            model=ReasoningThenToolCallModel(),
+            tool_runner=RecordingToolRunner(),
+            tools=[{"function": {"name": "browse_documents"}}],
+        )
+
+        events = [event async for event in runtime.stream(_state())]
+
+        event_types = [event.type for event in events]
+        assert event_types.index("reasoning_delta") < event_types.index("tool_started")
+        reasoning = [event for event in events if event.type == "reasoning_delta"]
+        assert [event.payload for event in reasoning] == [
+            {"content": "I need to inspect the document library.", "status": "streaming"}
+        ]
+        assert "processing_delta" not in event_types
 
     asyncio.run(run())
 

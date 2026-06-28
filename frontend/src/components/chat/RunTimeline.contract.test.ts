@@ -47,4 +47,15 @@ describe('RunTimeline contract', () => {
     expect(source).not.toContain('Thinking...')
     expect(source).not.toContain('Thought for a moment')
   })
+
+  it('renders native reasoning content separately from processing status rows', () => {
+    const source = readFileSync(
+      new URL('./RunTimeline.vue', import.meta.url),
+      'utf8',
+    )
+
+    expect(source).toContain('reasoningContent')
+    expect(source).toContain('reasoning-block')
+    expect(source).toContain('props.reasoningContent')
+  })
 })

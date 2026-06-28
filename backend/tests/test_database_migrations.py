@@ -113,6 +113,7 @@ def test_migrations_create_history_and_are_idempotent() -> None:
                 "20260626_009_add_model_route_capabilities",
                 "20260627_010_add_conversation_evidence",
                 "20260628_011_add_user_runtime_settings",
+                "20260628_012_add_model_provider_custom_models",
             ]
             evidence_columns = await _column_names(db, "conversation_evidence")
             assert {
@@ -130,6 +131,19 @@ def test_migrations_create_history_and_are_idempotent() -> None:
                 "created_at",
                 "updated_at",
             }.issubset(runtime_columns)
+            custom_model_columns = await _column_names(db, "model_provider_custom_models")
+            assert {
+                "model_config_id",
+                "user_id",
+                "provider_id",
+                "model",
+                "display_name",
+                "model_type",
+                "endpoint_model_name",
+                "capabilities_json",
+                "context_window",
+                "max_output_tokens",
+            }.issubset(custom_model_columns)
 
     asyncio.run(run())
 

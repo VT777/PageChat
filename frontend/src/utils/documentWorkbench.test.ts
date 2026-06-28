@@ -15,6 +15,7 @@ import {
   previewContentMetrics,
   qualityDisplay,
   localizedStatusLabel,
+  documentFailureMessage,
   statusLabel,
   workbenchIncludeSubfolders,
   unsupportedPreviewMessage,
@@ -101,6 +102,20 @@ describe('document workbench helpers', () => {
     expect(localizedStatusLabel('completed')).toBe('已完成')
     expect(localizedStatusLabel('processing:indexing')).toBe('索引中')
     expect(localizedStatusLabel('failed:indexing_timeout')).toBe('失败')
+  })
+
+  it('turns missing OCR route failures into actionable document guidance', () => {
+    expect(documentFailureMessage({
+      status: 'failed:ocr_not_configured',
+      parse_error_code: 'ocr_not_configured',
+      error_message: 'OCR_ROUTE_NOT_CONFIGURED: OCR model route is not configured',
+    })).toBe('未配置 OCR/VLM 模型。请先在设置页配置 OCR 设置后重新解析。')
+  })
+
+  it('keeps generic document parse failures concise and user-facing', () => {
+    expect(documentFailureMessage({ status: 'failed:indexing_timeout', error_message: 'Indexing timed out' }))
+      .toBe('Indexing timed out')
+    expect(documentFailureMessage({ status: 'completed' })).toBe('')
   })
 
   it('normalizes canonical table row blocks for frontend rendering', () => {

@@ -23,15 +23,17 @@ const CAPABILITY_ORDER: ModelCapability[] = [
   'llm',
   'vision',
   'tool_calling',
+  'reasoning',
   'ocr',
   'embedding',
 ]
 
 const CAPABILITY_LABELS: Record<ModelCapability, string> = {
   llm: 'LLM',
-  vision: 'Vision',
+  vision: 'VISION',
   embedding: 'Embedding',
-  tool_calling: 'Tool Calling',
+  tool_calling: 'CHAT',
+  reasoning: 'Thinking',
   ocr: 'OCR',
 }
 
@@ -46,33 +48,83 @@ export function resolveProviderTestModel(
 
 export function inferModelCapabilities(model: ProviderModelOption): ModelCapability[] {
   const explicit = (model.capabilities || []).filter(isModelCapability)
-  if (explicit.length > 0) return uniqueCapabilities(explicit)
 
   const id = (model.id || '').toLowerCase()
-  if (!id) return ['llm']
+  if (!id) return explicit.length > 0 ? uniqueCapabilities(explicit) : ['llm']
   if (id.includes('embedding') || id.includes('embed') || id.includes('bge-')) {
     return ['embedding']
   }
-  if (id.includes('ocr')) {
-    return uniqueCapabilities(['llm', 'vision', 'ocr'])
+  const inferred: ModelCapability[] = []
+  const isOcrModel = id.includes('ocr')
+  if (isOcrModel) {
+    inferred.push('llm', 'vision', 'ocr')
   }
-  if (
+  if (!isOcrModel && (
     id.includes('vl') ||
     id.includes('vision') ||
     id.includes('gpt-4o') ||
     id.includes('gemini') ||
     id.includes('claude-3') ||
     id.includes('qvq')
-  ) {
-    return uniqueCapabilities(['llm', 'vision', 'tool_calling'])
+  )) {
+    inferred.push('llm', 'vision', 'tool_calling')
   }
+  if (
+    id.includes('qwen3') ||
+    id.includes('qwen-3') ||
+    id.includes('qvq') ||
+    id.includes('qwq') ||
+    id.includes('r1') ||
+    id.includes('reason') ||
+    id.includes('thinking') ||
+    id.includes('o1') ||
+    id.includes('o3')
+  ) {
+    inferred.push('llm', 'tool_calling', 'reasoning')
+  }
+  if (explicit.length > 0 || inferred.length > 0) return uniqueCapabilities([...explicit, ...inferred])
   return uniqueCapabilities(['llm', 'tool_calling'])
 }
 
 export function modelCapabilityBadges(model: ProviderModelOption): string[] {
   return inferModelCapabilities(model)
-    .filter((capability) => capability !== 'llm' && capability !== 'tool_calling')
-    .map((capability) => CAPABILITY_LABELS[capability])
+    .filter((capability) => capability !== 'reasoning')
+    .map((capability) => CAPABILITY_LABELS[capability].toUpperCase())
+}
+
+export function formatModelContextBadge(model: ProviderModelOption): string {
+  const contextWindow = typeof (model as any).context_window === 'number'
+    ? (model as any).context_window
+    : 0
+  if (!contextWindow || contextWindow <= 0) return ''
+  const rounded = contextWindow >= 1000
+    ? `${contextWindow % 1000 === 0 ? contextWindow / 1000 : Math.round(contextWindow / 1000)}K`
+    : String(contextWindow)
+  return `Context ${rounded}`
+}
+
+export function providerCapabilityBadges(models: ProviderModelOption[]): string[] {
+  if (!models.length) return []
+  const capabilities = new Set<ModelCapability>()
+  let largestContextWindow = 0
+  for (const model of models) {
+    inferModelCapabilities(model).forEach((capability) => capabilities.add(capability))
+    const contextWindow = typeof (model as any).context_window === 'number'
+      ? (model as any).context_window
+      : 0
+    largestContextWindow = Math.max(largestContextWindow, contextWindow)
+  }
+  const badges = CAPABILITY_ORDER
+    .filter((capability) => capabilities.has(capability))
+    .filter((capability) => capability !== 'reasoning' && capability !== 'ocr')
+    .map((capability) => CAPABILITY_LABELS[capability].toUpperCase())
+  if (largestContextWindow > 0) {
+    const value = largestContextWindow >= 1000
+      ? `${largestContextWindow % 1000 === 0 ? largestContextWindow / 1000 : Math.round(largestContextWindow / 1000)}K`
+      : String(largestContextWindow)
+    badges.push(`${value} Context`)
+  }
+  return badges
 }
 
 export function buildAvailableModelOptions(

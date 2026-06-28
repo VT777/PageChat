@@ -412,6 +412,36 @@ def test_chat_stream_api_missing_model_route_uses_stable_error_payload(
     asyncio.run(assert_persisted_failure())
 
 
+def test_chat_stream_api_forwards_request_level_thinking_enabled(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    db_path = tmp_path / "stream-thinking-enabled.db"
+
+    async def setup() -> None:
+        async with aiosqlite.connect(db_path) as db:
+            await create_chat_history_schema(db)
+            await run_migrations(db)
+
+    asyncio.run(setup())
+    captured = {}
+
+    async def fake_stream_chat(self, **kwargs):
+        captured.update(kwargs)
+        yield sse_frame("answer_delta", {"content": "ok"})
+
+    monkeypatch.setattr(chat, "DB_PATH", db_path)
+    monkeypatch.setattr(ChatService, "stream_chat", fake_stream_chat)
+
+    response = _client(db_path).post(
+        "/api/chat/stream",
+        json={"question": "hello", "thinking_enabled": True},
+    )
+
+    assert response.status_code == 200
+    assert captured["thinking_enabled"] is True
+
+
 def test_chat_stream_api_periodic_save_error_does_not_create_transport_duplicate(
     tmp_path: Path,
     monkeypatch,

@@ -39,7 +39,8 @@ describe('model provider rows', () => {
 
     expect(rows.map((row) => row.provider)).toEqual(['openai', 'dashscope', 'deepseek'])
     expect(rows.find((row) => row.provider === 'openai')).toMatchObject({
-      id: 'provider-openai',
+      id: 'openai',
+      providerId: 'provider-openai',
       configured: true,
       keyMask: 'sk-...abcd',
     })
@@ -49,6 +50,41 @@ describe('model provider rows', () => {
       configured: false,
       validation: 'Not configured',
     })
+  })
+
+  it('groups multiple API keys under one provider row', () => {
+    const configured: ModelProviderConfig[] = [
+      {
+        provider_id: 'deepseek-key-1',
+        provider: 'deepseek',
+        base_url: 'https://api.deepseek.com',
+        api_key_mask: 'sk-...1111',
+        validation_status: 'valid',
+      },
+      {
+        provider_id: 'deepseek-key-2',
+        provider: 'deepseek',
+        base_url: 'https://api.deepseek.com',
+        api_key_mask: 'sk-...2222',
+        validation_status: 'untested',
+      },
+    ]
+
+    const rows = buildModelProviderRows(configured, presets, (provider) => provider)
+    const deepseek = rows.find((row) => row.provider === 'deepseek')
+
+    expect(rows.map((row) => row.provider)).toEqual(['openai', 'dashscope', 'deepseek'])
+    expect(deepseek).toMatchObject({
+      id: 'deepseek',
+      configured: true,
+      providerId: 'deepseek-key-1',
+      keyMask: 'sk-...1111',
+      validation: 'valid',
+    })
+    expect(deepseek?.credentials).toEqual([
+      expect.objectContaining({ providerId: 'deepseek-key-1', keyMask: 'sk-...1111' }),
+      expect.objectContaining({ providerId: 'deepseek-key-2', keyMask: 'sk-...2222' }),
+    ])
   })
 
   it('filters providers by label, provider id, and base URL', () => {

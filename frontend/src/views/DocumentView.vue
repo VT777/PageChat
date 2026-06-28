@@ -36,6 +36,7 @@ import { useDocumentStore } from '@/stores/document'
 import { useFolderStore } from '@/stores/folder'
 import {
   DOCUMENT_WORKBENCH_PAGE_SIZE,
+  documentFailureMessage,
   documentProgress,
   formatDocumentDate,
   formatDocumentDuration,
@@ -860,6 +861,9 @@ onBeforeUnmount(() => {
               <template v-if="document.page_count"> · {{ document.page_count }} pages</template>
               <template v-if="isProcessingStatus(document.status)"> · {{ documentProgress(document.status) }}%</template>
             </small>
+            <small v-if="documentFailureMessage(document)" class="file-error-hint">
+              {{ documentFailureMessage(document) }}
+            </small>
           </span>
           <span :class="['status-pill', document.status]">{{ localizedStatusLabel(document.status) }}</span>
           <span class="file-meta">{{ formatDocumentDate(document.updated_at) }}</span>
@@ -1478,6 +1482,15 @@ onBeforeUnmount(() => {
 .file-meta {
   color: var(--kc-text-tertiary);
   font-size: 12px;
+}
+
+.file-main .file-error-hint {
+  margin-top: 2px;
+  color: #b42318;
+  line-height: 16px;
+  overflow: visible;
+  text-overflow: clip;
+  white-space: normal;
 }
 
 .status-pill {

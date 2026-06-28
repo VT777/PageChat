@@ -384,6 +384,36 @@ async def _add_user_runtime_settings_table(db: aiosqlite.Connection) -> None:
     )
 
 
+async def _add_model_provider_custom_models_table(db: aiosqlite.Connection) -> None:
+    await db.execute(
+        """
+        CREATE TABLE IF NOT EXISTS model_provider_custom_models (
+            model_config_id TEXT PRIMARY KEY,
+            user_id TEXT NOT NULL,
+            provider_id TEXT NOT NULL,
+            model TEXT NOT NULL,
+            display_name TEXT,
+            model_type TEXT NOT NULL DEFAULT 'llm',
+            endpoint_model_name TEXT,
+            capabilities_json TEXT NOT NULL DEFAULT '[]',
+            context_window INTEGER,
+            max_output_tokens INTEGER,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (provider_id) REFERENCES model_provider_configs(provider_id)
+                ON DELETE CASCADE,
+            UNIQUE(user_id, provider_id, model)
+        )
+        """
+    )
+    await db.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_model_provider_custom_models_provider
+        ON model_provider_custom_models(user_id, provider_id, updated_at)
+        """
+    )
+
+
 MIGRATIONS: tuple[Migration, ...] = (
     ("20260610_001_add_documents_last_reindex_at", _add_documents_last_reindex_at),
     ("20260610_002_add_core_indexes", _add_core_indexes),
@@ -399,6 +429,10 @@ MIGRATIONS: tuple[Migration, ...] = (
     ("20260626_009_add_model_route_capabilities", _add_model_route_capabilities),
     ("20260627_010_add_conversation_evidence", _add_conversation_evidence_table),
     ("20260628_011_add_user_runtime_settings", _add_user_runtime_settings_table),
+    (
+        "20260628_012_add_model_provider_custom_models",
+        _add_model_provider_custom_models_table,
+    ),
 )
 
 

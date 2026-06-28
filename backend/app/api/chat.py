@@ -103,6 +103,7 @@ async def chat_stream(
                     web_search_enabled=request.web_search_enabled,
                     conversation_id=request.conversation_id,
                     web_search=request.web_search,
+                    thinking_enabled=request.thinking_enabled,
                     attachment_ids=request.attachment_ids,
                     user_id=current_user["id"],
                 ):

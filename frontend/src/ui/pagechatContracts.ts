@@ -119,8 +119,7 @@ export const WEB_SEARCH_CONTENT_TYPE_OPTIONS = [
 export const COMPOSER_ACTIONS = [
   { id: 'image', label: '添加图片', icon: 'ImagePlus' },
   { id: 'web-search', label: '网页搜索', icon: 'Globe' },
-  { id: 'file', label: '选择文件', icon: 'FileText' },
-  { id: 'folder', label: '选择文件夹', icon: 'Folder' },
+  { id: 'library', label: '选择文件/文件夹', icon: 'Folder' },
 ] as const
 
 export interface FilePresentation {

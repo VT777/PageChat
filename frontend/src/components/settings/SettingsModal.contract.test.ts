@@ -43,6 +43,59 @@ describe('SettingsModal model provider contract', () => {
     expect(source).toContain('model-capabilities')
   })
 
+  it('renders Dify-like model metadata for context, output and thinking capability', () => {
+    const source = readFileSync(new URL('./SettingsModal.vue', import.meta.url), 'utf-8')
+    const modelProviderModelsSource = readFileSync(
+      new URL('../../utils/modelProviderModels.ts', import.meta.url),
+      'utf-8',
+    )
+
+    expect(source).toContain('modelMetaBadges')
+    expect(source).toContain('model-meta-badge')
+    expect(source).toContain('model-compact-row')
+    expect(source).toContain('model-count-line')
+    expect(source).toContain('formatTokenWindow')
+    expect(modelProviderModelsSource).toContain("reasoning: 'Thinking'")
+  })
+
+  it('uses Dify-like provider cards and modal configuration flows instead of inline credential panels', () => {
+    const source = readFileSync(new URL('./SettingsModal.vue', import.meta.url), 'utf-8')
+
+    expect(source).toContain('provider-card-unconfigured')
+    expect(source).toContain('provider-card-configured')
+    expect(source).toContain('provider-config-summary')
+    expect(source).toContain('openProviderCredentialDialog')
+    expect(source).toContain('openCompatibleModelDialog')
+    expect(source).toContain('provider-config-dialog')
+    expect(source).toContain('providerModelBadges')
+    expect(source).toContain('provider-ready-dot')
+    expect(source).toContain('settingsApi.saveModelProviderCustomModel')
+    expect(source).toContain('collapsedProviderModels')
+    expect(source).toContain('toggleProviderModels')
+    expect(source).toContain('deleteProviderCredential')
+    expect(source).toContain('providerCredentialList')
+    expect(source).toContain('API 密钥授权配置')
+    expect(source).toContain('添加模型')
+    expect(source).not.toContain('class="credential-panel"')
+    expect(source).not.toContain('<span>Chat</span>')
+  })
+
+  it('uses an actionable provider configuration area instead of an inert chevron button', () => {
+    const source = readFileSync(new URL('./SettingsModal.vue', import.meta.url), 'utf-8')
+
+    expect(source).toContain('provider-config-summary')
+    expect(source).toContain('provider-config-button')
+    expect(source).toContain('openProviderCredentialDialog(provider)')
+    expect(source).not.toContain('provider-more-button')
+  })
+
+  it('aligns model row icons to the same provider logo system', () => {
+    const source = readFileSync(new URL('./SettingsModal.vue', import.meta.url), 'utf-8')
+
+    expect(source).toContain('model-provider-logo')
+    expect(source).toContain(':src="provider.iconUrl"')
+  })
+
   it('uses task-specific model option lists and persists route settings', () => {
     const source = readFileSync(new URL('./SettingsModal.vue', import.meta.url), 'utf-8')
 
@@ -64,12 +117,33 @@ describe('SettingsModal model provider contract', () => {
     expect(source).not.toContain('function fallbackModelOptions')
   })
 
-  it('renders QA thinking controls and persists them through settings API', () => {
+  it('wires the language selector to the global interface language preference', () => {
     const source = readFileSync(new URL('./SettingsModal.vue', import.meta.url), 'utf-8')
 
-    expect(source).toContain('qaThinkingOptions')
-    expect(source).toContain('qaSettings.thinkingMode')
-    expect(source).toContain('settingsApi.getQaSettings')
-    expect(source).toContain('settingsApi.updateQaSettings')
+    expect(source).toContain("import { useI18n }")
+    expect(source).toContain('languageOptions')
+    expect(source).toContain('v-model="language"')
+    expect(source).toContain('@change="setLanguage(language)"')
+    expect(source).toContain("settingsNavLabel(section.id)")
+  })
+
+  it('keeps the provider search input visually contained in its rounded parent', () => {
+    const source = readFileSync(new URL('./SettingsModal.vue', import.meta.url), 'utf-8')
+
+    expect(source).toContain('.provider-search:focus-within')
+    expect(source).toContain('box-sizing: border-box;')
+    expect(source).toContain('overflow: hidden;')
+    expect(source).toContain('background: transparent;')
+    expect(source).toContain('box-shadow: none;')
+    expect(source).toContain('width: 100%;')
+  })
+
+  it('does not render QA thinking controls in settings', () => {
+    const source = readFileSync(new URL('./SettingsModal.vue', import.meta.url), 'utf-8')
+
+    expect(source).not.toContain('qaThinkingOptions')
+    expect(source).not.toContain('qaSettings.thinkingMode')
+    expect(source).not.toContain('settingsApi.getQaSettings')
+    expect(source).not.toContain('settingsApi.updateQaSettings')
   })
 })

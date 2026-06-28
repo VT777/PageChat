@@ -65,10 +65,10 @@ describe('chat rollback', () => {
   it('keeps a rollback snapshot that can restore removed messages', () => {
     const store = useChatStore()
     store.messages.push(
-      message('u1', 'user', '第一轮问题'),
-      message('a1', 'assistant', '第一轮回答'),
-      message('u2', 'user', '统计下各地区销售表现'),
-      message('a2', 'assistant', '各地区表现差异明显'),
+      message('u1', 'user', 'First question'),
+      message('a1', 'assistant', 'First answer'),
+      message('u2', 'user', 'Second question'),
+      message('a2', 'assistant', 'Second answer'),
     )
 
     const result = store.rollbackToMessage('u2')
@@ -82,7 +82,7 @@ describe('chat rollback', () => {
     store.restoreRollback()
 
     expect(store.messages.map((item) => item.id)).toEqual(['u1', 'a1', 'u2', 'a2'])
-    expect(store.messages[2].content).toBe('统计下各地区销售表现')
+    expect(store.messages[2].content).toBe('Second question')
   })
 
   it('persists selected document context with the active chat session', () => {
@@ -119,42 +119,42 @@ describe('chat rollback', () => {
 
   it('persists selected folder context before the first message creates a session', () => {
     const store = useChatStore()
-    store.setFolderContexts([{ id: 'folder-draft', label: '销售分析', type: 'folder' }])
+    store.setFolderContexts([{ id: 'folder-draft', label: 'Sales analysis', type: 'folder' }])
 
     setActivePinia(createPinia())
     const restored = useChatStore()
     restored.loadConversationsFromStorage()
 
     expect(restored.documentContexts).toEqual([
-      { id: 'folder-draft', label: '销售分析', type: 'folder' },
+      { id: 'folder-draft', label: 'Sales analysis', type: 'folder' },
     ])
   })
 
   it('replaces stale untyped document context when the same item is selected as a folder', () => {
     const store = useChatStore()
-    store.setDocumentContexts([{ id: 'folder-sales', label: '销售分析' }])
+    store.setDocumentContexts([{ id: 'folder-sales', label: 'Sales analysis' }])
 
-    store.setFolderContexts([{ id: 'folder-sales', label: '销售分析', type: 'folder' }])
+    store.setFolderContexts([{ id: 'folder-sales', label: 'Sales analysis', type: 'folder' }])
 
     expect(store.documentContexts).toEqual([
-      { id: 'folder-sales', label: '销售分析', type: 'folder' },
+      { id: 'folder-sales', label: 'Sales analysis', type: 'folder' },
     ])
     expect(localStorage.getItem('pagechat_document_contexts')).toBe(
-      JSON.stringify([{ id: 'folder-sales', label: '销售分析', type: 'folder' }]),
+      JSON.stringify([{ id: 'folder-sales', label: 'Sales analysis', type: 'folder' }]),
     )
   })
 
   it('deduplicates persisted same-id folder and stale document contexts when loading', () => {
     localStorage.setItem('pagechat_document_contexts', JSON.stringify([
-      { id: 'folder-sales', label: '销售分析' },
-      { id: 'folder-sales', label: '销售分析', type: 'folder' },
+      { id: 'folder-sales', label: 'Sales analysis' },
+      { id: 'folder-sales', label: 'Sales analysis', type: 'folder' },
     ]))
 
     const store = useChatStore()
     store.loadConversationsFromStorage()
 
     expect(store.documentContexts).toEqual([
-      { id: 'folder-sales', label: '销售分析', type: 'folder' },
+      { id: 'folder-sales', label: 'Sales analysis', type: 'folder' },
     ])
   })
 
@@ -162,7 +162,7 @@ describe('chat rollback', () => {
     const store = useChatStore()
     store.currentSessionId = 'session-folder'
     store.messages.push(message('u1', 'user', 'Ask selected folder'))
-    store.setFolderContexts([{ id: 'folder-sales', label: '销售分析', type: 'folder' }])
+    store.setFolderContexts([{ id: 'folder-sales', label: 'Sales analysis', type: 'folder' }])
 
     store.saveCurrentSession()
 
@@ -171,7 +171,7 @@ describe('chat rollback', () => {
     restored.loadConversationsFromStorage()
 
     expect(restored.documentContexts).toEqual([
-      { id: 'folder-sales', label: '销售分析', type: 'folder' },
+      { id: 'folder-sales', label: 'Sales analysis', type: 'folder' },
     ])
   })
 
@@ -179,16 +179,16 @@ describe('chat rollback', () => {
     const store = useChatStore()
     store.currentSessionId = 'session-folder-replace'
     store.messages.push(message('u1', 'user', 'Ask selected folder'))
-    store.setDocumentContexts([{ id: 'folder-sales', label: '销售分析' }])
+    store.setDocumentContexts([{ id: 'folder-sales', label: 'Sales analysis' }])
 
-    store.setFolderContexts([{ id: 'folder-sales', label: '销售分析', type: 'folder' }])
+    store.setFolderContexts([{ id: 'folder-sales', label: 'Sales analysis', type: 'folder' }])
 
     setActivePinia(createPinia())
     const restored = useChatStore()
     restored.loadConversationsFromStorage()
 
     expect(restored.documentContexts).toEqual([
-      { id: 'folder-sales', label: '销售分析', type: 'folder' },
+      { id: 'folder-sales', label: 'Sales analysis', type: 'folder' },
     ])
   })
 
@@ -237,11 +237,11 @@ describe('chat rollback', () => {
     store.messages.push(message('u1', 'user', 'Existing question'))
     store.saveCurrentSession()
 
-    store.startDraftWithDocumentContexts([{ id: 'doc-cn', label: '中文报告.pdf' }])
+    store.startDraftWithDocumentContexts([{ id: 'doc-cn', label: '涓枃鎶ュ憡.pdf' }])
 
     expect(store.currentSessionId).toBeNull()
     expect(store.messages).toEqual([])
-    expect(store.documentContexts).toEqual([{ id: 'doc-cn', label: '中文报告.pdf' }])
+    expect(store.documentContexts).toEqual([{ id: 'doc-cn', label: '涓枃鎶ュ憡.pdf' }])
 
     store.loadConversation('session-existing')
 
@@ -253,7 +253,7 @@ describe('chat rollback', () => {
     const store = useChatStore()
     store.currentSessionId = 'session-existing'
     store.messages.push(message('u1', 'user', 'Existing question'))
-    store.setDocumentContexts([{ id: 'doc-cn', label: '中文报告.pdf' }])
+    store.setDocumentContexts([{ id: 'doc-cn', label: '涓枃鎶ュ憡.pdf' }])
 
     store.startEmptyDraft()
 
@@ -688,15 +688,15 @@ describe('chat rollback', () => {
       },
       {
         id: 'session-temp',
-        title: '现在有哪些文件夹',
-        firstMessage: '现在有哪些文件夹',
+        title: '鐜板湪鏈夊摢浜涙枃浠跺す',
+        firstMessage: '鐜板湪鏈夊摢浜涙枃浠跺す',
         timestamp: 2,
         messageCount: 2,
       },
     )
     store.currentSessionId = 'session-temp'
     store.messages.push(
-      message('u-current', 'user', '现在有哪些文件夹'),
+      message('u-current', 'user', '鐜板湪鏈夊摢浜涙枃浠跺す'),
       message('a-current', 'assistant', ''),
     )
     store.saveCurrentSession()
@@ -717,8 +717,8 @@ describe('chat rollback', () => {
     expect(store.currentSessionId).toBe('backend-existing')
     expect(matchingRows).toHaveLength(1)
     expect(matchingRows[0]).toMatchObject({
-      title: '现在有哪些文件夹',
-      firstMessage: '现在有哪些文件夹',
+      title: '鐜板湪鏈夊摢浜涙枃浠跺す',
+      firstMessage: '鐜板湪鏈夊摢浜涙枃浠跺す',
       messageCount: 2,
     })
   })
@@ -726,20 +726,32 @@ describe('chat rollback', () => {
   it('sends web search as structured chat state', async () => {
     const store = useChatStore()
 
-    await store.sendMessage('查一下最新资料', { web_search: true })
+    await store.sendMessage('Search the web', { web_search: true })
 
     const payload = vi.mocked(chatApi.stream).mock.calls[0][0]
     expect(payload).toMatchObject({
-      question: '查一下最新资料',
+      question: 'Search the web',
       web_search: true,
     })
     expect(payload.question).not.toContain('[Context:')
   })
 
+  it('sends request-level thinking preference as structured chat state', async () => {
+    const store = useChatStore()
+
+    await store.sendMessage('浣犲ソ', { thinking_enabled: true })
+
+    const payload = vi.mocked(chatApi.stream).mock.calls[0][0]
+    expect(payload).toMatchObject({
+      question: '浣犲ソ',
+      thinking_enabled: true,
+    })
+  })
+
   it('sends attachment ids without persisting image payloads', async () => {
     const store = useChatStore()
 
-    await store.sendMessage('看截图', {
+    await store.sendMessage('Use folder', {
       attachment_ids: ['att-a'],
       attachments: [
         {
@@ -758,7 +770,7 @@ describe('chat rollback', () => {
 
     const payload = vi.mocked(chatApi.stream).mock.calls[0][0] as unknown as Record<string, unknown>
     expect(payload).toMatchObject({
-      question: '看截图',
+      question: 'Use folder',
       attachment_ids: ['att-a'],
     })
     expect(payload).not.toHaveProperty('attachments')
@@ -832,7 +844,7 @@ describe('chat rollback', () => {
           message_id: 'backend-assistant-a',
           seq: 2,
           ts: '2026-06-26T10:00:01Z',
-          message: '正在定位相关页面',
+          message: '姝ｅ湪瀹氫綅鐩稿叧椤甸潰',
         },
       } as any)
       store.handleEnvelope({
@@ -843,24 +855,24 @@ describe('chat rollback', () => {
           message_id: 'backend-assistant-a',
           seq: 3,
           ts: '2026-06-26T10:00:02Z',
-          content: '重庆',
+          content: '閲嶅簡',
         },
       } as any)
 
       expect(store.conversationId).toBe('conv-a')
       expect(store.messages[0].id).toBe('backend-assistant-a')
-      expect(store.messages[0].content).toBe('重庆')
+      expect(store.messages[0].content).toBe('閲嶅簡')
       expect(store.messages[0].displayContent).toBe('')
       expect(store.messages[0].progressSteps).toEqual([
         {
-          message: '正在定位相关页面',
+          message: '姝ｅ湪瀹氫綅鐩稿叧椤甸潰',
           seq: 2,
           ts: '2026-06-26T10:00:01Z',
         },
       ])
 
       vi.advanceTimersByTime(24)
-      expect(store.messages[0].displayContent).toBe('重庆')
+      expect(store.messages[0].displayContent).toBe('閲嶅簡')
 
       store.handleEnvelope({
         event: 'citation_added',
@@ -873,8 +885,8 @@ describe('chat rollback', () => {
           citation: {
             citation_key: 'c1',
             document_id: 'doc-cq',
-            document_name: '重庆报告.pdf',
-            display_label: '重庆报告.pdf p.2',
+            document_name: '閲嶅簡鎶ュ憡.pdf',
+            display_label: '閲嶅簡鎶ュ憡.pdf p.2',
             source_anchor: { format: 'pdf', start_page: 2 },
             preview_kind: 'pdf',
           },
@@ -896,8 +908,8 @@ describe('chat rollback', () => {
       expect(store.messages[0].citations).toHaveLength(1)
       expect(store.messages[0].evidenceItems?.[0]).toMatchObject({
         docId: 'doc-cq',
-        documentName: '重庆报告.pdf',
-        displayLabel: '重庆报告.pdf p.2',
+        documentName: '閲嶅簡鎶ュ憡.pdf',
+        displayLabel: '閲嶅簡鎶ュ憡.pdf p.2',
       })
       expect(assistant.id).not.toBe(store.messages[0].id)
     } finally {
@@ -955,6 +967,48 @@ describe('chat rollback', () => {
     ])
   })
 
+  it('streams native reasoning deltas into assistant thinking only', () => {
+    const store = useChatStore()
+    store.addAssistantMessage()
+
+    store.handleEnvelope({
+      event: 'run_started',
+      data: {
+        run_id: 'run-a',
+        conversation_id: 'conv-a',
+        message_id: 'assistant-a',
+        seq: 1,
+        ts: '2026-06-26T10:00:00Z',
+        status: 'running',
+      },
+    } as any)
+    store.handleEnvelope({
+      event: 'reasoning_delta',
+      data: {
+        run_id: 'run-a',
+        conversation_id: 'conv-a',
+        message_id: 'assistant-a',
+        seq: 2,
+        ts: '2026-06-26T10:00:01Z',
+        content: 'I need to inspect ',
+      },
+    } as any)
+    store.handleEnvelope({
+      event: 'reasoning_delta',
+      data: {
+        run_id: 'run-a',
+        conversation_id: 'conv-a',
+        message_id: 'assistant-a',
+        seq: 3,
+        ts: '2026-06-26T10:00:02Z',
+        content: 'the selected file.',
+      },
+    } as any)
+
+    expect(store.messages[0].thinking).toBe('I need to inspect the selected file.')
+    expect(store.messages[0].progressSteps || []).toEqual([])
+  })
+
   it('shows missing model route failures as actionable settings guidance', () => {
     const store = useChatStore()
     store.addAssistantMessage()
@@ -971,11 +1025,11 @@ describe('chat rollback', () => {
         error_code: 'MODEL_ROUTE_NOT_CONFIGURED',
         route_slot: 'document_qa',
         error: "Model route 'document_qa' is not configured. Configure it in Settings.",
-        message: '请先在设置页配置问答模型。',
+        message: 'Sorry, something went wrong.',
       },
     } as any)
 
-    expect(store.messages[0].content).toBe('请先在设置页配置问答模型。')
+    expect(store.messages[0].content).toBe('Sorry, something went wrong.')
     expect(store.messages[0].isLoading).toBe(false)
   })
 
@@ -1148,8 +1202,8 @@ describe('chat rollback', () => {
         citation: {
           citation_key: 'c1',
           document_id: 'doc-cq',
-          document_name: '重庆统计年鉴.pdf',
-          display_label: '重庆统计年鉴.pdf p.12',
+          document_name: '閲嶅簡缁熻骞撮壌.pdf',
+          display_label: '閲嶅簡缁熻骞撮壌.pdf p.12',
           source_anchor: {
             format: 'pdf',
             unit_type: 'page',
@@ -1164,8 +1218,8 @@ describe('chat rollback', () => {
     expect(store.messages[0].evidenceItems).toEqual([
       expect.objectContaining({
         docId: 'doc-cq',
-        documentName: '重庆统计年鉴.pdf',
-        displayLabel: '重庆统计年鉴.pdf p.12',
+        documentName: '閲嶅簡缁熻骞撮壌.pdf',
+        displayLabel: '閲嶅簡缁熻骞撮壌.pdf p.12',
         sourceAnchor: expect.objectContaining({ start_page: 12 }),
       }),
     ])
@@ -1200,8 +1254,8 @@ describe('chat rollback', () => {
           citations: [
             {
               document_id: 'doc-cq',
-              document_name: '重庆统计年鉴.pdf',
-              display_label: '重庆统计年鉴.pdf p.12',
+              document_name: '閲嶅簡缁熻骞撮壌.pdf',
+              display_label: '閲嶅簡缁熻骞撮壌.pdf p.12',
               source_anchor: {
                 format: 'pdf',
                 unit_type: 'page',
@@ -1211,8 +1265,8 @@ describe('chat rollback', () => {
             },
             {
               document_id: 'doc-cq',
-              document_name: '重庆统计年鉴',
-              display_label: '重庆统计年鉴 page 12',
+              document_name: '閲嶅簡缁熻骞撮壌',
+              display_label: '閲嶅簡缁熻骞撮壌 page 12',
               source_anchor: {
                 format: 'pdf',
                 unit_type: 'page',
@@ -1228,8 +1282,8 @@ describe('chat rollback', () => {
     expect(store.messages[0].evidenceItems).toEqual([
       expect.objectContaining({
         docId: 'doc-cq',
-        documentName: '重庆统计年鉴.pdf',
-        displayLabel: '重庆统计年鉴.pdf p.12',
+        documentName: '閲嶅簡缁熻骞撮壌.pdf',
+        displayLabel: '閲嶅簡缁熻骞撮壌.pdf p.12',
         sourceAnchor: expect.objectContaining({ start_page: 12 }),
       }),
     ])
@@ -1273,6 +1327,76 @@ describe('chat rollback', () => {
     ])
   })
 
+  it('regenerates from a user message after truncating stale later context', async () => {
+    const store = useChatStore()
+    store.currentSessionId = 'conv-a'
+    store.conversationId = 'conv-a'
+    store.messages.push(
+      message('u1', 'user', 'First question'),
+      message('a1', 'assistant', 'First answer'),
+      message('u2', 'user', 'Second question'),
+      message('a2', 'assistant', 'Stale second answer'),
+    )
+    store.saveCurrentSession()
+
+    await store.regenerateFromUserMessage('u2')
+
+    expect(chatApi.stream).toHaveBeenCalledWith(expect.objectContaining({
+      question: 'Second question',
+      conversation_id: 'conv-a',
+      regenerate_from_message_id: 'u2',
+    }), expect.any(Object))
+    expect(store.messages.map((item) => item.id)).not.toContain('u2')
+    expect(store.messages.map((item) => item.id)).not.toContain('a2')
+    expect(store.messages.slice(0, 2).map((item) => item.id)).toEqual(['u1', 'a1'])
+    expect(store.messages[2]).toMatchObject({ role: 'user', content: 'Second question' })
+  })
+
+  it('regenerates an assistant answer from the preceding user message boundary', async () => {
+    const store = useChatStore()
+    store.currentSessionId = 'conv-a'
+    store.conversationId = 'conv-a'
+    store.messages.push(
+      message('u1', 'user', 'First question'),
+      message('a1', 'assistant', 'First answer'),
+      message('u2', 'user', 'Second question'),
+      message('a2', 'assistant', 'Stale second answer'),
+    )
+
+    await store.regenerateFromAssistantMessage('a2')
+
+    expect(chatApi.stream).toHaveBeenCalledWith(expect.objectContaining({
+      question: 'Second question',
+      conversation_id: 'conv-a',
+      regenerate_from_message_id: 'u2',
+    }), expect.any(Object))
+    expect(store.messages.map((item) => item.id)).not.toContain('u2')
+    expect(store.messages.map((item) => item.id)).not.toContain('a2')
+    expect(store.messages.slice(0, 2).map((item) => item.id)).toEqual(['u1', 'a1'])
+    expect(store.messages[2]).toMatchObject({ role: 'user', content: 'Second question' })
+  })
+
+  it('hydrates backend user message ids from run_started metadata', () => {
+    const store = useChatStore()
+    store.addUserMessage('Question')
+    store.addAssistantMessage()
+
+    store.handleEnvelope({
+      event: 'run_started',
+      data: {
+        run_id: 'run-a',
+        conversation_id: 'conv-a',
+        user_message_id: 'backend-user-a',
+        message_id: 'backend-assistant-a',
+        seq: 1,
+        ts: '2026-06-26T10:00:00Z',
+        status: 'running',
+      },
+    } as any)
+
+    expect(store.messages[0].id).toBe('backend-user-a')
+    expect(store.messages[1].id).toBe('backend-assistant-a')
+  })
   it('renders the new run timeline in ChatView instead of legacy thinking/tool blocks', () => {
     expect(chatViewSource).toContain('RunTimeline')
     expect(chatViewSource).not.toContain('ThinkingBlock')

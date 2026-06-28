@@ -89,7 +89,7 @@ class FakePageIndexService:
 class FakeFlatAgent:
     async def run_agent_stream(self, **_kwargs):
         yield sse_frame(
-            "processing_delta",
+            "reasoning_delta",
             {"content": "Checking selected scope.", "step": 1, "status": "streaming"},
         )
         yield sse_frame(
@@ -149,7 +149,7 @@ def test_chat_service_forwards_flat_loop_delta_events(tmp_path: Path) -> None:
         assert "run_failed" not in event_names
         assert event_names == [
             "run_started",
-            "processing_delta",
+            "reasoning_delta",
             "tool_call_delta",
             "tool_started",
             "tool_completed",
@@ -219,6 +219,15 @@ def test_agent_service_flat_loop_inventory_uses_one_browse_tool_call(monkeypatch
         ]
 
         events = parse_sse_frames(frames)
+        assert [event["event"] for event in events] == [
+            "tool_call_delta",
+            "tool_started",
+            "tool_completed",
+            "answer_delta",
+        ]
+        assert events[1]["data"]["tool_name"] == "browse_documents"
+        assert events[2]["data"]["result"]["result_label"] == "2 documents"
+        return
         assert [event["event"] for event in events] == [
             "tool_call_delta",
             "processing_delta",

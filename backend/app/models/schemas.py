@@ -144,7 +144,9 @@ class ChatRequest(BaseModel):
     strict_scope: Optional[bool] = None
     web_search_requested: bool = False
     web_search_enabled: bool = False
+    thinking_enabled: Optional[bool] = None
     conversation_id: Optional[str] = None
+    regenerate_from_message_id: Optional[str] = None
     web_search: bool = False
 
 

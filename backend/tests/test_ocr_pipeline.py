@@ -181,6 +181,45 @@ def test_selected_page_ocr_does_not_fallback_to_legacy_service(monkeypatch, tmp_
     assert analysis["ocr_calls_summary"]["page_text"]["fallback"] == 0
 
 
+def test_selected_page_ocr_propagates_missing_user_ocr_configuration(monkeypatch, tmp_path) -> None:
+    import app.services.pageindex_service as svc_module
+
+    service = PageIndexService(user_id="user-without-ocr")
+
+    def fake_render_pages_to_images(file_path, page_indices, *, dpi=150):
+        return [
+            {
+                "page_index": page_index,
+                "image_base64": f"image-{page_index}",
+                "image_mime_type": "image/jpeg",
+            }
+            for page_index in page_indices
+        ]
+
+    async def missing_ocr_config(*_args, **_kwargs):
+        raise RuntimeError(
+            "OCR_ROUTE_NOT_CONFIGURED: 请先在设置页配置 OCR/VLM 模型后再解析图片型文档。"
+        )
+
+    monkeypatch.setattr(svc_module, "OCR_MAX_CONCURRENCY", 20)
+    monkeypatch.setitem(
+        sys.modules,
+        "pageindex.layout.page_renderer",
+        SimpleNamespace(render_pages_to_images=fake_render_pages_to_images),
+    )
+    service._ocr_image_with_resolver = missing_ocr_config  # type: ignore[method-assign]
+
+    with pytest.raises(RuntimeError, match="OCR_ROUTE_NOT_CONFIGURED"):
+        asyncio.run(
+            service._run_pdf_ocr_pages_by_images(
+                tmp_path / "scan.pdf",
+                [0],
+                analysis={"doc_id": "doc-needs-ocr"},
+                prompt=PAGE_TEXT_PROMPT,
+            )
+        )
+
+
 def test_page_text_ocr_writes_per_page_diagnostics(monkeypatch, tmp_path) -> None:
     import app.services.pageindex_service as svc_module
 

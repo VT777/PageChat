@@ -2,6 +2,7 @@ import os
 import base64
 import io
 import inspect
+import logging
 from openai import OpenAI, AsyncOpenAI
 from app.core.config import (
     LLM_API_KEY,
@@ -15,10 +16,44 @@ from app.core.logging_config import silence_noisy_http_loggers
 from app.services.litellm_adapter import LiteLLMAdapter
 from app.agent.provider_adapter import ProviderCapabilityError, apply_provider_protocol
 from app.services.responses_adapter import response_provider_capabilities
-from app.services.model_settings_service import ModelRouteNotConfiguredError
+from app.services.model_settings_service import (
+    ModelProviderInvalidError,
+    ModelRouteNotConfiguredError,
+)
 
 
 silence_noisy_http_loggers()
+
+
+llm_logger = logging.getLogger("llm.route")
+
+
+def _log_llm_route_call(
+    *,
+    user_id: str | None,
+    scenario: str,
+    route_slot: str | None,
+    route: dict | None,
+    stream: bool,
+    tools: list | None,
+) -> None:
+    provider_config = route.get("provider_config") if isinstance(route, dict) else None
+    if not isinstance(provider_config, dict):
+        provider_config = route if isinstance(route, dict) else {}
+    llm_logger.info(
+        "llm_call user_id=%s scenario=%s route_slot=%s provider_id=%s "
+        "provider=%s model=%s source=%s route_version=%s stream=%s tools=%s",
+        user_id or "",
+        scenario,
+        route_slot or "",
+        provider_config.get("provider_id") or "",
+        provider_config.get("provider") or "",
+        provider_config.get("model") or route.get("model") if isinstance(route, dict) else "",
+        provider_config.get("source") or "",
+        provider_config.get("route_version") or "",
+        bool(stream),
+        len(tools or []),
+    )
 
 
 def _should_disable_thinking(model_name: str) -> bool:
@@ -80,7 +115,7 @@ async def _resolve_user_route(user_id: str, route_slot: str) -> dict | None:
                 "provider_config": resolved,
                 "model": resolved["model"],
             }
-    except ModelRouteNotConfiguredError:
+    except (ModelProviderInvalidError, ModelRouteNotConfiguredError):
         raise
     except Exception:
         return None
@@ -351,6 +386,14 @@ async def chat_by_scenario(
     if user_id and route_slot:
         route = await _resolve_user_route(user_id, route_slot)
         if route:
+            _log_llm_route_call(
+                user_id=user_id,
+                scenario=scenario,
+                route_slot=route_slot,
+                route=route,
+                stream=stream,
+                tools=tools,
+            )
             extra = dict(kwargs)
             if tools:
                 extra["tools"] = tools
@@ -371,6 +414,21 @@ async def chat_by_scenario(
     client = get_async_llm_client()
 
     resolved_model = config["model"]
+    _log_llm_route_call(
+        user_id=user_id,
+        scenario=scenario,
+        route_slot=route_slot,
+        route={
+            "model": resolved_model,
+            "provider_config": {
+                "provider": "environment",
+                "model": resolved_model,
+                "source": "environment",
+            },
+        },
+        stream=stream,
+        tools=tools,
+    )
     params = {
         "model": resolved_model,
         "messages": messages,

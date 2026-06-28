@@ -4,8 +4,10 @@ import {
   buildOcrModelOptions,
   buildParsingModelOptions,
   buildQaModelOptions,
+  formatModelContextBadge,
   inferModelCapabilities,
   modelCapabilityBadges,
+  providerCapabilityBadges,
   resolveProviderTestModel,
 } from './modelProviderModels'
 
@@ -78,8 +80,19 @@ describe('model provider model helpers', () => {
   })
 
   it('renders concise capability badges for model rows', () => {
-    expect(modelCapabilityBadges({ id: 'qwen-vl-ocr' })).toEqual(['Vision', 'OCR'])
-    expect(modelCapabilityBadges({ id: 'text-embedding-v3' })).toEqual(['Embedding'])
+    expect(modelCapabilityBadges({ id: 'qwen-vl-ocr' })).toEqual(['LLM', 'VISION', 'OCR'])
+    expect(modelCapabilityBadges({ id: 'text-embedding-v3' })).toEqual(['EMBEDDING'])
+    expect(modelCapabilityBadges({ id: 'plain-chat', capabilities: ['llm'] })).toEqual(['LLM'])
+    expect(formatModelContextBadge({ id: 'long-context', context_window: 128000 })).toBe('Context 128K')
+  })
+
+  it('derives provider capability badges from configured provider models only', () => {
+    expect(providerCapabilityBadges([])).toEqual([])
+    expect(providerCapabilityBadges([
+      { id: 'qwen-plus', capabilities: ['llm', 'tool_calling'], context_window: 32768 },
+      { id: 'qwen-vl-max', capabilities: ['llm', 'vision', 'tool_calling'], context_window: 128000 },
+      { id: 'text-embedding-v3', capabilities: ['embedding'] },
+    ])).toEqual(['LLM', 'VISION', 'CHAT', 'EMBEDDING', '128K Context'])
   })
 
   it('filters task model options by capability', () => {

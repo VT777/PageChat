@@ -184,10 +184,22 @@ def test_list_provider_models_uses_openai_compatible_models_endpoint(
     response = client.get(f"/api/settings/model-providers/{provider['provider_id']}/models")
 
     assert response.status_code == 200
-    assert response.json()["models"] == [
-        {"id": "qwen-plus", "capabilities": ["llm", "tool_calling"]},
-        {"id": "qwen-vl-max", "capabilities": ["llm", "vision", "tool_calling"]},
-    ]
+    models = response.json()["models"]
+    assert models[0] == {
+        "id": "qwen-plus",
+        "capabilities": ["llm", "tool_calling"],
+        "features": ["llm", "tool_calling"],
+        "supports_vision": False,
+        "supports_tool_calling": True,
+        "supports_reasoning": False,
+        "supports_embedding": False,
+        "supports_ocr": False,
+        "context_window": None,
+        "max_output_tokens": None,
+    }
+    assert models[1]["id"] == "qwen-vl-max"
+    assert models[1]["capabilities"] == ["llm", "vision", "tool_calling"]
+    assert models[1]["supports_vision"] is True
     assert calls[0][0] == "https://example.test/v1/models"
     assert calls[0][1]["Authorization"] == "Bearer sk-secret-123456"
 
@@ -216,6 +228,98 @@ def test_list_provider_models_sanitizes_provider_errors(
     assert response.status_code == 400
     assert "sk-secret-123456" not in response.text
     assert "[redacted-api-key]" in response.text
+
+
+def test_openai_compatible_provider_can_store_custom_models_when_models_endpoint_is_unavailable(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    client = _client(tmp_path)
+    provider = client.post(
+        "/api/settings/model-providers",
+        json={
+            "provider": "openai_compatible",
+            "base_url": "https://example.test/v1",
+            "api_key": "sk-secret-123456",
+        },
+    ).json()
+
+    saved_model = client.post(
+        f"/api/settings/model-providers/{provider['provider_id']}/models",
+        json={
+            "model": "custom-vl-model",
+            "display_name": "Custom Vision Model",
+            "model_type": "vision",
+            "endpoint_model_name": "vendor/custom-vl-model",
+            "capabilities": ["llm", "vision", "tool_calling"],
+            "context_window": 128000,
+        },
+    )
+
+    def fake_get(url, headers=None, timeout=None):
+        raise RuntimeError("models endpoint disabled sk-secret-123456")
+
+    monkeypatch.setattr(model_settings_service.requests, "get", fake_get)
+
+    response = client.get(f"/api/settings/model-providers/{provider['provider_id']}/models")
+
+    assert saved_model.status_code == 200
+    assert response.status_code == 200
+    assert response.json()["source"] == "custom"
+    assert response.json()["models"] == [
+        {
+            "id": "vendor/custom-vl-model",
+            "display_name": "Custom Vision Model",
+            "model_type": "vision",
+            "capabilities": ["llm", "vision", "tool_calling"],
+            "features": ["llm", "vision", "tool_calling"],
+            "supports_vision": True,
+            "supports_tool_calling": True,
+            "supports_reasoning": False,
+            "supports_embedding": False,
+            "supports_ocr": False,
+            "context_window": 128000,
+            "max_output_tokens": None,
+            "source": "custom",
+        }
+    ]
+    assert "sk-secret-123456" not in response.text
+
+
+def test_provider_models_merge_remote_and_custom_models(tmp_path: Path, monkeypatch) -> None:
+    client = _client(tmp_path)
+    provider = client.post(
+        "/api/settings/model-providers",
+        json={
+            "provider": "openai_compatible",
+            "base_url": "https://example.test/v1",
+            "api_key": "sk-secret-123456",
+        },
+    ).json()
+    client.post(
+        f"/api/settings/model-providers/{provider['provider_id']}/models",
+        json={
+            "model": "manual-chat",
+            "model_type": "llm",
+            "capabilities": ["llm", "tool_calling"],
+        },
+    )
+
+    class FakeResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"data": [{"id": "remote-vl", "capabilities": ["llm", "vision"]}]}
+
+    monkeypatch.setattr(model_settings_service.requests, "get", lambda *args, **kwargs: FakeResponse())
+
+    response = client.get(f"/api/settings/model-providers/{provider['provider_id']}/models")
+
+    assert response.status_code == 200
+    assert response.json()["source"] == "remote+custom"
+    assert [item["id"] for item in response.json()["models"]] == ["remote-vl", "manual-chat"]
+    assert response.json()["models"][0]["capabilities"] == ["llm", "vision", "tool_calling"]
 
 
 def test_update_provider_non_secret_fields_preserves_saved_key(tmp_path: Path) -> None:
@@ -493,6 +597,60 @@ def test_provider_connection_test_can_auto_select_model_and_mark_valid(
     assert listed[0]["validation_status"] == "valid"
 
 
+
+def test_provider_connection_test_auto_selects_chat_model_before_multimodal_or_audio_models(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    calls = []
+
+    class FakeResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {
+                "data": [
+                    {"id": "qwen-image-2.0-pro-2026-06-22"},
+                    {"id": "fun-asr-flash-2026-06-15"},
+                    {"id": "test-sre-gpu-auto-handle"},
+                    {"id": "qwen3.7-max-2026-06-08"},
+                ]
+            }
+
+    def fake_get(url, headers=None, timeout=None):
+        calls.append(("models", url, headers, timeout))
+        return FakeResponse()
+
+    class FakeAdapter:
+        async def acompletion(self, **kwargs):
+            calls.append(("completion", kwargs))
+            if kwargs["provider_config"]["model"] != "qwen3.7-max-2026-06-08":
+                raise RuntimeError("selected non-chat model")
+            return {"choices": [{"message": {"content": "ok"}}]}
+
+    monkeypatch.setattr(model_settings_service.requests, "get", fake_get)
+    monkeypatch.setattr(settings, "LiteLLMAdapter", lambda: FakeAdapter())
+    client = _client(tmp_path)
+    provider = client.post(
+        "/api/settings/model-providers",
+        json={
+            "provider": "dashscope",
+            "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+            "api_key": "sk-secret-123456",
+        },
+    ).json()
+
+    response = client.post(
+        f"/api/settings/model-providers/{provider['provider_id']}/test",
+        json={},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["tested_model"] == "qwen3.7-max-2026-06-08"
+    completion_call = [call for call in calls if call[0] == "completion"][0][1]
+    assert completion_call["provider_config"]["model"] == "qwen3.7-max-2026-06-08"
+    assert client.get("/api/settings/model-providers").json()[0]["validation_status"] == "valid"
 def test_provider_connection_test_marks_invalid_and_redacts_secret(
     monkeypatch,
     tmp_path: Path,

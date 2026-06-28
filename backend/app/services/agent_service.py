@@ -590,6 +590,7 @@ class AgentService:
         strict_scope: Optional[bool] = None,
         web_search_requested: bool = False,
         web_search_enabled: bool = False,
+        thinking_enabled: bool | None = None,
         suppress_user_library_fallback: bool = False,
         request_attachments: Optional[List[Dict[str, Any]]] = None,
         user_id: str = None,
@@ -718,7 +719,11 @@ class AgentService:
 
         # 检测用户语言，注入 prompt
         user_lang = detect_language(question)
-        disable_thinking = await self._qa_disable_thinking_for_user(user_id)
+        disable_thinking = (
+            not bool(thinking_enabled)
+            if thinking_enabled is not None
+            else await self._qa_disable_thinking_for_user(user_id)
+        )
         web_search_settings = await self._web_search_settings_for_request(
             user_id=user_id,
             requested=bool(web_search_requested or web_search_enabled),
