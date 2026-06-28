@@ -124,6 +124,12 @@ const DOCUMENT_CONTEXTS_KEY = 'pagechat_document_contexts'
 const DRAFT_COMPOSER_TEXT_KEY = 'pagechat_draft_composer_text'
 const LEGACY_STORAGE_KEY = 'know' + 'claw_chat_sessions'
 const LEGACY_SESSIONS_DATA_KEY = 'know' + 'claw_sessions_data'
+const STORAGE_SUFFIXES: Record<string, string> = {
+  [STORAGE_KEY]: 'chat_sessions',
+  [SESSIONS_DATA_KEY]: 'sessions_data',
+  [DOCUMENT_CONTEXTS_KEY]: 'document_contexts',
+  [DRAFT_COMPOSER_TEXT_KEY]: 'draft_composer_text',
+}
 
 let _msgIDCounter = 0
 function _generateMsgID(): string {
@@ -155,11 +161,53 @@ export const useChatStore = defineStore('chat', () => {
   const documentContexts = ref<DocumentChatContext[]>([])
   const draftComposerText = ref('')
   const activeStreamController = ref<AbortController | null>(null)
+  const storageUserId = ref<string | null>(null)
   const displayBuffers = new Map<string, DisplayBufferEntry>()
   
   // 对话历史记录列表
   const conversations = ref<Conversation[]>([])
   const currentSessionId = ref<string | null>(null)
+
+  function storageKey(baseKey: string): string {
+    const suffix = STORAGE_SUFFIXES[baseKey]
+    if (!storageUserId.value || !suffix) return baseKey
+    return `pagechat:${storageUserId.value}:${suffix}`
+  }
+
+  function getStorageItem(baseKey: string, legacyKey?: string): string | null {
+    const scopedKey = storageKey(baseKey)
+    const value = localStorage.getItem(scopedKey)
+    if (value !== null || storageUserId.value) return value
+    return legacyKey ? localStorage.getItem(legacyKey) : null
+  }
+
+  function setStorageItem(baseKey: string, value: string) {
+    localStorage.setItem(storageKey(baseKey), value)
+  }
+
+  function removeStorageItem(baseKey: string) {
+    localStorage.removeItem(storageKey(baseKey))
+  }
+
+  function resetInMemoryChatState() {
+    disposeAllDisplayBuffers()
+    messages.value = []
+    conversationId.value = null
+    isLoading.value = false
+    rollbackHistory.value = []
+    documentContexts.value = []
+    draftComposerText.value = ''
+    activeStreamController.value = null
+    conversations.value = []
+    currentSessionId.value = null
+  }
+
+  function setStorageUserId(userId: string | null) {
+    const normalized = userId ? String(userId).trim() : null
+    if (storageUserId.value === normalized) return
+    resetInMemoryChatState()
+    storageUserId.value = normalized
+  }
 
   function contextType(context: DocumentChatContext): 'document' | 'folder' {
     return context.type === 'folder' ? 'folder' : 'document'
@@ -210,9 +258,9 @@ export const useChatStore = defineStore('chat', () => {
   function persistDraftDocumentContexts() {
     try {
       if (documentContexts.value.length > 0) {
-        localStorage.setItem(DOCUMENT_CONTEXTS_KEY, JSON.stringify(documentContexts.value))
+        setStorageItem(DOCUMENT_CONTEXTS_KEY, JSON.stringify(documentContexts.value))
       } else {
-        localStorage.removeItem(DOCUMENT_CONTEXTS_KEY)
+        removeStorageItem(DOCUMENT_CONTEXTS_KEY)
       }
     } catch (e) {
       console.error('Failed to persist document contexts:', e)
@@ -221,7 +269,7 @@ export const useChatStore = defineStore('chat', () => {
 
   function clearPersistedDraftDocumentContexts() {
     try {
-      localStorage.removeItem(DOCUMENT_CONTEXTS_KEY)
+      removeStorageItem(DOCUMENT_CONTEXTS_KEY)
     } catch (e) {
       console.error('Failed to clear draft document contexts:', e)
     }
@@ -229,7 +277,7 @@ export const useChatStore = defineStore('chat', () => {
 
   function loadDraftDocumentContexts(): DocumentChatContext[] {
     try {
-      const stored = localStorage.getItem(DOCUMENT_CONTEXTS_KEY)
+      const stored = getStorageItem(DOCUMENT_CONTEXTS_KEY)
       if (!stored) return []
       const parsed = JSON.parse(stored)
       const contexts = Array.isArray(parsed)
@@ -248,9 +296,9 @@ export const useChatStore = defineStore('chat', () => {
     try {
       const value = draftComposerText.value.trim()
       if (value.length > 0) {
-        localStorage.setItem(DRAFT_COMPOSER_TEXT_KEY, draftComposerText.value)
+        setStorageItem(DRAFT_COMPOSER_TEXT_KEY, draftComposerText.value)
       } else {
-        localStorage.removeItem(DRAFT_COMPOSER_TEXT_KEY)
+        removeStorageItem(DRAFT_COMPOSER_TEXT_KEY)
       }
     } catch (e) {
       console.error('Failed to persist draft composer text:', e)
@@ -259,7 +307,7 @@ export const useChatStore = defineStore('chat', () => {
 
   function clearPersistedDraftComposerText() {
     try {
-      localStorage.removeItem(DRAFT_COMPOSER_TEXT_KEY)
+      removeStorageItem(DRAFT_COMPOSER_TEXT_KEY)
     } catch (e) {
       console.error('Failed to clear draft composer text:', e)
     }
@@ -267,7 +315,7 @@ export const useChatStore = defineStore('chat', () => {
 
   function loadDraftComposerText(): string {
     try {
-      return localStorage.getItem(DRAFT_COMPOSER_TEXT_KEY) || ''
+      return getStorageItem(DRAFT_COMPOSER_TEXT_KEY) || ''
     } catch (e) {
       console.error('Failed to load draft composer text:', e)
       return ''
@@ -335,7 +383,7 @@ export const useChatStore = defineStore('chat', () => {
   }
 
   function loadStoredSession(sessionId: string): StoredChatSession | null {
-    const sessionsData = localStorage.getItem(SESSIONS_DATA_KEY) || localStorage.getItem(LEGACY_SESSIONS_DATA_KEY)
+    const sessionsData = getStorageItem(SESSIONS_DATA_KEY, LEGACY_SESSIONS_DATA_KEY)
     if (!sessionsData) return null
     const data = parseSessionsData(sessionsData)
     return data.sessions[sessionId] || null
@@ -364,7 +412,7 @@ export const useChatStore = defineStore('chat', () => {
   }
 
   function writeSessionsData(data: StoredChatSessions) {
-    localStorage.setItem(SESSIONS_DATA_KEY, JSON.stringify(data))
+    setStorageItem(SESSIONS_DATA_KEY, JSON.stringify(data))
   }
 
   // 从localStorage加载会话历史
@@ -373,18 +421,18 @@ export const useChatStore = defineStore('chat', () => {
       const restoreLastActive = options.restoreLastActive ?? true
       const restoreDraft = options.restoreDraft ?? true
       let loadedSession = false
-      const stored = localStorage.getItem(STORAGE_KEY) || localStorage.getItem(LEGACY_STORAGE_KEY)
+      const stored = getStorageItem(STORAGE_KEY, LEGACY_STORAGE_KEY)
       if (stored) {
         conversations.value = JSON.parse(stored)
-        localStorage.setItem(STORAGE_KEY, stored)
+        setStorageItem(STORAGE_KEY, stored)
         dedupeConversationsById()
       }
       
       // 加载所有会话的数据
-      const sessionsData = localStorage.getItem(SESSIONS_DATA_KEY) || localStorage.getItem(LEGACY_SESSIONS_DATA_KEY)
+      const sessionsData = getStorageItem(SESSIONS_DATA_KEY, LEGACY_SESSIONS_DATA_KEY)
       if (sessionsData) {
         const data = parseSessionsData(sessionsData)
-        localStorage.setItem(SESSIONS_DATA_KEY, sessionsData)
+        setStorageItem(SESSIONS_DATA_KEY, sessionsData)
         // 找到最近活跃的会话并加载
         const lastActiveSessionId = data.lastActiveSessionId
         if (restoreLastActive && lastActiveSessionId && data.sessions && data.sessions[lastActiveSessionId]) {
@@ -413,7 +461,7 @@ export const useChatStore = defineStore('chat', () => {
   // 保存会话历史到localStorage
   function saveConversationsToStorage() {
     try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(conversations.value))
+      setStorageItem(STORAGE_KEY, JSON.stringify(conversations.value))
     } catch (e) {
       console.error('Failed to save conversations to storage:', e)
     }
@@ -430,7 +478,7 @@ export const useChatStore = defineStore('chat', () => {
         sessions: {}
       }
       
-      const existing = localStorage.getItem(SESSIONS_DATA_KEY)
+      const existing = getStorageItem(SESSIONS_DATA_KEY)
       if (existing) {
         data = parseSessionsData(existing)
       }
@@ -446,7 +494,7 @@ export const useChatStore = defineStore('chat', () => {
       // 设置为最近活跃
       data.lastActiveSessionId = currentSessionId.value
       
-      localStorage.setItem(SESSIONS_DATA_KEY, JSON.stringify(data))
+      setStorageItem(SESSIONS_DATA_KEY, JSON.stringify(data))
       console.log('Saved session:', currentSessionId.value, 'with', messages.value.length, 'messages')
     } catch (e) {
       console.error('Failed to save current session:', e)
@@ -875,7 +923,7 @@ export const useChatStore = defineStore('chat', () => {
       currentSessionId.value = backendConversationId
 
       try {
-        const sessionsData = localStorage.getItem(SESSIONS_DATA_KEY)
+        const sessionsData = getStorageItem(SESSIONS_DATA_KEY)
         const sessionStore = parseSessionsData(sessionsData)
         const oldSession = sessionStore.sessions[oldSessionId]
         const existingSession = sessionStore.sessions[backendConversationId]
@@ -1501,7 +1549,7 @@ export const useChatStore = defineStore('chat', () => {
       return messages.value
     }
     try {
-      const sessionsData = localStorage.getItem(SESSIONS_DATA_KEY) || localStorage.getItem(LEGACY_SESSIONS_DATA_KEY)
+      const sessionsData = getStorageItem(SESSIONS_DATA_KEY, LEGACY_SESSIONS_DATA_KEY)
       if (!sessionsData) return []
       const data = JSON.parse(sessionsData)
       const sessionMessages = data.sessions?.[conversationId]?.messages
@@ -1647,6 +1695,7 @@ export const useChatStore = defineStore('chat', () => {
     draftComposerText,
     conversations,
     currentSessionId,
+    setStorageUserId,
     addUserMessage,
     addAssistantMessage,
     updateLastMessage,

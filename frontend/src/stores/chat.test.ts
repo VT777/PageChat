@@ -481,6 +481,44 @@ describe('chat rollback', () => {
     expect(restored.messages.map((item) => item.content)).toEqual(['question', 'answer'])
   })
 
+  it('keeps persisted chat sessions isolated by storage user id', () => {
+    const userA = useChatStore()
+    userA.setStorageUserId('user-a')
+    userA.conversations.push({
+      id: 'session-a',
+      title: 'User A chat',
+      firstMessage: 'A question',
+      timestamp: 1,
+      messageCount: 1,
+    })
+    userA.currentSessionId = 'session-a'
+    userA.messages.push(message('u-a', 'user', 'A question'))
+    userA.setDocumentContexts([{ id: 'doc-a', label: 'A.pdf' }])
+    userA.setDraftComposerText('draft from user a')
+    userA.saveCurrentSession()
+    userA.saveConversationsToStorage()
+
+    setActivePinia(createPinia())
+    const userB = useChatStore()
+    userB.setStorageUserId('user-b')
+    userB.loadConversationsFromStorage()
+
+    expect(userB.conversations).toEqual([])
+    expect(userB.messages).toEqual([])
+    expect(userB.documentContexts).toEqual([])
+    expect(userB.draftComposerText).toBe('')
+
+    setActivePinia(createPinia())
+    const restoredA = useChatStore()
+    restoredA.setStorageUserId('user-a')
+    restoredA.loadConversationsFromStorage()
+
+    expect(restoredA.currentSessionId).toBe('session-a')
+    expect(restoredA.messages.map((item) => item.content)).toEqual(['A question'])
+    expect(restoredA.documentContexts).toEqual([{ id: 'doc-a', label: 'A.pdf' }])
+    expect(restoredA.draftComposerText).toBe('')
+  })
+
   it('persists the assistant placeholder when run_started migrates a draft session', () => {
     const store = useChatStore()
     store.currentSessionId = 'session-temp'

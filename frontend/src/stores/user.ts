@@ -1,5 +1,6 @@
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
+import { useChatStore } from './chat'
 
 interface User {
   id: string
@@ -49,6 +50,11 @@ export const useUserStore = defineStore('user', () => {
 
   function setUser(userData: User | null) {
     user.value = userData
+    try {
+      useChatStore().setStorageUserId(userData?.id || null)
+    } catch (error) {
+      console.error('Failed to switch chat storage user:', error)
+    }
   }
 
   async function fetchUserInfo() {
@@ -63,7 +69,7 @@ export const useUserStore = defineStore('user', () => {
       
       if (response.ok) {
         const data = await response.json()
-        user.value = data
+        setUser(data)
       } else {
         // Token无效，清除登录状态
         logout()
@@ -94,7 +100,7 @@ export const useUserStore = defineStore('user', () => {
       }
 
       setToken(data.token)
-      user.value = { id: data.user.id, username: data.user.username }
+      setUser({ id: data.user.id, username: data.user.username })
       return true
     } catch (error) {
       throw error
@@ -125,7 +131,7 @@ export const useUserStore = defineStore('user', () => {
       }
 
       setToken(data.token)
-      user.value = { id: data.user.id, username: data.user.username }
+      setUser({ id: data.user.id, username: data.user.username })
       return true
     } catch (error) {
       throw error
@@ -136,7 +142,7 @@ export const useUserStore = defineStore('user', () => {
 
   function logout() {
     setToken(null)
-    user.value = null
+    setUser(null)
   }
 
   // Initialize on store creation
