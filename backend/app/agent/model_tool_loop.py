@@ -132,6 +132,15 @@ class ModelToolLoopRuntime:
         validation = self.boundary_policy.validate_tool_call(call, scope=state.scope)
         repaired = validation.repaired_call
         yield RuntimeStreamEvent(
+            "processing_delta",
+            {
+                "content": _processing_note_for_tool(repaired.name, state.question),
+                "tool_call_id": repaired.id,
+                "tool_name": repaired.name,
+                "status": "streaming",
+            },
+        )
+        yield RuntimeStreamEvent(
             "tool_started",
             {
                 "tool_call_id": repaired.id,
@@ -223,3 +232,29 @@ _DEFAULT_SYSTEM_PROMPT = (
     "or raw markers such as [cite: ...]. For web evidence, cite with normal "
     "markdown links. Keep progress notes concise. Do not expose internal mechanics."
 )
+
+
+def _processing_note_for_tool(tool_name: str, question: str) -> str:
+    zh = _looks_chinese(question)
+    notes = {
+        "view_folder_structure": ("正在查看文件夹结构。", "Checking the folder structure."),
+        "browse_documents": ("正在查看文档库。", "Checking the document library."),
+        "get_document_structure": ("正在查看文档结构。", "Checking the document structure."),
+        "search_within_document": ("正在文档内搜索相关内容。", "Searching within the document."),
+        "get_page_content": ("正在读取相关页面。", "Reading the relevant page."),
+        "get_page_image": ("正在获取页面图像。", "Getting the page image."),
+        "get_document_image": ("正在获取文档图像。", "Getting the document image."),
+        "web_search": ("正在搜索网页。", "Searching the web."),
+    }
+    zh_note, en_note = notes.get(
+        tool_name,
+        ("正在使用工具核对信息。", "Checking information with a tool."),
+    )
+    return zh_note if zh else en_note
+
+
+def _looks_chinese(text: str) -> bool:
+    if not text:
+        return False
+    cjk = sum(1 for char in text if "\u4e00" <= char <= "\u9fff")
+    return cjk > 0 and cjk / max(len(text), 1) >= 0.15

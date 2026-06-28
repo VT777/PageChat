@@ -167,6 +167,32 @@ def test_flat_loop_executes_tool_and_returns_final_answer():
     asyncio.run(run())
 
 
+def test_flat_loop_emits_concise_processing_note_before_tool_start():
+    async def run() -> None:
+        runtime = ModelToolLoopRuntime(
+            model=ToolThenAnswerModel(),
+            tool_runner=RecordingToolRunner(),
+            tools=[{"function": {"name": "browse_documents"}}],
+        )
+
+        events = [event async for event in runtime.stream(_state("现在有哪些文件夹？"))]
+
+        event_types = [event.type for event in events]
+        assert event_types.index("processing_delta") < event_types.index("tool_started")
+        processing = [event for event in events if event.type == "processing_delta"]
+        assert [event.payload for event in processing] == [
+            {
+                "content": "正在查看文档库。",
+                "tool_call_id": "call_1",
+                "tool_name": "browse_documents",
+                "status": "streaming",
+            }
+        ]
+        assert "There are three documents." not in processing[0].payload["content"]
+
+    asyncio.run(run())
+
+
 def test_flat_loop_greeting_returns_answer_without_tool_call():
     async def run() -> None:
         runner = RecordingToolRunner()
