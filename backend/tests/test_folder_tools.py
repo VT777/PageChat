@@ -129,7 +129,7 @@ def test_folder_tool_descriptions_are_readable() -> None:
     tree = _tool_schema("view_folder_structure")
     contents = _tool_schema("browse_documents")
 
-    assert "folder structure" in tree["description"]
+    assert "folder tree" in tree["description"]
     assert "Browse or search documents" in contents["description"]
     assert "鑾" not in tree["description"]
     assert "鑾" not in contents["description"]
@@ -184,10 +184,8 @@ def test_browse_documents_returns_compact_documents_and_pagination(
             }
         ]
         assert result["folders"][0]["id"] == "folder-child"
-        assert result["next_steps"]["options"] == [
-            "Use get_document_structure() before reading pages",
-            "If results do not match the user's intent, retry with recursive=true or a refined query",
-        ]
+        assert result["next_steps"].startswith("Showing 1 folder(s) and 1 document(s).")
+        assert "retry with recursive=true or a refined query" in result["next_steps"]
 
     asyncio.run(run())
 

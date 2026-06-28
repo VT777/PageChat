@@ -271,6 +271,14 @@ def compact_tool_result(result: Any, tool_name: str | None = None) -> dict[str, 
         "items": [item for item in items if item],
         "citations": citations,
     }
+    if tool_name == "browse_documents":
+        folders = _compact_folder_list(result.get("folders"))
+        if folders:
+            compact["folders"] = folders
+    if tool_name == "view_folder_structure" and isinstance(result.get("tree"), dict):
+        tree = _compact_folder_tree(result["tree"])
+        if tree:
+            compact["tree"] = tree
     if success is not None:
         compact["success"] = bool(success)
     if error:
@@ -494,7 +502,7 @@ def _compact_evidence_item(item: Any) -> dict[str, Any]:
 
     compact: dict[str, Any] = {}
     key_map = {
-        "document_id": ("document_id", "doc_id"),
+        "document_id": ("document_id", "doc_id", "id"),
         "document_name": ("document_name", "doc_name", "name", "title"),
         "display_label": ("display_label", "source_label"),
         "source_anchor": ("source_anchor",),
@@ -514,6 +522,62 @@ def _compact_evidence_item(item: Any) -> dict[str, Any]:
         value = _first_item_value(item, source_keys)
         if value not in (None, ""):
             compact[target] = _truncate(value) if isinstance(value, str) else value
+    return compact
+
+
+def _compact_folder_list(value: Any, *, limit: int = 8) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        return []
+    folders: list[dict[str, Any]] = []
+    for item in value[:limit]:
+        folder = _compact_folder_item(item)
+        if folder:
+            folders.append(folder)
+    return folders
+
+
+def _compact_folder_item(item: Any) -> dict[str, Any]:
+    if not isinstance(item, dict):
+        return {}
+    compact: dict[str, Any] = {}
+    key_map = {
+        "id": ("id", "folder_id"),
+        "name": ("name", "folder_name", "title"),
+        "path": ("path", "folder_path"),
+        "child_count": ("child_count", "children_count", "folder_count"),
+        "document_count": ("document_count", "documents_count", "doc_count"),
+    }
+    for target, source_keys in key_map.items():
+        value = _first_item_value(item, source_keys)
+        if value not in (None, ""):
+            compact[target] = _truncate(value) if isinstance(value, str) else value
+    return compact
+
+
+def _compact_folder_tree(
+    node: Any,
+    *,
+    depth: int = 0,
+    max_depth: int = 6,
+    child_limit: int = 8,
+) -> dict[str, Any]:
+    compact = _compact_folder_item(node)
+    if not compact or not isinstance(node, dict):
+        return compact
+    children = node.get("children")
+    if isinstance(children, list) and depth < max_depth:
+        compact_children = [
+            child
+            for item in children[:child_limit]
+            if (child := _compact_folder_tree(
+                item,
+                depth=depth + 1,
+                max_depth=max_depth,
+                child_limit=child_limit,
+            ))
+        ]
+        if compact_children:
+            compact["children"] = compact_children
     return compact
 
 

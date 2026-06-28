@@ -146,3 +146,38 @@ def test_view_folder_structure_has_display_metadata():
 
     assert result["result_count"] == 2
     assert result["result_label"] == "2 folders"
+
+
+def test_folder_tool_message_keeps_names_but_strips_local_paths():
+    call = ModelToolCall(
+        id="call_folders",
+        name="view_folder_structure",
+        arguments={},
+    )
+    result = {
+        "success": True,
+        "tree": {
+            "id": "root",
+            "name": "root",
+            "path": "root",
+            "path_on_disk": "C:/secret/root",
+            "children": [
+                {
+                    "id": "folder-sales",
+                    "name": "Sales",
+                    "path": "root/Sales",
+                    "path_on_disk": "C:/secret/root/Sales",
+                    "children": [],
+                }
+            ],
+        },
+        "total_folders": 2,
+    }
+
+    message, ui_result = build_tool_result_message(call, result)
+    content = json.loads(message["content"])
+
+    assert content["tree"]["children"][0]["name"] == "Sales"
+    assert "C:/secret" not in message["content"]
+    assert "path_on_disk" not in message["content"]
+    assert ui_result["result_label"] == "2 folders"

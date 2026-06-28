@@ -222,6 +222,74 @@ def test_compact_tool_result_adds_display_counts_for_tool_timeline() -> None:
     assert search["result_count"] == 3
 
 
+def test_compact_tool_result_preserves_folder_names_for_browse_documents() -> None:
+    result = compact_tool_result(
+        {
+            "success": True,
+            "folders": [
+                {
+                    "id": "folder-sales",
+                    "name": "Sales",
+                    "path": "root/Sales",
+                    "child_count": 2,
+                    "document_count": 7,
+                    "path_on_disk": "C:/secret/Sales",
+                }
+            ],
+            "documents": [
+                {"id": "doc-a", "name": "sales_orders.xlsx", "folder_id": "folder-sales"}
+            ],
+        },
+        tool_name="browse_documents",
+    )
+
+    assert result["folders"] == [
+        {
+            "id": "folder-sales",
+            "name": "Sales",
+            "path": "root/Sales",
+            "child_count": 2,
+            "document_count": 7,
+        }
+    ]
+    assert result["items"][0]["document_id"] == "doc-a"
+    assert "path_on_disk" not in json.dumps(result, ensure_ascii=False)
+
+
+def test_compact_tool_result_preserves_folder_tree_names() -> None:
+    result = compact_tool_result(
+        {
+            "success": True,
+            "tree": {
+                "id": "root",
+                "name": "root",
+                "path": "root",
+                "children": [
+                    {
+                        "id": "folder-sales",
+                        "name": "Sales",
+                        "path": "root/Sales",
+                        "children": [
+                            {
+                                "id": "folder-q1",
+                                "name": "Q1",
+                                "path": "root/Sales/Q1",
+                                "children": [],
+                            }
+                        ],
+                    }
+                ],
+            },
+            "total_folders": 3,
+        },
+        tool_name="view_folder_structure",
+    )
+
+    assert result["tree"]["name"] == "root"
+    assert result["tree"]["children"][0]["name"] == "Sales"
+    assert result["tree"]["children"][0]["children"][0]["name"] == "Q1"
+
+
 class FakeDocumentService:
     async def get_indexed_documents(self, user_id=None):
         return [SimpleNamespace(id="doc-alpha")]
