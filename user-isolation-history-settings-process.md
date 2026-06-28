@@ -10,3 +10,5 @@ Plan: `docs/superpowers/plans/2026-06-28-pagechat-user-isolation-history-setting
 - 2026-06-28 Phase 2 end: Added backend conversation hydration, backend-first message loading for durable conversation ids, and inaccessible-cache cleanup. Verification passed: `npm.cmd test -- src/stores/user.test.ts src/stores/chat.test.ts` (43 tests).
 - 2026-06-28 Phase 3 start: Add backend defense-in-depth for message listing/export so repository calls can be scoped by conversation owner.
 - 2026-06-28 Phase 3 end: Added `list_messages_for_user` and wired chat messages/export endpoints through it. Verification passed: `python -m pytest backend/tests/test_chat_run_repository.py backend/tests/test_chat_history_persistence.py -q` (10 tests; existing deprecation warnings only).
+- 2026-06-28 Phase 4 start: Remove fake/default model choices from settings and show only configured provider models.
+- 2026-06-28 Phase 4 end: Removed hard-coded model defaults/fallback options and added empty select states for unconfigured routes. Verification passed: `npm.cmd test -- src/components/settings/SettingsModal.contract.test.ts`; `npm.cmd run build`.

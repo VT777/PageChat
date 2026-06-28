@@ -55,6 +55,15 @@ describe('SettingsModal model provider contract', () => {
     expect(source).toContain('settingsApi.saveModelRoutes')
   })
 
+  it('does not expose hard-coded example models as selectable route options', () => {
+    const source = readFileSync(new URL('./SettingsModal.vue', import.meta.url), 'utf-8')
+
+    expect(source).not.toContain("model: 'OpenAI Compatible: gpt-4.1'")
+    expect(source).not.toContain("fallbackModelOptions(['OpenAI Compatible: gpt-4.1'")
+    expect(source).not.toContain("fallbackModelOptions(['OpenAI Compatible: gpt-4o'")
+    expect(source).not.toContain('function fallbackModelOptions')
+  })
+
   it('renders QA thinking controls and persists them through settings API', () => {
     const source = readFileSync(new URL('./SettingsModal.vue', import.meta.url), 'utf-8')
 

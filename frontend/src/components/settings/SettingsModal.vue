@@ -22,7 +22,6 @@ import { settingsApi } from '@/api'
 import { useUserStore } from '@/stores/user'
 import type { ModelProviderConfig, ModelProviderModel, ModelProviderPreset, ModelRouteMapping } from '@/types/modelSettings'
 import {
-  buildAvailableModelOptions,
   buildOcrModelOptions,
   buildParsingModelOptions,
   buildQaModelOptions,
@@ -101,19 +100,19 @@ const providerForm = ref({
 })
 
 const ocrSettings = ref({
-  model: 'OpenAI Compatible: gpt-4.1',
+  model: '',
   concurrency: 3,
   vlmPrompt: '请只根据页面图像识别版面结构、表格和图片语义，不要编造不可见内容。',
 })
 
 const parsingSettings = ref({
-  model: 'OpenAI Compatible: gpt-4.1',
+  model: '',
   mode: 'smart',
   batchParseConcurrency: PARSING_BATCH_CONCURRENCY_SETTING.defaultValue,
 })
 
 const qaSettings = ref({
-  model: 'OpenAI Compatible: gpt-4.1',
+  model: '',
   thinkingMode: 'off' as QaThinkingMode,
 })
 
@@ -157,18 +156,10 @@ const filteredProviderRows = computed(() =>
   filterModelProviderRows(providerRows.value, providerSearchQuery.value),
 )
 
-const availableModels = computed(() => {
-  const base = providers.value.length > 0
-    ? buildAvailableModelOptions(providers.value, providerModels.value, providerLabel)
-    : fallbackModelOptions(['OpenAI Compatible: gpt-4.1', 'OpenAI Compatible: gpt-4.1-mini', 'Local: qwen2.5-vl'])
-  return uniqueModelOptions(base)
-})
-
 const ocrModelOptions = computed(() =>
   ensureModelOptions(
     buildOcrModelOptions(providers.value, providerModels.value, providerLabel),
     ocrSettings.value.model,
-    fallbackModelOptions(['OpenAI Compatible: gpt-4o', 'Alibaba Cloud Bailian / Tongyi: qwen-vl-ocr-2025']),
   ),
 )
 
@@ -176,7 +167,6 @@ const parsingModelOptions = computed(() =>
   ensureModelOptions(
     buildParsingModelOptions(providers.value, providerModels.value, providerLabel),
     parsingSettings.value.model,
-    availableModels.value,
   ),
 )
 
@@ -184,7 +174,6 @@ const qaModelOptions = computed(() =>
   ensureModelOptions(
     buildQaModelOptions(providers.value, providerModels.value, providerLabel),
     qaSettings.value.model,
-    availableModels.value,
   ),
 )
 
@@ -254,18 +243,12 @@ function defaultProviders(): ModelProviderPreset[] {
 function ensureModelOptions(
   options: ModelSelectOption[],
   selected: string,
-  fallback: ModelSelectOption[],
 ): ModelSelectOption[] {
-  const base = options.length > 0 ? options : fallback
-  const unique = uniqueModelOptions(base.filter((option) => Boolean(option.value)))
+  const unique = uniqueModelOptions(options.filter((option) => Boolean(option.value)))
   if (selected && !unique.some((option) => option.value === selected)) {
     return [modelOptionForSelectedValue(selected), ...unique]
   }
   return unique
-}
-
-function fallbackModelOptions(labels: string[]): ModelSelectOption[] {
-  return labels.map(legacyModelSelectOption)
 }
 
 function uniqueModelOptions(options: ModelSelectOption[]): ModelSelectOption[] {
@@ -892,6 +875,9 @@ onMounted(async () => {
             <label>
               OCR 模型
               <select v-model="ocrSettings.model">
+                <option v-if="ocrModelOptions.length === 0" value="" disabled>
+                  请先配置支持 OCR/VLM 的模型
+                </option>
                 <option v-for="model in ocrModelOptions" :key="model.value" :value="model.value">
                   {{ model.label }}
                 </option>
@@ -930,6 +916,9 @@ onMounted(async () => {
             <label class="wide">
               解析模型
               <select v-model="parsingSettings.model">
+                <option v-if="parsingModelOptions.length === 0" value="" disabled>
+                  请先配置模型供应商
+                </option>
                 <option v-for="model in parsingModelOptions" :key="model.value" :value="model.value">
                   {{ model.label }}
                 </option>
@@ -982,6 +971,9 @@ onMounted(async () => {
             <label class="wide">
               问答模型
               <select v-model="qaSettings.model">
+                <option v-if="qaModelOptions.length === 0" value="" disabled>
+                  请先配置模型供应商
+                </option>
                 <option v-for="model in qaModelOptions" :key="model.value" :value="model.value">
                   {{ model.label }}
                 </option>
