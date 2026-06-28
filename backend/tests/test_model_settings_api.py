@@ -11,6 +11,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from app.api import settings
 from app.models.migrations import run_migrations
 from app.services import model_settings_service
+from app.services.runtime_settings_service import RuntimeSettingsService
 
 
 async def _create_bootstrap_schema(db: aiosqlite.Connection) -> None:
@@ -545,6 +546,23 @@ def test_user_cannot_read_another_users_settings(tmp_path: Path) -> None:
     user_b = _client(tmp_path, user_id="user-b")
 
     assert user_b.get("/api/settings/model-providers").json() == []
+
+
+def test_qa_settings_are_user_scoped(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(
+        settings,
+        "runtime_settings_service",
+        RuntimeSettingsService(tmp_path / "runtime-settings.json"),
+    )
+    user_a = _client(tmp_path, user_id="user-a")
+    user_b = _client(tmp_path, user_id="user-b")
+
+    saved = user_a.put("/api/settings/qa", json={"qa_thinking_mode": "on"})
+
+    assert saved.status_code == 200
+    assert saved.json()["qa_thinking_mode"] == "on"
+    assert user_a.get("/api/settings/qa").json()["qa_thinking_mode"] == "on"
+    assert user_b.get("/api/settings/qa").json()["qa_thinking_mode"] == "off"
 
 
 def test_production_rejects_insecure_key_storage(monkeypatch, tmp_path: Path) -> None:

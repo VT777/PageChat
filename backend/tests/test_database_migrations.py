@@ -112,6 +112,7 @@ def test_migrations_create_history_and_are_idempotent() -> None:
                 "20260626_008_add_agent_runs_events_citations",
                 "20260626_009_add_model_route_capabilities",
                 "20260627_010_add_conversation_evidence",
+                "20260628_011_add_user_runtime_settings",
             ]
             evidence_columns = await _column_names(db, "conversation_evidence")
             assert {
@@ -122,6 +123,13 @@ def test_migrations_create_history_and_are_idempotent() -> None:
                 "scope_key",
                 "payload_json",
             }.issubset(evidence_columns)
+            runtime_columns = await _column_names(db, "user_runtime_settings")
+            assert {
+                "user_id",
+                "qa_thinking_mode",
+                "created_at",
+                "updated_at",
+            }.issubset(runtime_columns)
 
     asyncio.run(run())
 

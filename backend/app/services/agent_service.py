@@ -23,6 +23,7 @@ from app.services.web_search_settings_service import (
     WebSearchSettingsService,
 )
 from app.services.runtime_settings_service import runtime_settings_service
+from app.services.user_runtime_settings_service import UserRuntimeSettingsService
 from app.services.web_search_tool import WEB_SEARCH_TOOL, execute_web_search_tool
 from app.services.conversation_evidence_repository import ConversationEvidenceRepository
 from app.services.retrieval_planner import RetrievalPlanner
@@ -130,6 +131,22 @@ class AgentService:
         settings = runtime_settings_service.get_settings()
         return str(settings.get("qa_thinking_mode") or "off").strip().lower() == "off"
 
+    async def _qa_disable_thinking_for_user(self, user_id: str | None) -> bool:
+        if self.db is not None and user_id:
+            try:
+                settings = await UserRuntimeSettingsService(self.db).get_settings(user_id)
+                return (
+                    str(settings.get("qa_thinking_mode") or "off").strip().lower()
+                    == "off"
+                )
+            except Exception as exc:
+                agent_logger.warning(
+                    "Failed to load user runtime settings for %s: %s",
+                    user_id,
+                    exc,
+                )
+        return self._qa_disable_thinking()
+
     def build_explicit_agent_graph(
         self,
         *,
@@ -163,6 +180,7 @@ class AgentService:
         answer_generator: Any | None = None,
         user_id: str | None = None,
         max_steps: int = 8,
+        disable_thinking: bool | None = None,
     ):
         from app.agent.loop_runtime import AgentLoopRuntime
         from app.agent.planner import StructuredLLMPlanner
@@ -182,7 +200,11 @@ class AgentService:
 
             return ModelToolLoopRuntime(
                 model=ToolCallingModelAdapter(
-                    disable_thinking=self._qa_disable_thinking()
+                    disable_thinking=(
+                        self._qa_disable_thinking()
+                        if disable_thinking is None
+                        else disable_thinking
+                    )
                 ),
                 tool_runner=AgentLoopToolRunner(
                     tool_executor=tool_executor,
@@ -364,7 +386,12 @@ class AgentService:
             messages=messages,
             stream=True,
             user_id=state.scope.get("user_id"),
-            disable_thinking=self._qa_disable_thinking(),
+            disable_thinking=bool(
+                state.scope.get(
+                    "disable_thinking",
+                    self._qa_disable_thinking(),
+                )
+            ),
         )
         async for chunk in response:
             if not getattr(chunk, "choices", None):
@@ -691,6 +718,7 @@ class AgentService:
 
         # 检测用户语言，注入 prompt
         user_lang = detect_language(question)
+        disable_thinking = await self._qa_disable_thinking_for_user(user_id)
         web_search_settings = await self._web_search_settings_for_request(
             user_id=user_id,
             requested=bool(web_search_requested or web_search_enabled),
@@ -710,6 +738,7 @@ class AgentService:
                 request_attachments=request_attachments,
                 history_messages=history_messages,
                 user_id=user_id,
+                disable_thinking=disable_thinking,
             ):
                 yield event
             return
@@ -724,6 +753,7 @@ class AgentService:
             "web_search_requested": bool(web_search_requested),
             "web_search_enabled": bool(web_search_active),
             "suppress_user_library_fallback": bool(suppress_user_library_fallback),
+            "disable_thinking": bool(disable_thinking),
             "available_document_ids": sorted(available_doc_ids),
             "document_registry": self._build_document_registry(
                 docs,
@@ -755,6 +785,7 @@ class AgentService:
             answer_generator=self._stream_graph_answer,
             user_id=user_id,
             max_steps=max_steps,
+            disable_thinking=disable_thinking,
         )
         state = AgentRunState(
             question=question,
@@ -1015,6 +1046,7 @@ class AgentService:
         conversation_id: Optional[str] = None,
         history_messages: Optional[List[Dict[str, Any]]] = None,
         user_id: str = None,
+        disable_thinking: bool | None = None,
     ) -> AsyncGenerator[str, None]:
         """
         简单聊天模式 - 当没有文档时使用
@@ -1047,7 +1079,11 @@ class AgentService:
                 stream=True,
                 user_id=user_id,
                 temperature=0.7,
-                disable_thinking=self._qa_disable_thinking(),
+                disable_thinking=(
+                    self._qa_disable_thinking()
+                    if disable_thinking is None
+                    else disable_thinking
+                ),
             )
 
             print(f"[SimpleChat] Got response from LLM, streaming...")
@@ -1091,6 +1127,7 @@ class AgentService:
         request_attachments: Optional[List[Dict[str, Any]]] = None,
         history_messages: Optional[List[Dict[str, Any]]] = None,
         user_id: str = None,
+        disable_thinking: bool | None = None,
     ) -> AsyncGenerator[str, None]:
         from app.prompts import CHAT_SYSTEM_PROMPT
 
@@ -1107,7 +1144,11 @@ class AgentService:
             stream=True,
             user_id=user_id,
             temperature=0.7,
-            disable_thinking=self._qa_disable_thinking(),
+            disable_thinking=(
+                self._qa_disable_thinking()
+                if disable_thinking is None
+                else disable_thinking
+            ),
         )
         full_content = ""
         async for chunk in response:

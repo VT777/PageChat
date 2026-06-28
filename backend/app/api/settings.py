@@ -14,6 +14,7 @@ from app.services.ocr_engines.openai_compatible_adapter import OpenAICompatibleO
 from app.services.ocr_engines.paddleocr_job_adapter import PaddleOCRJobAdapter
 from app.services.ocr_settings_service import OCRSettingsService
 from app.services.runtime_settings_service import runtime_settings_service
+from app.services.user_runtime_settings_service import UserRuntimeSettingsService
 from app.services.web_search_settings_service import WebSearchSettingsService
 
 router = APIRouter(prefix="/api/settings", tags=["settings"])
@@ -114,6 +115,12 @@ def _web_search_settings_service(db: aiosqlite.Connection) -> WebSearchSettingsS
     return WebSearchSettingsService(db)
 
 
+def _user_runtime_settings_service(
+    db: aiosqlite.Connection,
+) -> UserRuntimeSettingsService:
+    return UserRuntimeSettingsService(db)
+
+
 @router.get("/pageindex")
 async def get_pageindex_settings(_current_user: dict = Depends(require_auth)):
     return runtime_settings_service.get_settings()
@@ -131,19 +138,24 @@ async def update_pageindex_settings(
 
 
 @router.get("/qa")
-async def get_qa_settings(_current_user: dict = Depends(require_auth)):
-    settings = runtime_settings_service.get_settings()
+async def get_qa_settings(
+    db: aiosqlite.Connection = Depends(get_db),
+    current_user: dict = Depends(require_auth),
+):
+    settings = await _user_runtime_settings_service(db).get_settings(current_user["id"])
     return {"qa_thinking_mode": settings["qa_thinking_mode"]}
 
 
 @router.put("/qa")
 async def update_qa_settings(
     payload: QASettingsUpdate,
-    _current_user: dict = Depends(require_auth),
+    db: aiosqlite.Connection = Depends(get_db),
+    current_user: dict = Depends(require_auth),
 ):
     try:
-        settings = runtime_settings_service.update_qa_thinking_mode(
-            payload.qa_thinking_mode
+        settings = await _user_runtime_settings_service(db).update_qa_thinking_mode(
+            current_user["id"],
+            payload.qa_thinking_mode,
         )
         return {"qa_thinking_mode": settings["qa_thinking_mode"]}
     except ValueError as e:

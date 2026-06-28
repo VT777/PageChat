@@ -371,6 +371,19 @@ async def _add_conversation_evidence_table(db: aiosqlite.Connection) -> None:
     )
 
 
+async def _add_user_runtime_settings_table(db: aiosqlite.Connection) -> None:
+    await db.execute(
+        """
+        CREATE TABLE IF NOT EXISTS user_runtime_settings (
+            user_id TEXT PRIMARY KEY,
+            qa_thinking_mode TEXT NOT NULL DEFAULT 'off',
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+        """
+    )
+
+
 MIGRATIONS: tuple[Migration, ...] = (
     ("20260610_001_add_documents_last_reindex_at", _add_documents_last_reindex_at),
     ("20260610_002_add_core_indexes", _add_core_indexes),
@@ -385,6 +398,7 @@ MIGRATIONS: tuple[Migration, ...] = (
     ("20260626_008_add_agent_runs_events_citations", _add_agent_run_storage),
     ("20260626_009_add_model_route_capabilities", _add_model_route_capabilities),
     ("20260627_010_add_conversation_evidence", _add_conversation_evidence_table),
+    ("20260628_011_add_user_runtime_settings", _add_user_runtime_settings_table),
 )
 
 
