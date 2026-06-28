@@ -11,9 +11,9 @@ This file is the compact handoff log for model routing, LiteLLM provider normali
 
 ## Current Status
 
-- Phase: 3 - Settings provider identity
+- Phase: 4 - Disable silent environment fallback
 - Status: Complete
-- Notes: Structured model select values now preserve provider identity; Phase 4 fallback cleanup next.
+- Notes: Missing user routes now fail by default; env fallback requires `ALLOW_ENV_MODEL_FALLBACK=true`.
 
 ## Phase Log
 
@@ -58,3 +58,14 @@ End:
 - RED: duplicate-provider-label test failed because model options were strings.
 - GREEN: model selects now store `provider_id::model_id` and render human labels.
 - Verification: targeted settings tests -> 14 passed; frontend `npm test` -> 132 passed.
+
+### Phase 4 - Disable Silent Environment Model Fallback
+
+Start:
+- Goal: missing user model routes fail by default instead of silently using env credentials.
+- RED target: `backend/tests/test_model_settings_service.py`.
+
+End:
+- RED: missing `ModelRouteNotConfiguredError` and fallback gate caused target tests to fail.
+- GREEN: added explicit route-missing exception and `ALLOW_ENV_MODEL_FALLBACK` gate.
+- Verification: `test_model_settings_service.py test_llm_timeout_defaults.py` -> 19 passed.

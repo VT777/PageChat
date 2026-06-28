@@ -1,9 +1,12 @@
 from pathlib import Path
 import sys
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from app.core import llm
+from app.services.model_settings_service import ModelRouteNotConfiguredError
 
 
 class FakeCompletions:
@@ -227,3 +230,31 @@ def test_resolve_user_route_loads_user_model_settings(monkeypatch):
 
     assert result["model"] == "custom-qa"
     assert result["provider_config"]["supports_responses_api"] is True
+
+
+def test_resolve_user_route_propagates_missing_route(monkeypatch):
+    import asyncio
+    import aiosqlite
+    from app.services import model_settings_service
+
+    class FakeConnection:
+        row_factory = None
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, traceback):
+            return None
+
+    class FakeModelSettingsService:
+        def __init__(self, db):
+            self.db = db
+
+        async def resolve_route(self, user_id, route_slot):
+            raise ModelRouteNotConfiguredError(route_slot)
+
+    monkeypatch.setattr(aiosqlite, "connect", lambda *_args, **_kwargs: FakeConnection())
+    monkeypatch.setattr(model_settings_service, "ModelSettingsService", FakeModelSettingsService)
+
+    with pytest.raises(ModelRouteNotConfiguredError):
+        asyncio.run(llm._resolve_user_route("user-a", "document_qa"))

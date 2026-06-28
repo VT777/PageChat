@@ -15,6 +15,7 @@ from app.core.logging_config import silence_noisy_http_loggers
 from app.services.litellm_adapter import LiteLLMAdapter
 from app.agent.provider_adapter import ProviderCapabilityError, apply_provider_protocol
 from app.services.responses_adapter import response_provider_capabilities
+from app.services.model_settings_service import ModelRouteNotConfiguredError
 
 
 silence_noisy_http_loggers()
@@ -79,6 +80,8 @@ async def _resolve_user_route(user_id: str, route_slot: str) -> dict | None:
                 "provider_config": resolved,
                 "model": resolved["model"],
             }
+    except ModelRouteNotConfiguredError:
+        raise
     except Exception:
         return None
 

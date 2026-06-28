@@ -3,11 +3,16 @@ from pathlib import Path
 import sys
 
 import aiosqlite
+import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from app.models.migrations import run_migrations
-from app.services.model_settings_service import ModelSettingsService, _normalize_provider_models
+from app.services.model_settings_service import (
+    ModelRouteNotConfiguredError,
+    ModelSettingsService,
+    _normalize_provider_models,
+)
 
 
 async def _create_bootstrap_schema(db: aiosqlite.Connection) -> None:
@@ -236,10 +241,36 @@ def test_save_provider_config_cannot_overwrite_another_users_provider_id() -> No
     asyncio.run(run())
 
 
-def test_resolve_route_uses_environment_fallback_without_user_config(monkeypatch) -> None:
+def test_resolve_route_requires_user_config_by_default(monkeypatch) -> None:
     async def run() -> None:
         db, service = await _service()
         try:
+            monkeypatch.setattr(
+                "app.services.model_settings_service.config.ALLOW_ENV_MODEL_FALLBACK",
+                False,
+                raising=False,
+            )
+
+            with pytest.raises(ModelRouteNotConfiguredError) as exc_info:
+                await service.resolve_route("user-a", "general_chat")
+
+            assert exc_info.value.route_slot == "general_chat"
+            assert "general_chat" in str(exc_info.value)
+        finally:
+            await db.close()
+
+    asyncio.run(run())
+
+
+def test_resolve_route_uses_environment_fallback_only_when_enabled(monkeypatch) -> None:
+    async def run() -> None:
+        db, service = await _service()
+        try:
+            monkeypatch.setattr(
+                "app.services.model_settings_service.config.ALLOW_ENV_MODEL_FALLBACK",
+                True,
+                raising=False,
+            )
             monkeypatch.setattr(
                 "app.services.model_settings_service.config.LLM_BASE_URL",
                 "https://env.example/v1",

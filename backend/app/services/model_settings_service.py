@@ -31,6 +31,14 @@ ENV_ROUTE_MODELS = {
     "vision": lambda: config.LLM_PLUS_MODEL,
 }
 
+
+class ModelRouteNotConfiguredError(RuntimeError):
+    def __init__(self, route_slot: str):
+        super().__init__(
+            f"Model route '{route_slot}' is not configured. Configure it in Settings."
+        )
+        self.route_slot = route_slot
+
 def _provider_preset(
     provider: str,
     label: str,
@@ -705,6 +713,9 @@ class ModelSettingsService:
                     supports_reasoning_effort=bool(row["supports_reasoning_effort"]),
                     supports_reasoning_summary=bool(row["supports_reasoning_summary"]),
                 ).as_dict()
+
+        if not config.ALLOW_ENV_MODEL_FALLBACK:
+            raise ModelRouteNotConfiguredError(route_slot)
 
         model = ENV_ROUTE_MODELS[route_slot]()
         env_capabilities = response_provider_capabilities("environment", config.LLM_BASE_URL)
