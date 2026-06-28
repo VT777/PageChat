@@ -27,7 +27,10 @@ import {
   buildParsingModelOptions,
   buildQaModelOptions,
   inferModelCapabilities,
+  legacyModelSelectOption,
   modelCapabilityBadges,
+  modelOptionValue,
+  type ModelSelectOption,
 } from '@/utils/modelProviderModels'
 import { buildModelProviderRows, filterModelProviderRows } from '@/utils/modelProviderRows'
 import {
@@ -157,15 +160,15 @@ const filteredProviderRows = computed(() =>
 const availableModels = computed(() => {
   const base = providers.value.length > 0
     ? buildAvailableModelOptions(providers.value, providerModels.value, providerLabel)
-    : ['OpenAI Compatible: gpt-4.1', 'OpenAI Compatible: gpt-4.1-mini', 'Local: qwen2.5-vl']
-  return Array.from(new Set(base))
+    : fallbackModelOptions(['OpenAI Compatible: gpt-4.1', 'OpenAI Compatible: gpt-4.1-mini', 'Local: qwen2.5-vl'])
+  return uniqueModelOptions(base)
 })
 
 const ocrModelOptions = computed(() =>
   ensureModelOptions(
     buildOcrModelOptions(providers.value, providerModels.value, providerLabel),
     ocrSettings.value.model,
-    ['OpenAI Compatible: gpt-4o', 'Alibaba Cloud Bailian / Tongyi: qwen-vl-ocr-2025'],
+    fallbackModelOptions(['OpenAI Compatible: gpt-4o', 'Alibaba Cloud Bailian / Tongyi: qwen-vl-ocr-2025']),
   ),
 )
 
@@ -248,13 +251,45 @@ function defaultProviders(): ModelProviderPreset[] {
   ]
 }
 
-function ensureModelOptions(options: string[], selected: string, fallback: string[]): string[] {
+function ensureModelOptions(
+  options: ModelSelectOption[],
+  selected: string,
+  fallback: ModelSelectOption[],
+): ModelSelectOption[] {
   const base = options.length > 0 ? options : fallback
-  const unique = Array.from(new Set(base.filter(Boolean)))
-  if (selected && !unique.includes(selected)) {
-    return [selected, ...unique]
+  const unique = uniqueModelOptions(base.filter((option) => Boolean(option.value)))
+  if (selected && !unique.some((option) => option.value === selected)) {
+    return [modelOptionForSelectedValue(selected), ...unique]
   }
   return unique
+}
+
+function fallbackModelOptions(labels: string[]): ModelSelectOption[] {
+  return labels.map(legacyModelSelectOption)
+}
+
+function uniqueModelOptions(options: ModelSelectOption[]): ModelSelectOption[] {
+  const seen = new Set<string>()
+  return options.filter((option) => {
+    if (!option.value || seen.has(option.value)) return false
+    seen.add(option.value)
+    return true
+  })
+}
+
+function modelOptionForSelectedValue(value: string): ModelSelectOption {
+  const stable = parseStableModelOptionValue(value)
+  if (!stable) return legacyModelSelectOption(value)
+  const provider = providers.value.find((item) => item.provider_id === stable.providerId)
+  const providerText = provider ? providerLabel(provider.provider) : stable.providerId
+  return {
+    value,
+    label: `${providerText}: ${stable.modelId}`,
+    providerId: stable.providerId,
+    providerLabel: providerText,
+    modelId: stable.modelId,
+    capabilities: [],
+  }
 }
 
 function providerKeyMask(providerId: string): string {
@@ -582,9 +617,7 @@ function applySavedRoute(slot: string, setter: (value: string) => void) {
 }
 
 function modelOptionForRoute(route: ModelRouteMapping): string {
-  const provider = providers.value.find((item) => item.provider_id === route.provider_id)
-  const label = provider ? providerLabel(provider.provider) : route.provider_id
-  return `${label}: ${route.model}`
+  return modelOptionValue(route.provider_id, route.model)
 }
 
 function buildRoutePayload(
@@ -607,6 +640,9 @@ function buildRoutePayload(
 }
 
 function resolveModelOption(modelOption: string) {
+  const stable = resolveStableModelOption(modelOption)
+  if (stable) return stable
+
   const separator = modelOption.indexOf(': ')
   if (separator < 0) return null
   const label = modelOption.slice(0, separator)
@@ -618,6 +654,28 @@ function resolveModelOption(modelOption: string) {
     provider,
     modelId,
     capabilities: inferModelCapabilities(model || { id: modelId }),
+  }
+}
+
+function resolveStableModelOption(modelOption: string) {
+  const parsed = parseStableModelOptionValue(modelOption)
+  if (!parsed || !parsed.modelId || parsed.modelId === 'models not loaded') return null
+  const provider = providers.value.find((item) => item.provider_id === parsed.providerId)
+  if (!provider) return null
+  const model = modelsForProvider(provider.provider_id).find((item) => item.id === parsed.modelId)
+  return {
+    provider,
+    modelId: parsed.modelId,
+    capabilities: inferModelCapabilities(model || { id: parsed.modelId }),
+  }
+}
+
+function parseStableModelOptionValue(value: string) {
+  const separator = value.indexOf('::')
+  if (separator < 0) return null
+  return {
+    providerId: value.slice(0, separator),
+    modelId: value.slice(separator + 2).trim(),
   }
 }
 
@@ -834,7 +892,9 @@ onMounted(async () => {
             <label>
               OCR 模型
               <select v-model="ocrSettings.model">
-                <option v-for="model in ocrModelOptions" :key="model" :value="model">{{ model }}</option>
+                <option v-for="model in ocrModelOptions" :key="model.value" :value="model.value">
+                  {{ model.label }}
+                </option>
               </select>
             </label>
             <label>
@@ -870,7 +930,9 @@ onMounted(async () => {
             <label class="wide">
               解析模型
               <select v-model="parsingSettings.model">
-                <option v-for="model in parsingModelOptions" :key="model" :value="model">{{ model }}</option>
+                <option v-for="model in parsingModelOptions" :key="model.value" :value="model.value">
+                  {{ model.label }}
+                </option>
               </select>
             </label>
             <label class="wide">
@@ -920,7 +982,9 @@ onMounted(async () => {
             <label class="wide">
               问答模型
               <select v-model="qaSettings.model">
-                <option v-for="model in qaModelOptions" :key="model" :value="model">{{ model }}</option>
+                <option v-for="model in qaModelOptions" :key="model.value" :value="model.value">
+                  {{ model.label }}
+                </option>
               </select>
             </label>
             <div class="wide settings-actions">

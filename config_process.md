@@ -11,9 +11,9 @@ This file is the compact handoff log for model routing, LiteLLM provider normali
 
 ## Current Status
 
-- Phase: 2 - Provider test route coverage
+- Phase: 3 - Settings provider identity
 - Status: Complete
-- Notes: Provider test API coverage added; Phase 3 frontend provider identity next.
+- Notes: Structured model select values now preserve provider identity; Phase 4 fallback cleanup next.
 
 ## Phase Log
 
@@ -47,3 +47,14 @@ Start:
 End:
 - Added DashScope provider-test coverage through real `LiteLLMAdapter` path.
 - Verification: `test_model_settings_api.py test_litellm_adapter.py` -> 23 passed.
+
+### Phase 3 - Settings Provider Identity
+
+Start:
+- Goal: preserve `provider_id` in frontend model option values.
+- RED target: `frontend/src/utils/modelProviderModels.test.ts`.
+
+End:
+- RED: duplicate-provider-label test failed because model options were strings.
+- GREEN: model selects now store `provider_id::model_id` and render human labels.
+- Verification: targeted settings tests -> 14 passed; frontend `npm test` -> 132 passed.

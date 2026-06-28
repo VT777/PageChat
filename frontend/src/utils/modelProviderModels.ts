@@ -10,6 +10,15 @@ export interface ProviderConfigOption {
   provider: string
 }
 
+export interface ModelSelectOption {
+  value: string
+  label: string
+  providerId: string
+  providerLabel: string
+  modelId: string
+  capabilities: ModelCapability[]
+}
+
 const CAPABILITY_ORDER: ModelCapability[] = [
   'llm',
   'vision',
@@ -70,43 +79,49 @@ export function buildAvailableModelOptions(
   providers: ProviderConfigOption[],
   providerModels: Record<string, ProviderModelOption[]>,
   labelProvider: (provider: string) => string,
-): string[] {
-  const remoteOptions = modelEntries(providers, providerModels, labelProvider).map(
-    (entry) => entry.option,
-  )
+): ModelSelectOption[] {
+  const remoteOptions = modelEntries(providers, providerModels, labelProvider)
   if (remoteOptions.length > 0) return remoteOptions
-  return providers.map((provider) => `${labelProvider(provider.provider)}: models not loaded`)
+  return providers.map((provider) => {
+    const providerLabel = labelProvider(provider.provider)
+    return {
+      value: modelOptionValue(provider.provider_id, ''),
+      label: `${providerLabel}: models not loaded`,
+      providerId: provider.provider_id,
+      providerLabel,
+      modelId: '',
+      capabilities: [],
+    }
+  })
 }
 
 export function buildOcrModelOptions(
   providers: ProviderConfigOption[],
   providerModels: Record<string, ProviderModelOption[]>,
   labelProvider: (provider: string) => string,
-): string[] {
+): ModelSelectOption[] {
   return modelEntries(providers, providerModels, labelProvider)
     .filter(({ capabilities }) =>
       capabilities.includes('ocr') || capabilities.includes('vision'),
     )
-    .map(({ option }) => option)
 }
 
 export function buildParsingModelOptions(
   providers: ProviderConfigOption[],
   providerModels: Record<string, ProviderModelOption[]>,
   labelProvider: (provider: string) => string,
-): string[] {
+): ModelSelectOption[] {
   return modelEntries(providers, providerModels, labelProvider)
     .filter(({ capabilities }) =>
       capabilities.includes('llm') || capabilities.includes('vision'),
     )
-    .map(({ option }) => option)
 }
 
 export function buildQaModelOptions(
   providers: ProviderConfigOption[],
   providerModels: Record<string, ProviderModelOption[]>,
   labelProvider: (provider: string) => string,
-): string[] {
+): ModelSelectOption[] {
   return modelEntries(providers, providerModels, labelProvider)
     .filter(({ capabilities }) =>
       capabilities.includes('llm') || capabilities.includes('vision'),
@@ -117,7 +132,22 @@ export function buildQaModelOptions(
       const priorityB = b.capabilities.includes('vision') ? 0 : 1
       return priorityA - priorityB || a.index - b.index
     })
-    .map(({ option }) => option)
+}
+
+export function modelOptionValue(providerId: string, modelId: string): string {
+  return `${providerId}::${modelId}`
+}
+
+export function legacyModelSelectOption(label: string): ModelSelectOption {
+  const separator = label.indexOf(': ')
+  return {
+    value: label,
+    label,
+    providerId: '',
+    providerLabel: separator >= 0 ? label.slice(0, separator) : '',
+    modelId: separator >= 0 ? label.slice(separator + 2).trim() : label.trim(),
+    capabilities: [],
+  }
 }
 
 function modelEntries(
@@ -133,11 +163,26 @@ function modelEntries(
         capabilities: inferModelCapabilities(model),
       }))
       .filter(({ modelId }) => Boolean(modelId))
-      .map(({ model, modelId, capabilities }) => ({
-        model: model as ModelProviderModel,
+      .map(({ model, modelId, capabilities }) => {
+        const providerLabel = labelProvider(provider.provider)
+        return {
+          model: model as ModelProviderModel,
+          providerId: provider.provider_id,
+          providerLabel,
+          modelId,
+          capabilities,
+          value: modelOptionValue(provider.provider_id, modelId),
+          label: `${providerLabel}: ${modelId}`,
+        }
+      })
+      .map(({ model, providerId, providerLabel, modelId, capabilities, value, label }) => ({
+        model,
+        providerId,
+        providerLabel,
         modelId,
         capabilities,
-        option: `${labelProvider(provider.provider)}: ${modelId}`,
+        value,
+        label,
       })),
   )
 }

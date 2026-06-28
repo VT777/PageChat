@@ -34,7 +34,34 @@ describe('model provider model helpers', () => {
       (provider) => provider,
     )
 
-    expect(options).toEqual(['dashscope: qwen-plus', 'deepseek: deepseek-chat'])
+    expect(options.map((option) => option.label)).toEqual([
+      'dashscope: qwen-plus',
+      'deepseek: deepseek-chat',
+    ])
+  })
+
+  it('keeps provider identity when two providers share a display label', () => {
+    const options = buildAvailableModelOptions(
+      [
+        { provider_id: 'dash-a', provider: 'dashscope' },
+        { provider_id: 'dash-b', provider: 'dashscope' },
+      ],
+      {
+        'dash-a': [{ id: 'qwen-plus' }],
+        'dash-b': [{ id: 'qwen3.7-max-2026-06-08' }],
+      },
+      () => 'Alibaba Cloud Bailian / Tongyi',
+    )
+
+    expect(options).toContainEqual(
+      expect.objectContaining({
+        value: 'dash-b::qwen3.7-max-2026-06-08',
+        label: 'Alibaba Cloud Bailian / Tongyi: qwen3.7-max-2026-06-08',
+        providerId: 'dash-b',
+        providerLabel: 'Alibaba Cloud Bailian / Tongyi',
+        modelId: 'qwen3.7-max-2026-06-08',
+      }),
+    )
   })
 
   it('infers model capabilities from model metadata and ids', () => {
@@ -70,15 +97,15 @@ describe('model provider model helpers', () => {
     }
     const labelProvider = (provider: string) => provider
 
-    expect(buildOcrModelOptions(providers, models, labelProvider)).toEqual([
+    expect(buildOcrModelOptions(providers, models, labelProvider).map((option) => option.label)).toEqual([
       'dashscope: qwen-vl-ocr-2025',
     ])
-    expect(buildParsingModelOptions(providers, models, labelProvider)).toEqual([
+    expect(buildParsingModelOptions(providers, models, labelProvider).map((option) => option.label)).toEqual([
       'dashscope: qwen-plus',
       'dashscope: qwen-vl-ocr-2025',
       'deepseek: deepseek-chat',
     ])
-    expect(buildQaModelOptions(providers, models, labelProvider)).toEqual([
+    expect(buildQaModelOptions(providers, models, labelProvider).map((option) => option.label)).toEqual([
       'dashscope: qwen-vl-ocr-2025',
       'dashscope: qwen-plus',
       'deepseek: deepseek-chat',
