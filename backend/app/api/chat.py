@@ -270,7 +270,9 @@ async def get_conversation_messages(
     if not await cursor.fetchone():
         raise HTTPException(status_code=404, detail="会话不存在或无权访问")
 
-    return await ChatRunRepository(db).list_messages(conversation_id)
+    return await ChatRunRepository(db).list_messages_for_user(
+        conversation_id, current_user["id"]
+    )
 
 
 @router.get("/conversations/{conversation_id}/export")
@@ -299,7 +301,9 @@ async def export_conversation(
             "created_at": row[2],
             "updated_at": row[3],
         },
-        "messages": await ChatRunRepository(db).list_messages(conversation_id),
+        "messages": await ChatRunRepository(db).list_messages_for_user(
+            conversation_id, current_user["id"]
+        ),
     }
 
 

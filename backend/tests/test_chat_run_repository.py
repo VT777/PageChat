@@ -247,6 +247,41 @@ def test_repository_lists_messages_with_structured_citations() -> None:
     asyncio.run(run())
 
 
+def test_repository_lists_messages_for_conversation_owner_only() -> None:
+    async def run() -> None:
+        from app.services.chat_run_repository import ChatRunRepository
+
+        async with aiosqlite.connect(":memory:") as db:
+            await create_chat_history_schema(db)
+            await run_migrations(db)
+            await db.execute(
+                """
+                INSERT INTO conversations (id, title, user_id)
+                VALUES ('conv-owned', 'Owned chat', 'user-a')
+                """
+            )
+            await db.execute(
+                """
+                INSERT INTO messages (
+                    id, conversation_id, role, content, sources, agent_steps,
+                    status, sequence, run_id
+                )
+                VALUES ('msg-owned', 'conv-owned', 'user', 'secret question',
+                        '[]', '[]', 'completed', 1, NULL)
+                """
+            )
+            await db.commit()
+
+            repo = ChatRunRepository(db)
+            owner_messages = await repo.list_messages_for_user("conv-owned", "user-a")
+            other_messages = await repo.list_messages_for_user("conv-owned", "user-b")
+
+        assert [message["content"] for message in owner_messages] == ["secret question"]
+        assert other_messages == []
+
+    asyncio.run(run())
+
+
 def test_repository_serializes_concurrent_message_and_event_sequences() -> None:
     async def run() -> None:
         from app.services.chat_run_repository import ChatRunRepository

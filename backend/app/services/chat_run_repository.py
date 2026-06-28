@@ -357,3 +357,14 @@ class ChatRunRepository:
                 }
             )
         return messages
+
+    async def list_messages_for_user(
+        self, conversation_id: str, user_id: str
+    ) -> list[dict[str, Any]]:
+        cursor = await self.db.execute(
+            "SELECT id FROM conversations WHERE id = ? AND user_id = ?",
+            (conversation_id, user_id),
+        )
+        if not await cursor.fetchone():
+            return []
+        return await self.list_messages(conversation_id)
