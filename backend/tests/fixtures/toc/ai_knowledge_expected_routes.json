@@ -1,5 +1,5 @@
 {
-  "input_dir": "D:\\chrome_download\\rag-skill-main\\rag-skill-main\\knowledge\\AI Knowledge",
+  "input_dir": "examples/ai-knowledge",
   "documents": [
     {
       "id": "T01",

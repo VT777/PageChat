@@ -23,7 +23,6 @@ root_handler.setFormatter(logging.Formatter("[%(levelname)s] %(message)s"))
 root_logger.addHandler(root_handler)
 
 # 禁用 uvicorn access log — 在 Windows 上 stdout 重定向到文件时
-# 同步 IO 会间歇性阻塞 asyncio event loop 导致请求延迟 5-15 秒
 logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
 logging.getLogger("uvicorn.error").propagate = False
 silence_noisy_http_loggers()
@@ -50,7 +49,6 @@ async def lifespan(app: FastAPI):
     for dir_path in [DATA_DIR, DOCUMENTS_DIR, INDEXES_DIR, PREVIEWS_DIR]:
         dir_path.mkdir(parents=True, exist_ok=True)
 
-    # 启动时 VACUUM 数据库防止 disk I/O error（用同步 sqlite3，在 init_db 之前）
     try:
         import sqlite3
 
@@ -92,10 +90,9 @@ async def lifespan(app: FastAPI):
     print("[BYE] Shutting down...")
 
 
-# 创建 FastAPI 应用
 app = FastAPI(
-    title="KnowClaw API",
-    description="智能知识问答系统 - 基于 PageIndex 树状索引",
+    title="PageChat API",
+    description="Document-centered AI chat API.",
     version="0.1.0",
     lifespan=lifespan,
 )
@@ -121,17 +118,17 @@ app.include_router(settings.router)
 
 @app.get("/")
 async def root():
-    """根路径"""
+    """Root endpoint."""
     return {
-        "name": "KnowClaw API",
+        "name": "PageChat API",
         "version": "0.1.0",
-        "description": "智能知识问答系统 - 基于 PageIndex 树状索引",
+        "description": "Document-centered AI chat API.",
     }
 
 
 @app.get("/health")
 async def health_check():
-    """健康检查"""
+    """Health check."""
     return {"status": "ok"}
 
 

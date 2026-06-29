@@ -893,7 +893,7 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 def main(argv: list[str] | None = None) -> int:
     args = _parse_args(argv)
     fixture = _load_fixture(args.fixture)
-    default_input = fixture.get("input_dir") or r"D:\chrome_download\rag-skill-main\rag-skill-main\knowledge\AI Knowledge"
+    default_input = fixture.get("input_dir") or "examples/ai-knowledge"
     input_dir = Path(args.input or default_input)
     if not input_dir.exists():
         print(f"[TOC-E2E] input directory does not exist: {input_dir}", file=sys.stderr)

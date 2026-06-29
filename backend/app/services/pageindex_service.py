@@ -8,7 +8,6 @@ from copy import deepcopy
 from pathlib import Path
 from typing import Optional, Dict, Any, List, Tuple
 
-# 濠电儑缍€濠?pageindex 闂?Python 闁荤姳璀﹂崹鎵?
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from pageindex.utils import config, get_nodes, get_page_tokens, structure_to_list
@@ -5472,7 +5471,6 @@ class PageIndexService:
 
         analysis["route_decision"] = dict(route_decision)
 
-        # P2-fix: 闂佸湱顣介崑鎾绘煛?balanced 闂佸搫鍊稿ú锕傚Υ閸岀偞鐒鹃柦妯侯槸鐢儵鎮归悜妯虹伌闁轰礁顑夐幃娆戞喆閸曞灚鈷曞┑鐐存綑缂佽鲸绻堥幊銏犵暋閺夎法鎮?dividers 婵烇絽娲犻崜婵囧?
         anchors = {
             "toc_pages": list(
                 analysis.get("toc_pages")
@@ -5500,8 +5498,6 @@ class PageIndexService:
                 dividers=len(dividers),
             )
 
-            # 闂佹悶鍎辨晶鑺ユ櫠閺嶎厼鍨傞悗锝団偓顔戒繆濡ゅ绉い銈呭€瑰鍕冀瑜岀划?OCR
-        # 婵犵鈧啿鈧綊鎮樻径鎰Е妞ゆ牗绮嶉弳蹇撁瑰鍐╊棡闁哄苯锕鎼佹嚋閻㈢鍋撻弫宥囦沪閻ｅ本顕涢柣鐘叉处濞叉垶绻涢崶顒佸仺?-path闁荤姳璀﹂崹鎶藉极?
         print(
             f"[TOC-ROUTE] selected_path={route_decision.get('selected_path')} "
             f"attempts={','.join(item.get('path', '') for item in route_decision.get('attempts') or [])}"
@@ -5656,9 +5652,7 @@ class PageIndexService:
 
         if completeness.get("needs_repair"):
             print(f"[TOC-QUALITY] action=coverage_repair_required details={completeness}")
-            # TODO: gap 婵烇絽娴傞崰鏍囬弻銉︽櫖闁割偅绻嶉崵?gaps 闂佸憡鐗曢幖顐︽偂濞嗘垶鍋橀柕澶堝劚鐢娀鏌涢幒鎴烆棡闁?)
 
-        # 闂佸憡甯楃换鍌烇綖閹版澘绀?result 闂佽濡虹紒銊㈠亾濞戞顏堝磻瀹ュ洦瀚婚柕濠忓瘜濮婂墽绱撴担瑙勫鞍闁?
         await self._expand_page_outline(
             toc_tree=toc_tree,
             analysis=analysis,
@@ -5694,13 +5688,11 @@ class PageIndexService:
             )
             result["llm_quality_check"] = quality_result
 
-            # 闂佸搫绉风€规挷鑳堕幏褰掑Ω閿旂粯鈷曠紓鍌欑劍閹稿鎮樻径瀣攳妞ゆ梻鈷堝Σ?
             if quality_result.get("needs_repair"):
                 print("[TOC-QUALITY] provider=llm_qc action=advisory suggestions=true")
                 for suggestion in quality_result.get("suggestions", []):
                     if any(token in suggestion for token in ("sub-chapter", "split")):
                         print("[TOC-QUALITY] provider=llm_qc action=advisory reason=large_node_detail")
-                        # 闂佸搫绉村ú鈺咁敊閸ヮ剚顥嗛柍褎鍟哄ù锝呮憸閹藉秶绱掗弮鍌毿┑鈥崇闁规壆鎮?
                         break
         except Exception as e:
             print(f"[TOC-QUALITY] provider=llm_qc action=skip error={e}")
@@ -5726,8 +5718,6 @@ class PageIndexService:
         self._log_index_stage(6, "enrich", "started", mode=execution_mode)
         fill_node_text(toc_tree, page_text_map)
         write_node_ids(toc_tree)
-        # 闂佸啿鍘滈崑鎾绘煃閸忓浜鹃梺鍐插帨閸?闂佸搫顑呯€氼剛绱撻幘瀛樼秶闁规儳鍟垮В?闂佸啿鍘滈崑鎾绘煃閸忓浜鹃梺鍐插帨閸?
-        # 婵烇絽娲︾换鍕汲閳ь剙鈽夐弬鎸庢櫠閻樼粯鍎嶉柛鏇犵崺濠碘€充壕缂傚倷鐒﹂幐濠氭倶?
         llm_quality_check_result = result.get("llm_quality_check")
         result = {
             "doc_name": file_path.name,
@@ -5855,7 +5845,6 @@ class PageIndexService:
             if adapted is not None:
                 result = adapted
             else:
-                # 闂佺绻戠划宀€鑺遍幎钘夌闁绘挸瀵掗崯鍥煥濞戞瑧鐓紒缁樺哺閹儳鈻庤箛鎾存灳闂?md_to_tree 闁荤姳璀﹂崹鎵?
                 result = await md_to_tree(
                     md_path=str(file_path),
                     if_thinning=False,
@@ -6054,7 +6043,6 @@ Return JSON only."""
                 node_id = item.get("node_id")
                 if node_id in node_dict:
                     node = node_dict[node_id]
-                    # 闂佸吋鍎抽崲鑼躲亹閸ヮ剙妫橀柛銉ｅ妽閹烽亶鏌涢幇顒佸櫣妞?
                     text = node.get("text", "")
                     relevance = item.get("relevance_score", 0.5)
                     reasoning = item.get("reasoning", "")
@@ -6106,7 +6094,6 @@ Return JSON only."""
 
                 results = filtered_results
 
-            # 闂佸湱顭堟繛鏉戭樀瀹曟宕橀幓鎺楁煕濠婂啰鐒搁柣娑欑懅閹风姵鎷呴搹瑙勭€繛锝呮礌閳ь剙鍟跨紓鍌欒兌閸樠囧箖鎼淬劌绠抽柟鐑樺灩绾?
             results.sort(
                 key=lambda x: (
                     x.get("relevance", 0)
@@ -6117,7 +6104,6 @@ Return JSON only."""
 
             final_results = results[:3]
 
-            # 缂傚倸鍊归幐鎼佹偤閵娧呯＜闁规儳顕禍?
             cache_service.set_search_result(
                 user_id, query, [doc_id], final_results, route_version=route_version
             )
@@ -6139,15 +6125,11 @@ Return JSON only."""
         nodes = structure_to_list(structure_data)
         results = []
 
-        # 濠电偞鎸搁幊鎰板箖婵犲洤钃熼柕澶婃畱
         query_clean = query.lower().replace(" ", "")
 
-        # 闂佸湱绮崝鏇°亹閸ヮ剙绀傞柟鎯板Г閺嗘盯鎮归崶褏鈻岀紒鍙樺嵆閹崇喐娼忛妸锔锯偓顕€鎮?+ 婵炴垶鎼╅崢浠嬪几?闁诲孩绋掗柣?+ 婵炴垶鎼╅崢浠嬪几閸愵喖纭€闁哄洨鍋熼幗?
         stopwords = set("theaantoofinfor")
         raw_tokens = _re.findall(r"[a-zA-Z0-9]+|[\u4e00-\u9fff]", query_clean)
-        # 婵烇絽娲︾换鍕汲閳ь剟鏌ら弰蹇涘摵闁哄鍟伴幏鐘差吋閸涱喖顏繛鎴炴尭缁夋潙锕㈠畷鎴濐煥閸涱喗娈㈤柣鐘叉搐缁夌兘濡撮崘鈺冣枖妞ゆ挾濮甸悾鍗炩槈閹垮啫骞楅柡瀣暟閳ь剚绋掓い?
         keywords = [t for t in raw_tokens if len(t) > 1 or t not in stopwords]
-        # 闂佸憡鑹鹃張顒€顪冮崒鐐村仺闁绘梻顭堥悘鍥煟閳哄倹鍊愰柛瀣堕檮缁嬪濡堕崨顖涙喕缂傚倷绀佺€氼剟骞冩惔銊︽櫖闁割偆鍞芥笟鈧獮蹇涙偄閹澘骞€闂佸搫鍊稿ú銈夊垂鎼达絾瀚氱€广儱绻掔粈?
         bigrams = []
         cn_chars = [t for t in raw_tokens if len(t) == 1 and t not in stopwords]
         for i in range(len(cn_chars) - 1):
@@ -6162,7 +6144,6 @@ Return JSON only."""
             text_lower = text.lower().replace(" ", "")
             search_content = f"{title} {text} {summary}".lower().replace(" ", "")
 
-            # 缂備焦顨忛崗娑氱博鐎靛摜妫憸婵堟娴兼潙绀傞柕濞垮€涢梺鍛婄墪缂嶅﹪宕?
             if query_clean in search_content:
                 relevance = 0.9
                 results.append(
@@ -6187,7 +6168,6 @@ Return JSON only."""
                 )
                 continue
 
-            # 缂備焦顨忛崗娑氳姳閳哄啰妫憸婵堟娴兼潙绀傞柟鎯板Г閺嗘盯鎮?闂佺懓鍢插Λ妤呮偤瑜斿畷鐘恒亹閹烘垵璧?
             if all_keywords:
                 hit_count = sum(1 for kw in all_keywords if kw in search_content)
                 title_hits = sum(1 for kw in all_keywords if kw in title_lower)
@@ -6221,7 +6201,6 @@ Return JSON only."""
                         }
                     )
 
-        # 闂佸湱顭堟繛鏉戭樀瀹曟宕橀幓鎺楁煙閻戞ê绗掔紒?
         results.sort(key=lambda x: x.get("relevance", 0), reverse=True)
         return results[:3]
 
@@ -6308,7 +6287,6 @@ Return JSON only:
                         }
                     )
 
-            # 闂佸湱顭堟繛鏉戭樀瀹曟宕橀幓鎺楁煙閻戞ê绗掔紒?
             results.sort(key=lambda x: x["relevance"], reverse=True)
             return results[:5]
 

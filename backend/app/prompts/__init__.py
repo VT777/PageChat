@@ -1,4 +1,4 @@
-"""Prompt templates for KnowClaw Agent."""
+"""Prompt templates for PageChat Agent."""
 
 from typing import Any, Dict, List
 

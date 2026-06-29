@@ -1,7 +1,7 @@
 {
-  "input_dir": "D:\\projects\\PageIndex\\examples\\documents",
-  "official_results_dir": "D:\\projects\\PageIndex\\examples\\documents\\results",
-  "comparison_baseline_dir": "D:\\projects\\page_chat\\eval0618\\pageindex_official_compare",
+  "input_dir": "examples/pageindex/documents",
+  "official_results_dir": "examples/pageindex/documents/results",
+  "comparison_baseline_dir": "artifacts/pageindex_official_compare",
   "purpose": "Official PageIndex examples converted into constraint-based TOC validation data. These checks are structural regression expectations, not byte-for-byte tree equality.",
   "documents": [
     {

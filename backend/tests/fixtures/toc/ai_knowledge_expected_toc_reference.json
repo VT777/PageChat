@@ -1,7 +1,7 @@
 {
   "source_markdown": "docs/architecture/ai_knowledge_expected_toc_reference.md",
   "current_e2e_baseline": "docs/architecture/ai_knowledge_current_e2e_baseline_2026-06-21.md",
-  "input_dir": "D:\\chrome_download\\rag-skill-main\\rag-skill-main\\knowledge\\AI Knowledge",
+  "input_dir": "examples/ai-knowledge",
   "documents": [
     {
       "id": "T01",

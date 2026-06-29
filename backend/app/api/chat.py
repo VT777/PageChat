@@ -241,13 +241,13 @@ async def list_conversations(
     db: aiosqlite.Connection = Depends(get_db),
     current_user: dict = Depends(require_auth),
 ):
-    """获取会话列表（仅当前用户）"""
+    """List conversations for the current user."""
     cursor = await db.execute(
         """
         SELECT
             c.id,
             CASE
-                WHEN c.title IN ('新对话', 'New chat', 'New Chat', '鏂板璇?')
+                WHEN c.title IN ('新对话', 'New chat', 'New Chat')
                      OR TRIM(COALESCE(c.title, '')) = ''
                 THEN COALESCE(
                     (

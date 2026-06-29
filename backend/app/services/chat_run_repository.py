@@ -9,7 +9,7 @@ import aiosqlite
 from app.agent.citations import dedupe_citations
 from app.agent.events import validate_pagechat_event_payload
 
-DEFAULT_CONVERSATION_TITLES = {"新对话", "New chat", "New Chat", "鏂板璇?"}
+DEFAULT_CONVERSATION_TITLES = {"新对话", "New chat", "New Chat"}
 
 
 class ChatRunRepository:
@@ -59,7 +59,7 @@ class ChatRunRepository:
             UPDATE conversations
             SET title = ?
             WHERE id = ?
-              AND (title IN (?, ?, ?, ?) OR TRIM(COALESCE(title, '')) = '')
+              AND (title IN (?, ?, ?) OR TRIM(COALESCE(title, '')) = '')
             """,
             (title, conversation_id, *sorted(DEFAULT_CONVERSATION_TITLES)),
         )

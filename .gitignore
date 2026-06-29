@@ -94,3 +94,7 @@ backend/tmp*/
 # OS
 .DS_Store
 Thumbs.db
+
+# Local agent skill installs
+.agents/
+skills-lock.json

@@ -45,7 +45,7 @@ class FakeHTTPSession:
                 }
             )
         return FakeResponse(
-            text='{"result":{"ocrResults":[{"prunedResult":{"rec_texts":["鐩綍","绗竴绔?缁 1"],"rec_scores":[0.99,0.98],"rec_boxes":[[80,80,180,120],[100,160,680,200]]}}]}}'
+            text='{"result":{"ocrResults":[{"prunedResult":{"rec_texts":["目录","第一章 绪论 1"],"rec_scores":[0.99,0.98],"rec_boxes":[[80,80,180,120],[100,160,680,200]]}}]}}'
         )
 
 
@@ -281,9 +281,9 @@ def test_code_toc_fast_path_allows_verified_bookmark_early_return() -> None:
             "code_toc": {
                 "source": "bookmarks",
                 "items": [
-                    {"title": "绗竴绔?缁", "level": 1, "physical_index": 3},
-                    {"title": "绗簩绔?鏂规硶", "level": 1, "physical_index": 8},
-                    {"title": "绗笁绔?缁撹", "level": 1, "physical_index": 14},
+                    {"title": "第一章 绪论", "level": 1, "physical_index": 3},
+                    {"title": "第二章 方法", "level": 1, "physical_index": 8},
+                    {"title": "第三章 结论", "level": 1, "physical_index": 14},
                 ],
             },
         }
@@ -366,8 +366,8 @@ def test_code_toc_fast_path_rejects_unverified_regex_candidate() -> None:
             "code_toc": {
                 "source": "regex",
                 "items": [
-                    {"title": "1 Introduction", "level": 1, "physical_index": 3},
-                    {"title": "2 Method", "level": 1, "physical_index": 8},
+                    {"title": "第一章 绪论", "level": 1, "physical_index": 3},
+                    {"title": "第二章 方法", "level": 1, "physical_index": 8},
                 ],
                 "quality": {"verified": False, "score": 0.2},
             },

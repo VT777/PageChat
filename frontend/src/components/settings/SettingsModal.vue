@@ -63,6 +63,7 @@ const emit = defineEmits<{
 const router = useRouter()
 const userStore = useUserStore()
 const { t, settingsNavLabel, language, languageOptions, setLanguage } = useI18n()
+const isChinese = computed(() => language.value === 'zh-CN')
 const activeSection = ref<SectionId>('providers')
 const providers = ref<ModelProviderConfig[]>([])
 const presets = ref<ModelProviderPreset[]>([])
@@ -339,10 +340,27 @@ function apiKeyPlaceholder(providerId: string): string {
 
 function providerKeyHint(providerId: string): string {
   const mask = providerKeyMask(providerId)
-  return mask
-    ? `Saved key: ${mask}. Leave empty to keep it.`
-    : 'Key is encrypted after saving. Saving loads the provider model list.'
+  if (mask) {
+    return isChinese.value
+      ? `已保存密钥：${mask}。留空将保留当前密钥。`
+      : `Saved key: ${mask}. Leave empty to keep it.`
+  }
+  return isChinese.value
+    ? 'API Key 会加密保存。保存后会尝试读取供应商模型列表。'
+    : 'The API key is encrypted after saving. Saving attempts to load the provider model list.'
 }
+
+const providerSecurityNote = computed(() =>
+  isChinese.value
+    ? 'API Key 会使用服务端配置的密钥加密保存。保存后会尝试读取供应商模型列表，并根据结果更新连接状态。'
+    : 'API keys are encrypted with the server-side settings secret. After saving, PageChat attempts to load the provider model list and updates the connection status from that result.',
+)
+
+const newProviderKeyHint = computed(() =>
+  isChinese.value
+    ? '新凭据保存后会显示加密后的密钥状态。'
+    : 'A saved credential will show its masked key status here.',
+)
 
 function testingStateForProvider(providerId: string): string {
   return providerTestMessages.value[providerId] || ''
@@ -1437,11 +1455,11 @@ onMounted(async () => {
               </div>
 
               <p class="provider-security-note">
-                API Key 将使用 PKCS1_OAEP 加密后保存。保存后会自动测试连接并获取可用模型。
+                {{ providerSecurityNote }}
               </p>
 
               <footer class="provider-dialog-footer">
-                <span>{{ providerForm.providerId ? providerKeyHint(providerForm.providerId) : '新凭据保存后会显示加密后的密钥状态。' }}</span>
+                <span>{{ providerForm.providerId ? providerKeyHint(providerForm.providerId) : newProviderKeyHint }}</span>
                 <button type="button" @click="closeProviderConfigDialogs">取消</button>
                 <button type="button" :disabled="providerSaveDisabled()" @click="saveProviderAndClose">
                   <Loader2 v-if="savingProvider" class="spin" />
