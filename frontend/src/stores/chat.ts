@@ -1706,7 +1706,7 @@ export const useChatStore = defineStore('chat', () => {
   }
 
   // 删除对话记录
-  function deleteConversation(conversationId: string) {
+  async function deleteConversation(conversationId: string) {
     const index = conversations.value.findIndex(c => c.id === conversationId)
     if (index !== -1) {
       conversations.value.splice(index, 1)
@@ -1715,6 +1715,13 @@ export const useChatStore = defineStore('chat', () => {
       // 如果删除的是当前对话，清空当前会话
       if (currentSessionId.value === conversationId) {
         clearMessages()
+      }
+    }
+    if (!isLocalSessionId(conversationId)) {
+      try {
+        await chatApi.deleteConversation(conversationId)
+      } catch (error) {
+        console.error('Failed to delete backend conversation:', error)
       }
     }
   }

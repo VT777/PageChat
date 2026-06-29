@@ -35,10 +35,11 @@ def test_execute_web_search_tool_returns_compact_results() -> None:
         def __init__(self):
             self.calls = []
 
-        async def search(self, **kwargs):
+        async def unified_search(self, **kwargs):
             self.calls.append(kwargs)
             return {
                 "success": True,
+                "route": "search",
                 "query": kwargs["query"],
                 "results": [{"title": "A", "url": "https://example.test"}],
             }
@@ -67,9 +68,50 @@ def test_execute_web_search_tool_returns_compact_results() -> None:
     asyncio.run(run())
 
 
+def test_execute_web_search_tool_forwards_unified_router_arguments() -> None:
+    class FakeClient:
+        def __init__(self):
+            self.calls = []
+
+        async def unified_search(self, **kwargs):
+            self.calls.append(kwargs)
+            return {"success": True, "route": "batch_search", "results": []}
+
+    async def run() -> None:
+        client = FakeClient()
+        result = await execute_web_search_tool(
+            arguments={
+                "query": "compare",
+                "intent": "compare",
+                "queries": ["a latest", "b latest"],
+                "urls": ["https://example.test/a"],
+                "domain": "news",
+                "tag": "finance",
+            },
+            settings={
+                "enabled": True,
+                "api_key": "as-key",
+                "max_results": 5,
+                "language": "zh-CN",
+                "zone": "cn",
+                "content_types": ["web", "news"],
+            },
+            client=client,
+        )
+
+        assert result["route"] == "batch_search"
+        assert client.calls[0]["intent"] == "compare"
+        assert client.calls[0]["queries"] == ["a latest", "b latest"]
+        assert client.calls[0]["urls"] == ["https://example.test/a"]
+        assert client.calls[0]["domain"] == "news"
+        assert client.calls[0]["tag"] == "finance"
+
+    asyncio.run(run())
+
+
 def test_execute_web_search_tool_respects_disabled_settings() -> None:
     class FakeClient:
-        async def search(self, **kwargs):
+        async def unified_search(self, **kwargs):
             raise AssertionError("disabled web_search must not call AnySearch")
 
     async def run() -> None:

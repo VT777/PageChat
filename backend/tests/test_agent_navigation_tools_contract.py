@@ -69,11 +69,12 @@ class FakePageIndexByDocService:
         return self.indexes.get(doc_id, {})
 
 
-def _executor(index, docs=None) -> ToolExecutor:
+def _executor(index, docs=None, qa_supports_vision: bool = True) -> ToolExecutor:
     return ToolExecutor(
         FakePageIndexService(index),
         FakeDocumentService(docs),
         user_id="user-a",
+        qa_supports_vision=qa_supports_vision,
     )
 
 
@@ -647,6 +648,71 @@ def test_get_page_content_reports_truncated_page_ranges() -> None:
     asyncio.run(run())
 
 
+def test_visual_page_content_returns_ocr_text_for_text_only_qa_model() -> None:
+    async def run() -> None:
+        index = {
+            "structure": [
+                {
+                    "node_id": "n1",
+                    "title": "OCR page",
+                    "start_index": 4,
+                    "end_index": 4,
+                    "text": "node OCR text should be returned for text-only QA",
+                }
+            ],
+            "pages": [
+                {
+                    "page": 4,
+                    "text": "page OCR text should be returned for text-only QA",
+                    "ocr_used": True,
+                }
+            ],
+        }
+        result = await _executor(
+            index,
+            docs=[_doc(page_count=4)],
+            qa_supports_vision=False,
+        ).execute("get_page_content", {"doc_id": "doc-a", "pages": "4"})
+
+        assert result["status"] == "success"
+        page = result["data"]["content"][0]
+        assert page["visual_evidence_required"] is False
+        assert page["has_visual_content"] is True
+        assert page["text_source"] == "ocr_text_fallback"
+        assert page["fallback_reason"] == "qa_model_without_vision"
+        assert "page OCR text" in page["text"]
+        assert "text_content" in page
+
+    asyncio.run(run())
+
+
+def test_visual_page_without_ocr_text_for_text_only_qa_model_returns_error() -> None:
+    async def run() -> None:
+        index = {
+            "pages": [
+                {
+                    "page": 4,
+                    "text": "",
+                    "ocr_used": True,
+                }
+            ],
+            "page_text_map_ocr_pages": [4],
+            "structure": [],
+        }
+        result = await _executor(
+            index,
+            docs=[_doc(page_count=4)],
+            qa_supports_vision=False,
+        ).execute("get_page_content", {"doc_id": "doc-a", "pages": "4"})
+
+        page = result["data"]["content"][0]
+        assert page["error_code"] == "OCR_TEXT_UNAVAILABLE_FOR_TEXT_QA"
+        assert page["visual_evidence_required"] is False
+        assert "QA model has no vision capability" in page["error"]
+
+    asyncio.run(run())
+
+
 def test_get_page_content_accepts_multi_segment_page_ranges() -> None:
     async def run() -> None:
         structure = [
@@ -869,5 +935,43 @@ def test_search_within_document_visual_match_omits_ocr_text(monkeypatch) -> None
         assert match["visual_evidence_required"] is True
         assert "OCR text" not in str(result)
         assert match["next_tool"] == "get_page_image"
+
+    asyncio.run(run())
+
+
+def test_search_within_document_visual_match_returns_ocr_snippet_for_text_only_qa(
+    monkeypatch,
+) -> None:
+    async def run() -> None:
+        async def fail_search(**_kwargs):
+            raise AssertionError("search_within_document must not call search_service.search")
+
+        monkeypatch.setattr(search_service, "search", fail_search)
+        search_service.doc_corpus = ["x"]
+
+        executor = _executor(
+            {
+                "pages": [
+                    {
+                        "page": 4,
+                        "text": "OCR text with alpha",
+                        "images": [{"image_path": "page://doc-a/4", "page": 4}],
+                        "ocr_used": True,
+                    }
+                ],
+                "page_text_map_ocr_pages": [4],
+                "structure": [],
+            },
+            qa_supports_vision=False,
+        )
+        result = await executor.execute(
+            "search_within_document", {"doc_id": "doc-a", "query": "alpha"}
+        )
+
+        match = result["matches"][0]
+        assert match["visual_evidence_required"] is False
+        assert match["text_source"] == "ocr_text_fallback"
+        assert "OCR text" in match["snippet"]
+        assert match["next_tool"] == "get_page_content"
 
     asyncio.run(run())

@@ -2,10 +2,14 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import json
+import re
 from typing import Any
 
 from app.agent.model_turn import ModelToolCall
 from app.services.retrieval_policy import normalize_folder_id
+
+
+_WEB_URL_RE = re.compile(r"https?://", re.IGNORECASE)
 
 
 @dataclass(frozen=True, slots=True)
@@ -49,10 +53,16 @@ class RuntimeBoundaryPolicy:
             )
         invalid_doc_id = self._invalid_doc_id(repaired, scope)
         if invalid_doc_id:
+            next_steps = "Choose a document from the selected scope or browse the selected folder."
+            if self._looks_like_url(invalid_doc_id) and scope.get("web_search_enabled"):
+                next_steps = (
+                    "Use web_search with intent=read_url or extract, and pass the URL "
+                    "in urls instead of document doc_id."
+                )
             return self._reject(
                 repaired,
                 f"Document '{invalid_doc_id}' is outside the selected scope.",
-                next_steps="Choose a document from the selected scope or browse the selected folder.",
+                next_steps=next_steps,
             )
         return RuntimeBoundaryValidation(True, repaired_call=repaired, tool_error={})
 
@@ -101,7 +111,7 @@ class RuntimeBoundaryPolicy:
         return {}
 
     def _web_search_allowed(self, scope: dict[str, Any]) -> bool:
-        return bool(scope.get("web_search_enabled") and scope.get("web_search_requested"))
+        return bool(scope.get("web_search_enabled"))
 
     def _document_reference_tools(self) -> set[str]:
         return {
@@ -182,6 +192,10 @@ class RuntimeBoundaryPolicy:
             or scope.get("preferred_document_ids")
             or self._document_registry(scope)
         )
+
+    @staticmethod
+    def _looks_like_url(value: Any) -> bool:
+        return bool(_WEB_URL_RE.search(str(value or "")))
 
     def _reject(
         self,

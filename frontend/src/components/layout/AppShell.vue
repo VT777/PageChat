@@ -81,10 +81,10 @@ function exportConversation(conversationId: string, title: string) {
   window.URL.revokeObjectURL(url)
 }
 
-function deleteConversation(conversationId: string) {
+async function deleteConversation(conversationId: string) {
   openChatMenuId.value = null
   if (!window.confirm(t('nav.deleteConfirm'))) return
-  chatStore.deleteConversation(conversationId)
+  await chatStore.deleteConversation(conversationId)
   if (chatStore.currentSessionId === null && route.path === '/') {
     router.push({ path: '/', query: { draft: String(Date.now()) } })
   }
@@ -226,7 +226,7 @@ onBeforeUnmount(() => {
         </button>
         <button class="danger" type="button" @click="deleteConversation(openChatMenuId)">
           <Trash2 />
-          <span>{{ t('nav.exportConversation') }}</span>
+          <span>{{ t('nav.deleteConversation') }}</span>
         </button>
       </div>
     </Teleport>

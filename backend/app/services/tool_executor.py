@@ -249,6 +249,7 @@ class ToolExecutor:
         document_service: DocumentService,
         user_id: str = None,
         allowed_doc_ids: Optional[List[str]] = None,
+        qa_supports_vision: bool = True,
     ):
         if not user_id:
             raise ValueError("ToolExecutor requires user_id")
@@ -259,6 +260,7 @@ class ToolExecutor:
         self.allowed_doc_ids: Optional[set[str]] = (
             set(allowed_doc_ids) if allowed_doc_ids is not None else None
         )
+        self.qa_supports_vision = bool(qa_supports_vision)
 
     def set_allowed_doc_ids(self, document_ids: Optional[List[str]]):
         """设置当前会话允许访问的文档范围（用户隔离）"""
@@ -765,7 +767,27 @@ class ToolExecutor:
             "cache_hit": False,
         }
         if has_visual:
-            result["text_omitted_reason"] = "visual_evidence_required"
+            text = (text_content or "").strip()
+            if not self.qa_supports_vision:
+                result["visual_evidence_required"] = False
+                result["fallback_reason"] = "qa_model_without_vision"
+                if text:
+                    result["text_source"] = "ocr_text_fallback"
+                    result["text"] = text[:MAX_TEXT_PAGE_CHARS]
+                    result["text_content"] = result["text"]
+                    if len(text) > MAX_TEXT_PAGE_CHARS:
+                        result["text_truncated"] = True
+                        result["continuation_hint"] = "Read a narrower page range or section."
+                else:
+                    result["error_code"] = "OCR_TEXT_UNAVAILABLE_FOR_TEXT_QA"
+                    result["error"] = (
+                        "QA model has no vision capability and OCR text is unavailable for this visual page."
+                    )
+                    result["next_steps"] = [
+                        "Choose a vision-capable QA model or re-parse the document with OCR/VLM enabled."
+                    ]
+            else:
+                result["text_omitted_reason"] = "visual_evidence_required"
         else:
             text = (text_content or "").strip()
             result["text"] = text[:MAX_TEXT_PAGE_CHARS]
@@ -1345,6 +1367,7 @@ class ToolExecutor:
             query=query,
             doc_id=doc.id,
             doc_name=doc.original_name,
+            qa_supports_vision=self.qa_supports_vision,
         )
     @classmethod
     def _count_folder_nodes(cls, folders: List[Dict[str, Any]]) -> int:

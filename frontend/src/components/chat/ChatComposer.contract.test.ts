@@ -23,6 +23,7 @@ describe('ChatComposer contract', () => {
   it('opens one unified library picker for documents and folders', () => {
     const source = readFileSync(new URL('./ChatComposer.vue', import.meta.url), 'utf-8')
 
+    expect(source).toContain("import LibraryScopePicker from './LibraryScopePicker.vue'")
     expect(source).toContain('LibraryScopePicker')
     expect(source).toContain('showLibraryPicker')
     expect(source).not.toContain("pickerMode = ref<'file' | 'folder'")

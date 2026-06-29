@@ -62,6 +62,7 @@ def locate_keywords_in_index(
     doc_id: str,
     doc_name: str,
     limit: int = 10,
+    qa_supports_vision: bool = True,
 ) -> dict:
     phrase_candidates, terms = _extract_query_terms(query)
     entries = _collect_page_entries(index_data)
@@ -113,13 +114,18 @@ def locate_keywords_in_index(
         if title_exact_hit:
             match["title_exact_hit"] = True
 
-        if is_visual:
+        if is_visual and qa_supports_vision:
             match["visual_evidence_required"] = True
             match["text_omitted_reason"] = "visual_evidence_required"
             match["image_refs"] = _image_refs(entry, doc_id, page)
         else:
             focus = phrase_hit or (matched_terms[0] if matched_terms else "")
             match["snippet"] = _snippet(text, focus)
+            if is_visual:
+                match["visual_evidence_required"] = False
+                match["text_source"] = "ocr_text_fallback"
+                match["fallback_reason"] = "qa_model_without_vision"
+                match["next_tool"] = "get_page_content"
 
         matches.append(
             {

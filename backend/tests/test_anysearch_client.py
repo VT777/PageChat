@@ -222,3 +222,84 @@ def test_search_rejects_invalid_request_arguments() -> None:
                 pass
 
     asyncio.run(run())
+
+
+def test_unified_search_extracts_urls_through_mcp(monkeypatch) -> None:
+    calls = []
+
+    def fake_post(url, **kwargs):
+        calls.append((url, kwargs))
+        return FakeResponse(
+            200,
+            {
+                "jsonrpc": "2.0",
+                "id": kwargs["json"]["id"],
+                "result": {
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": '{"url":"https://example.test/page","title":"Example","content":"Full markdown content"}',
+                        }
+                    ]
+                },
+            },
+        )
+
+    monkeypatch.setattr("requests.post", fake_post)
+
+    result = asyncio.run(
+        AnySearchClient().unified_search(
+            query="read page",
+            urls=["https://example.test/page"],
+            api_key="as-key",
+        )
+    )
+
+    assert calls[0][0] == "https://api.anysearch.com/mcp"
+    assert calls[0][1]["json"]["method"] == "tools/call"
+    assert calls[0][1]["json"]["params"]["name"] == "extract"
+    assert calls[0][1]["json"]["params"]["arguments"] == {"url": "https://example.test/page"}
+    assert result["success"] is True
+    assert result["route"] == "extract"
+    assert result["results"][0]["url"] == "https://example.test/page"
+    assert result["results"][0]["content_preview"] == "Full markdown content"
+
+
+def test_unified_search_routes_multi_query_to_batch_search(monkeypatch) -> None:
+    calls = []
+
+    def fake_post(url, **kwargs):
+        calls.append((url, kwargs))
+        return FakeResponse(
+            200,
+            {
+                "result": {
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": '{"results":[{"title":"A","url":"https://a.test","snippet":"Alpha"},{"title":"B","url":"https://b.test","snippet":"Beta"}]}',
+                        }
+                    ]
+                }
+            },
+        )
+
+    monkeypatch.setattr("requests.post", fake_post)
+
+    result = asyncio.run(
+        AnySearchClient().unified_search(
+            query="compare",
+            queries=["alpha latest", "beta latest"],
+            api_key="as-key",
+        )
+    )
+
+    assert calls[0][0] == "https://api.anysearch.com/mcp"
+    assert calls[0][1]["json"]["params"]["name"] == "batch_search"
+    assert calls[0][1]["json"]["params"]["arguments"]["queries"] == [
+        "alpha latest",
+        "beta latest",
+    ]
+    assert result["success"] is True
+    assert result["route"] == "batch_search"
+    assert [item["title"] for item in result["results"]] == ["A", "B"]

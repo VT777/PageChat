@@ -282,6 +282,37 @@ def test_repository_lists_messages_for_conversation_owner_only() -> None:
     asyncio.run(run())
 
 
+def test_repository_titles_new_conversation_from_first_user_message() -> None:
+    async def run() -> None:
+        from app.services.chat_run_repository import ChatRunRepository
+
+        async with aiosqlite.connect(":memory:") as db:
+            await create_chat_history_schema(db)
+            await run_migrations(db)
+            await db.execute(
+                """
+                INSERT INTO conversations (id, title, user_id)
+                VALUES ('conv-title', '新对话', 'user-a')
+                """
+            )
+            await db.commit()
+
+            repo = ChatRunRepository(db)
+            await repo.create_user_message(
+                "conv-title",
+                "请总结一下重庆人工智能典型案例集里有哪些重点方向？",
+            )
+
+            cursor = await db.execute(
+                "SELECT title FROM conversations WHERE id = 'conv-title'"
+            )
+            row = await cursor.fetchone()
+
+        assert row[0] == "请总结一下重庆人工智能典型案例集里有哪些重点方向？"
+
+    asyncio.run(run())
+
+
 def test_repository_serializes_concurrent_message_and_event_sequences() -> None:
     async def run() -> None:
         from app.services.chat_run_repository import ChatRunRepository

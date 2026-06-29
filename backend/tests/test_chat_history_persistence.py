@@ -122,6 +122,48 @@ def test_conversation_messages_endpoint_returns_sequence_order_and_run_metadata(
     ]
 
 
+def test_conversation_list_uses_first_user_message_when_title_is_default(tmp_path: Path) -> None:
+    db_path = tmp_path / "chat-list-title.db"
+
+    async def run() -> None:
+        async with aiosqlite.connect(db_path) as db:
+            await create_chat_history_schema(db)
+            await run_migrations(db)
+            await db.execute(
+                """
+                INSERT INTO conversations (id, title, user_id)
+                VALUES ('conv-default-title', '新对话', 'user-a')
+                """
+            )
+            await db.execute(
+                """
+                INSERT INTO messages (
+                    id, conversation_id, role, content, sources, agent_steps,
+                    status, sequence, run_id
+                )
+                VALUES (
+                    'msg-title-user',
+                    'conv-default-title',
+                    'user',
+                    '这个网页主要讲什么？',
+                    '[]',
+                    '[]',
+                    'completed',
+                    1,
+                    NULL
+                )
+                """
+            )
+            await db.commit()
+
+    asyncio.run(run())
+
+    response = _client(db_path).get("/api/chat/conversations")
+
+    assert response.status_code == 200
+    assert response.json()[0]["title"] == "这个网页主要讲什么？"
+
+
 def test_delete_conversation_removes_owned_messages_runs_events_and_citations(tmp_path: Path) -> None:
     db_path = tmp_path / "chat-delete.db"
 

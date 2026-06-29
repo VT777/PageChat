@@ -182,10 +182,17 @@ class ModelToolLoopRuntime:
         messages: list[dict[str, Any]] = [{"role": "system", "content": self.system_prompt}]
         selected_scope_summary = state.scope.get("selected_scope_summary")
         if isinstance(selected_scope_summary, dict) and selected_scope_summary:
+            source = selected_scope_summary.get("source")
+            if source == "user_selected":
+                scope_label = "User-selected scope summary: "
+            elif source == "auto_matched":
+                scope_label = "Automatically matched scope summary: "
+            else:
+                scope_label = "Selected scope summary: "
             messages.append(
                 {
                     "role": "system",
-                    "content": "Selected scope summary: "
+                    "content": scope_label
                     + json.dumps(selected_scope_summary, ensure_ascii=False, separators=(",", ":")),
                 }
             )
@@ -233,7 +240,9 @@ _DEFAULT_SYSTEM_PROMPT = (
     "human-readable citation_marker, formatted like [[display_label]], immediately "
     "after the supported claim. Never write internal IDs, citation_key values, "
     "or raw markers such as [cite: ...]. For web evidence, cite with normal "
-    "markdown links. Keep progress notes concise. Do not expose internal mechanics."
+    "markdown links. For user-provided URLs, call web_search with intent=read_url "
+    "or extract and pass the URL in urls; never pass a URL as a document doc_id. "
+    "Keep progress notes concise. Do not expose internal mechanics."
 )
 
 

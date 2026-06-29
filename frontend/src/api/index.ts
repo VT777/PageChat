@@ -152,6 +152,9 @@ export const chatApi = {
   getMessages: (conversationId: string) =>
     api.get(`/chat/conversations/${conversationId}/messages`),
 
+  deleteConversation: (conversationId: string) =>
+    api.delete(`/chat/conversations/${conversationId}`),
+
   uploadAttachment: (file: File) => {
     const formData = new FormData()
     formData.append('file', file)

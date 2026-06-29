@@ -38,6 +38,48 @@ def test_policy_returns_tool_error_for_disabled_web_search():
     assert "Web Search is disabled" in result.tool_error["error"]
 
 
+def test_policy_allows_auto_enabled_web_search_without_per_request_toggle():
+    policy = RuntimeBoundaryPolicy(tools=[{"function": {"name": "web_search"}}])
+    call = ModelToolCall(id="call_1", name="web_search", arguments={"query": "weather"})
+
+    result = policy.validate_tool_call(
+        call,
+        scope={"web_search_enabled": True, "web_search_requested": False},
+    )
+
+    assert result.allowed is True
+
+
+def test_policy_guides_url_doc_id_to_web_search_when_available():
+    policy = RuntimeBoundaryPolicy(
+        tools=[
+            {"function": {"name": "get_page_content"}},
+            {"function": {"name": "web_search"}},
+        ]
+    )
+    call = ModelToolCall(
+        id="call_1",
+        name="get_page_content",
+        arguments={"doc_id": "https://example.test/page", "pages": "1"},
+    )
+
+    result = policy.validate_tool_call(
+        call,
+        scope={
+            "web_search_enabled": True,
+            "available_document_ids": ["doc-a"],
+            "document_registry": [{"document_id": "doc-a", "document_name": "a.pdf"}],
+        },
+    )
+
+    assert result.allowed is False
+    assert result.tool_error["error"] == (
+        "Document 'https://example.test/page' is outside the selected scope."
+    )
+    assert "web_search" in result.tool_error["next_steps"]
+    assert "urls" in result.tool_error["next_steps"]
+
+
 def test_policy_repairs_unique_document_name_to_doc_id():
     policy = RuntimeBoundaryPolicy(tools=[{"function": {"name": "get_page_content"}}])
     call = ModelToolCall(

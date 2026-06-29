@@ -26,13 +26,14 @@ describe('SettingsModal model provider contract', () => {
     expect(source).not.toContain('TestTube2')
   })
 
-  it('shows saved API key mask state and auto-tests providers after save', () => {
+  it('shows saved API key mask state and treats loaded models as provider connection', () => {
     const source = readFileSync(new URL('./SettingsModal.vue', import.meta.url), 'utf-8')
 
     expect(source).toContain('apiKeyPlaceholder')
     expect(source).toContain('providerKeyMask')
-    expect(source).toContain('autoTestSavedProvider')
+    expect(source).toContain('fetchProviderModels(savedProviderId')
     expect(source).toContain('testingStateForProvider')
+    expect(source).not.toContain('autoTestSavedProvider')
   })
 
   it('renders model capabilities inside a scrollable available-models panel', () => {
@@ -101,11 +102,45 @@ describe('SettingsModal model provider contract', () => {
 
     expect(source).toContain('ocrModelOptions')
     expect(source).toContain('parsingModelOptions')
-    expect(source).toContain('qaModelOptions')
+    expect(source).toContain('qaModelGroups')
     expect(source).toContain('loadFunctionalRoutes')
     expect(source).toContain('saveFunctionalRoutes')
     expect(source).toContain('settingsApi.listModelRoutes')
     expect(source).toContain('settingsApi.saveModelRoutes')
+  })
+
+  it('renders QA model selector grouped by provider with backend capability tags', () => {
+    const source = readFileSync(new URL('./SettingsModal.vue', import.meta.url), 'utf-8')
+
+    expect(source).toContain('v-for="group in qaModelGroups"')
+    expect(source).toContain('v-for="model in group.models"')
+    expect(source).toContain('qa-model-groups')
+    expect(source).toContain('qa-model-row')
+    expect(source).toContain('modelCapabilityBadges(model)')
+    expect(source).toContain('图片页将使用 OCR 文本证据')
+    expect(source).not.toContain('v-for="model in qaModelOptions"')
+  })
+
+  it('lets provider model rows disable models and hides disabled models from task selectors', () => {
+    const source = readFileSync(new URL('./SettingsModal.vue', import.meta.url), 'utf-8')
+
+    expect(source).toContain('disabledProviderModelKeys')
+    expect(source).toContain('toggleProviderModelEnabled')
+    expect(source).toContain('isProviderModelEnabled')
+    expect(source).toContain('@click.stop="toggleProviderModelEnabled')
+    expect(source).toContain('disabled: !isProviderModelEnabled')
+    expect(source).toContain('disabledProviderModelKeys.value')
+  })
+
+  it('renders QA model options with the same compact model row structure as provider models', () => {
+    const source = readFileSync(new URL('./SettingsModal.vue', import.meta.url), 'utf-8')
+
+    expect(source).toContain('providerIconForModelOption')
+    expect(source).toContain('providerInitialForModelOption')
+    expect(source).toContain('class="model-row qa-model-row"')
+    expect(source).toContain('model-provider-logo')
+    expect(source).toContain('model-inline-main')
+    expect(source).not.toContain('qa-model-main')
   })
 
   it('does not expose hard-coded example models as selectable route options', () => {

@@ -1,9 +1,9 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
-import { marked } from 'marked'
 import { Bot, Check, Copy, RefreshCw, RotateCcw, Sparkles, Square, Undo2, User } from 'lucide-vue-next'
 import AppShell from '@/components/layout/AppShell.vue'
+import AssistantMarkdownRenderer from '@/components/chat/AssistantMarkdownRenderer.vue'
 import ChatComposer from '@/components/chat/ChatComposer.vue'
 import CitationPreviewDrawer from '@/components/chat/CitationPreviewDrawer.vue'
 import RunTimeline from '@/components/chat/RunTimeline.vue'
@@ -17,7 +17,7 @@ import type { ChatScopeRequest } from '@/types/retrieval'
 import type { SourceAnchor } from '@/types/preview'
 import { describeScopeTrace } from '@/utils/retrievalScope'
 import { answerStartScrollTop, isNearBottom } from '@/utils/chatScroll'
-import { assignInlineSourceNumbers, bindInlineCitations, extractInlineCitations, type BoundInlineCitation } from '@/utils/citations'
+import { bindInlineCitations, type BoundInlineCitation } from '@/utils/citations'
 import { parseDocumentChatRouteQuery, parseFolderChatRouteContexts } from '@/ui/pagechatContracts'
 
 interface ComposerPayload {
@@ -56,6 +56,7 @@ const pendingRollback = ref<{
   prompt: string
   deletedCount: number
   targetRole: 'user' | 'assistant'
+  boundaryMessageId: string
 } | null>(null)
 const attachmentPreviews = ref<Record<string, ChatAttachmentPreview>>({})
 const previewObjectUrls = new Map<string, string>()
@@ -133,10 +134,12 @@ function buildScope(payload: ComposerPayload): ChatScopeRequest | undefined {
 }
 
 async function handleSubmit(payload: ComposerPayload) {
+  const rollbackBoundaryMessageId = pendingRollback.value?.boundaryMessageId
   pendingRollback.value = null
   chatStore.clearRollbackHistory()
   await chatStore.sendMessage(payload.text, {
     ...buildScope(payload),
+    regenerate_from_message_id: rollbackBoundaryMessageId,
     web_search: payload.webSearch,
     thinking_enabled: Boolean(payload.thinkingEnabled),
     attachment_ids: payload.attachments.map((item) => item.attachment_id),
@@ -144,24 +147,6 @@ async function handleSubmit(payload: ComposerPayload) {
   })
   await nextTick()
   scrollToBottom()
-}
-
-function renderMarkdown(content: string): string {
-  if (!content) return ''
-  try {
-    return marked.parse(content, { breaks: true, gfm: true }) as string
-  } catch {
-    return content
-  }
-}
-
-function escapeHtml(value: string): string {
-  return value
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#39;')
 }
 
 function displayContentForMessage(message: Message): string {
@@ -178,83 +163,6 @@ function citationBindingsForMessage(message: Message, content = message.content)
 
 function webSourcesForMessage(message: Message): EvidenceItem[] {
   return (message.evidenceItems || []).filter((item) => item.type === 'web' && item.url)
-}
-
-function escapeRegExp(value: string): string {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-}
-
-function sourceNumbersForMessage(message: Message, content = message.content): {
-  documentNumbers: Map<number, number>
-  webNumbers: Map<number, number>
-} {
-  return assignInlineSourceNumbers(
-    content,
-    webSourcesForMessage(message).map((source) => source.url || ''),
-  )
-}
-
-function contentWithCitationPlaceholders(content: string): string {
-  const citations = extractInlineCitations(content)
-  if (citations.length === 0) return content
-
-  let cursor = 0
-  const parts: string[] = []
-  for (const citation of citations) {
-    parts.push(content.slice(cursor, citation.start))
-    parts.push(`PAGECHAT_CITATION_${citation.index}`)
-    cursor = citation.end
-  }
-  parts.push(content.slice(cursor))
-  return parts.join('')
-}
-
-function renderMessageMarkdown(message: Message): string {
-  const content = displayContentForMessage(message)
-  const bindings = citationBindingsForMessage(message, content)
-  const sourceNumbers = sourceNumbersForMessage(message, content)
-  if (bindings.length === 0) {
-    return decorateWebSourceLinks(renderMarkdown(content), message, sourceNumbers.webNumbers)
-  }
-
-  let html = renderMarkdown(contentWithCitationPlaceholders(content))
-  for (const binding of bindings) {
-    const placeholder = `PAGECHAT_CITATION_${binding.index}`
-    const title = binding.displayLabel
-    const number = sourceNumbers.documentNumbers.get(binding.index) || binding.sourceNumber
-    const button = [
-      `<button type="button" class="inline-citation"`,
-      ` data-citation-index="${binding.index}"`,
-      ` title="${escapeHtml(title)}">`,
-      `[${number}]`,
-      '</button>',
-    ].join('')
-    html = html.replace(placeholder, button)
-  }
-  return decorateWebSourceLinks(html, message, sourceNumbers.webNumbers)
-}
-
-function decorateWebSourceLinks(html: string, message: Message, webNumbers: Map<number, number>): string {
-  let decorated = html
-  webSourcesForMessage(message).forEach((source, index) => {
-    if (!source.url) return
-    const escapedUrl = escapeHtml(source.url)
-    const pattern = new RegExp(
-      `<a([^>]*?)href="${escapeRegExp(escapedUrl)}"([^>]*)>.*?<\\/a>`,
-      'gi',
-    )
-    const number = webNumbers.get(index) || index + 1
-    const title = source.displayLabel || source.title || source.domain || source.url
-    const button = [
-      `<button type="button" class="inline-citation web-citation"`,
-      ` data-web-source-index="${index}"`,
-      ` title="${escapeHtml(title)}">`,
-      `[${number}]`,
-      '</button>',
-    ].join('')
-    decorated = decorated.replace(pattern, button)
-  })
-  return decorated
 }
 
 function scopeLabel(message: Message): string {
@@ -400,21 +308,15 @@ async function resolveCitationDocument(binding: BoundInlineCitation): Promise<Ac
   }
 }
 
-async function handleAssistantContentClick(event: MouseEvent, message: Message) {
-  const target = event.target instanceof HTMLElement
-    ? event.target.closest<HTMLButtonElement>('[data-citation-index], [data-web-source-index]')
-    : null
-  if (!target) return
-  if (target.dataset.webSourceIndex !== undefined) {
-    const sourceIndex = Number(target.dataset.webSourceIndex)
-    const source = webSourcesForMessage(message)[sourceIndex]
-    if (source?.url) {
-      activeCitation.value = null
-      window.open(source.url, '_blank', 'noopener,noreferrer')
-    }
-    return
+async function handleAssistantWebSourceClick(message: Message, sourceIndex: number) {
+  const source = webSourcesForMessage(message)[sourceIndex]
+  if (source?.url) {
+    activeCitation.value = null
+    window.open(source.url, '_blank', 'noopener,noreferrer')
   }
-  const citationIndex = Number(target.dataset.citationIndex)
+}
+
+async function handleAssistantCitationClick(message: Message, citationIndex: number) {
   const binding = citationBindingsForMessage(message, displayContentForMessage(message)).find((item) => item.index === citationIndex)
   if (!binding) return
   activeCitation.value = await resolveCitationDocument(binding)
@@ -445,17 +347,28 @@ async function copyMessage(message: Message) {
 }
 
 async function rollbackMessage(message: Message) {
-  const result = chatStore.rollbackToMessage(message.id)
-  const prompt = message.role === 'user' ? message.content : result.content || ''
+  const boundaryMessage = rollbackBoundaryMessage(message)
+  const result = chatStore.rollbackToMessage(boundaryMessage.id)
+  const prompt = boundaryMessage.role === 'user' ? boundaryMessage.content : result.content || ''
   pendingRollback.value = {
     prompt,
     deletedCount: result.deletedCount,
     targetRole: result.targetRole || message.role,
+    boundaryMessageId: boundaryMessage.id,
   }
   chatStore.saveCurrentSession()
   await nextTick()
   scrollToBottom()
   placePromptInComposer(prompt)
+}
+
+function rollbackBoundaryMessage(message: Message): Message {
+  if (message.role === 'user') return message
+  const index = chatStore.messages.findIndex((item) => item.id === message.id)
+  for (let i = index - 1; i >= 0; i--) {
+    if (chatStore.messages[i].role === 'user') return chatStore.messages[i]
+  }
+  return message
 }
 
 async function restoreRollback() {
@@ -611,11 +524,13 @@ onBeforeUnmount(() => {
                   :is-answering="Boolean(message.content)"
                 />
 
-                <div
+                <AssistantMarkdownRenderer
                   v-if="displayContentForMessage(message)"
                   class="assistant-content"
-                  v-html="renderMessageMarkdown(message)"
-                  @click="handleAssistantContentClick($event, message)"
+                  :message="message"
+                  :documents="documentStore.documents"
+                  @citation-click="handleAssistantCitationClick(message, $event)"
+                  @web-source-click="handleAssistantWebSourceClick(message, $event)"
                 />
                 <div v-else-if="message.isLoading" class="assistant-loading">
                   <span />
@@ -1018,36 +933,8 @@ onBeforeUnmount(() => {
 
 .assistant-content {
   color: var(--kc-text);
-  font-size: 13.5px;
-  line-height: 22px;
-}
-
-.assistant-content :deep(p) {
-  margin: 0 0 10px;
-}
-
-.assistant-content :deep(ul),
-.assistant-content :deep(ol) {
-  margin: 8px 0 10px 18px;
-}
-
-.assistant-content :deep(li) {
-  margin: 3px 0;
-}
-
-.assistant-content :deep(code) {
-  border-radius: var(--kc-radius-xs);
-  background: var(--kc-surface-muted);
-  padding: 1px 4px;
-  font-size: 12px;
-}
-
-.assistant-content :deep(pre) {
-  overflow: auto;
-  border: 1px solid var(--kc-border-soft);
-  border-radius: var(--kc-radius-md);
-  background: #f8fafc;
-  padding: 12px;
+  font-size: 14px;
+  line-height: 23px;
 }
 
 .assistant-loading {
@@ -1094,29 +981,6 @@ onBeforeUnmount(() => {
   display: grid;
   width: min(860px, calc(100vw - 360px));
   gap: 8px;
-}
-
-.assistant-content :deep(.inline-citation) {
-  display: inline-flex;
-  width: 20px;
-  height: 20px;
-  align-items: center;
-  justify-content: center;
-  vertical-align: baseline;
-  border: 1px solid rgba(47, 128, 237, 0.2);
-  border-radius: 7px;
-  background: #eef6ff;
-  color: #145eb8;
-  font-size: 11px;
-  font-weight: 620;
-  line-height: 1;
-  text-decoration: none;
-  cursor: pointer;
-}
-
-.assistant-content :deep(.inline-citation:hover) {
-  border-color: rgba(47, 128, 237, 0.36);
-  background: #deefff;
 }
 
 .stop-button {

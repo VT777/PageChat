@@ -7,10 +7,16 @@ import os
 import uuid
 import asyncio
 from dataclasses import dataclass
+from functools import lru_cache
+from pathlib import Path
 from typing import Any
 
 import aiosqlite
 import requests
+try:
+    import litellm
+except ImportError:  # pragma: no cover - local installs should include litellm
+    litellm = None
 
 from app.core import config
 from app.services.responses_adapter import response_provider_capabilities
@@ -208,6 +214,15 @@ class ResolvedModelRoute:
         }
 
 
+@dataclass(frozen=True)
+class ModelSchema:
+    capabilities: tuple[str, ...]
+    model_type: str = "llm"
+    mode: str = "chat"
+    context_size: int | None = None
+    max_output_tokens: int | None = None
+
+
 def mask_api_key(api_key: str) -> str:
     if not api_key:
         return ""
@@ -284,34 +299,269 @@ MODEL_CAPABILITY_ORDER = (
 )
 
 
-def _infer_model_capabilities(model_id: str, raw: dict[str, Any] | None = None) -> list[str]:
+KNOWN_MODEL_SCHEMAS: dict[str, tuple[tuple[str, ModelSchema], ...]] = {
+    "openai": (
+        ("gpt-4o", ModelSchema(("llm", "vision", "tool_calling"), context_size=128000)),
+        ("gpt-4.1", ModelSchema(("llm", "vision", "tool_calling"), context_size=1047576)),
+        ("gpt-5", ModelSchema(("llm", "vision", "tool_calling", "reasoning"), context_size=400000)),
+        ("o3", ModelSchema(("llm", "vision", "tool_calling", "reasoning"), context_size=200000)),
+        ("o1", ModelSchema(("llm", "vision", "reasoning"), context_size=200000)),
+    ),
+    "dashscope": (
+        ("qwen-vl", ModelSchema(("llm", "vision", "tool_calling"), context_size=128000)),
+        ("qwen2-vl", ModelSchema(("llm", "vision", "tool_calling"), context_size=128000)),
+        ("qwen2.5-vl", ModelSchema(("llm", "vision", "tool_calling"), context_size=128000)),
+        ("qwen3-vl", ModelSchema(("llm", "vision", "tool_calling", "reasoning"), context_size=128000)),
+        ("qwen3.7-max", ModelSchema(("llm", "tool_calling", "reasoning"), context_size=129024)),
+        ("qwen3-max", ModelSchema(("llm", "tool_calling", "reasoning"), context_size=129024)),
+        ("qwen-plus", ModelSchema(("llm", "tool_calling"), context_size=131072)),
+        ("qwen-max", ModelSchema(("llm", "tool_calling"), context_size=32768)),
+        ("qwen-turbo", ModelSchema(("llm", "tool_calling"), context_size=1000000)),
+    ),
+    "deepseek": (
+        ("deepseek-chat", ModelSchema(("llm", "tool_calling"), context_size=64000)),
+        ("deepseek-reasoner", ModelSchema(("llm", "reasoning"), context_size=64000)),
+    ),
+    "anthropic": (
+        ("claude-3", ModelSchema(("llm", "vision", "tool_calling"), context_size=200000)),
+        ("claude-sonnet", ModelSchema(("llm", "vision", "tool_calling"), context_size=200000)),
+        ("claude-opus", ModelSchema(("llm", "vision", "tool_calling"), context_size=200000)),
+        ("claude-haiku", ModelSchema(("llm", "vision", "tool_calling"), context_size=200000)),
+    ),
+    "google_gemini": (
+        ("gemini", ModelSchema(("llm", "vision", "tool_calling"), context_size=1000000)),
+    ),
+}
+
+GLOBAL_KNOWN_MODEL_SCHEMAS: tuple[tuple[str, ModelSchema], ...] = (
+    ("text-embedding", ModelSchema(("embedding",), model_type="embedding", mode="embedding")),
+    ("embedding", ModelSchema(("embedding",), model_type="embedding", mode="embedding")),
+    ("embed", ModelSchema(("embedding",), model_type="embedding", mode="embedding")),
+    ("bge-", ModelSchema(("embedding",), model_type="embedding", mode="embedding")),
+)
+
+DIFY_SCHEMA_PATH = Path(__file__).resolve().parents[1] / "data" / "dify_model_schemas.json"
+
+
+def _provider_metadata_capabilities(raw: dict[str, Any] | None) -> list[str]:
     raw_capabilities = []
     for key in ("capabilities", "supported_capabilities", "features"):
         value = (raw or {}).get(key)
         if isinstance(value, list):
             raw_capabilities.extend(_normalize_capability_alias(str(item)) for item in value)
-    explicit = [item for item in raw_capabilities if item in MODEL_CAPABILITY_ORDER]
+    return _expand_visual_capabilities(
+        [item for item in raw_capabilities if item in MODEL_CAPABILITY_ORDER]
+    )
 
+
+@lru_cache(maxsize=1)
+def _load_dify_model_schemas() -> dict[str, Any]:
+    try:
+        return json.loads(DIFY_SCHEMA_PATH.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {"providers": {}}
+
+
+def _schema_from_dify_payload(payload: dict[str, Any] | None) -> ModelSchema | None:
+    if not isinstance(payload, dict):
+        return None
+    capabilities = [
+        str(item)
+        for item in payload.get("capabilities", [])
+        if str(item) in MODEL_CAPABILITY_ORDER
+    ]
+    if not capabilities:
+        return None
+    context_size = payload.get("context_size")
+    max_output_tokens = payload.get("max_output_tokens")
+    return ModelSchema(
+        tuple(_ordered_capabilities(capabilities)),
+        model_type=str(payload.get("model_type") or "llm"),
+        mode=str(payload.get("mode") or "chat"),
+        context_size=context_size if isinstance(context_size, int) else None,
+        max_output_tokens=max_output_tokens if isinstance(max_output_tokens, int) else None,
+    )
+
+
+def _dify_catalog_schema(
+    model_id: str, provider: str | None = None, base_url: str | None = None
+) -> ModelSchema | None:
+    provider_key = _effective_model_provider(provider, base_url) or ""
+    providers = _load_dify_model_schemas().get("providers", {})
+    provider_models = providers.get(provider_key)
+    if not isinstance(provider_models, dict):
+        return None
+
+    normalized = model_id.strip().lower()
+    indexed = {str(key).lower(): value for key, value in provider_models.items()}
+    exact = indexed.get(normalized)
+    if exact:
+        return _schema_from_dify_payload(exact)
+
+    for key in sorted(indexed, key=len, reverse=True):
+        if normalized.startswith(f"{key}-"):
+            return _schema_from_dify_payload(indexed[key])
+    return None
+
+
+def _provider_from_base_url(base_url: str | None) -> str | None:
+    normalized = (base_url or "").strip().lower()
+    if "dashscope.aliyuncs.com" in normalized:
+        return "dashscope"
+    if "api.deepseek.com" in normalized:
+        return "deepseek"
+    if "api.openai.com" in normalized:
+        return "openai"
+    if "generativelanguage.googleapis.com" in normalized:
+        return "google_gemini"
+    if "api.anthropic.com" in normalized:
+        return "anthropic"
+    return None
+
+
+def _effective_model_provider(provider: str | None, base_url: str | None = None) -> str | None:
+    provider_key = (provider or "").strip().lower()
+    if provider_key in {"openai_compatible", ""}:
+        return _provider_from_base_url(base_url) or provider_key or None
+    return provider_key
+
+
+def _known_catalog_schema(
+    model_id: str, provider: str | None = None, base_url: str | None = None
+) -> ModelSchema | None:
+    normalized = model_id.lower()
+    provider_key = _effective_model_provider(provider, base_url) or ""
+    for marker, schema in KNOWN_MODEL_SCHEMAS.get(provider_key, ()):
+        if marker in normalized:
+            return schema
+    if provider_key == "":
+        for provider_schemas in KNOWN_MODEL_SCHEMAS.values():
+            for marker, schema in provider_schemas:
+                if marker in normalized:
+                    return schema
+    if provider_key != "openai_compatible":
+        for marker, schema in GLOBAL_KNOWN_MODEL_SCHEMAS:
+            if marker in normalized:
+                return schema
+    return None
+
+
+def _litellm_provider(provider: str | None, base_url: str | None = None) -> str | None:
+    provider_key = _effective_model_provider(provider, base_url) or ""
+    aliases = {
+        "openai_compatible": None,
+        "google_gemini": "gemini",
+        "volcengine_ark": "volcengine",
+        "azure_openai": "azure",
+    }
+    return aliases.get(provider_key, provider_key or None)
+
+
+def _litellm_model_name(
+    model_id: str, provider: str | None, base_url: str | None = None
+) -> tuple[str, str | None]:
+    provider_key = _litellm_provider(provider, base_url)
+    if not provider_key:
+        return model_id, None
+    if model_id.startswith(f"{provider_key}/"):
+        return model_id, provider_key
+    return f"{provider_key}/{model_id}", provider_key
+
+
+def _litellm_model_schema(
+    model_id: str, provider: str | None = None, base_url: str | None = None
+) -> ModelSchema | None:
+    if litellm is None:
+        return None
+    model_name, provider_key = _litellm_model_name(model_id, provider, base_url)
+    try:
+        info = litellm.get_model_info(model_name, custom_llm_provider=provider_key)
+    except Exception:
+        return None
+
+    capabilities = ["llm"]
+    mode = str(info.get("mode") or "chat")
+    if mode == "embedding":
+        capabilities = ["embedding"]
+    if info.get("supports_vision") is True:
+        capabilities.append("vision")
+    if info.get("supports_function_calling") is True:
+        capabilities.append("tool_calling")
+    if info.get("supports_reasoning") is True:
+        capabilities.append("reasoning")
+
+    model_type = "embedding" if "embedding" in capabilities else "llm"
+    context_size = info.get("max_input_tokens")
+    max_output_tokens = info.get("max_output_tokens") or info.get("max_tokens")
+    return ModelSchema(
+        tuple(_ordered_capabilities(capabilities)),
+        model_type=model_type,
+        mode=mode,
+        context_size=context_size if isinstance(context_size, int) else None,
+        max_output_tokens=max_output_tokens if isinstance(max_output_tokens, int) else None,
+    )
+
+
+def _known_catalog_capabilities(
+    model_id: str, provider: str | None = None, base_url: str | None = None
+) -> list[str]:
+    schema = _known_catalog_schema(model_id, provider, base_url)
+    if not schema:
+        return []
+    return _ordered_capabilities(list(schema.capabilities))
+
+
+def _weak_inferred_capabilities(model_id: str) -> list[str]:
     normalized = model_id.lower()
     inferred: list[str] = []
-    if "embedding" in normalized or "embed" in normalized or "bge-" in normalized:
-        return ["embedding"]
-    is_ocr_model = "ocr" in normalized
-    if is_ocr_model:
+    if _looks_like_ocr_model(normalized):
         inferred.extend(["llm", "vision", "ocr"])
-    if not is_ocr_model and any(
-        marker in normalized
-        for marker in ("vl", "vision", "gpt-4o", "gemini", "claude-3", "qvq")
-    ):
-        inferred.extend(["llm", "vision", "tool_calling"])
-    if any(
-        marker in normalized
-        for marker in ("qwen3", "qwen-3", "qvq", "qwq", "r1", "reason", "thinking", "o1", "o3")
-    ):
-        inferred.extend(["llm", "tool_calling", "reasoning"])
-    if not explicit and not inferred:
-        inferred.extend(["llm", "tool_calling"])
-    return _ordered_capabilities([*explicit, *inferred])
+    elif _looks_like_vlm_model(normalized):
+        inferred.extend(["llm", "vision"])
+    if any(marker in normalized for marker in ("qvq", "qwq", "r1", "reason", "thinking", "o1", "o3")):
+        inferred.extend(["llm", "reasoning"])
+    return _ordered_capabilities(inferred)
+
+
+def _model_capabilities_with_source(
+    model_id: str,
+    raw: dict[str, Any] | None = None,
+    provider: str | None = None,
+    base_url: str | None = None,
+) -> tuple[list[str], str]:
+    explicit = _provider_metadata_capabilities(raw)
+    if explicit:
+        return _ordered_capabilities(explicit), "provider_metadata"
+
+    dify_schema = _dify_catalog_schema(model_id, provider, base_url)
+    if dify_schema:
+        return _expand_visual_capabilities(list(dify_schema.capabilities), model_id), "dify_schema"
+
+    litellm_schema = _litellm_model_schema(model_id, provider, base_url)
+    if litellm_schema:
+        return _expand_visual_capabilities(list(litellm_schema.capabilities), model_id), "litellm_catalog"
+
+    known = _known_catalog_capabilities(model_id, provider, base_url)
+    if known:
+        return _expand_visual_capabilities(known, model_id), "known_catalog"
+
+    inferred = _weak_inferred_capabilities(model_id)
+    if inferred:
+        return _expand_visual_capabilities(inferred, model_id), "inferred"
+
+    return ["llm"], "unknown"
+
+
+def _infer_model_capabilities(
+    model_id: str,
+    raw: dict[str, Any] | None = None,
+    provider: str | None = None,
+    base_url: str | None = None,
+) -> list[str]:
+    capabilities, _source = _model_capabilities_with_source(
+        model_id, raw, provider, base_url
+    )
+    return capabilities
 
 
 def _normalize_capability_alias(value: str) -> str:
@@ -322,11 +572,48 @@ def _normalize_capability_alias(value: str) -> str:
         "tool": "tool_calling",
         "image": "vision",
         "visual": "vision",
+        "vl": "vision",
+        "vlm": "vision",
+        "vision_language": "vision",
+        "vision_language_model": "vision",
         "reason": "reasoning",
         "thinking": "reasoning",
         "text_embedding": "embedding",
     }
     return aliases.get(normalized, normalized)
+
+
+def _looks_like_ocr_model(normalized_model_id: str) -> bool:
+    tokens = normalized_model_id.replace("_", "-").replace(".", "-")
+    return any(marker in tokens for marker in ("-ocr", "ocr-", "ocr"))
+
+
+def _looks_like_vlm_model(normalized_model_id: str) -> bool:
+    tokens = normalized_model_id.replace("_", "-").replace(".", "-")
+    return any(
+        marker in tokens
+        for marker in (
+            "-vl-",
+            "-vlm",
+            "vlm-",
+            "-vision-language",
+            "vision-language-",
+        )
+    )
+
+
+def _expand_visual_capabilities(
+    capabilities: list[str], model_id: str | None = None
+) -> list[str]:
+    selected = list(capabilities)
+    normalized_model_id = (model_id or "").strip().lower()
+    if "ocr" in selected or (normalized_model_id and _looks_like_ocr_model(normalized_model_id)):
+        selected.extend(["llm", "vision", "ocr"])
+    elif (
+        "vision" in selected and "ocr" not in selected
+    ) or (normalized_model_id and _looks_like_vlm_model(normalized_model_id)):
+        selected.extend(["llm", "vision"])
+    return _ordered_capabilities(selected)
 
 
 def _first_int(raw: dict[str, Any], keys: tuple[str, ...]) -> int | None:
@@ -425,7 +712,9 @@ def select_provider_test_model(models: list[dict[str, Any]]) -> str:
     )
     return fallback
 
-def _normalize_provider_models(payload: Any) -> list[dict[str, Any]]:
+def _normalize_provider_models(
+    payload: Any, provider: str | None = None, base_url: str | None = None
+) -> list[dict[str, Any]]:
     if isinstance(payload, dict):
         items = payload.get("data") or payload.get("models") or []
     elif isinstance(payload, list):
@@ -449,7 +738,17 @@ def _normalize_provider_models(payload: Any) -> list[dict[str, Any]]:
         for key in ("owned_by", "created", "object"):
             if raw.get(key) is not None:
                 model[key] = raw[key]
-        capabilities = _infer_model_capabilities(model_id, raw)
+        provider_hint = provider or str(raw.get("owned_by") or "").strip() or None
+        schema = _dify_catalog_schema(
+            model_id, provider_hint, base_url
+        ) or _litellm_model_schema(
+            model_id, provider_hint, base_url
+        ) or _known_catalog_schema(model_id, provider_hint, base_url)
+        capabilities, capability_source = _model_capabilities_with_source(
+            model_id, raw, provider_hint, base_url
+        )
+        if "ocr" in model_id.lower() and {"llm", "vision"}.issubset(set(capabilities)):
+            capabilities = _ordered_capabilities([*capabilities, "ocr"])
         context_window = _first_int(
             raw,
             (
@@ -469,8 +768,23 @@ def _normalize_provider_models(payload: Any) -> list[dict[str, Any]]:
                 "max_tokens",
             ),
         )
+        if context_window is None and schema:
+            context_window = schema.context_size
+        if max_output_tokens is None and schema:
+            max_output_tokens = schema.max_output_tokens
+        model_type = schema.model_type if schema else "llm"
+        model_properties = {
+            "mode": schema.mode if schema else "chat",
+        }
+        if context_window is not None:
+            model_properties["context_size"] = context_window
+        if max_output_tokens is not None:
+            model_properties["max_output_tokens"] = max_output_tokens
         model["capabilities"] = capabilities
+        model["capability_source"] = capability_source
         model["features"] = capabilities
+        model["model_type"] = model_type
+        model["model_properties"] = model_properties
         model["supports_vision"] = "vision" in capabilities
         model["supports_tool_calling"] = "tool_calling" in capabilities
         model["supports_reasoning"] = "reasoning" in capabilities
@@ -514,6 +828,7 @@ def _normalize_custom_model(
         "display_name": display_name or None,
         "model_type": normalized_type,
         "capabilities": normalized_capabilities,
+        "capability_source": "custom",
         "features": normalized_capabilities,
         "supports_vision": "vision" in normalized_capabilities,
         "supports_tool_calling": "tool_calling" in normalized_capabilities,
@@ -539,6 +854,10 @@ def _merge_provider_models(
         seen.add(model_id)
         merged.append(model)
     return merged
+
+
+def _capability_flag(capabilities: list[str], capability: str) -> bool:
+    return capability in set(capabilities or [])
 
 
 def _route_version(*parts: str) -> str:
@@ -746,6 +1065,38 @@ class ModelSettingsService:
             )
         return models
 
+    async def _resolve_selected_model_capabilities(
+        self,
+        *,
+        user_id: str,
+        provider_id: str,
+        model: str,
+    ) -> dict[str, Any]:
+        custom_models = await self.list_custom_provider_models(
+            user_id=user_id,
+            provider_id=provider_id,
+        )
+        for item in custom_models:
+            if item.get("id") == model:
+                return item
+
+        provider = await self._get_provider_config_with_secret(user_id, provider_id)
+        capabilities, source = _model_capabilities_with_source(
+            model,
+            provider=provider.get("provider") if provider else None,
+            base_url=provider.get("base_url") if provider else None,
+        )
+        return {
+            "id": model,
+            "capabilities": capabilities,
+            "capability_source": source,
+            "supports_vision": _capability_flag(capabilities, "vision"),
+            "supports_tool_calling": _capability_flag(capabilities, "tool_calling"),
+            "supports_reasoning": _capability_flag(capabilities, "reasoning"),
+            "supports_embedding": _capability_flag(capabilities, "embedding"),
+            "supports_ocr": _capability_flag(capabilities, "ocr"),
+        }
+
     async def list_provider_models(
         self,
         *,
@@ -775,10 +1126,22 @@ class ModelSettingsService:
 
         try:
             payload = await asyncio.to_thread(fetch)
-            remote_models = _normalize_provider_models(payload)
+            remote_models = _normalize_provider_models(
+                payload, provider=provider["provider"], base_url=provider["base_url"]
+            )
         except Exception as exc:
             if not custom_models:
+                await self.update_provider_validation_status(
+                    user_id=user_id,
+                    provider_id=provider_id,
+                    validation_status="invalid",
+                )
                 raise RuntimeError(_sanitize_provider_error(exc, api_key)) from exc
+            await self.update_provider_validation_status(
+                user_id=user_id,
+                provider_id=provider_id,
+                validation_status="valid",
+            )
             return {
                 "provider_id": provider_id,
                 "provider": provider["provider"],
@@ -789,6 +1152,11 @@ class ModelSettingsService:
 
         models = _merge_provider_models(remote_models, custom_models)
         source = "remote+custom" if custom_models else "remote"
+        await self.update_provider_validation_status(
+            user_id=user_id,
+            provider_id=provider_id,
+            validation_status="valid",
+        )
 
         return {
             "provider_id": provider_id,
@@ -935,6 +1303,14 @@ class ModelSettingsService:
         )
         if known_models and model not in {item["id"] for item in known_models}:
             raise ValueError("model is not available for this provider")
+        selected_model = await self._resolve_selected_model_capabilities(
+            user_id=user_id,
+            provider_id=provider_id,
+            model=model,
+        )
+        selected_capabilities = list(selected_model.get("capabilities") or [])
+        supports_tool_calling = _capability_flag(selected_capabilities, "tool_calling")
+        supports_vision = _capability_flag(selected_capabilities, "vision")
         route_supports_responses_api = (
             bool(provider.get("supports_responses_api"))
             if supports_responses_api is None

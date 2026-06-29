@@ -9,6 +9,8 @@ import aiosqlite
 from app.agent.citations import dedupe_citations
 from app.agent.events import validate_pagechat_event_payload
 
+DEFAULT_CONVERSATION_TITLES = {"新对话", "New chat", "New Chat", "鏂板璇?"}
+
 
 class ChatRunRepository:
     _message_sequence_locks: dict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
@@ -39,6 +41,37 @@ class ChatRunRepository:
             (conversation_id,),
         )
         await self.db.commit()
+
+    async def _title_conversation_from_first_user_message(
+        self,
+        conversation_id: str,
+        content: str,
+        sequence: int,
+        role: str,
+    ) -> None:
+        if role != "user" or sequence != 1:
+            return
+        title = self._conversation_title_from_message(content)
+        if not title:
+            return
+        await self.db.execute(
+            """
+            UPDATE conversations
+            SET title = ?
+            WHERE id = ?
+              AND (title IN (?, ?, ?, ?) OR TRIM(COALESCE(title, '')) = '')
+            """,
+            (title, conversation_id, *sorted(DEFAULT_CONVERSATION_TITLES)),
+        )
+
+    @staticmethod
+    def _conversation_title_from_message(content: str, limit: int = 32) -> str:
+        title = " ".join(str(content or "").split())
+        if not title:
+            return ""
+        if len(title) <= limit:
+            return title
+        return title[: limit - 1].rstrip() + "…"
 
     async def create_user_message(self, conversation_id: str, content: str) -> str:
         return await self.create_message(conversation_id, "user", content)
@@ -80,6 +113,12 @@ class ChatRunRepository:
                     run_id,
                     attachments_json,
                 ),
+            )
+            await self._title_conversation_from_first_user_message(
+                conversation_id,
+                content,
+                sequence,
+                role,
             )
             await self.touch_conversation(conversation_id)
             return message_id

@@ -21,6 +21,7 @@ class FakeDocumentService:
                 folder_path="root",
                 status="completed",
                 page_count=3,
+                description="Compact alpha summary.",
             )
         ]
 
@@ -176,6 +177,22 @@ def test_agent_service_stream_uses_loop_runtime_not_initial_retrieval(monkeypatc
             "answer_delta",
         ]
         assert loop_runtime.states[0].scope["document_ids"] == ["doc-alpha"]
+        assert loop_runtime.states[0].scope["selected_scope_summary"] == {
+            "type": "documents",
+            "source": "user_selected",
+            "document_count": 1,
+            "documents": [
+                {
+                    "id": "doc-alpha",
+                    "name": "alpha.pdf",
+                    "file_type": "pdf",
+                    "status": "completed",
+                    "page_count": 3,
+                    "path": "root/alpha.pdf",
+                    "summary": "Compact alpha summary.",
+                }
+            ],
+        }
         assert "retrieval_plan" not in loop_runtime.states[0].scope
 
     asyncio.run(run())
@@ -225,10 +242,56 @@ def test_agent_service_adds_selected_folder_scope_summary(monkeypatch) -> None:
         assert events[0]["event"] == "progress"
         assert loop_runtime.states[0].scope["selected_scope_summary"] == {
             "type": "folder",
+            "source": "user_selected",
             "folder_id": "folder-a",
             "include_subfolders": True,
             "document_count": 3,
         }
+
+    asyncio.run(run())
+
+
+def test_agent_service_marks_name_matched_documents_as_auto_matched(monkeypatch) -> None:
+    async def run() -> None:
+        service = AgentService.__new__(AgentService)
+        service.db = None
+        service.pageindex_service = object()
+        service.document_service = FakeDocumentService()
+        service.folder_service = None
+        loop_runtime = FakeLoopRuntime()
+
+        def fake_build_loop_runtime(self, **_kwargs):
+            return loop_runtime
+
+        async def fake_web_search_settings_for_request(**_kwargs):
+            return {"enabled": False}
+
+        monkeypatch.setattr(
+            AgentService,
+            "build_agent_loop_runtime",
+            fake_build_loop_runtime,
+            raising=False,
+        )
+        monkeypatch.setattr(
+            service,
+            "_web_search_settings_for_request",
+            fake_web_search_settings_for_request,
+        )
+
+        frames = [
+            frame
+            async for frame in service.run_agent_stream(
+                question="Summarize alpha.pdf",
+                conversation_id="conv-auto-match",
+                user_id="user-a",
+                history_messages=[],
+            )
+        ]
+
+        events = parse_sse_frames(frames)
+        assert events[0]["event"] == "progress"
+        assert loop_runtime.states[0].scope["document_ids"] == ["doc-alpha"]
+        assert loop_runtime.states[0].scope["selected_scope_summary"]["source"] == "auto_matched"
 
     asyncio.run(run())
 

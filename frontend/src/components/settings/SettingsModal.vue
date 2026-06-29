@@ -25,7 +25,7 @@ import type { ModelProviderConfig, ModelProviderModel, ModelProviderPreset, Mode
 import {
   buildOcrModelOptions,
   buildParsingModelOptions,
-  buildQaModelOptions,
+  buildQaModelGroups,
   inferModelCapabilities,
   legacyModelSelectOption,
   modelCapabilityBadges,
@@ -68,7 +68,6 @@ const providers = ref<ModelProviderConfig[]>([])
 const presets = ref<ModelProviderPreset[]>([])
 const loadingProviders = ref(false)
 const savingProvider = ref(false)
-const testingProviderId = ref<string | null>(null)
 const loadingModelProviderId = ref<string | null>(null)
 const providerSearchQuery = ref('')
 const providerMessage = ref('')
@@ -77,6 +76,7 @@ const providerCredentialDialogOpen = ref(false)
 const compatibleModelDialogOpen = ref(false)
 const selectedProviderRow = ref<ModelProviderRow | null>(null)
 const collapsedProviderModels = ref<Set<string>>(new Set())
+const disabledProviderModelKeys = ref<Set<string>>(new Set())
 const providerModels = ref<Record<string, ModelProviderModel[]>>({})
 const providerModelErrors = ref<Record<string, string>>({})
 const providerTestMessages = ref<Record<string, string>>({})
@@ -146,23 +146,22 @@ const filteredProviderRows = computed(() =>
 
 const ocrModelOptions = computed(() =>
   ensureModelOptions(
-    buildOcrModelOptions(providers.value, providerModels.value, providerLabel),
+    buildOcrModelOptions(providers.value, providerModels.value, providerLabel, disabledProviderModelKeys.value),
     ocrSettings.value.model,
+    !isModelValueDisabled(ocrSettings.value.model),
   ),
 )
 
 const parsingModelOptions = computed(() =>
   ensureModelOptions(
-    buildParsingModelOptions(providers.value, providerModels.value, providerLabel),
+    buildParsingModelOptions(providers.value, providerModels.value, providerLabel, disabledProviderModelKeys.value),
     parsingSettings.value.model,
+    !isModelValueDisabled(parsingSettings.value.model),
   ),
 )
 
-const qaModelOptions = computed(() =>
-  ensureModelOptions(
-    buildQaModelOptions(providers.value, providerModels.value, providerLabel),
-    qaSettings.value.model,
-  ),
+const qaModelGroups = computed(() =>
+  buildQaModelGroups(providers.value, providerModels.value, providerLabel, disabledProviderModelKeys.value),
 )
 
 function navIcon(icon: string) {
@@ -231,9 +230,10 @@ function defaultProviders(): ModelProviderPreset[] {
 function ensureModelOptions(
   options: ModelSelectOption[],
   selected: string,
+  includeSelected = true,
 ): ModelSelectOption[] {
   const unique = uniqueModelOptions(options.filter((option) => Boolean(option.value)))
-  if (selected && !unique.some((option) => option.value === selected)) {
+  if (includeSelected && selected && !unique.some((option) => option.value === selected)) {
     return [modelOptionForSelectedValue(selected), ...unique]
   }
   return unique
@@ -282,6 +282,35 @@ function modelMetaBadges(model: ModelProviderModel): string[] {
   return badges
 }
 
+function modelMetaBadgesForOption(model: ModelSelectOption): string[] {
+  const providerModelsForOption = providerModels.value[model.providerId] || []
+  const source = providerModelsForOption.find((item) => item.id === model.modelId)
+  return source ? modelMetaBadges(source) : []
+}
+
+function providerRowForModelOption(model: ModelSelectOption): ModelProviderRow | null {
+  return providerRows.value.find((provider) =>
+    provider.providerId === model.providerId ||
+    provider.credentials.some((credential) => credential.providerId === model.providerId),
+  ) || null
+}
+
+function providerIconForModelOption(model: ModelSelectOption): string {
+  return providerRowForModelOption(model)?.iconUrl || `/provider-logos/${model.providerId}.svg`
+}
+
+function providerInitialForModelOption(model: ModelSelectOption): string {
+  return providerInitial(providerRowForModelOption(model)?.label || model.providerLabel)
+}
+
+function selectQaModel(model: ModelSelectOption) {
+  qaSettings.value.model = model.value
+}
+
+function qaModelSelected(model: ModelSelectOption): boolean {
+  return qaSettings.value.model === model.value
+}
+
 function providerModelBadges(provider: ModelProviderRow): string[] {
   return providerCapabilityBadges(modelsForProviderRow(provider))
 }
@@ -312,11 +341,10 @@ function providerKeyHint(providerId: string): string {
   const mask = providerKeyMask(providerId)
   return mask
     ? `Saved key: ${mask}. Leave empty to keep it.`
-    : 'Key is encrypted after saving. Saving also runs a connection test.'
+    : 'Key is encrypted after saving. Saving loads the provider model list.'
 }
 
 function testingStateForProvider(providerId: string): string {
-  if (testingProviderId.value === providerId) return 'Testing connection...'
   return providerTestMessages.value[providerId] || ''
 }
 
@@ -334,8 +362,8 @@ function providerCredentialList(provider: ModelProviderRow | null): ModelProvide
 }
 
 function credentialStatusLabel(validation: string): string {
-  if (validation === 'valid') return 'valid'
-  if (validation === 'invalid') return 'invalid'
+  if (validation === 'valid') return 'Connected'
+  if (validation === 'invalid') return 'Connection failed'
   return 'untested'
 }
 
@@ -351,6 +379,43 @@ function modelsForProviderRow(provider: ModelProviderRow): ModelProviderModel[] 
       seen.add(model.id)
       return true
     })
+}
+
+function modelRowsForProviderRow(provider: ModelProviderRow) {
+  const seen = new Set<string>()
+  return provider.credentials.flatMap((credential) =>
+    modelsForProvider(credential.providerId).map((model) => ({
+      key: modelOptionValue(credential.providerId, model.id || ''),
+      providerId: credential.providerId,
+      model,
+    })),
+  ).filter((entry) => {
+    if (!entry.model.id || seen.has(entry.key)) return false
+    seen.add(entry.key)
+    return true
+  })
+}
+
+function isModelValueDisabled(value: string): boolean {
+  return Boolean(value) && disabledProviderModelKeys.value.has(value)
+}
+
+function isProviderModelEnabled(providerId: string, modelId: string): boolean {
+  return !disabledProviderModelKeys.value.has(modelOptionValue(providerId, modelId))
+}
+
+function toggleProviderModelEnabled(providerId: string, modelId: string) {
+  const key = modelOptionValue(providerId, modelId)
+  const next = new Set(disabledProviderModelKeys.value)
+  if (next.has(key)) {
+    next.delete(key)
+  } else {
+    next.add(key)
+    if (ocrSettings.value.model === key) ocrSettings.value.model = ''
+    if (parsingSettings.value.model === key) parsingSettings.value.model = ''
+    if (qaSettings.value.model === key) qaSettings.value.model = ''
+  }
+  disabledProviderModelKeys.value = next
 }
 
 function providerRowLoading(provider: ModelProviderRow): boolean {
@@ -582,10 +647,19 @@ async function fetchProviderModels(providerId: string, options: { silent?: boole
       ...providerModels.value,
       [providerId]: models,
     }
+    providerTestMessages.value = {
+      ...providerTestMessages.value,
+      [providerId]: models.length > 0 ? `Connected. ${models.length} models loaded.` : 'Connected. No remote models returned.',
+    }
   } catch (error: any) {
+    const message = error?.response?.data?.detail || 'Failed to fetch models.'
     providerModelErrors.value = {
       ...providerModelErrors.value,
-      [providerId]: error?.response?.data?.detail || 'Failed to fetch models.',
+      [providerId]: message,
+    }
+    providerTestMessages.value = {
+      ...providerTestMessages.value,
+      [providerId]: message,
     }
   } finally {
     if (!options.silent) loadingModelProviderId.value = null
@@ -630,12 +704,11 @@ async function saveProvider(): Promise<string | null> {
       savedProviderId = response.data?.provider_id || ''
       providerForm.value.providerId = savedProviderId
     }
-    providerMessage.value = 'Provider saved. Testing connection...'
+    providerMessage.value = 'Provider saved. Loading available models...'
     providerForm.value.apiKey = ''
     await loadProviders()
     if (savedProviderId) {
       await fetchProviderModels(savedProviderId, { silent: true })
-      await autoTestSavedProvider(savedProviderId)
       await loadProviders()
     }
     return savedProviderId
@@ -644,42 +717,6 @@ async function saveProvider(): Promise<string | null> {
     return null
   } finally {
     savingProvider.value = false
-  }
-}
-
-async function autoTestSavedProvider(providerId: string) {
-  providerTestMessages.value = {
-    ...providerTestMessages.value,
-    [providerId]: 'Testing connection...',
-  }
-  await testProvider(providerId)
-}
-
-async function testProvider(providerId: string) {
-  testingProviderId.value = providerId
-  providerError.value = ''
-  providerMessage.value = ''
-  try {
-    const response = await settingsApi.testModelProvider(providerId)
-    const testedModel = response.data?.tested_model
-    const message = testedModel
-      ? `Connection test passed with ${testedModel}.`
-      : 'Connection test passed.'
-    providerMessage.value = message
-    providerTestMessages.value = {
-      ...providerTestMessages.value,
-      [providerId]: message,
-    }
-    await loadProviders()
-  } catch (error: any) {
-    const message = error?.response?.data?.detail || 'Connection test failed.'
-    providerError.value = message
-    providerTestMessages.value = {
-      ...providerTestMessages.value,
-      [providerId]: message,
-    }
-  } finally {
-    testingProviderId.value = null
   }
 }
 
@@ -897,7 +934,7 @@ onMounted(async () => {
                   <div class="provider-config-status">
                     <i class="provider-ready-dot" aria-label="Provider available" />
                     <strong>{{ providerCredentialTitle(provider) }}</strong>
-                    <span>{{ testingStateForProvider(provider.id) || provider.validation }}</span>
+                    <span>{{ testingStateForProvider(provider.providerId) || credentialStatusLabel(provider.validation) }}</span>
                   </div>
                   <button class="provider-config-button" type="button" @click="openProviderCredentialDialog(provider)">
                     <SlidersHorizontal />
@@ -957,29 +994,41 @@ onMounted(async () => {
                     <div v-else-if="modelsForProviderRow(provider).length === 0" class="model-empty">
                       暂未返回模型。请检查 API Key 或 endpoint 后刷新。
                     </div>
-                    <div v-for="model in modelsForProviderRow(provider)" :key="model.id" class="model-row model-compact-row">
+                    <div
+                      v-for="entry in modelRowsForProviderRow(provider)"
+                      :key="entry.key"
+                      class="model-row model-compact-row"
+                      :class="{ disabled: !isProviderModelEnabled(entry.providerId, entry.model.id || '') }"
+                    >
                       <span class="model-provider-logo">
                         <img :src="provider.iconUrl" :alt="provider.label" @error="hideBrokenLogo" />
                         <small>{{ providerInitial(provider.label) }}</small>
                       </span>
                       <div class="model-inline-main">
-                        <strong>{{ model.id }}</strong>
+                        <strong>{{ entry.model.id }}</strong>
                         <span
-                          v-for="capability in modelCapabilityBadges(model)"
+                          v-for="capability in modelCapabilityBadges(entry.model)"
                           :key="capability"
                           class="model-capabilities"
                         >
                           {{ capability }}
                         </span>
                         <span
-                          v-for="badge in modelMetaBadges(model)"
+                          v-for="badge in modelMetaBadges(entry.model)"
                           :key="badge"
                           class="model-meta-badge"
                         >
                           {{ badge }}
                         </span>
                       </div>
-                      <button class="model-enabled-toggle" type="button" aria-label="Model enabled" />
+                      <button
+                        class="model-enabled-toggle"
+                        :class="{ off: !isProviderModelEnabled(entry.providerId, entry.model.id || '') }"
+                        type="button"
+                        :aria-pressed="isProviderModelEnabled(entry.providerId, entry.model.id || '')"
+                        aria-label="Toggle model availability"
+                        @click.stop="toggleProviderModelEnabled(entry.providerId, entry.model.id || '')"
+                      />
                     </div>
                   </div>
                 </div>
@@ -1098,17 +1147,50 @@ onMounted(async () => {
             </div>
           </div>
           <div class="form-grid">
-            <label class="wide">
-              问答模型
-              <select v-model="qaSettings.model">
-                <option v-if="qaModelOptions.length === 0" value="" disabled>
-                  请先配置模型供应商
-                </option>
-                <option v-for="model in qaModelOptions" :key="model.value" :value="model.value">
-                  {{ model.label }}
-                </option>
-              </select>
-            </label>
+            <div class="wide">
+              <div class="field-label">问答模型</div>
+              <div v-if="qaModelGroups.length === 0" class="model-empty">
+                请先配置模型供应商，并刷新可用模型。
+              </div>
+              <div v-else class="qa-model-groups">
+                <section v-for="group in qaModelGroups" :key="group.providerId" class="qa-model-group">
+                  <header>{{ group.providerLabel }}</header>
+                  <button
+                    v-for="model in group.models"
+                    :key="model.value"
+                    :class="{ active: qaModelSelected(model) }"
+                    class="model-row qa-model-row"
+                    type="button"
+                    @click="selectQaModel(model)"
+                  >
+                    <span class="model-provider-logo">
+                      <img :src="providerIconForModelOption(model)" :alt="model.providerLabel" @error="hideBrokenLogo" />
+                      <small>{{ providerInitialForModelOption(model) }}</small>
+                    </span>
+                    <span class="model-inline-main">
+                      <strong>{{ model.modelId }}</strong>
+                      <span
+                        v-for="capability in modelCapabilityBadges(model)"
+                        :key="capability"
+                        class="model-capabilities"
+                      >
+                        {{ capability }}
+                      </span>
+                      <span
+                        v-for="badge in modelMetaBadgesForOption(model)"
+                        :key="badge"
+                        class="model-meta-badge"
+                      >
+                        {{ badge }}
+                      </span>
+                    </span>
+                    <small v-if="!model.capabilities.includes('vision')" class="qa-model-note">
+                      图片页将使用 OCR 文本证据
+                    </small>
+                  </button>
+                </section>
+              </div>
+            </div>
             <div class="wide settings-actions">
               <span>{{ functionalRouteMessage || 'Document Q&A uses the selected answer model route.' }}</span>
               <button type="button" :disabled="savingFunctionalRoutes" @click="saveFunctionalRoutes">
@@ -1960,6 +2042,58 @@ onMounted(async () => {
   color: var(--kc-text-tertiary);
 }
 
+.model-row.disabled {
+  opacity: 0.52;
+}
+
+.model-row.disabled .model-inline-main strong,
+.model-row.disabled .model-capabilities,
+.model-row.disabled .model-meta-badge {
+  color: var(--kc-text-tertiary);
+}
+
+.qa-model-groups {
+  display: grid;
+  max-height: 320px;
+  gap: 10px;
+  overflow: auto;
+  padding-right: 4px;
+  scrollbar-width: thin;
+}
+
+.qa-model-group {
+  display: grid;
+  gap: 6px;
+}
+
+.qa-model-group header {
+  color: var(--kc-text-tertiary);
+  font-size: 11.5px;
+  font-weight: 650;
+}
+
+.qa-model-row {
+  width: 100%;
+  min-height: 38px;
+  justify-content: space-between;
+  border: 0;
+  border-bottom: 1px solid var(--kc-border-soft);
+  padding: 7px 2px;
+  color: var(--kc-text-secondary);
+  text-align: left;
+}
+
+.qa-model-row.active {
+  background: #f4f8ff;
+  color: #145eb8;
+}
+
+.qa-model-note {
+  flex: 0 0 auto;
+  color: var(--kc-text-tertiary);
+  font-size: 11.5px;
+}
+
 .model-enabled-toggle {
   position: relative;
   width: 30px;
@@ -1968,6 +2102,8 @@ onMounted(async () => {
   border: 0;
   border-radius: 999px;
   background: #2563eb;
+  cursor: pointer;
+  transition: background 0.16s ease;
 }
 
 .model-enabled-toggle::after {
@@ -1979,6 +2115,16 @@ onMounted(async () => {
   border-radius: 999px;
   background: #fff;
   content: '';
+  transition: transform 0.16s ease;
+}
+
+.model-enabled-toggle.off {
+  background: #cbd5e1;
+}
+
+.model-enabled-toggle.off::after {
+  right: auto;
+  left: 3px;
 }
 
 .form-grid,

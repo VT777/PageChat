@@ -16,6 +16,7 @@ import { useChatStore } from '@/stores/chat'
 import { chatApi } from '@/api'
 import type { Folder as FolderModel } from '@/api/folders'
 import type { ChatAttachmentMetadata, ComposerImageAttachment } from '@/types/chatAttachments'
+import LibraryScopePicker from './LibraryScopePicker.vue'
 import {
   COMPOSER_ACTIONS,
   documentOnlyChatContexts,

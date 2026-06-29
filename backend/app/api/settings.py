@@ -7,7 +7,6 @@ from app.models.database import get_db
 from app.services.litellm_adapter import LiteLLMAdapter
 from app.services.model_settings_service import (
     ModelSettingsService,
-    select_provider_test_model,
     _sanitize_provider_error,
     _unprotect_api_key,
 )
@@ -292,7 +291,13 @@ async def test_model_provider(
                 provider_id=provider_id,
                 timeout=5,
             )
-            model = select_provider_test_model(models_payload.get("models", []))
+            models = models_payload.get("models", [])
+            await service.update_provider_validation_status(
+                user_id=current_user["id"],
+                provider_id=provider_id,
+                validation_status="valid",
+            )
+            return {"success": True, "tested_model": None, "model_count": len(models)}
         if not model:
             raise ValueError("No available model returned by provider")
         provider_config = {

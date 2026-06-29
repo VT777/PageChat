@@ -19,6 +19,14 @@ export interface ModelSelectOption {
   capabilities: ModelCapability[]
 }
 
+export interface ModelSelectGroup {
+  providerId: string
+  providerLabel: string
+  models: ModelSelectOption[]
+}
+
+export type DisabledModelKeySet = ReadonlySet<string>
+
 const CAPABILITY_ORDER: ModelCapability[] = [
   'llm',
   'vision',
@@ -32,7 +40,7 @@ const CAPABILITY_LABELS: Record<ModelCapability, string> = {
   llm: 'LLM',
   vision: 'VISION',
   embedding: 'Embedding',
-  tool_calling: 'CHAT',
+  tool_calling: 'TOOLS',
   reasoning: 'Thinking',
   ocr: 'OCR',
 }
@@ -47,43 +55,7 @@ export function resolveProviderTestModel(
 }
 
 export function inferModelCapabilities(model: ProviderModelOption): ModelCapability[] {
-  const explicit = (model.capabilities || []).filter(isModelCapability)
-
-  const id = (model.id || '').toLowerCase()
-  if (!id) return explicit.length > 0 ? uniqueCapabilities(explicit) : ['llm']
-  if (id.includes('embedding') || id.includes('embed') || id.includes('bge-')) {
-    return ['embedding']
-  }
-  const inferred: ModelCapability[] = []
-  const isOcrModel = id.includes('ocr')
-  if (isOcrModel) {
-    inferred.push('llm', 'vision', 'ocr')
-  }
-  if (!isOcrModel && (
-    id.includes('vl') ||
-    id.includes('vision') ||
-    id.includes('gpt-4o') ||
-    id.includes('gemini') ||
-    id.includes('claude-3') ||
-    id.includes('qvq')
-  )) {
-    inferred.push('llm', 'vision', 'tool_calling')
-  }
-  if (
-    id.includes('qwen3') ||
-    id.includes('qwen-3') ||
-    id.includes('qvq') ||
-    id.includes('qwq') ||
-    id.includes('r1') ||
-    id.includes('reason') ||
-    id.includes('thinking') ||
-    id.includes('o1') ||
-    id.includes('o3')
-  ) {
-    inferred.push('llm', 'tool_calling', 'reasoning')
-  }
-  if (explicit.length > 0 || inferred.length > 0) return uniqueCapabilities([...explicit, ...inferred])
-  return uniqueCapabilities(['llm', 'tool_calling'])
+  return uniqueCapabilities((model.capabilities || []).filter(isModelCapability))
 }
 
 export function modelCapabilityBadges(model: ProviderModelOption): string[] {
@@ -93,9 +65,7 @@ export function modelCapabilityBadges(model: ProviderModelOption): string[] {
 }
 
 export function formatModelContextBadge(model: ProviderModelOption): string {
-  const contextWindow = typeof (model as any).context_window === 'number'
-    ? (model as any).context_window
-    : 0
+  const contextWindow = modelContextWindow(model)
   if (!contextWindow || contextWindow <= 0) return ''
   const rounded = contextWindow >= 1000
     ? `${contextWindow % 1000 === 0 ? contextWindow / 1000 : Math.round(contextWindow / 1000)}K`
@@ -109,9 +79,7 @@ export function providerCapabilityBadges(models: ProviderModelOption[]): string[
   let largestContextWindow = 0
   for (const model of models) {
     inferModelCapabilities(model).forEach((capability) => capabilities.add(capability))
-    const contextWindow = typeof (model as any).context_window === 'number'
-      ? (model as any).context_window
-      : 0
+    const contextWindow = modelContextWindow(model)
     largestContextWindow = Math.max(largestContextWindow, contextWindow)
   }
   const badges = CAPABILITY_ORDER
@@ -131,8 +99,9 @@ export function buildAvailableModelOptions(
   providers: ProviderConfigOption[],
   providerModels: Record<string, ProviderModelOption[]>,
   labelProvider: (provider: string) => string,
+  disabledModelKeys: DisabledModelKeySet = new Set(),
 ): ModelSelectOption[] {
-  const remoteOptions = modelEntries(providers, providerModels, labelProvider)
+  const remoteOptions = modelEntries(providers, providerModels, labelProvider, disabledModelKeys)
   if (remoteOptions.length > 0) return remoteOptions
   return providers.map((provider) => {
     const providerLabel = labelProvider(provider.provider)
@@ -151,8 +120,9 @@ export function buildOcrModelOptions(
   providers: ProviderConfigOption[],
   providerModels: Record<string, ProviderModelOption[]>,
   labelProvider: (provider: string) => string,
+  disabledModelKeys: DisabledModelKeySet = new Set(),
 ): ModelSelectOption[] {
-  return modelEntries(providers, providerModels, labelProvider)
+  return modelEntries(providers, providerModels, labelProvider, disabledModelKeys)
     .filter(({ capabilities }) =>
       capabilities.includes('ocr') || capabilities.includes('vision'),
     )
@@ -162,8 +132,9 @@ export function buildParsingModelOptions(
   providers: ProviderConfigOption[],
   providerModels: Record<string, ProviderModelOption[]>,
   labelProvider: (provider: string) => string,
+  disabledModelKeys: DisabledModelKeySet = new Set(),
 ): ModelSelectOption[] {
-  return modelEntries(providers, providerModels, labelProvider)
+  return modelEntries(providers, providerModels, labelProvider, disabledModelKeys)
     .filter(({ capabilities }) =>
       capabilities.includes('llm') || capabilities.includes('vision'),
     )
@@ -173,8 +144,9 @@ export function buildQaModelOptions(
   providers: ProviderConfigOption[],
   providerModels: Record<string, ProviderModelOption[]>,
   labelProvider: (provider: string) => string,
+  disabledModelKeys: DisabledModelKeySet = new Set(),
 ): ModelSelectOption[] {
-  return modelEntries(providers, providerModels, labelProvider)
+  return modelEntries(providers, providerModels, labelProvider, disabledModelKeys)
     .filter(({ capabilities }) =>
       capabilities.includes('llm') || capabilities.includes('vision'),
     )
@@ -184,6 +156,25 @@ export function buildQaModelOptions(
       const priorityB = b.capabilities.includes('vision') ? 0 : 1
       return priorityA - priorityB || a.index - b.index
     })
+}
+
+export function buildQaModelGroups(
+  providers: ProviderConfigOption[],
+  providerModels: Record<string, ProviderModelOption[]>,
+  labelProvider: (provider: string) => string,
+  disabledModelKeys: DisabledModelKeySet = new Set(),
+): ModelSelectGroup[] {
+  const entries = buildQaModelOptions(providers, providerModels, labelProvider, disabledModelKeys)
+  return providers
+    .map((provider) => {
+      const providerLabel = labelProvider(provider.provider)
+      return {
+        providerId: provider.provider_id,
+        providerLabel,
+        models: entries.filter((entry) => entry.providerId === provider.provider_id),
+      }
+    })
+    .filter((group) => group.models.length > 0)
 }
 
 export function modelOptionValue(providerId: string, modelId: string): string {
@@ -206,6 +197,7 @@ function modelEntries(
   providers: ProviderConfigOption[],
   providerModels: Record<string, ProviderModelOption[]>,
   labelProvider: (provider: string) => string,
+  disabledModelKeys: DisabledModelKeySet,
 ) {
   return providers.flatMap((provider) =>
     (providerModels[provider.provider_id] || [])
@@ -214,7 +206,9 @@ function modelEntries(
         modelId: model.id?.trim() || '',
         capabilities: inferModelCapabilities(model),
       }))
-      .filter(({ modelId }) => Boolean(modelId))
+      .filter(({ modelId }) =>
+        Boolean(modelId) && !disabledModelKeys.has(modelOptionValue(provider.provider_id, modelId)),
+      )
       .map(({ model, modelId, capabilities }) => {
         const providerLabel = labelProvider(provider.provider)
         return {
@@ -242,6 +236,13 @@ function modelEntries(
 function uniqueCapabilities(capabilities: ModelCapability[]): ModelCapability[] {
   const set = new Set(capabilities)
   return CAPABILITY_ORDER.filter((capability) => set.has(capability))
+}
+
+function modelContextWindow(model: ProviderModelOption): number {
+  const direct = (model as any).context_window
+  if (typeof direct === 'number') return direct
+  const schemaValue = (model as any).model_properties?.context_size
+  return typeof schemaValue === 'number' ? schemaValue : 0
 }
 
 function isModelCapability(value: string): value is ModelCapability {

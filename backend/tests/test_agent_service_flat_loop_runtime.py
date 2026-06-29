@@ -123,3 +123,60 @@ def test_agent_service_stream_accepts_flat_runtime_event_shape(monkeypatch):
         assert events == [{"event": "answer_delta", "data": {"content": "flat"}}]
 
     asyncio.run(run())
+
+
+def test_agent_service_treats_user_url_as_web_search_request(monkeypatch):
+    async def run() -> None:
+        captured = {}
+
+        class FlatRuntime:
+            async def stream(self, state):
+                captured["scope"] = state.scope
+                yield SimpleNamespace(type="answer_delta", payload={"content": "web"})
+
+        service = AgentService.__new__(AgentService)
+        service.db = None
+        service.pageindex_service = object()
+        service.document_service = FakeDocumentService()
+        service.folder_service = None
+
+        def fake_build_runtime(self, **kwargs):
+            captured["tool_names"] = {
+                tool["function"]["name"] for tool in kwargs["runtime_tools"]
+            }
+            return FlatRuntime()
+
+        async def fake_web_search_settings_for_request(**kwargs):
+            captured["requested"] = kwargs["requested"]
+            return {"enabled": bool(kwargs["requested"])}
+
+        monkeypatch.setattr(
+            AgentService,
+            "build_agent_loop_runtime",
+            fake_build_runtime,
+            raising=False,
+        )
+        monkeypatch.setattr(
+            service,
+            "_web_search_settings_for_request",
+            fake_web_search_settings_for_request,
+        )
+
+        frames = [
+            frame
+            async for frame in service.run_agent_stream(
+                question="你看下这个网页主要讲什么：https://example.test/resources/",
+                conversation_id="conv-url",
+                user_id="user-a",
+                history_messages=[],
+            )
+        ]
+
+        events = parse_sse_frames(frames)
+        assert events == [{"event": "answer_delta", "data": {"content": "web"}}]
+        assert captured["requested"] is True
+        assert "web_search" in captured["tool_names"]
+        assert captured["scope"]["web_search_requested"] is True
+        assert captured["scope"]["web_search_enabled"] is True
+
+    asyncio.run(run())

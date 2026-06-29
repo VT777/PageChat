@@ -7,6 +7,7 @@ Agent 核心服务 - PageChat
 import json
 import time
 import logging
+import re
 from pathlib import Path
 from typing import AsyncGenerator, List, Dict, Any, Optional
 import aiosqlite
@@ -27,6 +28,11 @@ from app.services.user_runtime_settings_service import UserRuntimeSettingsServic
 from app.services.web_search_tool import WEB_SEARCH_TOOL, execute_web_search_tool
 from app.services.conversation_evidence_repository import ConversationEvidenceRepository
 from app.services.retrieval_planner import RetrievalPlanner
+from app.services.model_settings_service import (
+    ModelProviderInvalidError,
+    ModelRouteNotConfiguredError,
+    ModelSettingsService,
+)
 from app.core.config import CHAT_ATTACHMENT_MAX_PER_MESSAGE
 from app.services.retrieval_policy import (
     normalize_folder_id,
@@ -51,6 +57,8 @@ _NON_CACHEABLE_TOOLS = {
     "get_page_image",
     "web_search",
 }
+
+_WEB_URL_RE = re.compile(r"https?://[^\s<>\]\[()\"'，。；、]+", re.IGNORECASE)
 
 
 class AgentLoopToolRunner:
@@ -146,6 +154,25 @@ class AgentService:
                     exc,
                 )
         return self._qa_disable_thinking()
+
+    async def _qa_supports_vision_for_user(self, user_id: str | None) -> bool:
+        if self.db is None or not user_id:
+            return False
+        try:
+            route = await ModelSettingsService(self.db).resolve_route(
+                user_id,
+                "document_qa",
+            )
+            return bool(route.get("supports_vision"))
+        except (ModelProviderInvalidError, ModelRouteNotConfiguredError):
+            return False
+        except Exception as exc:
+            agent_logger.warning(
+                "Failed to load QA route vision capability for %s: %s",
+                user_id,
+                exc,
+            )
+            return False
 
     def build_explicit_agent_graph(
         self,
@@ -351,6 +378,26 @@ class AgentService:
             "compare",
         )
         return any(hint in q for hint in library_question_hints)
+
+    @staticmethod
+    def _question_requests_web(question: str) -> bool:
+        q = (question or "").strip()
+        if not q:
+            return False
+        if _WEB_URL_RE.search(q):
+            return True
+        lowered = q.lower()
+        web_hints = (
+            "网页",
+            "网址",
+            "网站",
+            "链接",
+            "url",
+            "link",
+            "web page",
+            "website",
+        )
+        return any(hint in lowered for hint in web_hints)
 
     @staticmethod
     def _prior_evidence_is_sufficient(evidence: Dict[str, Any]) -> bool:
@@ -579,6 +626,79 @@ class AgentService:
             return normalized
         return f"{normalized} / {doc_name}"
 
+    @staticmethod
+    def _selected_document_path(folder_path: Any, doc_name: str) -> str:
+        folder = str(folder_path or "root").strip() or "root"
+        normalized = "/".join(
+            part.strip()
+            for part in folder.replace("\\", "/").split("/")
+            if part.strip()
+        )
+        normalized = normalized or "root"
+        if normalized.lower().endswith(doc_name.lower()):
+            return normalized
+        return f"{normalized}/{doc_name}"
+
+    @staticmethod
+    def _infer_file_type(doc: Any, doc_name: str) -> str:
+        file_type = getattr(doc, "file_type", None)
+        if file_type:
+            return str(file_type).lstrip(".").lower()
+        suffix = Path(doc_name).suffix.lstrip(".").lower()
+        return suffix or "document"
+
+    @staticmethod
+    def _compact_text(value: Any, limit: int = 240) -> str:
+        text = " ".join(str(value or "").split())
+        if len(text) <= limit:
+            return text
+        return text[: limit - 1].rstrip() + "..."
+
+    @staticmethod
+    def _build_selected_document_summaries(
+        docs: List[Any],
+        document_ids: List[str],
+        limit: int = 8,
+    ) -> List[Dict[str, Any]]:
+        doc_by_id = {
+            str(getattr(doc, "id", None) or getattr(doc, "doc_id", None)): doc
+            for doc in docs
+            if getattr(doc, "id", None) or getattr(doc, "doc_id", None)
+        }
+        summaries: List[Dict[str, Any]] = []
+        for doc_id in document_ids[:limit]:
+            doc = doc_by_id.get(str(doc_id))
+            if not doc:
+                continue
+            doc_name = (
+                getattr(doc, "original_name", None)
+                or getattr(doc, "name", None)
+                or str(doc_id)
+            )
+            doc_name = str(doc_name)
+            item: Dict[str, Any] = {
+                "id": str(doc_id),
+                "name": doc_name,
+                "file_type": AgentService._infer_file_type(doc, doc_name),
+                "status": str(getattr(doc, "status", None) or "unknown"),
+                "path": AgentService._selected_document_path(
+                    getattr(doc, "folder_path", None),
+                    doc_name,
+                ),
+            }
+            page_count = getattr(doc, "page_count", None)
+            if isinstance(page_count, int) and page_count >= 0:
+                item["page_count"] = page_count
+            summary = AgentService._compact_text(
+                getattr(doc, "description", None)
+                or getattr(doc, "summary", None)
+                or getattr(doc, "abstract", None)
+            )
+            if summary:
+                item["summary"] = summary
+            summaries.append(item)
+        return summaries
+
     async def run_agent_stream(
         self,
         question: str,
@@ -613,6 +733,10 @@ class AgentService:
         if not user_id:
             raise ValueError("user_id is required")
 
+        explicit_document_scope = document_ids is not None
+        explicit_folder_scope = bool(normalize_folder_id(folder_id))
+        auto_matched_document_scope = False
+
         folder_id, invalid_folder_scope = await self._resolve_valid_folder_id(
             folder_id, user_id
         )
@@ -624,6 +748,7 @@ class AgentService:
             if matched_doc_ids:
                 document_ids = matched_doc_ids
                 preferred_document_ids = matched_doc_ids
+                auto_matched_document_scope = True
         requested_document_ids = list(document_ids or [])
         if document_ids is not None:
             document_ids = [
@@ -651,7 +776,10 @@ class AgentService:
             else None
         )
 
-        has_valid_explicit_scope = bool(document_ids or folder_id)
+        has_valid_explicit_scope = bool(
+            (explicit_document_scope and document_ids)
+            or (explicit_folder_scope and folder_id)
+        )
         effective_strict_scope = strict_scope
         if effective_strict_scope is None:
             effective_strict_scope = has_valid_explicit_scope
@@ -680,6 +808,7 @@ class AgentService:
         if folder_id and folder_allowed_doc_ids is not None:
             selected_scope_summary = {
                 "type": "folder",
+                "source": "user_selected",
                 "folder_id": folder_id,
                 "include_subfolders": bool(include_subfolders),
                 "document_count": len(folder_allowed_doc_ids),
@@ -687,8 +816,19 @@ class AgentService:
         elif document_ids is not None:
             selected_scope_summary = {
                 "type": "documents",
+                "source": (
+                    "auto_matched"
+                    if auto_matched_document_scope
+                    else "user_selected"
+                ),
                 "document_count": len(document_ids),
+                "documents": self._build_selected_document_summaries(
+                    docs,
+                    list(document_ids),
+                ),
             }
+            if len(document_ids) > 8:
+                selected_scope_summary["omitted_document_count"] = len(document_ids) - 8
 
         evidence_scope_key = self._scope_cache_key(
             user_id,
@@ -715,6 +855,7 @@ class AgentService:
             self.document_service,
             user_id=user_id,
             allowed_doc_ids=executor_allowed_doc_ids,
+            qa_supports_vision=await self._qa_supports_vision_for_user(user_id),
         )
 
         # 检测用户语言，注入 prompt
@@ -724,9 +865,14 @@ class AgentService:
             if thinking_enabled is not None
             else await self._qa_disable_thinking_for_user(user_id)
         )
+        effective_web_search_requested = bool(
+            web_search_requested
+            or web_search_enabled
+            or self._question_requests_web(question)
+        )
         web_search_settings = await self._web_search_settings_for_request(
             user_id=user_id,
-            requested=bool(web_search_requested or web_search_enabled),
+            requested=effective_web_search_requested,
         )
         web_search_active = bool(web_search_settings.get("enabled"))
         needs_document_retrieval = needs_document_retrieval or self._should_use_document_library(
@@ -755,7 +901,7 @@ class AgentService:
             "folder_id": folder_id,
             "include_subfolders": bool(include_subfolders),
             "strict_scope": bool(effective_strict_scope),
-            "web_search_requested": bool(web_search_requested),
+            "web_search_requested": bool(effective_web_search_requested),
             "web_search_enabled": bool(web_search_active),
             "suppress_user_library_fallback": bool(suppress_user_library_fallback),
             "disable_thinking": bool(disable_thinking),

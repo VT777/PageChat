@@ -9,6 +9,7 @@ vi.mock('@/api', () => ({
     stream: vi.fn(),
     getConversations: vi.fn(),
     getMessages: vi.fn(),
+    deleteConversation: vi.fn(),
   },
 }))
 
@@ -57,9 +58,11 @@ describe('chat rollback', () => {
     vi.mocked(chatApi.stream).mockReset()
     vi.mocked(chatApi.getConversations).mockReset()
     vi.mocked(chatApi.getMessages).mockReset()
+    vi.mocked(chatApi.deleteConversation).mockReset()
     vi.mocked(chatApi.stream).mockResolvedValue(streamResponse())
     vi.mocked(chatApi.getConversations).mockResolvedValue({ data: [] } as any)
     vi.mocked(chatApi.getMessages).mockResolvedValue({ data: [] } as any)
+    vi.mocked(chatApi.deleteConversation).mockResolvedValue({ data: { success: true } } as any)
   })
 
   it('keeps a rollback snapshot that can restore removed messages', () => {
@@ -83,6 +86,13 @@ describe('chat rollback', () => {
 
     expect(store.messages.map((item) => item.id)).toEqual(['u1', 'a1', 'u2', 'a2'])
     expect(store.messages[2].content).toBe('Second question')
+  })
+
+  it('passes the rollback boundary when submitting after a withdraw', () => {
+    expect(chatViewSource).toContain('boundaryMessageId')
+    expect(chatViewSource).toContain('regenerate_from_message_id: rollbackBoundaryMessageId')
+    expect(chatViewSource).toContain('boundaryMessageId: boundaryMessage.id')
+    expect(chatViewSource).toContain('function rollbackBoundaryMessage(message: Message)')
   })
 
   it('persists selected document context with the active chat session', () => {
@@ -652,6 +662,22 @@ describe('chat rollback', () => {
 
     expect(restored.currentSessionId).toBe('backend-a')
     expect(restored.messages.map((item) => item.id)).toEqual(['u1', 'backend-assistant-a'])
+  })
+
+  it('deletes backend conversations when removing history rows', async () => {
+    const store = useChatStore()
+    store.conversations.push({
+      id: 'backend-delete',
+      title: 'Delete me',
+      firstMessage: 'Delete me',
+      timestamp: Date.now(),
+      messageCount: 2,
+    })
+
+    await store.deleteConversation('backend-delete')
+
+    expect(chatApi.deleteConversation).toHaveBeenCalledWith('backend-delete')
+    expect(store.conversations).toEqual([])
   })
 
   it('can abort an in-flight chat stream', async () => {

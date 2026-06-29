@@ -139,6 +139,148 @@ def test_normalize_provider_models_adds_capabilities() -> None:
     assert models[2]["context_window"] is None
 
 
+def test_provider_metadata_capabilities_are_marked_as_provider_metadata() -> None:
+    models = _normalize_provider_models(
+        {"data": [{"id": "model-a", "capabilities": ["vision", "function_calling"]}]}
+    )
+
+    assert models[0]["capabilities"] == ["llm", "vision", "tool_calling"]
+    assert models[0]["capability_source"] == "provider_metadata"
+
+
+def test_models_without_metadata_are_conservative_unknown_capabilities() -> None:
+    models = _normalize_provider_models({"data": [{"id": "plain-text-model"}]})
+
+    assert models[0]["capabilities"] == ["llm"]
+    assert models[0]["capability_source"] == "unknown"
+    assert models[0]["supports_vision"] is False
+    assert models[0]["supports_tool_calling"] is False
+
+
+def test_dify_schema_is_primary_for_supported_models() -> None:
+    models = _normalize_provider_models({"data": [{"id": "gpt-4o"}]}, provider="openai")
+
+    assert models[0]["capabilities"] == ["llm", "vision", "tool_calling"]
+    assert models[0]["capability_source"] == "dify_schema"
+    assert models[0]["model_type"] == "llm"
+    assert models[0]["model_properties"]["mode"] == "chat"
+    assert models[0]["model_properties"]["context_size"] == 128000
+    assert models[0]["context_window"] == 128000
+
+
+def test_dify_schema_is_primary_for_dashscope_and_deepseek_models() -> None:
+    dashscope = _normalize_provider_models({"data": [{"id": "qwen-plus"}]}, provider="dashscope")
+    deepseek = _normalize_provider_models({"data": [{"id": "deepseek-reasoner"}]}, provider="deepseek")
+
+    assert dashscope[0]["capability_source"] == "dify_schema"
+    assert dashscope[0]["capabilities"] == ["llm", "tool_calling"]
+    assert dashscope[0]["model_properties"]["context_size"] == 1000000
+    assert dashscope[0]["max_output_tokens"] == 32768
+
+    assert deepseek[0]["capability_source"] == "dify_schema"
+    assert deepseek[0]["capabilities"] == ["llm", "tool_calling", "reasoning"]
+    assert deepseek[0]["supports_tool_calling"] is True
+    assert deepseek[0]["model_properties"]["context_size"] == 1000000
+    assert deepseek[0]["max_output_tokens"] == 384000
+
+
+def test_reasoning_model_uses_dify_tool_calling_metadata() -> None:
+    models = _normalize_provider_models({"data": [{"id": "deepseek-reasoner"}]}, provider="deepseek")
+
+    assert models[0]["capabilities"] == ["llm", "tool_calling", "reasoning"]
+    assert models[0]["capability_source"] == "dify_schema"
+    assert models[0]["supports_tool_calling"] is True
+
+
+def test_dify_schema_fills_litellm_gaps() -> None:
+    models = _normalize_provider_models({"data": [{"id": "qwen-vl-max"}]}, provider="dashscope")
+
+    assert models[0]["capability_source"] == "dify_schema"
+    assert models[0]["capabilities"] == ["llm", "vision"]
+    assert models[0]["supports_vision"] is True
+
+
+def test_openai_compatible_unknown_vlm_and_ocr_names_are_visual_capable() -> None:
+    models = _normalize_provider_models(
+        {"data": [{"id": "custom-ocr-proxy"}, {"id": "private-qwen-vl-router"}]},
+        provider="openai_compatible",
+    )
+
+    assert models[0]["capabilities"] == ["llm", "vision", "ocr"]
+    assert models[0]["capability_source"] == "inferred"
+    assert models[0]["supports_ocr"] is True
+    assert models[0]["supports_vision"] is True
+    assert models[1]["capabilities"] == ["llm", "vision"]
+    assert models[1]["capability_source"] == "inferred"
+    assert models[1]["supports_vision"] is True
+
+
+def test_provider_metadata_vlm_and_ocr_aliases_expand_to_visual_capabilities() -> None:
+    models = _normalize_provider_models(
+        {
+            "data": [
+                {"id": "vendor-vlm-model", "capabilities": ["vlm"]},
+                {"id": "vendor-ocr-model", "capabilities": ["ocr"]},
+            ]
+        }
+    )
+
+    assert models[0]["capabilities"] == ["llm", "vision"]
+    assert models[0]["capability_source"] == "provider_metadata"
+    assert models[0]["supports_vision"] is True
+    assert models[1]["capabilities"] == ["llm", "vision", "ocr"]
+    assert models[1]["supports_vision"] is True
+    assert models[1]["supports_ocr"] is True
+
+
+def test_openai_compatible_dashscope_base_url_uses_dashscope_capabilities() -> None:
+    models = _normalize_provider_models(
+        {"data": [{"id": "qwen3-vl-plus"}, {"id": "qwen-vl-max"}]},
+        provider="openai_compatible",
+        base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
+    )
+
+    assert models[0]["capability_source"] == "dify_schema"
+    assert models[0]["capabilities"] == ["llm", "vision", "reasoning"]
+    assert models[0]["supports_vision"] is True
+    assert models[1]["capability_source"] == "dify_schema"
+    assert models[1]["capabilities"] == ["llm", "vision"]
+    assert models[1]["supports_vision"] is True
+
+
+def test_dify_schema_supplies_capabilities_for_supported_providers() -> None:
+    cases = [
+        ("openai", None, "gpt-4o", ["llm", "vision", "tool_calling"]),
+        ("deepseek", None, "deepseek-chat", ["llm", "tool_calling"]),
+        ("anthropic", None, "claude-3-5-sonnet-20241022", ["llm", "vision", "tool_calling"]),
+        ("google_gemini", None, "gemini-2.5-pro", ["llm", "vision", "tool_calling", "reasoning"]),
+        ("dashscope", None, "qwen3.6-plus", ["llm", "vision", "tool_calling", "reasoning"]),
+    ]
+
+    for provider, base_url, model_id, expected_capabilities in cases:
+        models = _normalize_provider_models(
+            {"data": [{"id": model_id}]},
+            provider=provider,
+            base_url=base_url,
+        )
+
+        assert models[0]["capability_source"] == "dify_schema"
+        assert models[0]["capabilities"] == expected_capabilities
+
+
+def test_dashscope_schema_marks_qwen37_plus_as_vision_model() -> None:
+    models = _normalize_provider_models(
+        {"data": [{"id": "qwen3.7-plus-2026-06-08"}]},
+        provider="openai_compatible",
+        base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
+    )
+
+    assert models[0]["capability_source"] == "dify_schema"
+    assert models[0]["capabilities"] == ["llm", "vision", "tool_calling", "reasoning"]
+    assert models[0]["supports_vision"] is True
+    assert models[0]["context_window"] == 1000000
+
+
 def test_update_provider_validation_status_persists() -> None:
     async def run() -> None:
         db, service = await _service()
@@ -520,6 +662,87 @@ def test_save_route_mapping_persists_provider_capabilities() -> None:
                 assert payload["supports_vision"] is False
                 assert payload["supports_structured_output"] is True
                 assert payload["supports_responses_api"] is False
+        finally:
+            await db.close()
+
+    asyncio.run(run())
+
+
+def test_save_route_mapping_derives_vision_from_selected_model() -> None:
+    async def run() -> None:
+        db, service = await _service()
+        try:
+            provider = await service.save_provider_config(
+                user_id="user-a",
+                provider="openai_compatible",
+                base_url="https://example.test/v1",
+                api_key="sk-secret-123456",
+            )
+            await service.save_custom_provider_model(
+                user_id="user-a",
+                provider_id=provider["provider_id"],
+                model="vision-chat",
+                model_type="vision",
+            )
+            await service.save_custom_provider_model(
+                user_id="user-a",
+                provider_id=provider["provider_id"],
+                model="text-chat",
+                model_type="llm",
+                capabilities=["llm"],
+            )
+
+            vision_route = await service.save_route_mapping(
+                user_id="user-a",
+                route_slot="document_qa",
+                provider_id=provider["provider_id"],
+                model="vision-chat",
+                supports_vision=False,
+            )
+            text_route = await service.save_route_mapping(
+                user_id="user-a",
+                route_slot="document_qa",
+                provider_id=provider["provider_id"],
+                model="text-chat",
+                supports_vision=True,
+            )
+
+            assert vision_route["supports_vision"] is True
+            assert text_route["supports_vision"] is False
+            assert text_route["supports_tool_calling"] is True
+        finally:
+            await db.close()
+
+    asyncio.run(run())
+
+
+def test_save_route_mapping_ignores_frontend_vision_override_for_text_model() -> None:
+    async def run() -> None:
+        db, service = await _service()
+        try:
+            provider = await service.save_provider_config(
+                user_id="user-a",
+                provider="openai_compatible",
+                base_url="https://example.test/v1",
+                api_key="sk-secret-123456",
+            )
+            await service.save_custom_provider_model(
+                user_id="user-a",
+                provider_id=provider["provider_id"],
+                model="text-chat",
+                model_type="llm",
+                capabilities=["llm"],
+            )
+
+            saved = await service.save_route_mapping(
+                user_id="user-a",
+                route_slot="document_qa",
+                provider_id=provider["provider_id"],
+                model="text-chat",
+                supports_vision=True,
+            )
+
+            assert saved["supports_vision"] is False
         finally:
             await db.close()
 

@@ -105,6 +105,7 @@ async def chat_stream(
                     web_search=request.web_search,
                     thinking_enabled=request.thinking_enabled,
                     attachment_ids=request.attachment_ids,
+                    regenerate_from_message_id=request.regenerate_from_message_id,
                     user_id=current_user["id"],
                 ):
                     if stream_state["active"]:
@@ -243,9 +244,29 @@ async def list_conversations(
     """获取会话列表（仅当前用户）"""
     cursor = await db.execute(
         """
-        SELECT id, title, created_at, updated_at
-        FROM conversations
-        WHERE user_id = ?
+        SELECT
+            c.id,
+            CASE
+                WHEN c.title IN ('新对话', 'New chat', 'New Chat', '鏂板璇?')
+                     OR TRIM(COALESCE(c.title, '')) = ''
+                THEN COALESCE(
+                    (
+                        SELECT m.content
+                        FROM messages m
+                        WHERE m.conversation_id = c.id
+                          AND m.role = 'user'
+                          AND TRIM(COALESCE(m.content, '')) != ''
+                        ORDER BY COALESCE(m.sequence, 999999), m.created_at, m.id
+                        LIMIT 1
+                    ),
+                    c.title
+                )
+                ELSE c.title
+            END AS display_title,
+            c.created_at,
+            c.updated_at
+        FROM conversations c
+        WHERE c.user_id = ?
         ORDER BY updated_at DESC, created_at DESC
         """,
         (current_user["id"],),

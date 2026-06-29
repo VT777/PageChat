@@ -35,7 +35,15 @@ export interface ModelProviderModel {
   created?: number
   object?: string
   capabilities?: ModelCapability[]
+  capability_source?: 'provider_metadata' | 'dify_schema' | 'litellm_catalog' | 'custom' | 'known_catalog' | 'inferred' | 'unknown' | string
   features?: ModelCapability[]
+  model_type?: string
+  model_properties?: {
+    mode?: string
+    context_size?: number
+    max_output_tokens?: number
+    [key: string]: unknown
+  }
   supports_vision?: boolean
   supports_tool_calling?: boolean
   supports_reasoning?: boolean

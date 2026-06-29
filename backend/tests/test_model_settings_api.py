@@ -187,10 +187,13 @@ def test_list_provider_models_uses_openai_compatible_models_endpoint(
     models = response.json()["models"]
     assert models[0] == {
         "id": "qwen-plus",
-        "capabilities": ["llm", "tool_calling"],
-        "features": ["llm", "tool_calling"],
+        "capabilities": ["llm"],
+        "capability_source": "unknown",
+        "features": ["llm"],
+        "model_type": "llm",
+        "model_properties": {"mode": "chat"},
         "supports_vision": False,
-        "supports_tool_calling": True,
+        "supports_tool_calling": False,
         "supports_reasoning": False,
         "supports_embedding": False,
         "supports_ocr": False,
@@ -198,10 +201,47 @@ def test_list_provider_models_uses_openai_compatible_models_endpoint(
         "max_output_tokens": None,
     }
     assert models[1]["id"] == "qwen-vl-max"
-    assert models[1]["capabilities"] == ["llm", "vision", "tool_calling"]
+    assert models[1]["capabilities"] == ["llm", "vision"]
     assert models[1]["supports_vision"] is True
     assert calls[0][0] == "https://example.test/v1/models"
     assert calls[0][1]["Authorization"] == "Bearer sk-secret-123456"
+
+
+def test_list_provider_models_uses_provider_catalog_for_known_dashscope_models(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    client = _client(tmp_path)
+    provider = client.post(
+        "/api/settings/model-providers",
+        json={
+            "provider": "dashscope",
+            "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+            "api_key": "sk-secret-123456",
+        },
+    ).json()
+
+    class FakeResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"data": [{"id": "qwen-plus"}, {"id": "qwen-vl-max"}]}
+
+    monkeypatch.setattr(model_settings_service.requests, "get", lambda *args, **kwargs: FakeResponse())
+
+    response = client.get(f"/api/settings/model-providers/{provider['provider_id']}/models")
+
+    assert response.status_code == 200
+    models = response.json()["models"]
+    assert models[0]["id"] == "qwen-plus"
+    assert models[0]["capabilities"] == ["llm", "tool_calling"]
+    assert models[0]["capability_source"] == "dify_schema"
+    assert models[0]["model_properties"]["context_size"] == 1000000
+    assert models[1]["id"] == "qwen-vl-max"
+    assert models[1]["capabilities"] == ["llm", "vision"]
+    assert models[1]["capability_source"] == "dify_schema"
+    assert models[1]["supports_vision"] is True
 
 
 def test_list_provider_models_sanitizes_provider_errors(
@@ -272,6 +312,7 @@ def test_openai_compatible_provider_can_store_custom_models_when_models_endpoint
             "display_name": "Custom Vision Model",
             "model_type": "vision",
             "capabilities": ["llm", "vision", "tool_calling"],
+            "capability_source": "custom",
             "features": ["llm", "vision", "tool_calling"],
             "supports_vision": True,
             "supports_tool_calling": True,
@@ -319,7 +360,8 @@ def test_provider_models_merge_remote_and_custom_models(tmp_path: Path, monkeypa
     assert response.status_code == 200
     assert response.json()["source"] == "remote+custom"
     assert [item["id"] for item in response.json()["models"]] == ["remote-vl", "manual-chat"]
-    assert response.json()["models"][0]["capabilities"] == ["llm", "vision", "tool_calling"]
+    assert response.json()["models"][0]["capabilities"] == ["llm", "vision"]
+    assert response.json()["models"][0]["capability_source"] == "provider_metadata"
 
 
 def test_update_provider_non_secret_fields_preserves_saved_key(tmp_path: Path) -> None:
@@ -457,6 +499,48 @@ def test_save_route_mapping_accepts_provider_capability_flags(tmp_path: Path) ->
     assert payload["supports_responses_api"] is False
 
 
+def test_save_route_mapping_derives_capabilities_from_backend_model_metadata(
+    tmp_path: Path,
+) -> None:
+    client = _client(tmp_path)
+    provider = client.post(
+        "/api/settings/model-providers",
+        json={
+            "provider": "openai_compatible",
+            "base_url": "https://example.test/v1",
+            "api_key": "sk-secret-123456",
+        },
+    ).json()
+    saved_model = client.post(
+        f"/api/settings/model-providers/{provider['provider_id']}/models",
+        json={
+            "model": "text-chat",
+            "model_type": "llm",
+            "capabilities": ["llm"],
+        },
+    )
+    assert saved_model.status_code == 200
+
+    response = client.put(
+        "/api/settings/model-routes",
+        json={
+            "routes": [
+                {
+                    "route_slot": "document_qa",
+                    "provider_id": provider["provider_id"],
+                    "model": "text-chat",
+                    "supports_vision": True,
+                }
+            ]
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()[0]
+    assert payload["supports_vision"] is False
+    assert payload["supports_tool_calling"] is True
+
+
 def test_delete_provider_removes_route_mappings_for_fallback(tmp_path: Path) -> None:
     client = _client(tmp_path)
     provider = client.post(
@@ -550,7 +634,7 @@ def test_provider_connection_test_normalizes_dashscope_model_for_litellm(
     assert calls[0]["model"] == "dashscope/qwen3.7-max-2026-06-08"
 
 
-def test_provider_connection_test_can_auto_select_model_and_mark_valid(
+def test_provider_connection_test_uses_model_list_as_connected_status(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
@@ -570,7 +654,7 @@ def test_provider_connection_test_can_auto_select_model_and_mark_valid(
     class FakeAdapter:
         async def acompletion(self, **kwargs):
             calls.append(("completion", kwargs))
-            return {"choices": [{"message": {"content": "ok"}}]}
+            raise AssertionError("provider connection test should not call completion without an explicit model")
 
     monkeypatch.setattr(model_settings_service.requests, "get", fake_get)
     monkeypatch.setattr(settings, "LiteLLMAdapter", lambda: FakeAdapter())
@@ -590,15 +674,16 @@ def test_provider_connection_test_can_auto_select_model_and_mark_valid(
     )
 
     assert response.status_code == 200
-    assert response.json()["tested_model"] == "qwen-plus"
-    completion_call = [call for call in calls if call[0] == "completion"][0][1]
-    assert completion_call["provider_config"]["model"] == "qwen-plus"
+    assert response.json()["success"] is True
+    assert response.json()["tested_model"] is None
+    assert response.json()["model_count"] == 2
+    assert [call for call in calls if call[0] == "completion"] == []
     listed = client.get("/api/settings/model-providers").json()
     assert listed[0]["validation_status"] == "valid"
 
 
 
-def test_provider_connection_test_auto_selects_chat_model_before_multimodal_or_audio_models(
+def test_provider_connection_test_does_not_auto_select_multimodal_or_audio_models(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
@@ -625,9 +710,7 @@ def test_provider_connection_test_auto_selects_chat_model_before_multimodal_or_a
     class FakeAdapter:
         async def acompletion(self, **kwargs):
             calls.append(("completion", kwargs))
-            if kwargs["provider_config"]["model"] != "qwen3.7-max-2026-06-08":
-                raise RuntimeError("selected non-chat model")
-            return {"choices": [{"message": {"content": "ok"}}]}
+            raise AssertionError("provider connection test should not auto-select a completion model")
 
     monkeypatch.setattr(model_settings_service.requests, "get", fake_get)
     monkeypatch.setattr(settings, "LiteLLMAdapter", lambda: FakeAdapter())
@@ -647,17 +730,17 @@ def test_provider_connection_test_auto_selects_chat_model_before_multimodal_or_a
     )
 
     assert response.status_code == 200
-    assert response.json()["tested_model"] == "qwen3.7-max-2026-06-08"
-    completion_call = [call for call in calls if call[0] == "completion"][0][1]
-    assert completion_call["provider_config"]["model"] == "qwen3.7-max-2026-06-08"
+    assert response.json()["tested_model"] is None
+    assert response.json()["model_count"] == 4
+    assert [call for call in calls if call[0] == "completion"] == []
     assert client.get("/api/settings/model-providers").json()[0]["validation_status"] == "valid"
-def test_provider_connection_test_marks_invalid_and_redacts_secret(
+def test_provider_connection_test_marks_invalid_when_model_list_fails_and_redacts_secret(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
     class FakeResponse:
         def raise_for_status(self):
-            return None
+            raise RuntimeError("bad key sk-secret-123456")
 
         def json(self):
             return {"data": [{"id": "qwen-plus"}]}

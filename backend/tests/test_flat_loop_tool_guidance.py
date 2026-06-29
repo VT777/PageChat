@@ -105,6 +105,15 @@ def test_flat_runtime_prompt_requires_readable_inline_citation_markers() -> None
     assert "immediately after the supported claim" in prompt
 
 
+def test_flat_runtime_prompt_routes_user_urls_to_web_search() -> None:
+    prompt = _DEFAULT_SYSTEM_PROMPT
+
+    assert "user-provided URLs" in prompt
+    assert "web_search" in prompt
+    assert "urls" in prompt
+    assert "doc_id" in prompt
+
+
 def test_initial_messages_do_not_inject_forced_document_route() -> None:
     runtime = ModelToolLoopRuntime(
         model=FakeModel(),
@@ -131,6 +140,60 @@ def test_initial_messages_do_not_inject_forced_document_route() -> None:
     assert "before reading pages" not in text
 
 
+def test_initial_messages_label_user_selected_scope_explicitly() -> None:
+    runtime = ModelToolLoopRuntime(
+        model=FakeModel(),
+        tool_runner=FakeToolRunner(),
+        tools=AGENT_TOOLS,
+    )
+    state = AgentRunState(
+        question="Summarize this file",
+        conversation_id="c1",
+        run_id="r1",
+        message_id="m1",
+        scope={
+            "user_id": "u1",
+            "selected_scope_summary": {
+                "type": "documents",
+                "source": "user_selected",
+                "document_count": 1,
+            },
+        },
+    )
+
+    text = "\n".join(str(message.get("content", "")) for message in runtime._initial_messages(state))
+
+    assert "User-selected scope summary:" in text
+    assert "Selected scope summary:" not in text
+
+
+def test_initial_messages_label_auto_matched_scope_explicitly() -> None:
+    runtime = ModelToolLoopRuntime(
+        model=FakeModel(),
+        tool_runner=FakeToolRunner(),
+        tools=AGENT_TOOLS,
+    )
+    state = AgentRunState(
+        question="Summarize alpha.pdf",
+        conversation_id="c1",
+        run_id="r1",
+        message_id="m1",
+        scope={
+            "user_id": "u1",
+            "selected_scope_summary": {
+                "type": "documents",
+                "source": "auto_matched",
+                "document_count": 1,
+            },
+        },
+    )
+
+    text = "\n".join(str(message.get("content", "")) for message in runtime._initial_messages(state))
+
+    assert "Automatically matched scope summary:" in text
+    assert "User-selected scope summary:" not in text
+
+
 def test_key_tool_descriptions_are_affordances_not_fixed_routes() -> None:
     view_folder_description = _tool_schema("view_folder_structure")["description"]
     browse_description = _tool_schema("browse_documents")["description"]
@@ -143,6 +206,8 @@ def test_key_tool_descriptions_are_affordances_not_fixed_routes() -> None:
     assert "when section/page-range context is useful" in structure_description
     assert "visual pages return image references only" in page_description
     assert "when the user requested web search" in web_description
+    assert "user-provided URLs" in web_description
+    assert "urls" in web_description
 
 
 def test_document_tool_next_steps_are_concise_model_guidance() -> None:
