@@ -7,7 +7,7 @@ from typing import Any, Dict, List, Optional
 
 from pageindex.contracts import make_toc_skeleton_context
 from pageindex.evidence_classifier import classify_page_text
-from pageindex.quality_validation import TocQualityChecker
+from pageindex.index_quality import TocQualityChecker
 
 
 _ENTRY_RE = re.compile(

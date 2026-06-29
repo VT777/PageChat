@@ -6,6 +6,7 @@
 """
 
 import asyncio
+import json
 import re
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -17,43 +18,549 @@ from pageindex.fast_toc import verify_content_match, apply_offset
 # 配置
 # ---------------------------------------------------------------------------
 
-MAX_TOKENS_PER_PHASE1 = 8000      # Phase 1 最大token数
-MAX_TOKENS_PER_PHASE2 = 6000      # Phase 2 每章最大token数
-CHAPTER_BATCH_SIZE = 3            # Phase 2 并发章节数
+MAX_TOKENS_FRAMEWORK = 8000      # stage=framework 最大token数
+MAX_TOKENS_EXPAND = 6000      # stage=expand 每章最大token数
+CHAPTER_BATCH_SIZE = 3            # stage=expand 并发章节数
 MIN_CHAPTER_PAGES = 2             # 章节最小页数
+CHAPTER_EXCERPT_CHARS = 400
+LONG_CHAPTER_WINDOW_SIZE = 10
+LONG_CHAPTER_WINDOW_OVERLAP = 1
+LONG_CHAPTER_WINDOW_THRESHOLD = 25
+CONTENT_OUTLINE_GROUP_TOKEN_LIMIT = 10000
+CONTENT_OUTLINE_PAGE_CHAR_LIMIT = 4500
+MIN_CONTENT_OUTLINE_ITEMS = 2
 
 
-# ---------------------------------------------------------------------------
-# Phase 1: 提取一级框架
-# ---------------------------------------------------------------------------
 
-_PHASE1_PROMPT = """你是文档结构分析专家。请分析以下文档的内容，提取所有一级章节标题。
+def _coerce_text(value: Any) -> str:
+    if value is None:
+        return ""
+    return str(value).strip()
 
-要求：
-1. 只提取一级章节（最大的结构单元，如"第一章"、"1. 引言"等）
-2. 每个章节包含：标题、起始页码
-3. 页码从1开始计数
-4. 不要遗漏任何章节，包括附录、参考文献等
-5. 如果文档有"目录"、"图目录"、"表目录"等前置部分，也请列出
 
-输出JSON格式：
-{
-  "chapters": [
-    {"title": "章节标题", "start_page": 1},
-    ...
-  ]
+def _coerce_int(value: Any, default: int = 0) -> int:
+    if isinstance(value, bool) or value is None:
+        return default
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(value)
+    if isinstance(value, str):
+        value = value.strip()
+        if not value:
+            return default
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+_EXPLICIT_NUMBERING_RE = re.compile(
+    r"^\s*(?P<number>\d{1,3}(?:[.]\d{1,3})+)\b"
+)
+_NUMBERED_STRUCTURE_RE = re.compile(r"^\d{1,3}(?:\.\d{1,3})*$")
+_AUTHORITATIVE_UNNUMBERED_STRUCTURES = {
+    "abstract",
+    "references",
+    "acknowledgment",
+    "acknowledgement",
+    "conclusion",
+    "index",
+    "preface",
+    "contents",
 }
 
-文档内容（每页前300字）：
+
+def _explicit_numbering_key(title: str) -> Optional[str]:
+    """Return a stable key for explicit section numbers such as 1.4 or 2.3.1."""
+    normalized = (title or "").replace(chr(0xFF0E), ".")
+    match = _EXPLICIT_NUMBERING_RE.match(normalized)
+    if not match:
+        return None
+    return match.group("number")
+
+
+def _content_outline_structure_key(value: Any) -> str:
+    return _coerce_text(value).casefold()
+
+
+def _is_numbered_structure(structure: Any) -> bool:
+    return bool(_NUMBERED_STRUCTURE_RE.fullmatch(_coerce_text(structure)))
+
+
+def _is_authoritative_heading_item(item: Dict[str, Any]) -> bool:
+    structure = _content_outline_structure_key(item.get("structure"))
+    title = _coerce_text(item.get("title"))
+    page = _physical_index_to_int(item.get("physical_index"))
+    if not title or page <= 0:
+        return False
+    if _is_numbered_structure(structure):
+        return True
+    return structure in _AUTHORITATIVE_UNNUMBERED_STRUCTURES
+
+
+def _title_has_own_number(title: Any) -> bool:
+    value = _coerce_text(title).replace(chr(0xFF0E), ".")
+    return bool(re.match(r"^\s*\d{1,3}(?:\.\d{1,3})*[.)]?\s+\S", value))
+
+
+def _title_without_explicit_number_key(title: Any) -> str:
+    value = _coerce_text(title).replace(chr(0xFF0E), ".")
+    value = re.sub(r"^\s*\d{1,3}(?:\.\d{1,3})*[.)]?\s+", "", value)
+    return _normalize_title_key(value)
+
+
+def _content_outline_sort_key(item: Dict[str, Any]) -> Tuple[int, Tuple[Any, ...], int]:
+    page = _physical_index_to_int(item.get("physical_index")) or 10**9
+    structure = _content_outline_structure_key(item.get("structure"))
+    order = _coerce_int(item.get("_content_outline_order"), 10**6)
+    if structure == "0":
+        return (page, (-3, 0), order)
+    if structure.startswith("front-"):
+        return (page, (-2, order), order)
+    if structure == "abstract":
+        return (page, (-1, 0), order)
+    if _is_numbered_structure(structure):
+        parts = tuple(_coerce_int(part, 0) for part in structure.split("."))
+        return (page, (0, *parts), order)
+    if structure in {"acknowledgment", "acknowledgement"}:
+        return (page, (900, 0), order)
+    if structure == "references":
+        return (page, (910, 0), order)
+    if structure == "index":
+        return (page, (920, 0), order)
+    return (page, (999, order), order)
+
+
+def _merge_text_heading_facts(
+    flat_items: List[Dict[str, Any]],
+    *,
+    page_texts: List[str],
+    physical_start_page: int,
+    physical_end_page: int,
+) -> List[Dict[str, Any]]:
+    """Repair LLM outline facts with high-confidence headings from page text.
+
+    The LLM remains responsible for the document outline, but explicit numbered
+    headings and canonical paper sections such as ABSTRACT/REFERENCES are
+    reliable page-level evidence. They can safely fill omissions and correct
+    start pages without introducing a separate rule-only path.
+    """
+    try:
+        from pageindex.text_heading_extractor import extract_text_headings
+    except Exception:
+        return flat_items
+
+    heading_items = extract_text_headings(page_texts, start_page=physical_start_page)
+    heading_items = [
+        dict(item)
+        for item in heading_items
+        if isinstance(item, dict)
+        and physical_start_page
+        <= _physical_index_to_int(item.get("physical_index"))
+        <= physical_end_page
+    ]
+    authoritative = [item for item in heading_items if _is_authoritative_heading_item(item)]
+    if len(authoritative) < 3:
+        return flat_items
+
+    merged: List[Dict[str, Any]] = []
+    for order, item in enumerate(flat_items):
+        updated = dict(item)
+        updated.setdefault("_content_outline_order", order)
+        merged.append(updated)
+
+    # If the model labeled the document title as numeric section "1", move it
+    # to the deterministic front-matter structure so the real section 1 can
+    # remain a separate node.
+    front_heading_by_title = {
+        _normalize_title_key(item.get("title")): item
+        for item in heading_items
+        if _content_outline_structure_key(item.get("structure")).startswith("front-")
+    }
+    if physical_start_page == 1 and front_heading_by_title:
+        for item in merged:
+            title_key = _normalize_title_key(item.get("title"))
+            front = front_heading_by_title.get(title_key)
+            if not front:
+                continue
+            if _is_numbered_structure(item.get("structure")) and not _title_has_own_number(item.get("title")):
+                item["structure"] = front.get("structure") or "front-1"
+                item["level"] = 1
+                item["physical_index"] = _physical_index_to_int(front.get("physical_index"))
+
+    by_structure: Dict[str, Dict[str, Any]] = {}
+    by_title_page: Dict[Tuple[str, int], Dict[str, Any]] = {}
+    for item in merged:
+        structure = _content_outline_structure_key(item.get("structure"))
+        if structure and structure not in by_structure:
+            by_structure[structure] = item
+        page = _physical_index_to_int(item.get("physical_index"))
+        title_key = _title_without_explicit_number_key(item.get("title"))
+        if title_key and page > 0 and (title_key, page) not in by_title_page:
+            by_title_page[(title_key, page)] = item
+
+    next_order = len(merged)
+    changed = 0
+    for heading in authoritative:
+        structure = _content_outline_structure_key(heading.get("structure"))
+        page = _physical_index_to_int(heading.get("physical_index"))
+        if not structure or page <= 0:
+            continue
+        existing = by_structure.get(structure)
+        if existing is not None:
+            if _physical_index_to_int(existing.get("physical_index")) != page:
+                existing["physical_index"] = page
+                existing["source"] = str(existing.get("source") or "llm_content_outline")
+                existing["heading_fact_verified"] = True
+                changed += 1
+            continue
+
+        title_key = _title_without_explicit_number_key(heading.get("title"))
+        existing = by_title_page.get((title_key, page)) if title_key else None
+        if existing is not None:
+            old_structure = _content_outline_structure_key(existing.get("structure"))
+            existing["structure"] = heading.get("structure")
+            existing["title"] = heading.get("title")
+            existing["level"] = heading.get("level")
+            existing["physical_index"] = page
+            existing["source"] = str(existing.get("source") or "llm_content_outline")
+            existing["heading_fact_verified"] = True
+            if old_structure and by_structure.get(old_structure) is existing:
+                by_structure.pop(old_structure, None)
+            by_structure[structure] = existing
+            by_title_page[(title_key, page)] = existing
+            changed += 1
+            continue
+
+        added = dict(heading)
+        added["source"] = "text_heading_fact"
+        added["heading_fact_verified"] = True
+        added["_content_outline_order"] = next_order
+        next_order += 1
+        merged.append(added)
+        by_structure[structure] = added
+        changed += 1
+
+    if changed <= 0:
+        return flat_items
+
+    merged.sort(key=_content_outline_sort_key)
+    for item in merged:
+        item.pop("_content_outline_order", None)
+    return merged
+
+
+# ---------------------------------------------------------------------------
+# stage=content_outline: 官方式带物理页标签全文建树
+# ---------------------------------------------------------------------------
+
+_CONTENT_OUTLINE_INIT_PROMPT = """You are an expert in extracting hierarchical document structure.
+
+Generate a navigation outline from the provided page text.
+
+Rules:
+1. The text contains physical page tags like <physical_index_12>. Use those tags as the start page evidence.
+2. Extract meaningful sections and subsections in reading order.
+3. Preserve original heading wording when visible; only fix obvious spacing issues.
+4. Include meaningful front matter or introductory sections when they start before the first numbered chapter.
+5. If the document starts with a prominent document/report/paper title, include it as the first top-level node.
+6. Keep visible long headings complete when possible; do not shorten them unless only a shorter heading is visible.
+7. Do not invent unsupported sections. If unsure, return fewer items.
+8. Return a flat JSON list using structure numbers such as "1", "1.1", "1.2", "2".
+
+Return JSON only:
+{{
+  "items": [
+    {{"structure": "1", "title": "Section title", "physical_index": "<physical_index_1>"}}
+  ]
+}}
+
+Document text:
 {content}
 """
 
 
-async def phase1_extract_framework(
+_CONTENT_OUTLINE_CONTINUE_PROMPT = """You are an expert in extracting hierarchical document structure.
+
+Continue the previous outline using only the current page text.
+
+Rules:
+1. The text contains physical page tags like <physical_index_12>. Use those tags as the start page evidence.
+2. Return only new sections/subsections that start in the current text.
+3. Preserve original heading wording when visible; only fix obvious spacing issues.
+4. Keep structure numbers consistent with the previous outline.
+5. If a new group starts with a prominent document/report/paper title not present in the previous outline, include it as a top-level node.
+6. Keep visible long headings complete when possible; do not shorten them unless only a shorter heading is visible.
+7. Do not invent unsupported sections. If unsure, return fewer items.
+
+Return JSON only:
+{{
+  "items": [
+    {{"structure": "2", "title": "Next section", "physical_index": "<physical_index_12>"}}
+  ]
+}}
+
+Previous outline JSON:
+{previous}
+
+Current page text:
+{content}
+"""
+
+
+def _page_labeled_text(page: int, text: Any) -> str:
+    value = _coerce_text(text)
+    if len(value) > CONTENT_OUTLINE_PAGE_CHAR_LIMIT:
+        value = value[:CONTENT_OUTLINE_PAGE_CHAR_LIMIT]
+    return f"<physical_index_{page}>\n{value}\n</physical_index_{page}>"
+
+
+def _build_page_labeled_groups(page_texts: List[str], *, physical_start_page: int = 1) -> List[str]:
+    groups: List[str] = []
+    current: List[str] = []
+    current_tokens = 0
+    for index, text in enumerate(page_texts, start=1):
+        labeled = _page_labeled_text(physical_start_page + index - 1, text)
+        if not labeled.strip():
+            continue
+        token_count = max(1, count_tokens(labeled))
+        if current and current_tokens + token_count > CONTENT_OUTLINE_GROUP_TOKEN_LIMIT:
+            groups.append("\n\n".join(current))
+            current = []
+            current_tokens = 0
+        current.append(labeled)
+        current_tokens += token_count
+    if current:
+        groups.append("\n\n".join(current))
+    return groups
+
+
+def _physical_index_to_int(value: Any) -> int:
+    if isinstance(value, bool) or value is None:
+        return 0
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(value)
+    text = _coerce_text(value)
+    if not text:
+        return 0
+    marker = re.search(r"physical_index_(\d+)", text)
+    if marker:
+        return _coerce_int(marker.group(1), 0)
+    page_marker = re.search(r"\bpage\s*(\d+)\b", text, flags=re.IGNORECASE)
+    if page_marker:
+        return _coerce_int(page_marker.group(1), 0)
+    return _coerce_int(text, 0)
+
+
+def _extract_outline_payload_items(payload: Any) -> List[Dict[str, Any]]:
+    if isinstance(payload, list):
+        return [item for item in payload if isinstance(item, dict)]
+    if not isinstance(payload, dict):
+        return []
+    for key in ("items", "toc_items", "outline", "structure", "chapters", "sections"):
+        value = payload.get(key)
+        if isinstance(value, list):
+            return [item for item in value if isinstance(item, dict)]
+    return []
+
+
+def _structure_depth(structure: str) -> int:
+    if not structure:
+        return 1
+    return structure.count(".") + 1
+
+
+def _normalize_content_outline_items(
+    payload: Any,
+    *,
+    min_page: int,
+    max_page: int,
+) -> List[Dict[str, Any]]:
+    raw_items = _extract_outline_payload_items(payload)
+    normalized: List[Dict[str, Any]] = []
+    seen: set[Tuple[str, str, int]] = set()
+
+    def append_item(item: Dict[str, Any], fallback_structure: str) -> None:
+        title = _coerce_text(
+            item.get("title")
+            or item.get("heading")
+            or item.get("name")
+        )
+        page = _physical_index_to_int(
+            item.get("physical_index")
+            or item.get("start_page")
+            or item.get("start_index")
+            or item.get("page")
+        )
+        if not title or page < min_page or page > max_page:
+            return
+        structure = _coerce_text(item.get("structure") or fallback_structure)
+        if not structure:
+            level = max(1, _coerce_int(item.get("level"), 1))
+            structure = ".".join("1" for _ in range(level))
+        key = (structure, _normalize_title_key(title), page)
+        if key in seen:
+            return
+        seen.add(key)
+        normalized.append(
+            {
+                "structure": structure,
+                "title": title,
+                "level": _structure_depth(structure),
+                "physical_index": page,
+                "source": "llm_content_outline",
+            }
+        )
+
+    def walk(items: List[Dict[str, Any]], parent_structure: str = "") -> None:
+        for index, item in enumerate(items, start=1):
+            fallback_structure = (
+                f"{parent_structure}.{index}" if parent_structure else str(index)
+            )
+            structure = _coerce_text(item.get("structure") or fallback_structure)
+            append_item(item, structure)
+            children = item.get("nodes") or item.get("children") or []
+            if isinstance(children, list):
+                walk([child for child in children if isinstance(child, dict)], structure)
+
+    walk(raw_items)
+    return normalized
+
+
+def _dedupe_content_outline_items(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    deduped: List[Dict[str, Any]] = []
+    seen: set[Tuple[str, str, int]] = set()
+    for item in items:
+        title = _coerce_text(item.get("title"))
+        page = _physical_index_to_int(item.get("physical_index"))
+        structure = _coerce_text(item.get("structure"))
+        key = (structure, _normalize_title_key(title), page)
+        if not title or page <= 0 or key in seen:
+            continue
+        seen.add(key)
+        deduped.append(dict(item))
+    return deduped
+
+
+async def extract_page_labeled_content_outline(
+    page_texts: List[str],
+    model: Optional[str] = None,
+    physical_start_page: int = 1,
+) -> Optional[Dict[str, Any]]:
+    """Build a full-document outline from page-tagged text.
+
+    This mirrors the official PageIndex no-TOC path: each page is labeled with
+    its 1-based physical PDF page and the model returns a flat structured list.
+    """
+    if not page_texts:
+        return None
+
+    physical_start_page = max(1, int(physical_start_page or 1))
+    groups = _build_page_labeled_groups(page_texts, physical_start_page=physical_start_page)
+    if not groups:
+        return None
+
+    page_count = len(page_texts)
+    physical_end_page = physical_start_page + page_count - 1
+    all_items: List[Dict[str, Any]] = []
+
+    from pageindex.post_processing import assign_page_ranges, build_tree, normalize_tree_page_ranges
+    from pageindex.utils import extract_json
+
+    for group_index, group in enumerate(groups):
+        if group_index == 0:
+            prompt = _CONTENT_OUTLINE_INIT_PROMPT.format(content=group)
+        else:
+            previous = json.dumps(all_items[-80:], ensure_ascii=False, indent=2)
+            prompt = _CONTENT_OUTLINE_CONTINUE_PROMPT.format(
+                previous=previous,
+                content=group,
+            )
+        response = await llm_acompletion(model, prompt)
+        if not response:
+            continue
+        payload = extract_json(response)
+        items = _normalize_content_outline_items(
+            payload,
+            min_page=physical_start_page,
+            max_page=physical_end_page,
+        )
+        all_items.extend(items)
+
+    flat_items = _dedupe_content_outline_items(all_items)
+    if len(flat_items) < MIN_CONTENT_OUTLINE_ITEMS:
+        return None
+    flat_items = _merge_text_heading_facts(
+        flat_items,
+        page_texts=page_texts,
+        physical_start_page=physical_start_page,
+        physical_end_page=physical_end_page,
+    )
+    flat_items = _dedupe_content_outline_items(flat_items)
+
+    ranged_items = assign_page_ranges([dict(item) for item in flat_items], physical_end_page)
+    tree = build_tree(ranged_items)
+    tree = normalize_tree_page_ranges(tree, physical_end_page)
+
+    total_nodes = len(flat_items)
+    root_count = len(tree)
+    confidence = 0.62
+    if total_nodes >= max(4, root_count + 2):
+        confidence += 0.12
+    if root_count >= 3:
+        confidence += 0.08
+
+    print(
+        "[TOC-CANDIDATE] provider=hierarchical "
+        f"stage=content_outline status=ok groups={len(groups)} items={total_nodes}"
+    )
+    return {
+        "items": tree,
+        "toc_items": tree,
+        "flat_items": ranged_items,
+        "structure": "hierarchical",
+        "source": "hierarchical_content_outline",
+        "confidence": min(confidence, 0.92),
+        "stages": {
+            "content_outline_groups": len(groups),
+            "content_outline_items": total_nodes,
+            "content_outline_roots": root_count,
+        },
+    }
+
+# ---------------------------------------------------------------------------
+# stage=framework: 提取一级框架
+# ---------------------------------------------------------------------------
+
+_FRAMEWORK_PROMPT = """You are a document structure analyst. Analyze the document excerpts below and extract all top-level chapter titles.
+
+Requirements:
+1. Extract only top-level chapters, meaning the largest structural units such as "Chapter 1" or "1. Introduction".
+2. For each chapter, return the title and the starting physical page number.
+3. Page numbers are 1-based physical PDF pages.
+4. Do not omit appendices, references, or other top-level back matter.
+5. If the document has front-matter sections such as Contents, Figure List, or Table List, include them only when they are top-level visible document sections.
+
+Return JSON only:
+{{
+  "chapters": [
+    {{"title": "Chapter title", "start_page": 1}}
+  ]
+}}
+
+Document excerpts, up to the first 300 characters per page:
+{content}
+"""
+
+
+async def extract_framework(
     page_texts: List[str],
     model: Optional[str] = None,
 ) -> Optional[List[Dict]]:
-    """Phase 1: 提取一级章节框架。
+    """Extract the top-level framework for the hierarchical provider.
 
     Args:
         page_texts: 所有页面的文本列表（0-indexed）
@@ -77,7 +584,7 @@ async def phase1_extract_framework(
 
     # 如果内容太长，截断
     tokens = count_tokens(content)
-    if tokens > MAX_TOKENS_PER_PHASE1:
+    if tokens > MAX_TOKENS_FRAMEWORK:
         # 保留首尾，中间采样
         keep_pages = max(3, len(page_texts) // 10)
         head = summaries[:keep_pages]
@@ -87,7 +594,7 @@ async def phase1_extract_framework(
         middle = summaries[keep_pages:len(summaries)-keep_pages:step]
         content = '\n'.join(head + middle + tail)
 
-    prompt = _PHASE1_PROMPT.format(content=content)
+    prompt = _FRAMEWORK_PROMPT.format(content=content)
 
     try:
         response = await llm_acompletion(model, prompt)
@@ -98,7 +605,7 @@ async def phase1_extract_framework(
         from pageindex.utils import extract_json
         data = extract_json(response)
         if not data:
-            print(f"[HIERARCHICAL] Failed to parse JSON from response")
+            print(f"[TOC-CANDIDATE] provider=hierarchical Failed to parse JSON from response")
             return None
         
         chapters = data.get("chapters", [])
@@ -106,8 +613,8 @@ async def phase1_extract_framework(
         # 验证
         valid_chapters = []
         for ch in chapters:
-            title = ch.get("title", "").strip()
-            start_page = ch.get("start_page", 0)
+            title = _coerce_text(ch.get("title"))
+            start_page = _coerce_int(ch.get("start_page"), 0)
             if title and start_page > 0:
                 valid_chapters.append({
                     "title": title,
@@ -115,55 +622,195 @@ async def phase1_extract_framework(
                 })
 
         if len(valid_chapters) >= 2:
-            print(f"[HIERARCHICAL] Phase 1: Extracted {len(valid_chapters)} chapters")
+            print(f"[TOC-CANDIDATE] provider=hierarchical stage=framework status=ok chapters={len(valid_chapters)}")
             return valid_chapters
 
     except Exception as e:
-        print(f"[HIERARCHICAL] Phase 1 failed: {e}")
+        print(f"[TOC-CANDIDATE] provider=hierarchical stage=framework status=error error={e}")
 
     return None
 
 
 # ---------------------------------------------------------------------------
-# Phase 2: 逐章展开子章节
+# stage=expand status=ok chapter= 逐章展开子章节
 # ---------------------------------------------------------------------------
 
-_PHASE2_PROMPT = """你是文档结构分析专家。请分析以下章节的内容，提取该章节的所有子章节标题。
+_EXPAND_PROMPT = """You are a document structure analyst. Extract subsection titles inside the chapter using only the provided page excerpts.
 
-章节信息：
-- 标题: {chapter_title}
-- 起始页: {start_page}
-- 结束页: {end_page}
+Chapter metadata:
+- Title: {chapter_title}
+- Start page: {start_page}
+- End page: {end_page}
 
-要求：
-1. 提取该章节下的所有子章节（二级、三级等）
-2. 每个子章节包含：标题、级别（2,3,4...）、页码
-3. 页码是文档的绝对页码（从1开始）
-4. 保持原始编号（如"1.1"、"（一）"等）
-5. 不要编造不存在的子章节
+Requirements:
+1. Extract all second-level, third-level, and deeper section headings under this chapter.
+2. For each subsection, return title, hierarchy level (2, 3, 4, ...), and the page value from the provided excerpt where the heading appears. This page is only a hint; final physical page mapping is handled later.
+3. Keep original numbering when present, such as "1.1" or "(a)".
+4. Titles must be concise headings, not paragraphs, table cells, or body text.
+5. If unsure, return fewer items instead of guessing.
+6. Ignore headers, footers, page numbers, table cells, and decorative text.
+7. Do not return end pages.
 
-输出JSON格式：
-{
+Return JSON only:
+{{
   "sub_chapters": [
-    {"title": "子章节标题", "level": 2, "page": 5},
-    {"title": "子子章节", "level": 3, "page": 7},
-    ...
+    {{"title": "Subsection title", "level": 2, "page": 5}}
   ]
-}
+}}
 
-章节内容：
+Page excerpts JSON:
 {content}
 """
 
 
-async def phase2_expand_chapter(
+_EXPAND_RETRY_PROMPT = """You are a document structure analyst. Re-check the chapter page excerpts and extract subsection titles.
+
+Chapter metadata:
+- Title: {chapter_title}
+- Start page: {start_page}
+- End page: {end_page}
+
+Requirements:
+1. Extract visible subsection headings under this chapter in reading order.
+2. If a page begins with a prominent content heading, include it when it belongs to this chapter.
+3. Return title, hierarchy level, and the page value from the excerpt where the heading appears.
+4. Ignore headers, footers, page numbers, table cells, and decorative text.
+5. Do not invent unsupported headings. If unsure, return fewer items.
+6. Do not return end pages.
+
+Return JSON only:
+{{
+  "sub_chapters": [
+    {{"title": "Subsection title", "level": 2, "page": 5}}
+  ]
+}}
+
+Page excerpts JSON:
+{content}
+"""
+
+
+def _normalize_title_key(value: Any) -> str:
+    return re.sub(r"[\s\W_]+", "", str(value or "").casefold(), flags=re.UNICODE)
+
+
+def _page_excerpt(text: Any, max_chars: int = CHAPTER_EXCERPT_CHARS) -> str:
+    value = str(text or "").strip()
+    return value[:max_chars]
+
+
+def _chapter_excerpt_windows(
+    start_page: int,
+    end_page: int,
+    page_texts: List[str],
+) -> List[List[Dict[str, Any]]]:
+    """Build page/excerpt windows for chapter expansion."""
+    end_page = min(end_page, len(page_texts))
+    if start_page < 1 or start_page > end_page:
+        return []
+
+    pages = list(range(start_page, end_page + 1))
+    if len(pages) <= LONG_CHAPTER_WINDOW_THRESHOLD:
+        return [_page_excerpt_items(pages, page_texts)]
+
+    windows: List[List[Dict[str, Any]]] = []
+    step = max(1, LONG_CHAPTER_WINDOW_SIZE - LONG_CHAPTER_WINDOW_OVERLAP)
+    index = 0
+    while index < len(pages):
+        chunk = pages[index:index + LONG_CHAPTER_WINDOW_SIZE]
+        if not chunk:
+            break
+        windows.append(_page_excerpt_items(chunk, page_texts))
+        if chunk[-1] == pages[-1]:
+            break
+        index += step
+    return windows
+
+
+def _page_excerpt_items(pages: List[int], page_texts: List[str]) -> List[Dict[str, Any]]:
+    items: List[Dict[str, Any]] = []
+    for page in pages:
+        if 1 <= page <= len(page_texts):
+            items.append(
+                {
+                    "page": page,
+                    "excerpt": _page_excerpt(page_texts[page - 1]),
+                }
+            )
+    return items
+
+
+def _format_excerpt_window(window: List[Dict[str, Any]]) -> str:
+    return json.dumps(window, ensure_ascii=False, indent=2)
+
+
+def _valid_sub_chapters_from_response(
+    response: str,
+    *,
+    chapter_title: str,
+    start_page: int,
+    end_page: int,
+) -> List[Dict[str, Any]]:
+    from pageindex.utils import extract_json
+
+    data = extract_json(response)
+    if not data:
+        print(f"[TOC-CANDIDATE] provider=hierarchical Failed to parse JSON for '{chapter_title}'")
+        return []
+
+    valid: List[Dict[str, Any]] = []
+    for sub in data.get("sub_chapters", []):
+        if not isinstance(sub, dict):
+            continue
+        title = _coerce_text(sub.get("title"))
+        level = max(2, _coerce_int(sub.get("level"), 2))
+        page = _coerce_int(sub.get("page"), 0)
+
+        if title and start_page <= page <= end_page:
+            valid.append(
+                {
+                    "title": title,
+                    "level": level,
+                    "page": page,
+                }
+            )
+    return valid
+
+
+def _merge_window_sub_chapters(sub_chapters: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    merged: List[Dict[str, Any]] = []
+    seen: set[tuple[str, int]] = set()
+    for item in sorted(
+        sub_chapters,
+        key=lambda value: (
+            _coerce_int(value.get("page"), 0),
+            _normalize_title_key(value.get("title")),
+        ),
+    ):
+        title = _coerce_text(item.get("title"))
+        page = _coerce_int(item.get("page"), 0)
+        key = (_normalize_title_key(title), page)
+        if not title or page <= 0 or key in seen:
+            continue
+        seen.add(key)
+        merged.append(
+            {
+                "title": title,
+                "level": max(2, _coerce_int(item.get("level"), 2)),
+                "page": page,
+            }
+        )
+    return merged
+
+
+async def expand_chapter(
     chapter_title: str,
     start_page: int,
     end_page: int,
     page_texts: List[str],
     model: Optional[str] = None,
 ) -> List[Dict]:
-    """Phase 2: 展开单个章节的子章节。
+    """stage=expand status=ok chapter= 展开单个章节的子章节。
 
     Args:
         chapter_title: 章节标题
@@ -180,76 +827,71 @@ async def phase2_expand_chapter(
 
     end_page = min(end_page, len(page_texts))
 
-    # 提取章节文本
-    chapter_texts = page_texts[start_page-1:end_page]
-    content = '\n'.join(f"[Page {i+start_page}] {t[:500]}" 
-                        for i, t in enumerate(chapter_texts))
+    windows = _chapter_excerpt_windows(start_page, end_page, page_texts)
+    if not windows:
+        return []
 
-    # 截断过长内容
-    tokens = count_tokens(content)
-    if tokens > MAX_TOKENS_PER_PHASE2:
-        # 保留每页前300字
-        content = '\n'.join(f"[Page {i+start_page}] {t[:300]}" 
-                            for i, t in enumerate(chapter_texts))
-        tokens = count_tokens(content)
-        if tokens > MAX_TOKENS_PER_PHASE2:
-            # 进一步采样：只取奇数页
-            content = '\n'.join(f"[Page {i+start_page}] {t[:300]}" 
-                                for i, t in enumerate(chapter_texts) if i % 2 == 0)
-
-    prompt = _PHASE2_PROMPT.format(
-        chapter_title=chapter_title,
-        start_page=start_page,
-        end_page=end_page,
-        content=content,
-    )
-
+    valid: List[Dict[str, Any]] = []
     try:
-        response = await llm_acompletion(model, prompt)
-        if not response:
-            return []
+        for window in windows:
+            prompt = _EXPAND_PROMPT.format(
+                chapter_title=chapter_title,
+                start_page=start_page,
+                end_page=end_page,
+                content=_format_excerpt_window(window),
+            )
+            response = await llm_acompletion(model, prompt)
+            if not response:
+                continue
+            valid.extend(
+                _valid_sub_chapters_from_response(
+                    response,
+                    chapter_title=chapter_title,
+                    start_page=start_page,
+                    end_page=end_page,
+                )
+            )
 
-        # 使用更健壮的extract_json
-        from pageindex.utils import extract_json
-        data = extract_json(response)
-        if not data:
-            print(f"[HIERARCHICAL] Failed to parse JSON for '{chapter_title}'")
-            return []
-        
-        sub_chapters = data.get("sub_chapters", [])
-
-        # 验证和清理
-        valid = []
-        for sub in sub_chapters:
-            title = sub.get("title", "").strip()
-            level = sub.get("level", 2)
-            page = sub.get("page", 0)
-
-            if title and page >= start_page and page <= end_page:
-                valid.append({
-                    "title": title,
-                    "level": level,
-                    "page": page,
-                })
-
-        print(f"[HIERARCHICAL] Phase 2: '{chapter_title}' -> {len(valid)} sub-chapters")
-        return valid
+        merged = _merge_window_sub_chapters(valid)
+        if not merged and len(windows) == 1:
+            retry_valid: List[Dict[str, Any]] = []
+            for window in windows:
+                prompt = _EXPAND_RETRY_PROMPT.format(
+                    chapter_title=chapter_title,
+                    start_page=start_page,
+                    end_page=end_page,
+                    content=_format_excerpt_window(window),
+                )
+                response = await llm_acompletion(model, prompt)
+                if not response:
+                    continue
+                retry_valid.extend(
+                    _valid_sub_chapters_from_response(
+                        response,
+                        chapter_title=chapter_title,
+                        start_page=start_page,
+                        end_page=end_page,
+                    )
+                )
+            merged = _merge_window_sub_chapters(retry_valid)
+        print(f"[TOC-CANDIDATE] provider=hierarchical stage=expand status=ok chapter='{chapter_title}' sub_chapters={len(merged)}")
+        return merged
 
     except Exception as e:
-        print(f"[HIERARCHICAL] Phase 2 failed for '{chapter_title}': {e}")
+        print(f"[TOC-CANDIDATE] provider=hierarchical stage=expand status=error chapter='{chapter_title}' error={e}")
 
     return []
 
 
-async def phase2_expand_all_chapters(
+async def expand_all_chapters(
     chapters: List[Dict],
     page_texts: List[str],
     model: Optional[str] = None,
 ) -> Dict[int, List[Dict]]:
-    """Phase 2: 并发展开所有章节的子章节。
+    """stage=expand status=ok chapter= 并发展开所有章节的子章节。
 
     Args:
-        chapters: Phase 1 提取的章节列表
+        chapters: chapters extracted by the framework stage
         page_texts: 所有页面文本
         model: LLM模型
 
@@ -284,7 +926,7 @@ async def phase2_expand_all_chapters(
         tasks = []
         for idx in batch_indices:
             info = results[idx]
-            task = phase2_expand_chapter(
+            task = expand_chapter(
                 info["title"],
                 info["start_page"],
                 info["end_page"],
@@ -312,18 +954,18 @@ async def phase2_expand_all_chapters(
 
 
 # ---------------------------------------------------------------------------
-# Phase 3: 合并结果
+# stage=merge: 合并结果
 # ---------------------------------------------------------------------------
 
-def phase3_merge_results(
+def merge_results(
     chapters: List[Dict],
     sub_chapters_map: Dict[int, List[Dict]],
 ) -> List[Dict]:
-    """Phase 3: 将一级章节和子章节合并为完整目录树。
+    """Merge top-level chapters and expanded children into a TOC tree.
 
     Args:
-        chapters: Phase 1 的一级章节
-        sub_chapters_map: Phase 2 的子章节 {章节索引: 子章节列表}
+        chapters: chapters extracted by the framework stage
+        sub_chapters_map: child chapters from the expand stage
 
     Returns:
         完整的目录树结构
@@ -346,7 +988,7 @@ def phase3_merge_results(
         subs = sub_chapters_map.get(i, [])
         if subs:
             # 构建子章节树
-            sub_tree = _build_sub_tree(subs, i + 1)
+            sub_tree = _build_sub_tree(subs, str(i + 1))
             chapter_node["nodes"] = sub_tree
 
         result.append(chapter_node)
@@ -368,21 +1010,32 @@ def _build_sub_tree(sub_chapters: List[Dict], parent_structure: str) -> List[Dic
         return []
 
     # 按页码排序
-    sub_chapters = sorted(sub_chapters, key=lambda x: x.get("page", 0))
+    sub_chapters = sorted(sub_chapters, key=lambda x: _coerce_int(x.get("page"), 0))
 
+    parent_prefix = _coerce_text(parent_structure)
     result = []
     stack = []  # (level, node)
 
     # 子章节计数器
     level_counters: Dict[int, int] = {}
+    seen_numbered_nodes: Dict[Tuple[int, str], Dict[str, Any]] = {}
 
     for sub in sub_chapters:
-        level = sub.get("level", 2)
-        title = sub.get("title", "")
-        page = sub.get("page", 0)
+        level = max(2, _coerce_int(sub.get("level"), 2))
+        title = _coerce_text(sub.get("title"))
+        page = _coerce_int(sub.get("page"), 0)
 
         if not title or page <= 0:
             continue
+
+        numbering_key = _explicit_numbering_key(title)
+        if numbering_key:
+            duplicate_node = seen_numbered_nodes.get((level, numbering_key))
+            if duplicate_node is not None:
+                while stack and stack[-1][0] >= level:
+                    stack.pop()
+                stack.append((level, duplicate_node))
+                continue
 
         # 生成structure
         level_counters[level] = level_counters.get(level, 0) + 1
@@ -392,11 +1045,11 @@ def _build_sub_tree(sub_chapters: List[Dict], parent_structure: str) -> List[Dic
                 del level_counters[l]
 
         # 构建structure路径
-        parts = [parent_structure]
+        parts = [parent_prefix] if parent_prefix else []
         for l in sorted(level_counters.keys()):
             if l >= 2:
                 parts.append(str(level_counters[l]))
-        structure = '.'.join(parts)
+        structure = '.'.join(str(part) for part in parts if str(part))
 
         node = {
             "title": title,
@@ -404,6 +1057,8 @@ def _build_sub_tree(sub_chapters: List[Dict], parent_structure: str) -> List[Dic
             "physical_index": page,
             "nodes": [],
         }
+        if numbering_key:
+            seen_numbered_nodes[(level, numbering_key)] = node
 
         # 找到父节点
         if level <= 2:
@@ -440,7 +1095,7 @@ async def extract_hierarchical_toc(
 ) -> Optional[Dict[str, Any]]:
     """分层提取主入口。
 
-    执行完整的 Phase 1 → Phase 2 → Phase 3 流程。
+    Runs the hierarchical provider framework -> expand -> merge flow.
 
     Args:
         page_texts: 所有页面的文本列表
@@ -452,34 +1107,46 @@ async def extract_hierarchical_toc(
             "structure": "hierarchical",
             "source": "hierarchical",
             "confidence": float,
-            "phases": {
-                "phase1_chapters": int,
-                "phase2_expanded": int,
+            "stages": {
+                "framework_chapters": int,
+                "expanded_chapters": int,
                 "total_sub_chapters": int,
             }
         }
     """
-    print("[HIERARCHICAL] Starting Phase 1: Framework extraction...")
+    print("[TOC-CANDIDATE] provider=hierarchical stage=content_outline status=started")
+    try:
+        content_outline = await extract_page_labeled_content_outline(page_texts, model)
+    except Exception as exc:
+        print(
+            "[TOC-CANDIDATE] provider=hierarchical "
+            f"stage=content_outline status=error error={type(exc).__name__}"
+        )
+        content_outline = None
+    if content_outline:
+        return content_outline
 
-    # Phase 1
-    chapters = await phase1_extract_framework(page_texts, model)
+    print("[TOC-CANDIDATE] provider=hierarchical stage=framework status=started")
+
+    # stage=framework
+    chapters = await extract_framework(page_texts, model)
     if not chapters:
-        print("[HIERARCHICAL] Phase 1 failed, aborting")
+        print("[TOC-CANDIDATE] provider=hierarchical stage=framework status=error action=abort")
         return None
 
-    print(f"[HIERARCHICAL] Phase 1 complete: {len(chapters)} chapters")
+    print(f"[TOC-CANDIDATE] provider=hierarchical stage=framework status=done chapters={len(chapters)}")
 
-    # Phase 2
-    print("[HIERARCHICAL] Starting Phase 2: Chapter expansion...")
-    sub_chapters_map = await phase2_expand_all_chapters(chapters, page_texts, model)
+    # stage=expand
+    print("[TOC-CANDIDATE] provider=hierarchical stage=expand status=started")
+    sub_chapters_map = await expand_all_chapters(chapters, page_texts, model)
 
     total_subs = sum(len(subs) for subs in sub_chapters_map.values())
     expanded_count = sum(1 for subs in sub_chapters_map.values() if subs)
-    print(f"[HIERARCHICAL] Phase 2 complete: {expanded_count}/{len(chapters)} chapters expanded, {total_subs} sub-chapters")
+    print(f"[TOC-CANDIDATE] provider=hierarchical stage=expand status=done expanded={expanded_count}/{len(chapters)} sub_chapters={total_subs}")
 
-    # Phase 3
-    print("[HIERARCHICAL] Starting Phase 3: Merge results...")
-    tree = phase3_merge_results(chapters, sub_chapters_map)
+    # stage=merge
+    print("[TOC-CANDIDATE] provider=hierarchical stage=merge status=started")
+    tree = merge_results(chapters, sub_chapters_map)
 
     # 计算置信度
     confidence = 0.5
@@ -495,9 +1162,9 @@ async def extract_hierarchical_toc(
         "structure": "hierarchical",
         "source": "hierarchical",
         "confidence": min(confidence, 1.0),
-        "phases": {
-            "phase1_chapters": len(chapters),
-            "phase2_expanded": expanded_count,
+        "stages": {
+            "framework_chapters": len(chapters),
+            "expanded_chapters": expanded_count,
             "total_sub_chapters": total_subs,
         },
     }

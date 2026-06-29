@@ -1,13 +1,21 @@
 from pathlib import Path
 import asyncio
 import sys
+import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from pageindex import vlm_utils
+try:
+    from pageindex import vlm_utils
+except ImportError:
+    vlm_utils = None
 from pageindex import utils as pageindex_utils
 
 
+@pytest.mark.skipif(
+    vlm_utils is None,
+    reason="legacy pageindex.vlm_utils removed in unified TOC architecture",
+)
 def test_vlm_client_cache_is_scoped_to_event_loop(monkeypatch) -> None:
     created = []
 

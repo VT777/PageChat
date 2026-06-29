@@ -1,0 +1,138 @@
+from pathlib import Path
+import json
+import sys
+
+import pymupdf
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+
+def _fixture_pdf(name: str) -> Path:
+    fixture_path = Path(__file__).resolve().parent / "fixtures" / "toc" / "ai_knowledge_expected_routes.json"
+    fixture = json.loads(fixture_path.read_text(encoding="utf-8"))
+    return Path(fixture["input_dir"]) / name
+
+
+def test_collects_bookmarks_and_links_for_compliance_guide() -> None:
+    from pageindex.code_toc_collector import collect_code_toc
+
+    pdf_path = _fixture_pdf("生成式人工智能服务合规备案指南（2026年）.pdf")
+    with pymupdf.open(pdf_path) as doc:
+        report = collect_code_toc(doc, page_texts=[page.get_text() or "" for page in doc])
+
+    assert report["source"] == "bookmarks+links"
+    assert report["sources"]["bookmarks"]["count"] >= 150
+    assert report["sources"]["links"]["count"] >= 60
+    assert report["sources"]["links"]["toc_pages"] == [7, 8, 9]
+    assert [section["kind"] for section in report["toc_sections"]] == [
+        "main_toc",
+        "table_toc",
+        "figure_toc",
+    ]
+    assert report["toc_sections"][0]["source"] == "links"
+    assert report["toc_sections"][1]["items"], "table catalog must come from links"
+    assert report["toc_sections"][2]["items"], "figure catalog must come from links"
+    for section in report["toc_sections"]:
+        assert not [
+            item["title"]
+            for item in section["items"]
+            if str(item.get("title") or "").strip().isdigit()
+        ], f"{section['kind']} must not include bare page-number links"
+
+
+def test_infers_hierarchy_for_chinese_chapter_and_section_link_titles() -> None:
+    from pageindex.code_toc_collector import _infer_structure_from_titles
+
+    items = [
+        {"title": "第一章总则", "physical_index": 10, "catalog_type": "main"},
+        {"title": "一、指南目的及基本原则", "physical_index": 10, "catalog_type": "main"},
+        {"title": "二、相关术语界定", "physical_index": 12, "catalog_type": "main"},
+        {"title": "第二章生成式人工智能服务备案的发展现状", "physical_index": 14, "catalog_type": "main"},
+        {"title": "一、中央层面生成式人工智能服务备案的相关政策文件", "physical_index": 14, "catalog_type": "main"},
+        {"title": "二、地方层面生成式人工智能服务备案的相关政策文件", "physical_index": 16, "catalog_type": "main"},
+    ]
+
+    structured = _infer_structure_from_titles(items)
+
+    assert [item["structure"] for item in structured] == [
+        "1",
+        "1.1",
+        "1.2",
+        "2",
+        "2.1",
+        "2.2",
+    ]
+
+
+def test_infers_unnumbered_same_page_content_after_chapter_as_child() -> None:
+    from pageindex.code_toc_collector import _infer_structure_from_titles
+
+    items = [
+        {"title": "第一章 AI Agent 技术概述与发展现状", "physical_index": 9, "catalog_type": "main"},
+        {"title": "引言：2025 年智能体进入产业落地阶段", "physical_index": 9, "catalog_type": "main"},
+        {"title": "AI Agent 的再定义：从自动化到自主智能", "physical_index": 10, "catalog_type": "main"},
+        {"title": "第二章 AI Agent 核心技术架构解析", "physical_index": 20, "catalog_type": "main"},
+    ]
+
+    structured = _infer_structure_from_titles(items)
+
+    assert [item["structure"] for item in structured] == ["1", "1.1", "1.2", "2"]
+
+
+def test_infers_chapter_hierarchy_after_unicode_compatibility_normalization() -> None:
+    from pageindex.code_toc_collector import _infer_structure_from_titles
+
+    items = [
+        {"title": "第⼀章：AI Agent 技术概述与发展现状", "physical_index": 9, "catalog_type": "main"},
+        {"title": "引⾔：2025，AI Agent 元年的开启", "physical_index": 9, "catalog_type": "main"},
+        {"title": "AI Agent 的再定义：从自动化到自主智能", "physical_index": 10, "catalog_type": "main"},
+        {"title": "第⼆章：AI Agent 核心技术架构解析", "physical_index": 20, "catalog_type": "main"},
+    ]
+
+    structured = _infer_structure_from_titles(items)
+
+    assert [item["structure"] for item in structured] == ["1", "1.1", "1.2", "2"]
+
+
+def test_collects_link_only_toc_for_ai_agent_report() -> None:
+    from pageindex.code_toc_collector import collect_code_toc
+
+    pdf_path = _fixture_pdf("2026年AI Agent智能体技术发展报告.pdf")
+    with pymupdf.open(pdf_path) as doc:
+        report = collect_code_toc(doc, page_texts=[page.get_text() or "" for page in doc])
+
+    assert report["source"] == "links"
+    assert report["sources"]["bookmarks"]["count"] == 0
+    assert report["sources"]["links"]["toc_pages"] == [3, 4, 5, 6, 7, 8]
+    assert len(report["items"]) >= 100
+    assert [section["kind"] for section in report["toc_sections"]] == ["main_toc"]
+
+
+def test_collects_slide_outline_but_marks_weak_slide_noise() -> None:
+    from pageindex.code_toc_collector import collect_code_toc
+
+    pdf_path = _fixture_pdf("2025全球人工智能技术应用洞察报告.pdf")
+    with pymupdf.open(pdf_path) as doc:
+        report = collect_code_toc(doc, page_texts=[page.get_text() or "" for page in doc])
+
+    assert report["source"] == "bookmarks"
+    assert report["sources"]["bookmarks"]["slide_export_noise_count"] >= 3
+    assert "weak_slide_export_outline" in report["quality_flags"]
+    assert len(report["items"]) >= 30
+
+
+def test_pdf_analyzer_preserves_multi_source_code_toc() -> None:
+    from pageindex.pdf_analyzer import analyze_pdf_structure
+
+    pdf_path = _fixture_pdf("生成式人工智能服务合规备案指南（2026年）.pdf")
+    analysis = analyze_pdf_structure(str(pdf_path))
+    code_toc = analysis["code_toc"]
+
+    assert code_toc["source"] == "bookmarks+links"
+    assert code_toc["sources"]["bookmarks"]["count"] >= 150
+    assert code_toc["sources"]["links"]["toc_pages"] == [7, 8, 9]
+    assert [section["kind"] for section in code_toc["toc_sections"]] == [
+        "main_toc",
+        "table_toc",
+        "figure_toc",
+    ]

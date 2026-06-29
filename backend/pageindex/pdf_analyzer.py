@@ -1,4 +1,4 @@
-"""Phase 0: PDF 文档预分析 — 纯代码，零 LLM/VLM 调用，< 100ms。
+"""PDF document probe — pure code, no LLM/image-model calls, < 100ms.
 
 输出文档画像：页面分类、代码 TOC 提取（书签→链接注解→正则）、乱码/图片检测。
 """
@@ -14,13 +14,67 @@ import pymupdf
 # 页面分类
 # ---------------------------------------------------------------------------
 
+_COMMON_CJK_CHARS = set(
+    "的一是在不了有和人这中大为上个国我以要他时来用们生到作地于出就分"
+    "对成会可主发年动同工也能下过子说产种面而方后多定行学法所民得"
+    "经十三之进着等部度家电力里如水化高自二理起小物现实加量都两体"
+    "制机当使点从业本去把性好应开它合还因由其些然前外天政四日那社"
+    "义事平形相全表间样与关各重新线内数正心反你明看原又么利比或但"
+    "质气第向道命此变条只没结解问意建月公无系军很情者最立代想已通"
+    "并提直题党程展五果料象员革位入常文总次品式活设及管特件长求老"
+    "头基资边流路级少图山统接知较将组见计别她手角期根论运农指几九"
+    "区强放决西被干做必战先回则任取据处队南给色光门即保治北造百规"
+    "热领七海口东导器压志世金增争济阶油思术极交受联认六共权收证改"
+    "清美再采转更单风切打白教速花带安场身车例真务具万每目至达走积"
+    "示议声报斗完类八离华名确才科张信马节话米整空元况今集温传土许"
+    "步群广石记需段研界拉林律叫且究观越织装影算低持音众书布复容儿"
+    "须际商非验连断深难近矿千周委素技备半办青省列习响约支般史感劳"
+    "便团往酸历市克何除消构府称太准精值号率族维划选标写存候毛亲快"
+    "效斯院查江型眼王按格养易置派层片始却专状育厂京识适属圆包火住"
+    "调满县局照参红细引听该铁价严龙飞"
+)
+_COMMON_TEXT_PUNCTUATION = set("，。！？；：、（）《》“”‘’—…,.!?;:()[]")
+
+
+def _is_cjk_char(char: str) -> bool:
+    return (
+        "\u3400" <= char <= "\u4dbf"
+        or "\u4e00" <= char <= "\u9fff"
+        or "\uf900" <= char <= "\ufaff"
+    )
+
+
+def _looks_like_rare_cjk_mojibake(text: str) -> bool:
+    """Detect mojibake that is encoded as rare CJK-looking characters."""
+    non_space = [char for char in text if not char.isspace()]
+    if len(non_space) < 30:
+        return False
+
+    cjk_chars = [char for char in non_space if _is_cjk_char(char)]
+    if len(cjk_chars) < 20:
+        return False
+
+    common_ratio = sum(1 for char in cjk_chars if char in _COMMON_CJK_CHARS) / len(cjk_chars)
+    ascii_word_ratio = sum(1 for char in non_space if char.isascii() and char.isalnum()) / len(non_space)
+    punctuation_ratio = sum(1 for char in non_space if char in _COMMON_TEXT_PUNCTUATION) / len(non_space)
+    cjk_ratio = len(cjk_chars) / len(non_space)
+
+    return (
+        cjk_ratio >= 0.55
+        and common_ratio < 0.08
+        and ascii_word_ratio < 0.25
+        and punctuation_ratio < 0.08
+    )
+
 
 def _is_garbled_text(text: str, threshold: float = 0.5) -> bool:
     """检测文本是否大量乱码。CJK+ASCII 占比低于阈值视为乱码。"""
     if len(text) < 30:
         return False
     cjk_or_ascii = sum(1 for c in text if "\u4e00" <= c <= "\u9fff" or c.isascii())
-    return (cjk_or_ascii / len(text)) < threshold
+    if (cjk_or_ascii / len(text)) < threshold:
+        return True
+    return _looks_like_rare_cjk_mojibake(text)
 
 
 def _compute_meaningful_text_ratio(text: str) -> float:
@@ -66,7 +120,7 @@ def _compute_meaningful_text_ratio(text: str) -> float:
 
 
 def _detect_toc_pages(page_texts: List[str], max_scan_pages: int = 20) -> Tuple[bool, List[int], float, List[Dict]]:
-    """检测目录页（TOC pages）- v2 分批扫描 + 多维度打分。
+    """检测目录页（TOC pages）- 分批扫描 + 多维度打分。
     
     检测逻辑：
     1. 分批扫描（每批5页，最多4批=20页）
@@ -198,7 +252,7 @@ def _detect_toc_pages(page_texts: List[str], max_scan_pages: int = 20) -> Tuple[
                 max_score = max(max_score, score)
                 batch_has_toc = True
                 
-                print(f"[PDF-ANALYZER] TOC candidate p.{page_idx + 1}: score={score}")
+                print(f"[TOC-PROBE] TOC candidate p.{page_idx + 1}: score={score}")
         
         # 连续性检测逻辑
         if batch_has_toc:
@@ -208,7 +262,7 @@ def _detect_toc_pages(page_texts: List[str], max_scan_pages: int = 20) -> Tuple[
                 next_score, _ = score_page(next_page)
                 if next_score < 60:
                     # 下一页不是目录，且当前批次已找到目录，停止扫描
-                    print(f"[PDF-ANALYZER] TOC sequence ends at p.{detected_pages[-1] + 1}")
+                    print(f"[TOC-PROBE] TOC sequence ends at p.{detected_pages[-1] + 1}")
                     break
                 # 否则继续扫描（下一页也是目录，会在下一批次处理）
             else:
@@ -442,20 +496,20 @@ def _build_document_profile(
     else:
         text_layer_quality = "noisy"
 
-    visual_dependency_score = 0.0
+    layout_dependency_score = 0.0
     if image_coverage >= 0.9:
-        visual_dependency_score += 0.45
+        layout_dependency_score += 0.45
     elif image_coverage >= 0.5:
-        visual_dependency_score += 0.25
+        layout_dependency_score += 0.25
     if image_only_ratio >= 0.2:
-        visual_dependency_score += 0.25
+        layout_dependency_score += 0.25
     elif image_only_ratio > 0:
-        visual_dependency_score += 0.1
+        layout_dependency_score += 0.1
     if has_dividers:
-        visual_dependency_score += 0.2
+        layout_dependency_score += 0.2
     if text_layer_quality in {"partial", "noisy", "garbled"}:
-        visual_dependency_score += 0.15
-    visual_dependency_score = min(1.0, round(visual_dependency_score, 3))
+        layout_dependency_score += 0.15
+    layout_dependency_score = min(1.0, round(layout_dependency_score, 3))
 
     has_reliable_full_text = (
         text_layer_quality == "reliable"
@@ -468,23 +522,23 @@ def _build_document_profile(
     elif image_coverage >= 0.9 and not has_reliable_full_text and (
         image_only_ratio >= 0.15 or has_dividers
     ):
-        layout_type = "mixed_visual_report"
+        layout_type = "mixed_layout_report"
     elif image_coverage >= 0.8 and has_dividers and not has_reliable_full_text:
         layout_type = "slide_like_report"
     else:
         layout_type = "native_text_report"
 
-    if layout_type in {"scanned_image_pdf", "mixed_visual_report", "slide_like_report"}:
-        structure_policy = "visual_required"
-    elif visual_dependency_score >= 0.7:
-        structure_policy = "visual_preferred"
+    if layout_type in {"scanned_image_pdf", "mixed_layout_report", "slide_like_report"}:
+        structure_policy = "layout_required"
+    elif layout_dependency_score >= 0.7:
+        structure_policy = "layout_preferred"
     else:
         structure_policy = "text_allowed"
 
     return {
         "layout_type": layout_type,
         "text_layer_quality": text_layer_quality,
-        "visual_dependency_score": visual_dependency_score,
+        "layout_dependency_score": layout_dependency_score,
         "structure_policy": structure_policy,
         "ocr_policy": "content_fill_only",
     }
@@ -747,7 +801,7 @@ def _infer_structure_from_titles(items: List[Dict]) -> List[Dict]:
 
 
 def analyze_pdf_structure(file_path: str) -> Dict[str, Any]:
-    """文档预分析：纯代码，零 LLM/VLM，< 100ms。"""
+    """文档预分析：纯代码，零 LLM/image-model，< 100ms。"""
     doc = pymupdf.open(file_path)
     page_count = len(doc)
 
@@ -784,9 +838,9 @@ def analyze_pdf_structure(file_path: str) -> Dict[str, Any]:
     # 文本质量深度检测（针对扫描件/图片PDF但有伪文本层的情况）
     quality = _check_text_quality(page_texts)
     if quality["is_low_quality"]:
-        print(f"[PDF-ANALYZER] Low quality text detected: meaningful={quality['meaningful_ratio']:.0%}, "
+        print(f"[TOC-PROBE] Low quality text detected: meaningful={quality['meaningful_ratio']:.0%}, "
               f"duplicate={quality['duplicate_ratio']:.0%}, fragment={quality['fragment_ratio']:.0%}")
-        # 降低 text_coverage，强制路由到 visual 路径
+        # 降低 text_coverage，强制路由到 layout/OCR 路径
         text_coverage = min(text_coverage, 0.3)
         # 标记为乱码PDF
         if not garbled_pages:
@@ -799,7 +853,7 @@ def analyze_pdf_structure(file_path: str) -> Dict[str, Any]:
     # 章节分隔页检测（用于识别"汇报提纲"等特殊文档模式）
     chapter_dividers = _detect_chapter_dividers(page_texts)
     if chapter_dividers:
-        print(f"[PDF-ANALYZER] Chapter dividers detected: {chapter_dividers}")
+        print(f"[TOC-PROBE] Chapter dividers detected: {chapter_dividers}")
 
     document_profile = _build_document_profile(
         page_count=page_count,
@@ -815,26 +869,10 @@ def analyze_pdf_structure(file_path: str) -> Dict[str, Any]:
     # 预分析不再做目录页检测，避免重复工作和不必要的计算
     has_toc_page, toc_page_indices, toc_confidence, toc_preview = False, [], 0.0, []
 
-    # 代码 TOC 提取（三级优先）
-    code_toc_items = None
-    code_toc_source = None
+    # 代码 TOC 提取（多源采集，不因先发现 bookmarks 就跳过 links）
+    from pageindex.code_toc_collector import collect_code_toc
 
-    # Level 1: 书签
-    code_toc_items = extract_toc_from_bookmarks(doc)
-    if code_toc_items:
-        code_toc_source = "bookmarks"
-
-    # Level 2: 链接注解
-    if not code_toc_items:
-        code_toc_items = extract_toc_from_link_annotations(doc)
-        if code_toc_items:
-            code_toc_source = "links"
-
-    # Level 3: 正则（只在有文本页时尝试）
-    if not code_toc_items and text_coverage > 0.3:
-        code_toc_items = extract_toc_by_regex(page_texts)
-        if code_toc_items:
-            code_toc_source = "regex"
+    code_toc = collect_code_toc(doc, page_texts=page_texts)
 
     doc.close()
 
@@ -858,10 +896,7 @@ def analyze_pdf_structure(file_path: str) -> Dict[str, Any]:
         "is_garbled_pdf": len(garbled_pages) / page_count > 0.5
         if page_count > 0
         else False,
-        "code_toc": {
-            "items": code_toc_items,
-            "source": code_toc_source,
-        },
+        "code_toc": code_toc,
         "page_list": page_list,
         "page_texts": page_texts,
         "text_quality": quality,
@@ -873,3 +908,4 @@ def analyze_pdf_structure(file_path: str) -> Dict[str, Any]:
             "preview_items": toc_preview,
         },
     }
+

@@ -1,12 +1,26 @@
 <script setup lang="ts">
 import { ref, computed, watch, nextTick } from 'vue'
 import type { DocumentContent, SourceAnchor, TocItem } from '@/types/preview'
+import { normalizePreviewBlocks } from '@/utils/documentWorkbench'
 
-const props = defineProps<{
+type DocumentBlock = {
+  id: string
+  type: string
+  paraNumber: number
+  text: string
+  level: number
+  rows: unknown[][]
+  hasImages: boolean
+}
+
+const props = withDefaults(defineProps<{
   content: DocumentContent
   toc?: TocItem[]
   initialAnchor?: SourceAnchor | null
-}>()
+  showToc?: boolean
+}>(), {
+  showToc: true,
+})
 
 const emit = defineEmits<{
   anchorClick: [anchor: SourceAnchor]
@@ -17,15 +31,22 @@ const activeParagraph = ref<number | null>(null)
 const activeTocParagraph = ref<number | null>(null)
 
 // 段落列表
-const paragraphs = computed(() => {
-  return props.content.blocks
-    .filter(block => block.type === 'paragraph')
-    .map(block => ({
-      id: block.id,
-      paraNumber: block.metadata.paragraph_number as number,
-      text: block.content as string,
-      hasImages: (block.metadata.images?.length || 0) > 0
+const documentBlocks = computed<DocumentBlock[]>(() => {
+  return normalizePreviewBlocks(props.content)
+    .filter((block) => ['heading', 'paragraph', 'table'].includes(String(block.type)))
+    .map((block, index) => ({
+      id: String(block.id || `block_${index + 1}`),
+      type: String(block.type),
+      paraNumber: Number(block.paraNumber || index + 1),
+      text: String(block.text || ''),
+      level: Number(block.level || 1),
+      rows: Array.isArray(block.rows) ? block.rows as unknown[][] : [],
+      hasImages: Boolean(block.hasImages),
     }))
+})
+
+const paragraphs = computed(() => {
+  return documentBlocks.value.filter((block) => block.type === 'paragraph' || block.type === 'heading')
 })
 
 function inferHeadingLevel(text: string): number | null {
@@ -80,8 +101,8 @@ const tocItems = computed(() => {
   if (items.length > 0) return items
 
   const fallback: { id: string; paraNumber: number; title: string; level: number }[] = []
-  for (let i = 0; i < paragraphs.value.length; i += 20) {
-    const para = paragraphs.value[i]
+  for (let i = 0; i < documentBlocks.value.length; i += 20) {
+    const para = documentBlocks.value[i]
     if (!para) continue
     fallback.push({
       id: `chunk_${Math.floor(i / 20) + 1}`,
@@ -98,7 +119,7 @@ const images = computed(() => props.content.images || [])
 
 // 统计信息
 const stats = computed(() => ({
-  paragraphs: props.content.metadata.paragraph_count || 0,
+  paragraphs: props.content.metadata.paragraph_count || documentBlocks.value.length,
   images: props.content.metadata.image_count || 0
 }))
 
@@ -123,6 +144,7 @@ function handleParagraphClick(paraNumber: number) {
   activeTocParagraph.value = paraNumber
   const anchor: SourceAnchor = {
     format: 'docx',
+    unit_type: 'paragraph',
     start_paragraph: paraNumber,
     end_paragraph: paraNumber
   }
@@ -132,6 +154,7 @@ function handleParagraphClick(paraNumber: number) {
 function handleTocClick(paraNumber: number) {
   const anchor: SourceAnchor = {
     format: 'docx',
+    unit_type: 'paragraph',
     start_paragraph: paraNumber,
     end_paragraph: paraNumber,
   }
@@ -169,7 +192,7 @@ defineExpose({
     </div>
 
     <div class="main-content">
-      <aside class="toc-sidebar">
+      <aside v-if="showToc" class="toc-sidebar">
         <div class="toc-title">目录</div>
         <div class="toc-nav">
           <button
@@ -187,18 +210,31 @@ defineExpose({
       <!-- 段落列表 -->
       <div class="paragraphs-container">
         <div
-          v-for="para in paragraphs"
-          :key="para.id"
-          :id="`para-${para.paraNumber}`"
-          :class="['paragraph', { active: activeParagraph === para.paraNumber }]"
-          @click="handleParagraphClick(para.paraNumber)"
+          v-for="block in documentBlocks"
+          :key="block.id"
+          :id="`para-${block.paraNumber}`"
+          :class="['paragraph', `block-${block.type}`, { active: activeParagraph === block.paraNumber }]"
+          @click="handleParagraphClick(block.paraNumber)"
         >
-          <span class="para-number">{{ para.paraNumber }}</span>
-          <span class="para-text">{{ para.text }}</span>
+          <span class="para-number">{{ block.paraNumber }}</span>
+          <template v-if="block.type === 'table'">
+            <div class="docx-table-wrap">
+              <table class="docx-table">
+                <tbody>
+                  <tr v-for="(row, rowIndex) in block.rows" :key="`${block.id}-${rowIndex}`">
+                    <td v-for="(cell, cellIndex) in row" :key="`${block.id}-${rowIndex}-${cellIndex}`">
+                      {{ cell }}
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </template>
+          <span v-else class="para-text">{{ block.text }}</span>
         </div>
         
         <!-- 无内容提示 -->
-        <div v-if="paragraphs.length === 0" class="empty-state">
+        <div v-if="documentBlocks.length === 0" class="empty-state">
           <p>文档无文本内容</p>
         </div>
       </div>
@@ -337,6 +373,32 @@ defineExpose({
 
 .paragraph.active {
   background: #dbeafe;
+}
+
+.paragraph.block-heading .para-text {
+  color: #111827;
+  font-weight: 700;
+  font-size: 16px;
+}
+
+.docx-table-wrap {
+  flex: 1;
+  min-width: 0;
+  overflow-x: auto;
+}
+
+.docx-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.docx-table td {
+  border: 1px solid #e5e7eb;
+  padding: 6px 8px;
+  color: #374151;
+  background: #fff;
 }
 
 .paragraph.highlight-paragraph {

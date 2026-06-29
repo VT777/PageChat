@@ -1,7 +1,15 @@
 <script setup lang="ts">
-import { ref, computed, watch } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { ChevronLeft, ChevronRight } from 'lucide-vue-next'
-import type { DocumentContent, SourceAnchor, Slide } from '@/types/preview'
+import type { DocumentContent, SourceAnchor } from '@/types/preview'
+import { normalizePreviewBlocks } from '@/utils/documentWorkbench'
+
+type PreviewSlide = {
+  id: string
+  slideNumber: number
+  title: string
+  text: string
+}
 
 const props = defineProps<{
   content: DocumentContent
@@ -16,51 +24,53 @@ const containerRef = ref<HTMLDivElement>()
 const currentSlideIndex = ref(0)
 const viewMode = ref<'grid' | 'single'>('single')
 
-// 幻灯片列表
-const slides = computed(() => {
-  return props.content.blocks.map(block => block.content as Slide)
+const slides = computed<PreviewSlide[]>(() => {
+  return normalizePreviewBlocks(props.content)
+    .filter((block) => block.type === 'slide')
+    .map((block) => ({
+      id: String(block.id),
+      slideNumber: Number(block.slideNumber),
+      title: String(block.title || `Slide ${block.slideNumber}`),
+      text: String(block.text || ''),
+    }))
 })
 
-// 当前幻灯片
 const currentSlide = computed(() => slides.value[currentSlideIndex.value])
-
-// 总幻灯片数
 const totalSlides = computed(() => slides.value.length)
 
-// 切换到下一张
 function nextSlide() {
   if (currentSlideIndex.value < totalSlides.value - 1) {
     currentSlideIndex.value++
   }
 }
 
-// 切换到上一张
 function prevSlide() {
   if (currentSlideIndex.value > 0) {
     currentSlideIndex.value--
   }
 }
 
-// 跳转到指定幻灯片
 function goToSlide(index: number) {
-  currentSlideIndex.value = index
+  const clamped = Math.min(Math.max(index, 0), Math.max(totalSlides.value - 1, 0))
+  currentSlideIndex.value = clamped
   viewMode.value = 'single'
 }
 
-// 处理幻灯片点击
 function handleSlideClick(slideNumber: number) {
   const anchor: SourceAnchor = {
     format: 'pptx',
-    slide: slideNumber
+    unit_type: 'slide',
+    slide: slideNumber,
+    start_slide: slideNumber,
+    end_slide: slideNumber,
   }
   emit('anchorClick', anchor)
   goToSlide(slideNumber - 1)
 }
 
-// 监听键盘事件
 function handleKeydown(e: KeyboardEvent) {
   if (viewMode.value !== 'single') return
-  
+
   if (e.key === 'ArrowLeft') {
     prevSlide()
   } else if (e.key === 'ArrowRight') {
@@ -68,15 +78,21 @@ function handleKeydown(e: KeyboardEvent) {
   }
 }
 
-// 监听初始锚点
 watch(() => props.initialAnchor, (anchor) => {
-  if (anchor?.slide) {
-    goToSlide(anchor.slide - 1)
+  const slideNumber = anchor?.slide || anchor?.start_slide
+  if (slideNumber) {
+    goToSlide(slideNumber - 1)
   }
 }, { immediate: true })
 
+watch(totalSlides, (count) => {
+  if (currentSlideIndex.value >= count) {
+    currentSlideIndex.value = Math.max(count - 1, 0)
+  }
+})
+
 defineExpose({
-  goToSlide
+  goToSlide,
 })
 </script>
 
@@ -87,7 +103,6 @@ defineExpose({
     tabindex="0"
     @keydown="handleKeydown"
   >
-    <!-- 工具栏 -->
     <div class="toolbar">
       <div class="toolbar-left">
         <div class="view-toggle">
@@ -95,17 +110,17 @@ defineExpose({
             :class="['view-btn', { active: viewMode === 'single' }]"
             @click="viewMode = 'single'"
           >
-            单页
+            Single
           </button>
           <button
             :class="['view-btn', { active: viewMode === 'grid' }]"
             @click="viewMode = 'grid'"
           >
-            缩略图
+            Grid
           </button>
         </div>
       </div>
-      
+
       <div class="toolbar-center">
         <template v-if="viewMode === 'single'">
           <button
@@ -115,58 +130,55 @@ defineExpose({
           >
             <ChevronLeft class="w-4 h-4" />
           </button>
-          
+
           <span class="slide-counter">
-            {{ currentSlideIndex + 1 }} / {{ totalSlides }}
+            {{ totalSlides ? currentSlideIndex + 1 : 0 }} / {{ totalSlides }}
           </span>
-          
+
           <button
             class="nav-btn"
-            :disabled="currentSlideIndex === totalSlides - 1"
+            :disabled="currentSlideIndex === totalSlides - 1 || totalSlides === 0"
             @click="nextSlide"
           >
             <ChevronRight class="w-4 h-4" />
           </button>
         </template>
-        
-        <span v-else class="stats">共 {{ totalSlides }} 页</span>
+
+        <span v-else class="stats">{{ totalSlides }} slides</span>
       </div>
     </div>
 
-    <!-- 单页模式 -->
     <div v-if="viewMode === 'single'" class="single-view">
       <div
         v-if="currentSlide"
         class="slide-container"
-        @click="handleSlideClick(currentSlide.slide_number)"
+        @click="handleSlideClick(currentSlide.slideNumber)"
       >
-        <div class="slide-number-badge">{{ currentSlide.slide_number }}</div>
-        
+        <div class="slide-number-badge">{{ currentSlide.slideNumber }}</div>
+
         <div class="slide-content">
           <div class="slide-title">{{ currentSlide.title }}</div>
-          
           <pre class="slide-text">{{ currentSlide.text }}</pre>
         </div>
       </div>
-      
+
       <div v-else class="empty-slide">
-        <p>幻灯片内容为空</p>
+        <p>No slide content was extracted.</p>
       </div>
     </div>
 
-    <!-- 缩略图模式 -->
     <div v-else class="grid-view">
       <div
         v-for="slide in slides"
-        :key="slide.slide_number"
-        :class="['slide-thumb', { active: currentSlideIndex === slide.slide_number - 1 }]"
-        @click="handleSlideClick(slide.slide_number)"
+        :key="slide.id"
+        :class="['slide-thumb', { active: currentSlideIndex === slide.slideNumber - 1 }]"
+        @click="handleSlideClick(slide.slideNumber)"
       >
-        <div class="thumb-number">{{ slide.slide_number }}</div>
-        
+        <div class="thumb-number">{{ slide.slideNumber }}</div>
+
         <div class="thumb-content">
           <div class="thumb-title">{{ slide.title }}</div>
-          <div class="thumb-preview">{{ slide.text.slice(0, 100) }}...</div>
+          <div class="thumb-preview">{{ slide.text.slice(0, 100) }}</div>
         </div>
       </div>
     </div>
@@ -258,7 +270,6 @@ defineExpose({
   color: #6b7280;
 }
 
-/* 单页视图 */
 .single-view {
   flex: 1;
   display: flex;
@@ -334,7 +345,6 @@ defineExpose({
   font-size: 14px;
 }
 
-/* 缩略图视图 */
 .grid-view {
   flex: 1;
   display: grid;

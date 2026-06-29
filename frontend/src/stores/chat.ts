@@ -1,33 +1,92 @@
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
 import { chatApi } from '@/api'
+import { buildConversationExportMarkdown } from '@/ui/pagechatContracts'
+import { createBufferedStreamText, type BufferedStreamText } from '@/composables/useBufferedStreamText'
 import type {
+  AnswerDelta,
+  Citation,
+  CitationAdded,
+  ProcessingDelta,
+  ProgressEvent,
+  ReasoningDelta,
+  RunCompleted,
+  RunFailed,
+  RunStarted,
   StreamEnvelope,
-  ThinkingData,
-  ContentData,
-  ToolCallData,
-  ToolResultData,
-  DoneData,
+  ToolCallDelta,
+  ToolCompleted,
+  ToolStarted,
 } from '@/types/stream'
+import type { ChatScopeRequest, RetrievalScopeTrace } from '@/types/retrieval'
+import type { SourceAnchor } from '@/types/preview'
+import type { ChatAttachmentMetadata } from '@/types/chatAttachments'
+
+export interface DocumentChatContext {
+  id: string
+  label: string
+  type?: 'document' | 'folder'
+}
+
+export interface EvidenceItem {
+  type?: 'document' | 'web'
+  docId?: string
+  documentName?: string
+  displayLabel?: string
+  sourceAnchor?: SourceAnchor | null
+  retrievalSource?: string
+  sourceId?: string
+  title?: string
+  url?: string
+  domain?: string
+  snippet?: string
+  contentPreview?: string
+  provider?: string
+}
 
 export interface ToolStep {
+  toolCallId?: string
   toolName: string
   arguments: Record<string, unknown>
+  argumentText?: string
   result: Record<string, unknown> | null
   status: 'calling' | 'done'
+  seq?: number
+  ts?: string
   elapsedMs?: number
   searchMethod?: string
   resultsCount?: number
+}
+
+export interface ProgressStep {
+  message: string
+  kind?: string
+  step?: number
+  status?: string
+  seq?: number
+  ts?: string
+}
+
+interface DisplayBufferEntry {
+  messageId: string
+  buffer: BufferedStreamText
 }
 
 export interface Message {
   id: string
   role: 'user' | 'assistant'
   content: string
+  displayContent?: string
   thinking: string
   toolSteps: ToolStep[]
   isLoading: boolean
   timestamp?: number
+  retrievalScope?: RetrievalScopeTrace | null
+  retrievalFallbacks?: string[]
+  evidenceItems?: EvidenceItem[]
+  attachments?: ChatAttachmentMetadata[]
+  citations?: Citation[]
+  progressSteps?: ProgressStep[]
 }
 
 export interface RollbackState {
@@ -43,13 +102,57 @@ export interface Conversation {
   messageCount: number
 }
 
-const STORAGE_KEY = 'knowclaw_chat_sessions'
-const SESSIONS_DATA_KEY = 'knowclaw_sessions_data'
+interface StoredChatSession {
+  messages?: Message[]
+  conversationId?: string | null
+  documentContexts?: DocumentChatContext[]
+  timestamp?: number
+}
+
+interface StoredChatSessions {
+  lastActiveSessionId: string | null
+  sessions: Record<string, StoredChatSession>
+}
+
+interface ChatSendOptions extends ChatScopeRequest {
+  attachment_ids?: string[]
+  attachments?: ChatAttachmentMetadata[]
+  thinking_enabled?: boolean
+  regenerate_from_message_id?: string
+}
+
+const STORAGE_KEY = 'pagechat_chat_sessions'
+const SESSIONS_DATA_KEY = 'pagechat_sessions_data'
+const DOCUMENT_CONTEXTS_KEY = 'pagechat_document_contexts'
+const DRAFT_COMPOSER_TEXT_KEY = 'pagechat_draft_composer_text'
+const LEGACY_STORAGE_KEY = 'know' + 'claw_chat_sessions'
+const LEGACY_SESSIONS_DATA_KEY = 'know' + 'claw_sessions_data'
+const STORAGE_SUFFIXES: Record<string, string> = {
+  [STORAGE_KEY]: 'chat_sessions',
+  [SESSIONS_DATA_KEY]: 'sessions_data',
+  [DOCUMENT_CONTEXTS_KEY]: 'document_contexts',
+  [DRAFT_COMPOSER_TEXT_KEY]: 'draft_composer_text',
+}
 
 let _msgIDCounter = 0
 function _generateMsgID(): string {
   _msgIDCounter++
   return `${Date.now()}-${_msgIDCounter}`
+}
+
+function sanitizeAttachmentMetadata(attachments?: ChatAttachmentMetadata[]): ChatAttachmentMetadata[] {
+  if (!attachments || attachments.length === 0) return []
+  return attachments
+    .filter((item) => item && item.attachment_id)
+    .map((item) => ({
+      attachment_id: item.attachment_id,
+      original_name: item.original_name || 'image',
+      mime_type: item.mime_type,
+      size_bytes: item.size_bytes,
+      width: item.width ?? null,
+      height: item.height ?? null,
+      content_url: item.content_url,
+    }))
 }
 
 export const useChatStore = defineStore('chat', () => {
@@ -58,32 +161,351 @@ export const useChatStore = defineStore('chat', () => {
   const conversationId = ref<string | null>(null)
   const isLoading = ref(false)
   const rollbackHistory = ref<RollbackState[]>([])
+  const documentContexts = ref<DocumentChatContext[]>([])
+  const draftComposerText = ref('')
+  const activeStreamController = ref<AbortController | null>(null)
+  const storageUserId = ref<string | null>(null)
+  const displayBuffers = new Map<string, DisplayBufferEntry>()
   
   // 对话历史记录列表
   const conversations = ref<Conversation[]>([])
   const currentSessionId = ref<string | null>(null)
 
-  // 从localStorage加载会话历史
-  function loadConversationsFromStorage() {
+  function storageKey(baseKey: string): string {
+    const suffix = STORAGE_SUFFIXES[baseKey]
+    if (!storageUserId.value || !suffix) return baseKey
+    return `pagechat:${storageUserId.value}:${suffix}`
+  }
+
+  function getStorageItem(baseKey: string, legacyKey?: string): string | null {
+    const scopedKey = storageKey(baseKey)
+    const value = localStorage.getItem(scopedKey)
+    if (value !== null || storageUserId.value) return value
+    return legacyKey ? localStorage.getItem(legacyKey) : null
+  }
+
+  function setStorageItem(baseKey: string, value: string) {
+    localStorage.setItem(storageKey(baseKey), value)
+  }
+
+  function removeStorageItem(baseKey: string) {
+    localStorage.removeItem(storageKey(baseKey))
+  }
+
+  function resetInMemoryChatState() {
+    disposeAllDisplayBuffers()
+    messages.value = []
+    conversationId.value = null
+    isLoading.value = false
+    rollbackHistory.value = []
+    documentContexts.value = []
+    draftComposerText.value = ''
+    activeStreamController.value = null
+    conversations.value = []
+    currentSessionId.value = null
+  }
+
+  function setStorageUserId(userId: string | null) {
+    const normalized = userId ? String(userId).trim() : null
+    if (storageUserId.value === normalized) return
+    resetInMemoryChatState()
+    storageUserId.value = normalized
+  }
+
+  function contextType(context: DocumentChatContext): 'document' | 'folder' {
+    return context.type === 'folder' ? 'folder' : 'document'
+  }
+
+  function normalizeDocumentContexts(contexts: DocumentChatContext[]): DocumentChatContext[] {
+    const normalized = contexts
+      .filter((context) => context.id)
+      .map((context) => {
+        const normalized: DocumentChatContext = {
+          id: context.id,
+          label: context.label || context.id,
+        }
+        if (contextType(context) === 'folder') normalized.type = 'folder'
+        return normalized
+      })
+    const byId = new Map<string, DocumentChatContext>()
+    for (const context of normalized) {
+      const existing = byId.get(context.id)
+      if (!existing || context.type === 'folder' || existing.type !== 'folder') {
+        byId.set(context.id, context)
+      }
+    }
+    return Array.from(byId.values())
+  }
+
+  function replaceContextsByType(type: 'document' | 'folder', contexts: DocumentChatContext[]) {
+    const normalized = normalizeDocumentContexts(
+      contexts.map((context) => ({
+        ...context,
+        type,
+      })),
+    )
+    const replacementIds = new Set(normalized.map((context) => context.id))
+    documentContexts.value = [
+      ...documentContexts.value.filter((context) =>
+        contextType(context) !== type && !replacementIds.has(context.id),
+      ),
+      ...normalized,
+    ]
+    if (currentSessionId.value) {
+      saveCurrentSession()
+    } else {
+      persistDraftDocumentContexts()
+    }
+  }
+
+  function persistDraftDocumentContexts() {
     try {
-      const stored = localStorage.getItem(STORAGE_KEY)
+      if (documentContexts.value.length > 0) {
+        setStorageItem(DOCUMENT_CONTEXTS_KEY, JSON.stringify(documentContexts.value))
+      } else {
+        removeStorageItem(DOCUMENT_CONTEXTS_KEY)
+      }
+    } catch (e) {
+      console.error('Failed to persist document contexts:', e)
+    }
+  }
+
+  function clearPersistedDraftDocumentContexts() {
+    try {
+      removeStorageItem(DOCUMENT_CONTEXTS_KEY)
+    } catch (e) {
+      console.error('Failed to clear draft document contexts:', e)
+    }
+  }
+
+  function loadDraftDocumentContexts(): DocumentChatContext[] {
+    try {
+      const stored = getStorageItem(DOCUMENT_CONTEXTS_KEY)
+      if (!stored) return []
+      const parsed = JSON.parse(stored)
+      const contexts = Array.isArray(parsed)
+        ? parsed.filter((context): context is DocumentChatContext =>
+          typeof context?.id === 'string' && typeof context?.label === 'string',
+        )
+        : []
+      return normalizeDocumentContexts(contexts)
+    } catch (e) {
+      console.error('Failed to load document contexts:', e)
+      return []
+    }
+  }
+
+  function persistDraftComposerText() {
+    try {
+      const value = draftComposerText.value.trim()
+      if (value.length > 0) {
+        setStorageItem(DRAFT_COMPOSER_TEXT_KEY, draftComposerText.value)
+      } else {
+        removeStorageItem(DRAFT_COMPOSER_TEXT_KEY)
+      }
+    } catch (e) {
+      console.error('Failed to persist draft composer text:', e)
+    }
+  }
+
+  function clearPersistedDraftComposerText() {
+    try {
+      removeStorageItem(DRAFT_COMPOSER_TEXT_KEY)
+    } catch (e) {
+      console.error('Failed to clear draft composer text:', e)
+    }
+  }
+
+  function loadDraftComposerText(): string {
+    try {
+      return getStorageItem(DRAFT_COMPOSER_TEXT_KEY) || ''
+    } catch (e) {
+      console.error('Failed to load draft composer text:', e)
+      return ''
+    }
+  }
+
+  function setDraftComposerText(text: string) {
+    draftComposerText.value = text
+    persistDraftComposerText()
+  }
+
+  function clearDraftComposerText() {
+    draftComposerText.value = ''
+    clearPersistedDraftComposerText()
+  }
+
+  function mergeConversationMetadata(primary: Conversation, secondary?: Conversation): Conversation {
+    if (!secondary) return { ...primary }
+    return {
+      id: primary.id,
+      title: primary.title || secondary.title,
+      firstMessage: primary.firstMessage || secondary.firstMessage,
+      timestamp: Math.max(primary.timestamp || 0, secondary.timestamp || 0),
+      messageCount: Math.max(primary.messageCount || 0, secondary.messageCount || 0),
+    }
+  }
+
+  function dedupeConversationsById() {
+    const mergedById = new Map<string, Conversation>()
+    for (const conversation of conversations.value) {
+      const existing = mergedById.get(conversation.id)
+      if (!existing) {
+        mergedById.set(conversation.id, { ...conversation })
+        continue
+      }
+      const newer = (conversation.timestamp || 0) > (existing.timestamp || 0) ? conversation : existing
+      const older = newer === conversation ? existing : conversation
+      mergedById.set(conversation.id, mergeConversationMetadata(newer, older))
+    }
+
+    const seen = new Set<string>()
+    const deduped: Conversation[] = []
+    for (const conversation of conversations.value) {
+      if (seen.has(conversation.id)) continue
+      seen.add(conversation.id)
+      const merged = mergedById.get(conversation.id)
+      if (merged) deduped.push(merged)
+    }
+
+    if (deduped.length !== conversations.value.length) {
+      conversations.value = deduped
+      saveConversationsToStorage()
+    }
+  }
+
+  function parseSessionsData(raw: string | null): StoredChatSessions {
+    if (!raw) {
+      return { lastActiveSessionId: null, sessions: {} }
+    }
+    const parsed = JSON.parse(raw)
+    return {
+      lastActiveSessionId: parsed.lastActiveSessionId || null,
+      sessions: parsed.sessions || {},
+    }
+  }
+
+  function loadStoredSession(sessionId: string): StoredChatSession | null {
+    const sessionsData = getStorageItem(SESSIONS_DATA_KEY, LEGACY_SESSIONS_DATA_KEY)
+    if (!sessionsData) return null
+    const data = parseSessionsData(sessionsData)
+    return data.sessions[sessionId] || null
+  }
+
+  function normalizeBackendMessage(raw: any): Message {
+    const role: Message['role'] = raw?.role === 'assistant' ? 'assistant' : 'user'
+    const rawAttachments = Array.isArray(raw?.attachments)
+      ? raw.attachments
+      : Array.isArray(raw?.attachments_json)
+        ? raw.attachments_json
+        : []
+    return {
+      id: String(raw?.id || _generateMsgID()),
+      role,
+      content: String(raw?.content || ''),
+      displayContent: role === 'assistant' ? String(raw?.content || '') : undefined,
+      thinking: String(raw?.thinking || raw?.thinking_content || ''),
+      toolSteps: Array.isArray(raw?.agent_steps) ? raw.agent_steps : [],
+      isLoading: raw?.status === 'streaming',
+      timestamp: raw?.created_at ? new Date(raw.created_at).getTime() : Date.now(),
+      attachments: sanitizeAttachmentMetadata(rawAttachments),
+      citations: Array.isArray(raw?.citations) ? raw.citations : [],
+      progressSteps: Array.isArray(raw?.progressSteps) ? raw.progressSteps : [],
+    }
+  }
+
+  function isLocalSessionId(sessionId: string): boolean {
+    return sessionId.startsWith('session-')
+  }
+
+  function timestampFromBackend(value: unknown, fallback = Date.now()): number {
+    if (typeof value !== 'string' || !value.trim()) return fallback
+    const parsed = Date.parse(value)
+    return Number.isFinite(parsed) ? parsed : fallback
+  }
+
+  function normalizeBackendConversation(raw: any): Conversation {
+    const id = String(raw?.id || '')
+    const title = String(raw?.title || 'New chat')
+    return {
+      id,
+      title,
+      firstMessage: String(raw?.first_message || raw?.firstMessage || title),
+      timestamp: timestampFromBackend(raw?.updated_at || raw?.created_at),
+      messageCount: Number(raw?.message_count || raw?.messageCount || 0),
+    }
+  }
+
+  function writeSessionsData(data: StoredChatSessions) {
+    setStorageItem(SESSIONS_DATA_KEY, JSON.stringify(data))
+  }
+
+  async function hydrateConversationsFromBackend(options: { restoreLastActive?: boolean } = {}): Promise<boolean> {
+    try {
+      const response = await chatApi.getConversations()
+      const rows = Array.isArray(response.data) ? response.data : []
+      conversations.value = rows
+        .map(normalizeBackendConversation)
+        .filter((conversation) => conversation.id)
+      saveConversationsToStorage()
+
+      const restoreLastActive = options.restoreLastActive ?? false
+      if (restoreLastActive && conversations.value.length > 0) {
+        const stored = getStorageItem(SESSIONS_DATA_KEY, LEGACY_SESSIONS_DATA_KEY)
+        const lastActiveSessionId = stored ? parseSessionsData(stored).lastActiveSessionId : null
+        const candidateId = (
+          lastActiveSessionId && conversations.value.some((item) => item.id === lastActiveSessionId)
+            ? lastActiveSessionId
+            : conversations.value[0]?.id
+        )
+        if (candidateId) {
+          await loadConversation(candidateId)
+        }
+      }
+      return true
+    } catch (error) {
+      console.error('Failed to hydrate backend conversations:', error)
+      return false
+    }
+  }
+
+  // 从localStorage加载会话历史
+  function loadConversationsFromStorage(options: { restoreLastActive?: boolean; restoreDraft?: boolean } = {}) {
+    try {
+      const restoreLastActive = options.restoreLastActive ?? true
+      const restoreDraft = options.restoreDraft ?? true
+      let loadedSession = false
+      const stored = getStorageItem(STORAGE_KEY, LEGACY_STORAGE_KEY)
       if (stored) {
         conversations.value = JSON.parse(stored)
+        setStorageItem(STORAGE_KEY, stored)
+        dedupeConversationsById()
       }
       
       // 加载所有会话的数据
-      const sessionsData = localStorage.getItem(SESSIONS_DATA_KEY)
+      const sessionsData = getStorageItem(SESSIONS_DATA_KEY, LEGACY_SESSIONS_DATA_KEY)
       if (sessionsData) {
-        const data = JSON.parse(sessionsData)
+        const data = parseSessionsData(sessionsData)
+        setStorageItem(SESSIONS_DATA_KEY, sessionsData)
         // 找到最近活跃的会话并加载
         const lastActiveSessionId = data.lastActiveSessionId
-        if (lastActiveSessionId && data.sessions && data.sessions[lastActiveSessionId]) {
+        if (restoreLastActive && lastActiveSessionId && data.sessions && data.sessions[lastActiveSessionId]) {
           const session = data.sessions[lastActiveSessionId]
           messages.value = session.messages || []
           conversationId.value = session.conversationId || null
+          documentContexts.value = Array.isArray(session.documentContexts)
+            ? normalizeDocumentContexts(session.documentContexts)
+            : []
           currentSessionId.value = lastActiveSessionId
+          loadedSession = true
           console.log('Loaded session:', lastActiveSessionId, 'with', messages.value.length, 'messages')
         }
+      }
+      if (restoreDraft && !loadedSession && documentContexts.value.length === 0) {
+        documentContexts.value = loadDraftDocumentContexts()
+      }
+      if (restoreDraft && !loadedSession && draftComposerText.value.length === 0) {
+        draftComposerText.value = loadDraftComposerText()
       }
     } catch (e) {
       console.error('Failed to load conversations from storage:', e)
@@ -93,7 +515,7 @@ export const useChatStore = defineStore('chat', () => {
   // 保存会话历史到localStorage
   function saveConversationsToStorage() {
     try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(conversations.value))
+      setStorageItem(STORAGE_KEY, JSON.stringify(conversations.value))
     } catch (e) {
       console.error('Failed to save conversations to storage:', e)
     }
@@ -105,34 +527,36 @@ export const useChatStore = defineStore('chat', () => {
       if (!currentSessionId.value) return
       
       // 获取现有数据
-      let data: { lastActiveSessionId: string | null; sessions: Record<string, any> } = {
+      let data: StoredChatSessions = {
         lastActiveSessionId: null,
         sessions: {}
       }
       
-      const existing = localStorage.getItem(SESSIONS_DATA_KEY)
+      const existing = getStorageItem(SESSIONS_DATA_KEY)
       if (existing) {
-        data = JSON.parse(existing)
+        data = parseSessionsData(existing)
       }
       
       // 保存当前会话
       data.sessions[currentSessionId.value] = {
         messages: messages.value,
         conversationId: conversationId.value,
+        documentContexts: documentContexts.value,
         timestamp: Date.now()
       }
       
       // 设置为最近活跃
       data.lastActiveSessionId = currentSessionId.value
       
-      localStorage.setItem(SESSIONS_DATA_KEY, JSON.stringify(data))
+      setStorageItem(SESSIONS_DATA_KEY, JSON.stringify(data))
       console.log('Saved session:', currentSessionId.value, 'with', messages.value.length, 'messages')
     } catch (e) {
       console.error('Failed to save current session:', e)
     }
   }
 
-  function addUserMessage(content: string) {
+  function addUserMessage(content: string, attachments?: ChatAttachmentMetadata[]) {
+    const safeAttachments = sanitizeAttachmentMetadata(attachments)
     messages.value.push({
       id: _generateMsgID(),
       role: 'user',
@@ -141,15 +565,18 @@ export const useChatStore = defineStore('chat', () => {
       toolSteps: [],
       isLoading: false,
       timestamp: Date.now(),
+      attachments: safeAttachments,
     })
     
     // 检查是否已有当前对话记录
     let currentConv = conversations.value.find(c => c.id === currentSessionId.value)
+    let createdNewSession = false
     
     if (!currentConv) {
       // 如果没有找到对话记录（可能是新会话或ID丢失），创建新的
       const newSessionId = `session-${Date.now()}-${++_msgIDCounter}`
       currentSessionId.value = newSessionId
+      createdNewSession = true
       
       const newConversation: Conversation = {
         id: newSessionId,
@@ -180,11 +607,16 @@ export const useChatStore = defineStore('chat', () => {
     
     // 保存当前会话状态
     saveCurrentSession()
+    if (createdNewSession) {
+      clearPersistedDraftDocumentContexts()
+      clearDraftComposerText()
+    }
   }
 
   function deleteMessage(messageId: string) {
     const index = messages.value.findIndex((m) => m.id === messageId)
     if (index !== -1) {
+      disposeDisplayBuffer(messages.value[index].id)
       messages.value.splice(index, 1)
     }
   }
@@ -212,6 +644,7 @@ export const useChatStore = defineStore('chat', () => {
 
     // 计算要删除的消息（包含 index 及之后的所有消息）
     const deletedMessages = messages.value.slice(index)
+    deletedMessages.forEach((message) => disposeDisplayBuffer(message.id))
     
     // 保留 index 之前的所有消息
     messages.value = messages.value.slice(0, index)
@@ -236,6 +669,7 @@ export const useChatStore = defineStore('chat', () => {
   function restoreRollback() {
     const state = rollbackHistory.value.pop()
     if (state) {
+      disposeAllDisplayBuffers()
       messages.value = state.messages
     }
   }
@@ -253,40 +687,64 @@ export const useChatStore = defineStore('chat', () => {
       // 删除该消息之后的所有消息（重新生成）
       const index = messages.value.indexOf(msg)
       if (index !== -1) {
+        messages.value.slice(index + 1).forEach((message) => disposeDisplayBuffer(message.id))
         messages.value.splice(index + 1)
       }
     }
   }
 
-  async function regenerateMessage(messageId: string) {
+  function truncateMessagesFrom(index: number) {
+    if (index < 0 || index >= messages.value.length) return
+    messages.value.slice(index).forEach((message) => disposeDisplayBuffer(message.id))
+    messages.value = messages.value.slice(0, index)
+    const currentConv = conversations.value.find(c => c.id === currentSessionId.value)
+    if (currentConv) {
+      currentConv.messageCount = messages.value.length
+      currentConv.timestamp = Date.now()
+      saveConversationsToStorage()
+    }
+    saveCurrentSession()
+  }
+
+  async function regenerateFromUserMessage(messageId: string) {
     const index = messages.value.findIndex((m) => m.id === messageId)
     if (index === -1) return
+    const msg = messages.value[index]
+    if (msg.role !== 'user') return
 
+    const content = msg.content
+    const attachments = sanitizeAttachmentMetadata(msg.attachments)
+    truncateMessagesFrom(index)
+    await sendMessage(content, {
+      regenerate_from_message_id: messageId,
+      attachment_ids: attachments.map((item) => item.attachment_id),
+      attachments,
+    })
+  }
+
+  async function regenerateFromAssistantMessage(messageId: string) {
+    const index = messages.value.findIndex((m) => m.id === messageId)
+    if (index === -1) return
     const msg = messages.value[index]
     if (msg.role !== 'assistant') return
 
-    // 找到前一条用户消息
     let userIndex = index - 1
     while (userIndex >= 0 && messages.value[userIndex].role !== 'user') {
       userIndex--
     }
-
     if (userIndex < 0) return
-
-    const userMsg = messages.value[userIndex]
-    
-    // 删除当前 AI 消息和后续消息
-    messages.value.splice(index)
-    
-    // 重新发送
-    await sendMessage(userMsg.content)
+    await regenerateFromUserMessage(messages.value[userIndex].id)
   }
 
+  async function regenerateMessage(messageId: string) {
+    await regenerateFromAssistantMessage(messageId)
+  }
   function addAssistantMessage() {
     const msg: Message = {
       id: _generateMsgID(),
       role: 'assistant',
       content: '',
+      displayContent: '',
       thinking: '',
       toolSteps: [],
       isLoading: true,
@@ -295,10 +753,237 @@ export const useChatStore = defineStore('chat', () => {
     return msg
   }
 
+  function setMessageDisplayContent(messageId: string, displayContent: string) {
+    const index = messages.value.findIndex((message) => message.id === messageId)
+    if (index === -1) return
+    messages.value[index] = {
+      ...messages.value[index],
+      displayContent,
+    }
+  }
+
+  function getDisplayBuffer(message: Message): BufferedStreamText {
+    const existing = displayBuffers.get(message.id)
+    if (existing) return existing.buffer
+
+    const entry = {} as DisplayBufferEntry
+    entry.messageId = message.id
+    const buffer = createBufferedStreamText({
+      frameMs: 24,
+      initialText: message.displayContent ?? '',
+      onDisplayChange: (displayContent) => setMessageDisplayContent(entry.messageId, displayContent),
+    })
+    entry.buffer = buffer
+    displayBuffers.set(message.id, entry)
+    return buffer
+  }
+
+  function flushDisplayBuffer(messageId: string, remove = false) {
+    const entry = displayBuffers.get(messageId)
+    if (!entry) return
+    entry.buffer.flush()
+    if (remove) {
+      displayBuffers.delete(messageId)
+    }
+  }
+
+  function disposeDisplayBuffer(messageId: string) {
+    const entry = displayBuffers.get(messageId)
+    if (!entry) return
+    entry.buffer.dispose()
+    displayBuffers.delete(messageId)
+  }
+
+  function disposeAllDisplayBuffers() {
+    for (const entry of displayBuffers.values()) {
+      entry.buffer.dispose()
+    }
+    displayBuffers.clear()
+  }
+
+  function moveDisplayBuffer(oldMessageId: string, newMessageId: string) {
+    if (!oldMessageId || !newMessageId || oldMessageId === newMessageId) return
+    const entry = displayBuffers.get(oldMessageId)
+    if (!entry) return
+    displayBuffers.delete(oldMessageId)
+    entry.messageId = newMessageId
+    displayBuffers.set(newMessageId, entry)
+  }
+
   function updateLastMessage(updates: Partial<Message>) {
     const last = messages.value[messages.value.length - 1]
     if (last && last.role === 'assistant') {
-      Object.assign(last, updates)
+      const nextUpdates = { ...updates }
+      if (
+        nextUpdates.content !== undefined &&
+        nextUpdates.displayContent === undefined &&
+        nextUpdates.isLoading === false
+      ) {
+        disposeDisplayBuffer(last.id)
+        nextUpdates.displayContent = nextUpdates.content
+      }
+      Object.assign(last, nextUpdates)
+    }
+  }
+
+  function extractScopeTrace(value: unknown): RetrievalScopeTrace | null {
+    if (!value || typeof value !== 'object') return null
+    const record = value as Record<string, unknown>
+    if (record.scope && typeof record.scope === 'object') {
+      return record.scope as RetrievalScopeTrace
+    }
+    if (record.retrieval_scope && typeof record.retrieval_scope === 'object') {
+      return record.retrieval_scope as RetrievalScopeTrace
+    }
+    if (
+      'folder_id' in record ||
+      'requested_folder_id' in record ||
+      'document_ids' in record ||
+      'requested_document_ids' in record ||
+      'expanded_to_user_library' in record ||
+      'retrieval_mode' in record
+    ) {
+      return record as RetrievalScopeTrace
+    }
+    return null
+  }
+
+  function collectResultMetadata(result: unknown): { scope: RetrievalScopeTrace | null; fallbacks: string[]; evidence: EvidenceItem[] } {
+    const fallbacks = new Set<string>()
+    const evidence: EvidenceItem[] = []
+    let scope: RetrievalScopeTrace | null = extractScopeTrace(result)
+
+    const visit = (value: unknown, depth = 0) => {
+      if (!value || depth > 4) return
+      if (Array.isArray(value)) {
+        value.forEach((item) => visit(item, depth + 1))
+        return
+      }
+      if (typeof value !== 'object') return
+      const record = value as Record<string, unknown>
+      const nestedScope = extractScopeTrace(record)
+      if (!scope && nestedScope) scope = nestedScope
+      const source = record.retrieval_source
+      if (source === 'keyword_fallback' || source === 'visual_summary') {
+        fallbacks.add(String(source))
+      }
+      const sourceType = typeof record.type === 'string' ? record.type : ''
+      const url = typeof record.url === 'string' ? record.url : ''
+      if ((sourceType === 'web' || record.source === 'anysearch' || record.provider === 'anysearch') && url) {
+        let domain = typeof record.domain === 'string' ? record.domain : ''
+        if (!domain) {
+          try {
+            domain = new URL(url).hostname.replace(/^www\./, '')
+          } catch {
+            domain = ''
+          }
+        }
+        const title = String(record.title || record.display_label || record.displayLabel || domain || url)
+        evidence.push({
+          type: 'web',
+          sourceId: typeof record.source_id === 'string'
+            ? record.source_id
+            : typeof record.sourceId === 'string'
+              ? record.sourceId
+              : undefined,
+          title,
+          displayLabel: typeof record.display_label === 'string'
+            ? record.display_label
+            : typeof record.displayLabel === 'string'
+              ? record.displayLabel
+              : title,
+          url,
+          domain,
+          snippet: typeof record.snippet === 'string' ? record.snippet : undefined,
+          contentPreview: typeof record.content_preview === 'string'
+            ? record.content_preview
+            : typeof record.contentPreview === 'string'
+              ? record.contentPreview
+              : undefined,
+          provider: typeof record.provider === 'string'
+            ? record.provider
+            : typeof record.source === 'string'
+              ? record.source
+              : undefined,
+        })
+      } else if (record.display_label || record.source_anchor) {
+        evidence.push({
+          type: 'document',
+          docId: typeof record.doc_id === 'string'
+            ? record.doc_id
+            : typeof record.docId === 'string'
+              ? record.docId
+              : typeof record.document_id === 'string'
+                ? record.document_id
+                : undefined,
+          documentName: String(record.document_name || record.doc_name || record.documentName || record.name || ''),
+          displayLabel: typeof record.display_label === 'string'
+            ? record.display_label
+            : typeof record.displayLabel === 'string'
+              ? record.displayLabel
+              : undefined,
+          sourceAnchor: (record.source_anchor || null) as SourceAnchor | null,
+          retrievalSource: typeof record.retrieval_source === 'string' ? record.retrieval_source : undefined,
+        })
+      }
+      for (const nested of Object.values(record)) {
+        if (typeof nested === 'object') visit(nested, depth + 1)
+      }
+    }
+
+    visit(result)
+    return { scope, fallbacks: Array.from(fallbacks), evidence }
+  }
+
+  function recordFromAnchor(anchor: Citation['source_anchor']): Record<string, unknown> {
+    return anchor && typeof anchor === 'object' ? anchor as Record<string, unknown> : {}
+  }
+
+  function safeWebUrlFromCitation(citation: Citation): string {
+    const anchor = recordFromAnchor(citation.source_anchor)
+    const rawUrl = typeof anchor.url === 'string'
+      ? anchor.url
+      : typeof citation.document_id === 'string'
+        ? citation.document_id
+        : ''
+    try {
+      const parsed = new URL(rawUrl)
+      return parsed.protocol === 'http:' || parsed.protocol === 'https:' ? parsed.toString() : ''
+    } catch {
+      return ''
+    }
+  }
+
+  function domainFromUrl(url: string): string {
+    try {
+      return new URL(url).hostname.replace(/^www\./, '')
+    } catch {
+      return ''
+    }
+  }
+
+  function evidenceFromCitation(citation: Citation): EvidenceItem {
+    const anchor = recordFromAnchor(citation.source_anchor)
+    const previewKind = String(citation.preview_kind || anchor.format || '').toLowerCase()
+    const url = safeWebUrlFromCitation(citation)
+    if (previewKind === 'web' || url) {
+      const title = citation.document_name || citation.display_label || url
+      return {
+        type: 'web',
+        sourceId: citation.citation_key,
+        title,
+        displayLabel: citation.display_label || title,
+        url,
+        domain: domainFromUrl(url),
+        provider: 'citation',
+      }
+    }
+    return {
+      type: 'document',
+      docId: citation.document_id,
+      documentName: citation.document_name,
+      displayLabel: citation.display_label,
+      sourceAnchor: citation.source_anchor as SourceAnchor,
     }
   }
 
@@ -311,71 +996,280 @@ export const useChatStore = defineStore('chat', () => {
       currentSessionId.value = backendConversationId
 
       try {
-        const sessionsData = localStorage.getItem(SESSIONS_DATA_KEY)
-        if (sessionsData) {
-          const sessionStore = JSON.parse(sessionsData)
-          if (sessionStore.sessions && sessionStore.sessions[oldSessionId]) {
-            sessionStore.sessions[backendConversationId] = sessionStore.sessions[oldSessionId]
-            delete sessionStore.sessions[oldSessionId]
-            sessionStore.lastActiveSessionId = backendConversationId
-            localStorage.setItem(SESSIONS_DATA_KEY, JSON.stringify(sessionStore))
-            console.log('Migrated session from', oldSessionId, 'to', backendConversationId)
-          }
+        const sessionsData = getStorageItem(SESSIONS_DATA_KEY)
+        const sessionStore = parseSessionsData(sessionsData)
+        const oldSession = sessionStore.sessions[oldSessionId]
+        const existingSession = sessionStore.sessions[backendConversationId]
+        const oldMessages = Array.isArray(oldSession?.messages) ? oldSession.messages : []
+        const existingMessages = Array.isArray(existingSession?.messages) ? existingSession.messages : []
+        const activeMessages = messages.value.length > 0 ? messages.value : oldMessages
+        const activeDocumentContexts = documentContexts.value.length > 0
+          ? documentContexts.value
+          : Array.isArray(oldSession?.documentContexts)
+            ? oldSession.documentContexts
+            : Array.isArray(existingSession?.documentContexts)
+              ? existingSession.documentContexts
+              : []
+
+        sessionStore.sessions[backendConversationId] = {
+          ...existingSession,
+          ...oldSession,
+          messages: oldMessages.length > 0
+            ? oldMessages
+            : activeMessages.length > 0
+              ? activeMessages
+              : existingMessages,
+          conversationId: backendConversationId,
+          documentContexts: activeDocumentContexts,
+          timestamp: Date.now(),
         }
+        delete sessionStore.sessions[oldSessionId]
+        sessionStore.lastActiveSessionId = backendConversationId
+        writeSessionsData(sessionStore)
+        console.log('Migrated session from', oldSessionId, 'to', backendConversationId)
       } catch (e) {
         console.error('Failed to migrate session:', e)
       }
 
       const convIndex = conversations.value.findIndex(c => c.id === oldSessionId)
+      const existingIndex = conversations.value.findIndex(c => c.id === backendConversationId)
       if (convIndex !== -1) {
-        conversations.value[convIndex].id = backendConversationId
+        const currentConversation: Conversation = {
+          ...conversations.value[convIndex],
+          id: backendConversationId,
+          timestamp: Math.max(conversations.value[convIndex].timestamp || 0, Date.now()),
+          messageCount: Math.max(conversations.value[convIndex].messageCount || 0, messages.value.length),
+        }
+        const existingConversation = existingIndex !== -1 ? conversations.value[existingIndex] : undefined
+        const mergedConversation = mergeConversationMetadata(currentConversation, existingConversation)
+        conversations.value[convIndex] = mergedConversation
+        if (existingIndex !== -1 && existingIndex !== convIndex) {
+          conversations.value.splice(existingIndex, 1)
+        }
+        saveConversationsToStorage()
       }
     } else if (!currentSessionId.value) {
       currentSessionId.value = backendConversationId
+      saveCurrentSession()
     }
   }
 
+  function pendingToolStepIndex(
+    steps: ToolStep[],
+    data: { tool_call_id?: string; tool_name?: string },
+  ): number {
+    if (data.tool_call_id) {
+      const byCallId = steps.findIndex((step) => step.toolCallId === data.tool_call_id)
+      if (byCallId !== -1) return byCallId
+    }
+    if (data.tool_name) {
+      return steps.findIndex((step) => step.toolName === data.tool_name && step.status === 'calling')
+    }
+    return -1
+  }
+
   function handleEnvelope(envelope: StreamEnvelope) {
-    const lastIndex = messages.value.length - 1
+    let lastIndex = messages.value.length - 1
+    const eventData = envelope.data as unknown as Record<string, unknown>
+    const backendMessageId = typeof eventData.message_id === 'string' ? eventData.message_id : ''
+    if (backendMessageId) {
+      const matchingIndex = messages.value.findIndex((message) => message.id === backendMessageId)
+      if (matchingIndex !== -1) {
+        lastIndex = matchingIndex
+      }
+    }
     const last = messages.value[lastIndex]
     if (!last || last.role !== 'assistant') return
 
     switch (envelope.event) {
-      case 'thinking': {
-        const data = envelope.data as unknown as ThinkingData
-        messages.value[lastIndex] = { ...last, thinking: last.thinking + data.content }
-        break
-      }
-      case 'content': {
-        const data = envelope.data as unknown as ContentData
-        messages.value[lastIndex] = { ...last, content: last.content + data.content }
-        break
-      }
-      case 'tool_call': {
-        const data = envelope.data as unknown as ToolCallData
+      case 'run_started': {
+        const data = envelope.data as unknown as RunStarted
+        if (data.conversation_id) {
+          syncBackendConversationId(data.conversation_id)
+        }
+        const backendUserMessageId = data.user_message_id || ''
+        if (backendUserMessageId) {
+          for (let i = lastIndex - 1; i >= 0; i--) {
+            if (messages.value[i].role === 'user') {
+              messages.value[i] = {
+                ...messages.value[i],
+                id: backendUserMessageId,
+              }
+              break
+            }
+          }
+        }
+        const nextMessageId = data.message_id || last.id
         messages.value[lastIndex] = {
           ...last,
-          toolSteps: [...last.toolSteps, {
-            toolName: data.tool_name,
-            arguments: data.arguments,
-            result: null,
-            status: 'calling' as const,
-          }]
+          id: nextMessageId,
+          isLoading: true,
+        }
+        moveDisplayBuffer(last.id, nextMessageId)
+        saveCurrentSession()
+        break
+      }
+      case 'processing_delta': {
+        const data = envelope.data as unknown as ProcessingDelta
+        const content = data.content || ''
+        if (!content) break
+        flushDisplayBuffer(last.id)
+        const base = messages.value[lastIndex] || last
+        const nextProgressSteps = [...(base.progressSteps || [])]
+        const step = data.step ?? 0
+        const existingProgressIndex = nextProgressSteps.findIndex((item) => (
+          item.kind === 'processing' && (item.step ?? 0) === step
+        ))
+        const previous = existingProgressIndex >= 0 ? nextProgressSteps[existingProgressIndex] : null
+        const progressStep: ProgressStep = {
+          message: `${previous?.message || ''}${content}`,
+          kind: 'processing',
+          step,
+          status: data.status || 'streaming',
+          seq: data.seq,
+          ts: data.ts,
+        }
+        if (existingProgressIndex >= 0) {
+          nextProgressSteps[existingProgressIndex] = progressStep
+        } else {
+          nextProgressSteps.push(progressStep)
+        }
+        messages.value[lastIndex] = {
+          ...base,
+          progressSteps: nextProgressSteps,
         }
         break
       }
-      case 'tool_result': {
-        const data = envelope.data as unknown as ToolResultData
-        const stepIndex = last.toolSteps.findIndex(
-          (s) => s.toolName === data.tool_name && s.status === 'calling'
+      case 'reasoning_delta': {
+        const data = envelope.data as unknown as ReasoningDelta
+        const content = data.content || ''
+        if (!content) break
+        flushDisplayBuffer(last.id)
+        const base = messages.value[lastIndex] || last
+        messages.value[lastIndex] = {
+          ...base,
+          thinking: `${base.thinking || ''}${content}`,
+        }
+        saveCurrentSession()
+        break
+      }
+      case 'progress': {
+        const data = envelope.data as unknown as ProgressEvent
+        flushDisplayBuffer(last.id)
+        const base = messages.value[lastIndex] || last
+        const nextProgressSteps = [...(base.progressSteps || [])]
+        if (data.kind === 'plan_retract' && typeof data.step === 'number') {
+          messages.value[lastIndex] = {
+            ...base,
+            progressSteps: nextProgressSteps.filter((step) => !(
+              step.kind === (data.target_kind || 'plan') && step.step === data.step
+            )),
+          }
+          break
+        }
+        const progressStep: ProgressStep = {
+          message: data.message,
+          kind: data.kind,
+          step: data.step,
+          status: data.status,
+          seq: data.seq,
+          ts: data.ts,
+        }
+        const existingProgressIndex = (
+          data.kind === 'plan' && typeof data.step === 'number'
+            ? nextProgressSteps.findIndex((step) => (
+                step.kind === 'plan' && step.step === data.step
+              ))
+            : -1
         )
+        if (existingProgressIndex >= 0) {
+          nextProgressSteps[existingProgressIndex] = {
+            ...nextProgressSteps[existingProgressIndex],
+            ...progressStep,
+          }
+        } else {
+          nextProgressSteps.push(progressStep)
+        }
+        messages.value[lastIndex] = {
+          ...base,
+          progressSteps: nextProgressSteps,
+        }
+        break
+      }
+      case 'tool_call_delta': {
+        const data = envelope.data as unknown as ToolCallDelta
+        if (!data.tool_name && !data.tool_call_id) break
+        flushDisplayBuffer(last.id)
+        const base = messages.value[lastIndex] || last
+        const nextToolSteps = [...base.toolSteps]
+        const stepIndex = pendingToolStepIndex(nextToolSteps, {
+          tool_call_id: data.tool_call_id,
+          tool_name: data.tool_name,
+        })
+        const existing = stepIndex >= 0 ? nextToolSteps[stepIndex] : null
+        const toolStep: ToolStep = {
+          toolCallId: data.tool_call_id || existing?.toolCallId,
+          toolName: data.tool_name || existing?.toolName || 'tool_call',
+          arguments: data.arguments || existing?.arguments || {},
+          argumentText: `${existing?.argumentText || ''}${data.arguments_delta || ''}` || undefined,
+          result: existing?.result || null,
+          status: 'calling',
+          seq: existing?.seq ?? data.seq,
+          ts: existing?.ts ?? data.ts,
+        }
+        if (stepIndex >= 0) {
+          nextToolSteps[stepIndex] = toolStep
+        } else {
+          nextToolSteps.push(toolStep)
+        }
+        messages.value[lastIndex] = {
+          ...base,
+          toolSteps: nextToolSteps,
+        }
+        break
+      }
+      case 'tool_started': {
+        const data = envelope.data as unknown as ToolStarted
+        flushDisplayBuffer(last.id)
+        const base = messages.value[lastIndex] || last
+        const nextToolSteps = [...base.toolSteps]
+        const stepIndex = pendingToolStepIndex(nextToolSteps, data)
+        const existing = stepIndex >= 0 ? nextToolSteps[stepIndex] : null
+        const toolStep: ToolStep = {
+          ...(existing || {}),
+          toolCallId: data.tool_call_id || existing?.toolCallId,
+          toolName: data.tool_name,
+          arguments: data.arguments,
+          result: null,
+          status: 'calling' as const,
+          seq: existing?.seq ?? data.seq,
+          ts: existing?.ts ?? data.ts,
+        }
+        if (stepIndex >= 0) {
+          nextToolSteps[stepIndex] = toolStep
+        } else {
+          nextToolSteps.push(toolStep)
+        }
+        messages.value[lastIndex] = {
+          ...base,
+          toolSteps: nextToolSteps,
+        }
+        break
+      }
+      case 'tool_completed': {
+        const data = envelope.data as unknown as ToolCompleted
+        flushDisplayBuffer(last.id)
+        const base = messages.value[lastIndex] || last
+        const stepIndex = pendingToolStepIndex(base.toolSteps, data)
         if (stepIndex !== -1) {
-          const raw = envelope.data as Record<string, unknown>
-          const updatedStep = { ...last.toolSteps[stepIndex] }
+          const raw = envelope.data as unknown as Record<string, unknown>
+          const updatedStep = { ...base.toolSteps[stepIndex] }
           updatedStep.result = data.result
           updatedStep.status = 'done' as const
-          if (raw.elapsed_ms !== undefined) {
-            updatedStep.elapsedMs = Number(raw.elapsed_ms)
+          updatedStep.seq = updatedStep.seq ?? data.seq
+          updatedStep.ts = updatedStep.ts ?? data.ts
+          if (data.elapsed_ms !== undefined) {
+            updatedStep.elapsedMs = Number(data.elapsed_ms)
           }
           if (raw.search_method !== undefined) {
             ;(updatedStep as any).searchMethod = String(raw.search_method)
@@ -383,77 +1277,385 @@ export const useChatStore = defineStore('chat', () => {
           if (raw.results_count !== undefined) {
             ;(updatedStep as any).resultsCount = Number(raw.results_count)
           }
-          const newToolSteps = [...last.toolSteps]
+          const newToolSteps = [...base.toolSteps]
           newToolSteps[stepIndex] = updatedStep
-          messages.value[lastIndex] = { ...last, toolSteps: newToolSteps }
+          const metadata = collectResultMetadata(data.result)
+          messages.value[lastIndex] = {
+            ...base,
+            toolSteps: newToolSteps,
+            retrievalScope: metadata.scope || base.retrievalScope || null,
+            retrievalFallbacks: Array.from(new Set([...(base.retrievalFallbacks || []), ...metadata.fallbacks])),
+            evidenceItems: dedupeEvidence([...(base.evidenceItems || []), ...metadata.evidence]),
+          }
         }
         break
       }
-      case 'conversation': {
-        const data = envelope.data as unknown as DoneData
+      case 'answer_delta': {
+        const data = envelope.data as unknown as AnswerDelta
+        const base = messages.value[lastIndex] || last
+        const buffer = getDisplayBuffer(base)
+        buffer.push(data.content)
+        messages.value[lastIndex] = {
+          ...base,
+          content: base.content + data.content,
+          displayContent: buffer.current(),
+        }
+        break
+      }
+      case 'citation_added': {
+        const data = envelope.data as unknown as CitationAdded
+        flushDisplayBuffer(last.id)
+        const base = messages.value[lastIndex] || last
+        const citations = dedupeCitations([...(base.citations || []), data.citation])
+        messages.value[lastIndex] = {
+          ...base,
+          citations,
+          evidenceItems: dedupeEvidence([
+            ...(base.evidenceItems || []),
+            evidenceFromCitation(data.citation),
+          ]),
+        }
+        break
+      }
+      case 'run_completed': {
+        const data = envelope.data as unknown as RunCompleted
         if (data.conversation_id) {
           syncBackendConversationId(data.conversation_id)
         }
-        break
-      }
-      case 'done': {
-        const doneData = envelope.data as unknown as DoneData
-        if (doneData.conversation_id) {
-          syncBackendConversationId(doneData.conversation_id)
+        const base = messages.value[lastIndex] || last
+        flushDisplayBuffer(base.id, true)
+        messages.value[lastIndex] = {
+          ...base,
+          displayContent: base.content,
+          isLoading: false,
         }
-        messages.value[lastIndex] = { ...last, isLoading: false }
-        
-        // 更新对话记录的消息数
         const currentConv = conversations.value.find(c => c.id === currentSessionId.value)
         if (currentConv) {
           currentConv.messageCount = messages.value.length
           currentConv.timestamp = Date.now()
           saveConversationsToStorage()
-          console.log('Updated conversation after AI reply:', currentConv.id, 'now has', messages.value.length, 'messages')
+        }
+        break
+      }
+      case 'run_failed': {
+        const data = envelope.data as unknown as RunFailed
+        const base = messages.value[lastIndex] || last
+        flushDisplayBuffer(base.id, true)
+        const errorContent = runFailedDisplayMessage(data)
+        messages.value[lastIndex] = {
+          ...base,
+          content: base.content || errorContent,
+          displayContent: base.content || errorContent,
+          isLoading: false,
+        }
+        break
+      }
+      case 'run_cancelled': {
+        const base = messages.value[lastIndex] || last
+        flushDisplayBuffer(base.id, true)
+        messages.value[lastIndex] = {
+          ...base,
+          isLoading: false,
         }
         break
       }
     }
   }
 
+  function runFailedDisplayMessage(data: RunFailed): string {
+    if (data.error_code === 'MODEL_ROUTE_NOT_CONFIGURED') {
+      return data.message || modelRouteMissingMessage(data.route_slot)
+    }
+    return data.error || data.message || '抱歉，处理请求时发生错误。'
+  }
+
+  function modelRouteMissingMessage(routeSlot?: string): string {
+    if (routeSlot === 'document_qa' || routeSlot === 'query_expansion') {
+      return '请先在设置页配置问答模型。'
+    }
+    if (routeSlot === 'indexing') {
+      return '请先在设置页配置解析模型。'
+    }
+    if (routeSlot === 'vision') {
+      return '请先在设置页配置 OCR/VLM 模型。'
+    }
+    if (routeSlot === 'general_chat') {
+      return '请先在设置页配置聊天模型。'
+    }
+    return '请先在设置页配置所需模型。'
+  }
+
+  function dedupeCitations(items: Citation[]): Citation[] {
+    const seen = new Set<string>()
+    const result: Citation[] = []
+    for (const item of items) {
+      const key = citationIdentityKey(item)
+      if (!key || seen.has(key)) continue
+      seen.add(key)
+      result.push(item)
+    }
+    return result
+  }
+
+  function dedupeEvidence(items: EvidenceItem[]): EvidenceItem[] {
+    const seen = new Set<string>()
+    const result: EvidenceItem[] = []
+    for (const item of items) {
+      const key = item.type === 'web'
+        ? item.url || item.sourceId || item.displayLabel || ''
+        : documentEvidenceIdentityKey(item)
+      if (!key || seen.has(key)) continue
+      seen.add(key)
+      result.push(item)
+      if (result.length >= 8) break
+    }
+    return result
+  }
+
+  function citationIdentityKey(item: Citation): string {
+    const anchor = recordFromAnchor(item.source_anchor)
+    const previewKind = String(item.preview_kind || anchor.format || '').toLowerCase()
+    const url = safeWebUrlFromCitation(item)
+    if (previewKind === 'web' || url) return `web:${url || item.citation_key || item.document_id || ''}`
+    return documentEvidenceIdentityKey({
+      type: 'document',
+      docId: item.document_id,
+      documentName: item.document_name,
+      displayLabel: item.display_label,
+      sourceAnchor: item.source_anchor as SourceAnchor,
+    }) || item.citation_key || `${item.document_id || ''}:${item.display_label}`
+  }
+
+  function documentEvidenceIdentityKey(item: EvidenceItem): string {
+    const anchorKey = sourceAnchorIdentityKey(item.sourceAnchor)
+    if (item.docId && anchorKey) return `document-id:${item.docId}:${anchorKey}`
+    const name = normalizeSourceName(item.documentName || item.displayLabel || '')
+    return name || anchorKey ? `document-name:${name}:${anchorKey}` : ''
+  }
+
+  function sourceAnchorIdentityKey(anchor?: SourceAnchor | null): string {
+    if (!anchor || typeof anchor !== 'object') return ''
+    const record = anchor as unknown as Record<string, unknown>
+    const format = String(record.format || '').toLowerCase()
+    const startPage = firstFiniteNumber(record.start_page, record.page)
+    if (startPage !== null) {
+      const endPage = firstFiniteNumber(record.end_page) ?? startPage
+      return stableJson({
+        format: format || 'pdf',
+        unit_type: 'page',
+        start_page: String(startPage),
+        end_page: String(endPage),
+      })
+    }
+
+    for (const unit of [
+      ['line', 'start_line', 'end_line'],
+      ['row', 'start_row', 'end_row'],
+      ['paragraph', 'start_paragraph', 'end_paragraph'],
+      ['slide', 'start_slide', 'end_slide'],
+    ] as const) {
+      const start = firstFiniteNumber(record[unit[1]])
+      if (start === null) continue
+      const end = firstFiniteNumber(record[unit[2]]) ?? start
+      const identity: Record<string, unknown> = {
+        format,
+        unit_type: unit[0],
+        [unit[1]]: String(start),
+        [unit[2]]: String(end),
+      }
+      if (unit[0] === 'row' && record.sheet) identity.sheet = String(record.sheet)
+      return stableJson(identity)
+    }
+
+    return stableJson(record)
+  }
+
+  function firstFiniteNumber(...values: unknown[]): number | null {
+    for (const value of values) {
+      const number = Number(value)
+      if (Number.isFinite(number)) return number
+    }
+    return null
+  }
+
+  function stableJson(value: Record<string, unknown>): string {
+    const sorted: Record<string, unknown> = {}
+    Object.keys(value).sort().forEach((key) => {
+      const item = value[key]
+      if (item !== undefined && item !== null && item !== '') sorted[key] = item
+    })
+    return JSON.stringify(sorted)
+  }
+
+  function normalizeSourceName(value: string): string {
+    return String(value || '')
+      .toLowerCase()
+      .replace(/\.(pdf|docx|xlsx|csv|tsv|pptx|md|markdown|txt)\b/g, '')
+      .replace(/\s+/g, ' ')
+      .trim()
+  }
+
   function clearMessages() {
+    disposeAllDisplayBuffers()
     messages.value = []
     conversationId.value = null
     currentSessionId.value = null
     rollbackHistory.value = []
+    documentContexts.value = []
+    clearPersistedDraftDocumentContexts()
+    clearDraftComposerText()
     // 不调用 saveCurrentSession，因为清空意味着要新建对话
   }
 
+  function setDocumentContexts(contexts: DocumentChatContext[]) {
+    replaceContextsByType('document', contexts)
+  }
+
+  function setFolderContexts(contexts: DocumentChatContext[]) {
+    replaceContextsByType('folder', contexts)
+  }
+
+  function clearDocumentContexts() {
+    replaceContextsByType('document', [])
+  }
+
+  function clearFolderContexts() {
+    replaceContextsByType('folder', [])
+  }
+
+  function startDraftWithDocumentContexts(contexts: DocumentChatContext[]) {
+    if (currentSessionId.value && messages.value.length > 0) {
+      saveCurrentSession()
+    }
+    messages.value = []
+    conversationId.value = null
+    currentSessionId.value = null
+    rollbackHistory.value = []
+    documentContexts.value = normalizeDocumentContexts(contexts)
+    persistDraftDocumentContexts()
+  }
+
   // 加载指定对话
-  function loadConversation(conversationId: string) {
-    const conversation = conversations.value.find(c => c.id === conversationId)
+  function attachDocumentContextsToCurrentChat(contexts: DocumentChatContext[]) {
+    setDocumentContexts(contexts)
+  }
+
+  function startEmptyDraft() {
+    if (currentSessionId.value && messages.value.length > 0) {
+      saveCurrentSession()
+    }
+    messages.value = []
+    conversationId.value = null
+    currentSessionId.value = null
+    rollbackHistory.value = []
+    documentContexts.value = []
+    clearPersistedDraftDocumentContexts()
+    clearDraftComposerText()
+  }
+
+  function openDraftChat() {
+    if (currentSessionId.value && messages.value.length > 0) {
+      saveCurrentSession()
+    }
+    messages.value = []
+    conversationId.value = null
+    currentSessionId.value = null
+    rollbackHistory.value = []
+    documentContexts.value = loadDraftDocumentContexts()
+    draftComposerText.value = loadDraftComposerText()
+  }
+
+  async function loadConversation(sessionId: string): Promise<boolean> {
+    const conversation = conversations.value.find(c => c.id === sessionId)
     if (!conversation) return false
 
     // 如果是当前对话，不做任何事
-    if (currentSessionId.value === conversationId) return true
+    if (currentSessionId.value === sessionId) {
+      try {
+        const session = loadStoredSession(sessionId)
+        if (session) {
+          conversationId.value = session.conversationId || null
+        }
+      } catch (e) {
+        console.error('Failed to restore current conversation id:', e)
+      }
+      return true
+    }
 
     // 保存当前会话（如果有）
     if (messages.value.length > 0) {
       saveCurrentSession()
     }
 
+    if (!isLocalSessionId(sessionId)) {
+      try {
+        const response = await chatApi.getMessages(sessionId)
+        const backendMessages = Array.isArray(response.data)
+          ? response.data.map(normalizeBackendMessage)
+          : []
+        currentSessionId.value = sessionId
+        messages.value = backendMessages
+        conversationId.value = sessionId
+        const session = loadStoredSession(sessionId)
+        documentContexts.value = Array.isArray(session?.documentContexts)
+          ? normalizeDocumentContexts(session.documentContexts)
+          : []
+        saveCurrentSession()
+        console.log('Hydrated backend conversation:', sessionId, 'with', messages.value.length, 'messages')
+        return true
+      } catch {
+        conversations.value = conversations.value.filter((item) => item.id !== sessionId)
+        saveConversationsToStorage()
+        try {
+          const sessionsData = getStorageItem(SESSIONS_DATA_KEY, LEGACY_SESSIONS_DATA_KEY)
+          if (sessionsData) {
+            const data = parseSessionsData(sessionsData)
+            delete data.sessions[sessionId]
+            if (data.lastActiveSessionId === sessionId) data.lastActiveSessionId = null
+            writeSessionsData(data)
+          }
+        } catch (storageError) {
+          console.error('Failed to remove inaccessible conversation cache:', storageError)
+        }
+        return false
+      }
+    }
+
     // 加载新对话
-    currentSessionId.value = conversationId
+    currentSessionId.value = sessionId
 
     // 尝试从新的存储结构中恢复该对话的完整消息
     try {
-      const sessionsData = localStorage.getItem(SESSIONS_DATA_KEY)
-      if (sessionsData) {
-        const data = JSON.parse(sessionsData)
-        if (data.sessions && data.sessions[conversationId] && data.sessions[conversationId].messages) {
-          messages.value = data.sessions[conversationId].messages
+      const session = loadStoredSession(sessionId)
+      if (session && Array.isArray(session.messages) && session.messages.length > 0) {
+          messages.value = session.messages
+          conversationId.value = session.conversationId || null
+          documentContexts.value = Array.isArray(session.documentContexts)
+            ? normalizeDocumentContexts(session.documentContexts)
+            : []
           saveCurrentSession()
-          console.log('Loaded conversation:', conversationId, 'with', messages.value.length, 'messages')
+          console.log('Loaded conversation:', sessionId, 'with', messages.value.length, 'messages')
           return true
-        }
       }
     } catch (e) {
       console.error('Failed to load conversation:', e)
+    }
+
+    try {
+      const response = await chatApi.getMessages(sessionId)
+      const backendMessages = Array.isArray(response.data)
+        ? response.data.map(normalizeBackendMessage)
+        : []
+      if (backendMessages.length > 0) {
+        messages.value = backendMessages
+        conversationId.value = sessionId
+        documentContexts.value = []
+        saveCurrentSession()
+        console.log('Hydrated backend conversation:', sessionId, 'with', messages.value.length, 'messages')
+        return true
+      }
+    } catch (e) {
+      console.error('Failed to hydrate backend conversation:', e)
     }
 
     // 如果没有存储的完整消息，从第一条消息开始
@@ -466,14 +1668,45 @@ export const useChatStore = defineStore('chat', () => {
       isLoading: false,
       timestamp: conversation.timestamp,
     }]
+    conversationId.value = null
+    documentContexts.value = []
 
     saveCurrentSession()
-    console.log('Created new conversation from first message:', conversationId)
+    console.log('Created new conversation from first message:', sessionId)
     return true
   }
 
+  function messagesForConversationExport(conversationId: string): Message[] {
+    if (currentSessionId.value === conversationId) {
+      return messages.value
+    }
+    try {
+      const sessionsData = getStorageItem(SESSIONS_DATA_KEY, LEGACY_SESSIONS_DATA_KEY)
+      if (!sessionsData) return []
+      const data = JSON.parse(sessionsData)
+      const sessionMessages = data.sessions?.[conversationId]?.messages
+      return Array.isArray(sessionMessages) ? sessionMessages : []
+    } catch (e) {
+      console.error('Failed to load conversation export:', e)
+      return []
+    }
+  }
+
+  function exportConversationMarkdown(conversationId: string, exportedAt = new Date().toISOString()) {
+    const conversation = conversations.value.find(c => c.id === conversationId)
+    return buildConversationExportMarkdown({
+      title: conversation?.title || 'PageChat Conversation',
+      exportedAt,
+      messages: messagesForConversationExport(conversationId).map((message) => ({
+        role: message.role,
+        content: message.content,
+        toolSteps: message.toolSteps,
+      })),
+    })
+  }
+
   // 删除对话记录
-  function deleteConversation(conversationId: string) {
+  async function deleteConversation(conversationId: string) {
     const index = conversations.value.findIndex(c => c.id === conversationId)
     if (index !== -1) {
       conversations.value.splice(index, 1)
@@ -484,20 +1717,33 @@ export const useChatStore = defineStore('chat', () => {
         clearMessages()
       }
     }
+    if (!isLocalSessionId(conversationId)) {
+      try {
+        await chatApi.deleteConversation(conversationId)
+      } catch (error) {
+        console.error('Failed to delete backend conversation:', error)
+      }
+    }
   }
 
-  async function sendMessage(question: string, documentIds?: string[]) {
+  async function sendMessage(question: string, scope?: ChatSendOptions) {
     if (isLoading.value) return
     
     isLoading.value = true
-    addUserMessage(question)
+    const controller = new AbortController()
+    activeStreamController.value = controller
+    const safeAttachments = sanitizeAttachmentMetadata(scope?.attachments)
+    addUserMessage(question, safeAttachments)
     addAssistantMessage()
 
     try {
+      const { attachments, ...streamScope } = scope || {}
       const response = await chatApi.stream({
         question,
-        document_ids: documentIds,
+        ...streamScope,
         conversation_id: conversationId.value || undefined,
+      }, {
+        signal: controller.signal,
       })
 
       if (!response.body) throw new Error('No response body')
@@ -535,6 +1781,8 @@ export const useChatStore = defineStore('chat', () => {
         }
       }
 
+      const last = messages.value[messages.value.length - 1]
+      if (last?.role === 'assistant') flushDisplayBuffer(last.id, true)
       updateLastMessage({ isLoading: false })
       
       // 保存当前会话状态
@@ -547,15 +1795,34 @@ export const useChatStore = defineStore('chat', () => {
         currentConv.timestamp = Date.now()
         saveConversationsToStorage()
       }
-    } catch (error) {
-      console.error('Chat error:', error)
-      updateLastMessage({
-        content: '抱歉，发生了错误。请稍后重试。',
-        isLoading: false,
-      })
+    } catch (error: any) {
+      const last = messages.value[messages.value.length - 1]
+      if (last?.role === 'assistant') flushDisplayBuffer(last.id, true)
+      if (error?.name === 'AbortError') {
+        updateLastMessage({ isLoading: false })
+      } else {
+        console.error('Chat error:', error)
+        updateLastMessage({
+          content: '抱歉，发生了错误。请稍后重试。',
+          isLoading: false,
+        })
+      }
     } finally {
+      if (activeStreamController.value === controller) {
+        activeStreamController.value = null
+      }
       isLoading.value = false
     }
+  }
+
+  function stopGeneration() {
+    const last = messages.value[messages.value.length - 1]
+    if (last?.role === 'assistant') flushDisplayBuffer(last.id, true)
+    activeStreamController.value?.abort()
+    activeStreamController.value = null
+    isLoading.value = false
+    updateLastMessage({ isLoading: false })
+    saveCurrentSession()
   }
 
   return {
@@ -563,22 +1830,40 @@ export const useChatStore = defineStore('chat', () => {
     conversationId,
     isLoading,
     rollbackHistory,
+    documentContexts,
+    draftComposerText,
     conversations,
     currentSessionId,
+    setStorageUserId,
     addUserMessage,
     addAssistantMessage,
     updateLastMessage,
     sendMessage,
+    stopGeneration,
     clearMessages,
+    setDocumentContexts,
+    setFolderContexts,
+    clearDocumentContexts,
+    clearFolderContexts,
+    startDraftWithDocumentContexts,
+    attachDocumentContextsToCurrentChat,
+    startEmptyDraft,
+    openDraftChat,
+    setDraftComposerText,
+    clearDraftComposerText,
     handleEnvelope,
+    hydrateConversationsFromBackend,
     deleteMessage,
     editMessage,
     regenerateMessage,
+    regenerateFromUserMessage,
+    regenerateFromAssistantMessage,
     rollbackToMessage,
     restoreRollback,
     clearRollbackHistory,
     loadConversationsFromStorage,
     loadConversation,
+    exportConversationMarkdown,
     deleteConversation,
     saveCurrentSession,
     saveConversationsToStorage,

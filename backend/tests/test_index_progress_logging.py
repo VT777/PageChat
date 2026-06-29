@@ -64,3 +64,31 @@ def test_toc_extract_stage_log_details_separate_start_pages_from_coverage():
         "final_end": 201,
         "frozen": True,
     }
+
+
+def test_index_diagnostics_exclude_ocr_prompt_and_raw_content():
+    diagnostics = PageIndexService._index_diagnostics_from_analysis(
+        {
+            "ocr_calls": [
+                {
+                    "task": "page_text",
+                    "model": "qwen3.5-ocr",
+                    "prompt_text": "Extract every visible text line in reading order, including section numbers and headings.",
+                    "raw": {"content": "full OCR output"},
+                    "diagnostics_path": "backend/data/ocr_diagnostics/doc/page_text-0001.json",
+                }
+            ],
+            "ocr_calls_summary": {
+                "page_text": {
+                    "primary_model": "qwen3.5-ocr",
+                    "pages": 1,
+                    "diagnostics_dir": "backend/data/ocr_diagnostics/doc",
+                }
+            },
+        }
+    )
+
+    serialized = str(diagnostics)
+    assert "prompt_text" not in serialized
+    assert "full OCR output" not in serialized
+    assert diagnostics["ocr_calls"][0]["diagnostics_path"].endswith("page_text-0001.json")

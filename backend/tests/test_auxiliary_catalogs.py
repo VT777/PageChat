@@ -3,11 +3,16 @@ import sys
 import asyncio
 from types import SimpleNamespace
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from app.services.pageindex_service import PageIndexService
 from pageindex.node_filler import fill_node_text
-from pageindex import page_index
+from pageindex import page_index_md as page_index
+
+
+_HAS_LEGACY_LARGE_NODE_API = hasattr(page_index, "process_large_node_recursively")
 
 
 def test_extract_auxiliary_catalogs_from_regex_toc_items() -> None:
@@ -35,6 +40,36 @@ def test_extract_auxiliary_catalogs_from_regex_toc_items() -> None:
     assert catalogs[1]["nodes"][0]["title"] == "表1、OpenAI 核心员工离职后的创业情况"
 
 
+def test_extract_auxiliary_catalogs_from_code_toc_sections() -> None:
+    analysis = {
+        "code_toc": {
+            "source": "bookmarks+links",
+            "items": [{"title": "第一章 总则", "physical_index": 10}],
+            "toc_sections": [
+                {"kind": "main_toc", "items": [{"title": "第一章 总则", "physical_index": 10}]},
+                {
+                    "kind": "table_toc",
+                    "items": [
+                        {"title": "表 1 备案材料清单", "physical_index": 31, "catalog_type": "table"}
+                    ],
+                },
+                {
+                    "kind": "figure_toc",
+                    "items": [
+                        {"title": "图 1 备案流程", "physical_index": 36, "catalog_type": "figure"}
+                    ],
+                },
+            ],
+        }
+    }
+
+    catalogs = PageIndexService._build_auxiliary_catalog_nodes(analysis)
+
+    assert [node["title"] for node in catalogs] == ["图目录", "表目录"]
+    assert catalogs[0]["nodes"][0]["title"] == "图 1 备案流程"
+    assert catalogs[1]["nodes"][0]["title"] == "表 1 备案材料清单"
+
+
 def test_merge_auxiliary_catalogs_appends_without_duplicates() -> None:
     tree = [{"title": "正文", "start_index": 1, "end_index": 5}]
     catalogs = [
@@ -46,6 +81,28 @@ def test_merge_auxiliary_catalogs_appends_without_duplicates() -> None:
     merged_again = PageIndexService._merge_auxiliary_catalog_nodes(merged, catalogs)
 
     assert [node["title"] for node in merged_again] == ["正文", "图目录", "表目录"]
+
+def test_merge_auxiliary_catalogs_wraps_multiple_main_roots() -> None:
+    tree = [
+        {"title": "Preface", "start_index": 1, "end_index": 2},
+        {"title": "第一章 总则", "start_index": 10, "end_index": 13},
+        {"title": "第二章 备案现状", "start_index": 14, "end_index": 30},
+    ]
+    catalogs = [
+        {"title": "图目录", "node_type": "auxiliary_catalog", "catalog_type": "figure", "nodes": []},
+        {"title": "表目录", "node_type": "auxiliary_catalog", "catalog_type": "table", "nodes": []},
+    ]
+
+    merged = PageIndexService._merge_auxiliary_catalog_nodes(tree, catalogs)
+
+    assert [node["title"] for node in merged] == ["目录", "图目录", "表目录"]
+    assert merged[0]["node_type"] == "catalog_group"
+    assert merged[0]["metadata"]["toc_section_kind"] == "main_toc"
+    assert [child["title"] for child in merged[0]["nodes"]] == [
+        "Preface",
+        "第一章 总则",
+        "第二章 备案现状",
+    ]
 
 
 def test_fill_node_text_skips_auxiliary_catalog_nodes() -> None:
@@ -74,6 +131,10 @@ def test_fill_node_text_skips_auxiliary_catalog_nodes() -> None:
     assert tree[1]["nodes"][0].get("text", "") == ""
 
 
+@pytest.mark.skipif(
+    not _HAS_LEGACY_LARGE_NODE_API,
+    reason="legacy large-node recursion API is not part of the state-machine TOC path",
+)
 def test_large_node_processing_does_not_skip_regular_catalog_group(monkeypatch) -> None:
     calls = []
 
@@ -112,6 +173,10 @@ def test_large_node_processing_does_not_skip_regular_catalog_group(monkeypatch) 
     assert calls, "regular catalog groups should not block child processing"
 
 
+@pytest.mark.skipif(
+    not _HAS_LEGACY_LARGE_NODE_API,
+    reason="legacy large-node recursion API is not part of the state-machine TOC path",
+)
 def test_large_node_processing_skips_auxiliary_catalog_group(monkeypatch) -> None:
     async def fail_meta_processor(*args, **kwargs):
         raise AssertionError("auxiliary catalogs should not be expanded as正文 nodes")

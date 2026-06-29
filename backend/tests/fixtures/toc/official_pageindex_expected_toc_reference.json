@@ -1,0 +1,349 @@
+{
+  "input_dir": "D:\\projects\\PageIndex\\examples\\documents",
+  "official_results_dir": "D:\\projects\\PageIndex\\examples\\documents\\results",
+  "comparison_baseline_dir": "D:\\projects\\page_chat\\eval0618\\pageindex_official_compare",
+  "purpose": "Official PageIndex examples converted into constraint-based TOC validation data. These checks are structural regression expectations, not byte-for-byte tree equality.",
+  "documents": [
+    {
+      "id": "P01",
+      "file": "2023-annual-report.pdf",
+      "page_count": 222,
+      "expected_route": {"content_type": "text", "selected_path": "embedded_toc"},
+      "official_baseline": {
+        "available": true,
+        "result_file": "2023-annual-report_structure.json",
+        "metrics": {"root_count": 16, "node_count": 76, "max_depth": 3}
+      },
+      "acceptance": {
+        "must_succeed": true,
+        "min_root_count": 12,
+        "min_node_count": 50,
+        "min_depth": 2,
+        "required_root_titles": [
+          "Preface",
+          "About the Federal Reserve",
+          "Overview",
+          "Monetary Policy and Economic Developments",
+          "Financial Stability",
+          "Supervision and Regulation",
+          "Payment System and Reserve Bank Oversight",
+          "Consumer and Community Affairs",
+          "Appendixes",
+          "Statistical Tables"
+        ],
+        "required_pages": {
+          "Overview": 7,
+          "Monetary Policy and Economic Developments": 9,
+          "Financial Stability": 21,
+          "Supervision and Regulation": 31,
+          "Consumer and Community Affairs": 89
+        },
+        "forbidden_patterns": {
+          "no_generic_single_node": true,
+          "no_toc_page_mass_mapping": true,
+          "do_not_replace_good_embedded_toc_with_weaker_fallback": true
+        }
+      }
+    },
+    {
+      "id": "P02",
+      "file": "2023-annual-report-truncated.pdf",
+      "page_count": 50,
+      "expected_route": {"content_type": "text", "selected_path": "visible_toc_with_pages"},
+      "official_baseline": {
+        "available": true,
+        "result_file": "2023-annual-report-truncated_structure.json",
+        "metrics": {"root_count": 6, "node_count": 12, "max_depth": 2}
+      },
+      "acceptance": {
+        "must_succeed": true,
+        "min_root_count": 6,
+        "min_node_count": 10,
+        "min_depth": 2,
+        "required_root_titles": [
+          "Preface",
+          "About the Federal Reserve",
+          "Overview",
+          "Monetary Policy and Economic Developments",
+          "Financial Stability",
+          "Supervision and Regulation"
+        ],
+        "required_pages": {
+          "Preface": 1,
+          "About the Federal Reserve": 5,
+          "Overview": 7,
+          "Financial Stability": 21,
+          "Supervision and Regulation": 31
+        },
+        "forbidden_patterns": {
+          "no_generic_single_node": true,
+          "no_all_nodes_on_page_one": true,
+          "no_mapping_non_monotonic": true
+        }
+      }
+    },
+    {
+      "id": "P03",
+      "file": "attention-residuals.pdf",
+      "page_count": 21,
+      "expected_route": {"content_type": "text", "selected_path": "embedded_toc"},
+      "official_baseline": {
+        "available": false,
+        "result_file": null,
+        "metrics": {"root_count": 0, "node_count": 0, "max_depth": 0}
+      },
+      "acceptance": {
+        "must_succeed": true,
+        "min_root_count": 8,
+        "min_node_count": 20,
+        "min_depth": 2,
+        "required_root_titles": [
+          "Introduction",
+          "Motivation",
+          "Attention Residuals: A Unified View of Time and Depth",
+          "Infrastructure Design",
+          "Experiments",
+          "Related Work"
+        ],
+        "required_pages": {},
+        "forbidden_patterns": {
+          "no_generic_single_node": true,
+          "no_missing_middle_sections": true
+        }
+      }
+    },
+    {
+      "id": "P04",
+      "file": "earthmover.pdf",
+      "page_count": 12,
+      "expected_route": {"content_type": "text", "selected_path": "content_outline"},
+      "official_baseline": {
+        "available": true,
+        "result_file": "earthmover_structure.json",
+        "metrics": {"root_count": 11, "node_count": 21, "max_depth": 2}
+      },
+      "acceptance": {
+        "must_succeed": true,
+        "min_root_count": 9,
+        "min_node_count": 18,
+        "min_depth": 2,
+        "required_root_titles": [
+          "ABSTRACT",
+          "INTRODUCTION",
+          "PRELIMINARIES",
+          "SCALING UP SSP",
+          "BOOSTING THE REFINEMENT PHASE",
+          "EXPERIMENTAL EVALUATION",
+          "RELATED WORK",
+          "CONCLUSION",
+          "REFERENCES"
+        ],
+        "required_pages": {
+          "INTRODUCTION": 1,
+          "PRELIMINARIES": 2,
+          "SCALING UP SSP": 4,
+          "BOOSTING THE REFINEMENT PHASE": 5,
+          "EXPERIMENTAL EVALUATION": 8,
+          "CONCLUSION": 12
+        },
+        "forbidden_patterns": {
+          "no_generic_single_node": true,
+          "no_false_toc_page_route": true,
+          "no_segment_fallback_collapse": true
+        }
+      }
+    },
+    {
+      "id": "P05",
+      "file": "four-lectures.pdf",
+      "page_count": 53,
+      "expected_route": {"content_type": "ocr", "selected_path": "content_outline"},
+      "official_baseline": {
+        "available": true,
+        "result_file": "four-lectures_structure.json",
+        "metrics": {"root_count": 7, "node_count": 53, "max_depth": 2}
+      },
+      "acceptance": {
+        "must_succeed": true,
+        "min_root_count": 7,
+        "min_node_count": 45,
+        "min_depth": 2,
+        "required_root_titles": [
+          "Preface",
+          "ML at a Glance",
+          "Programming with ML Modules",
+          "The Static Semantics of Modules",
+          "Implementing an Interpreter in ML",
+          "Appendix A: The Bare Interpreter",
+          "Appendix B: Files"
+        ],
+        "required_pages": {
+          "Preface": 1,
+          "ML at a Glance": 2,
+          "Programming with ML Modules": 10,
+          "The Static Semantics of Modules": 20,
+          "Implementing an Interpreter in ML": 30
+        },
+        "forbidden_patterns": {
+          "no_generic_single_node": true,
+          "no_missing_front_matter": true,
+          "must_not_start_at_second_lecture": true
+        }
+      }
+    },
+    {
+      "id": "P06",
+      "file": "PRML.pdf",
+      "page_count": 758,
+      "expected_route": {"content_type": "text", "selected_path": "embedded_toc"},
+      "official_baseline": {
+        "available": true,
+        "result_file": "PRML_structure.json",
+        "metrics": {"root_count": 39, "node_count": 286, "max_depth": 3}
+      },
+      "acceptance": {
+        "must_succeed": true,
+        "min_root_count": 20,
+        "min_node_count": 250,
+        "min_depth": 3,
+        "required_root_titles": [
+          "Preface",
+          "Mathematical notation",
+          "Contents",
+          "Introduction",
+          "Probability Distributions",
+          "Linear Models for Regression",
+          "Neural Networks",
+          "Kernel Methods",
+          "Graphical Models",
+          "References",
+          "Index"
+        ],
+        "required_pages": {
+          "Introduction": 21,
+          "Probability Distributions": 87,
+          "Linear Models for Regression": 157,
+          "Neural Networks": 245,
+          "References": 731,
+          "Index": 749
+        },
+        "forbidden_patterns": {
+          "no_generic_single_node": true,
+          "no_loss_of_chapter_children": true
+        }
+      }
+    },
+    {
+      "id": "P07",
+      "file": "q1-fy25-earnings.pdf",
+      "page_count": 22,
+      "expected_route": {"content_type": "text", "selected_path": "content_outline"},
+      "official_baseline": {
+        "available": true,
+        "result_file": "q1-fy25-earnings_structure.json",
+        "metrics": {"root_count": 11, "node_count": 41, "max_depth": 3}
+      },
+      "acceptance": {
+        "must_succeed": true,
+        "min_root_count": 10,
+        "min_node_count": 30,
+        "min_depth": 3,
+        "required_root_titles": [
+          "THE WALT DISNEY COMPANY REPORTS FIRST QUARTER EARNINGS FOR FISCAL 2025",
+          "SUMMARIZED FINANCIAL RESULTS",
+          "DISCUSSION OF FIRST QUARTER SEGMENT RESULTS",
+          "OTHER FINANCIAL INFORMATION",
+          "THE WALT DISNEY COMPANY CONDENSED CONSOLIDATED STATEMENTS OF INCOME",
+          "NON-GAAP FINANCIAL MEASURES",
+          "FORWARD-LOOKING STATEMENTS"
+        ],
+        "required_pages": {
+          "SUMMARIZED FINANCIAL RESULTS": 3,
+          "DISCUSSION OF FIRST QUARTER SEGMENT RESULTS": 4,
+          "OTHER FINANCIAL INFORMATION": 9,
+          "NON-GAAP FINANCIAL MEASURES": 17,
+          "FORWARD-LOOKING STATEMENTS": 21
+        },
+        "forbidden_patterns": {
+          "no_generic_single_node": true,
+          "no_shallow_only_tree": true
+        }
+      }
+    },
+    {
+      "id": "P08",
+      "file": "Regulation Best Interest_Interpretive release.pdf",
+      "page_count": 28,
+      "expected_route": {"content_type": "text", "selected_path": "embedded_toc"},
+      "official_baseline": {
+        "available": true,
+        "result_file": "Regulation Best Interest_Interpretive release_structure.json",
+        "metrics": {"root_count": 4, "node_count": 9, "max_depth": 2}
+      },
+      "acceptance": {
+        "must_succeed": true,
+        "min_root_count": 4,
+        "min_node_count": 8,
+        "min_depth": 2,
+        "required_root_titles": [
+          "Preface",
+          "Introduction",
+          "Interpretation and Application",
+          "Economic Considerations"
+        ],
+        "required_pages": {
+          "Preface": 1,
+          "Introduction": 2,
+          "Interpretation and Application": 6,
+          "Economic Considerations": 22
+        },
+        "forbidden_patterns": {
+          "no_generic_single_node": true,
+          "no_front_collapse": true,
+          "no_content_mapping_false_failure_after_good_quality": true
+        }
+      }
+    },
+    {
+      "id": "P09",
+      "file": "Regulation Best Interest_proposed rule.pdf",
+      "page_count": 408,
+      "expected_route": {"content_type": "text", "selected_path": "embedded_toc"},
+      "official_baseline": {
+        "available": true,
+        "result_file": "Regulation Best Interest_proposed rule_structure.json",
+        "metrics": {"root_count": 9, "node_count": 84, "max_depth": 5}
+      },
+      "acceptance": {
+        "must_succeed": true,
+        "min_root_count": 9,
+        "min_node_count": 80,
+        "min_depth": 5,
+        "required_root_titles": [
+          "Preface",
+          "I. Introduction",
+          "II. Discussion of Regulation Best Interest",
+          "III. Request for Comment",
+          "IV. Economic Analysis",
+          "V. Paperwork Reduction Act Analysis",
+          "VI. Small Business Regulatory Enforcement Fairness Act",
+          "VII. Initial Regulatory Flexibility Act Analysis",
+          "VIII. Statutory Authority and Text of Proposed Rule"
+        ],
+        "required_pages": {
+          "I. Introduction": 6,
+          "II. Discussion of Regulation Best Interest": 44,
+          "III. Request for Comment": 209,
+          "IV. Economic Analysis": 214,
+          "V. Paperwork Reduction Act Analysis": 338,
+          "VIII. Statutory Authority and Text of Proposed Rule": 403
+        },
+        "forbidden_patterns": {
+          "no_generic_single_node": true,
+          "no_loss_of_legal_subtree_depth": true,
+          "no_toc_page_mass_mapping": true
+        }
+      }
+    }
+  ]
+}

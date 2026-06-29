@@ -1,0 +1,279 @@
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+
+def _plan(analysis: dict, requested_mode: str = "smart") -> dict:
+    from pageindex.pipeline.toc_state_machine import TocStateMachine
+
+    return TocStateMachine().plan(analysis, requested_mode=requested_mode).to_dict()
+
+
+def test_state_machine_accepts_high_quality_embedded_toc() -> None:
+    plan = _plan(
+        {
+            "page_count": 20,
+            "content_type": "text",
+            "code_toc": {
+                "source": "bookmarks",
+                "items": [
+                    {"title": f"Chapter {idx}", "physical_index": idx}
+                    for idx in range(1, 17)
+                ],
+            },
+        }
+    )
+
+    assert plan["selected_path"] == "embedded_toc"
+    assert plan["execution_mode"] == "fast"
+    assert plan["states"] == ["S0", "S1", "S2", "S5", "S6"]
+    assert plan["fallbacks"] == []
+    assert [attempt["path"] for attempt in plan["attempts"]] == ["embedded_toc"]
+
+
+def test_state_machine_rejects_embedded_toc_missing_visible_auxiliary_catalog() -> None:
+    plan = _plan(
+        {
+            "page_count": 50,
+            "content_type": "text",
+            "code_toc": {
+                "source": "bookmarks",
+                "toc_sections": [
+                    {
+                        "kind": "main_toc",
+                        "source": "bookmarks",
+                        "items": [
+                            {"title": "一、概述", "physical_index": 7},
+                            {"title": "二、现状", "physical_index": 10},
+                            {"title": "三、挑战", "physical_index": 16},
+                            {"title": "四、框架", "physical_index": 25},
+                            {"title": "五、实践", "physical_index": 40},
+                            {"title": "六、展望", "physical_index": 47},
+                        ],
+                    }
+                ],
+                "items": [
+                    {"title": "一、概述", "physical_index": 7},
+                    {"title": "二、现状", "physical_index": 10},
+                    {"title": "三、挑战", "physical_index": 16},
+                    {"title": "四、框架", "physical_index": 25},
+                    {"title": "五、实践", "physical_index": 40},
+                    {"title": "六、展望", "physical_index": 47},
+                ],
+            },
+            "toc_page_detection": {
+                "status": "detected",
+                "pages": [2],
+                "has_page_numbers": True,
+                "sections": [
+                    {"kind": "main_toc", "pages": [2]},
+                    {"kind": "figure_toc", "pages": [2]},
+                ],
+            },
+        }
+    )
+
+    assert plan["selected_path"] == "visible_toc_with_pages"
+    assert plan["fallbacks"][0]["reason"] == "embedded_toc_rejected"
+
+
+def test_state_machine_rejects_sparse_bookmark_outline_when_visible_toc_exists() -> None:
+    plan = _plan(
+        {
+            "page_count": 50,
+            "content_type": "text",
+            "code_toc": {
+                "source": "bookmarks",
+                "items": [
+                    {"title": f"Section {idx}", "physical_index": idx + 3}
+                    for idx in range(1, 20)
+                ],
+            },
+            "toc_page_detection": {
+                "status": "detected",
+                "pages": [5],
+                "has_page_numbers": True,
+            },
+        }
+    )
+
+    assert plan["selected_path"] == "visible_toc_with_pages"
+    assert plan["fallbacks"][0]["reason"] == "embedded_toc_rejected"
+
+
+def test_state_machine_falls_back_from_failed_s2_to_visible_toc_with_pages() -> None:
+    plan = _plan(
+        {
+            "page_count": 40,
+            "content_type": "text",
+            "code_toc": {
+                "source": "regex",
+                "items": [
+                    {"title": "2024", "physical_index": 2024},
+                    {"title": "2025", "physical_index": 2025},
+                    {"title": "2026", "physical_index": 2026},
+                ],
+            },
+            "toc_page_detection": {
+                "status": "detected",
+                "pages": [2, 3],
+                "has_page_numbers": True,
+            },
+        }
+    )
+
+    assert plan["selected_path"] == "visible_toc_with_pages"
+    assert "S3" in plan["states"]
+    assert plan["fallbacks"]
+    assert plan["fallbacks"][0]["from"] == "S2"
+    assert plan["fallbacks"][0]["to"] == "S3"
+    assert [attempt["path"] for attempt in plan["attempts"]] == [
+        "visible_toc_with_pages",
+        "visible_toc_no_pages",
+        "content_outline",
+    ]
+
+
+def test_state_machine_outputs_visible_toc_attempt_chain() -> None:
+    plan = _plan(
+        {
+            "page_count": 40,
+            "content_type": "text",
+            "toc_page_detection": {
+                "status": "detected",
+                "pages": [2, 3],
+                "has_page_numbers": True,
+            },
+        }
+    )
+
+    assert plan["selected_path"] == "visible_toc_with_pages"
+    assert [attempt["path"] for attempt in plan["attempts"]] == [
+        "visible_toc_with_pages",
+        "visible_toc_no_pages",
+        "content_outline",
+    ]
+
+
+def test_fast_mode_without_embedded_toc_escalates_to_balanced() -> None:
+    plan = _plan(
+        {
+            "page_count": 40,
+            "content_type": "text",
+            "toc_page_detection": {
+                "status": "detected",
+                "pages": [2, 3],
+                "has_page_numbers": True,
+            },
+        },
+        requested_mode="fast",
+    )
+
+    assert plan["selected_path"] == "visible_toc_with_pages"
+    assert plan["execution_mode"] == "balanced"
+    assert any(
+        fallback.get("reason") == "fast_requires_embedded_toc"
+        for fallback in plan["fallbacks"]
+    )
+
+
+def test_state_machine_routes_no_page_number_toc_separately() -> None:
+    plan = _plan(
+        {
+            "page_count": 62,
+            "content_type": "hybrid",
+            "toc_page_detection": {
+                "status": "detected",
+                "pages": [4],
+                "has_page_numbers": False,
+            },
+        }
+    )
+
+    assert plan["content_type"] == "hybrid"
+    assert plan["preprocess_strategy"] == "ocr_selected_pages"
+    assert plan["selected_path"] == "visible_toc_no_pages"
+
+
+def test_state_machine_ignores_embedded_toc_when_code_toc_is_disabled() -> None:
+    plan = _plan(
+        {
+            "page_count": 20,
+            "content_type": "text",
+            "disable_code_toc_fast_path": True,
+            "code_toc": {
+                "source": "bookmarks+links",
+                "items": [
+                    {"title": f"Chapter {idx}", "physical_index": idx}
+                    for idx in range(1, 17)
+                ],
+            },
+            "toc_page_detection": {
+                "status": "detected",
+                "pages": [2, 3],
+                "has_page_numbers": True,
+            },
+        },
+        requested_mode="balanced",
+    )
+
+    assert plan["selected_path"] == "visible_toc_with_pages"
+    assert plan["execution_mode"] == "balanced"
+    assert plan["fallbacks"][0]["reason"] == "embedded_toc_disabled"
+
+
+def test_state_machine_uses_preprocess_content_type_for_sparse_edge_images() -> None:
+    plan = _plan(
+        {
+            "page_count": 70,
+            "text_coverage": 0.985,
+            "image_coverage": 0.21,
+            "image_only_pages": [0],
+            "garbled_pages": [],
+            "text_layer_quality": "reliable",
+            "code_toc": {
+                "source": "bookmarks",
+                "items": [
+                    {"title": f"Section {idx:02d}", "physical_index": idx + 1}
+                    for idx in range(1, 61)
+                ],
+            },
+        }
+    )
+
+    assert plan["content_type"] == "text"
+    assert plan["preprocess_strategy"] == "pdf_text"
+    assert plan["selected_path"] == "embedded_toc"
+
+
+def test_state_machine_routes_missing_toc_to_content_outline() -> None:
+    plan = _plan(
+        {
+            "page_count": 28,
+            "content_type": "text",
+            "toc_page_detection": {"status": "not_found", "pages": []},
+        }
+    )
+
+    assert plan["selected_path"] == "content_outline"
+    assert plan["states"] == ["S0", "S1", "S2", "S3", "S4", "S5", "S6"]
+
+
+def test_state_machine_keeps_enrich_out_of_toc_route() -> None:
+    plan = _plan(
+        {
+            "page_count": 44,
+            "content_type": "ocr",
+            "toc_page_detection": {
+                "status": "detected",
+                "pages": [2],
+                "has_page_numbers": True,
+            },
+        }
+    )
+
+    assert plan["preprocess_strategy"] == "ocr_full_document"
+    assert plan["selected_path"] == "visible_toc_with_pages"
+    assert "S8" not in plan["states"]
+    assert plan["post_route_states"] == ["S7", "S8"]

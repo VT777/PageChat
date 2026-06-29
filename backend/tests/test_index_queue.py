@@ -11,9 +11,12 @@ def test_start_index_process_queues_when_worker_busy(monkeypatch) -> None:
     started = []
     statuses = []
     release = threading.Event()
+    first_started = threading.Event()
 
-    def fake_run_index_job(doc_id, file_path, mode_override=None):
+    def fake_run_index_job(doc_id, file_path, mode_override=None, user_id=None):
         started.append(doc_id)
+        if doc_id == "doc-1":
+            first_started.set()
         if doc_id == "doc-1":
             release.wait(timeout=1)
 
@@ -41,6 +44,7 @@ def test_start_index_process_queues_when_worker_busy(monkeypatch) -> None:
             queued=1,
             timeout=1,
         )
+        assert first_started.wait(timeout=1)
         assert started == ["doc-1"]
 
         release.set()

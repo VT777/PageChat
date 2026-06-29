@@ -143,7 +143,7 @@ async def llm_validate_toc(
     Returns:
         True = 通过, False = 不通过
     """
-    from pageindex.vlm_utils import parse_vlm_json
+    from pageindex.json_utils import parse_llm_json
     from pageindex.utils import ChatGPT_API_async
     from app.prompts.pageindex_prompts import TOC_LIGHT_VALIDATION_PROMPT
 
@@ -152,15 +152,15 @@ async def llm_validate_toc(
         for item in toc_items
     )
 
-    mismatch_details = "无"
+    mismatch_details = "none"
     if match_info.get("mismatches"):
         parts = []
         for m in match_info["mismatches"][:5]:
             if "actual" in m:
-                parts.append(f"'{m['title']}' 声称p.{m['claimed']}→实际p.{m['actual']}")
+                parts.append(f"'{m['title']}' claimed p.{m['claimed']} -> actual p.{m['actual']}")
             else:
                 parts.append(
-                    f"'{m['title']}' 声称p.{m.get('claimed', '?')} {m.get('reason', '')}"
+                    f"'{m['title']}' claimed p.{m.get('claimed', '?')} {m.get('reason', '')}"
                 )
         mismatch_details = "; ".join(parts)
 
@@ -175,18 +175,18 @@ async def llm_validate_toc(
 
     try:
         response = await ChatGPT_API_async(model=model, prompt=prompt)
-        parsed = parse_vlm_json(response)
+        parsed = parse_llm_json(response)
         valid = parsed.get("valid", "no") if isinstance(parsed, dict) else "no"
         reason = parsed.get("reason", "") if isinstance(parsed, dict) else ""
-        print(f"[FAST-TOC] LLM validation: valid={valid}, reason={reason}")
+        print(f"[TOC-CODE] LLM validation: valid={valid}, reason={reason}")
         return valid == "yes"
     except Exception as e:
         # LLM 失败时，如果覆盖度 >= 70% 且匹配率 >= 50% 则接受
         last_page = max(((it.get("physical_index") or 0) for it in toc_items), default=0)
         if last_page >= page_count * 0.7 and match_info.get("match_rate", 0) >= 0.5:
-            print(f"[FAST-TOC] LLM error: {e}, accepting (good coverage + match)")
+            print(f"[TOC-CODE] LLM error: {e}, accepting (good coverage + match)")
             return True
-        print(f"[FAST-TOC] LLM error: {e}, rejecting")
+        print(f"[TOC-CODE] LLM error: {e}, rejecting")
         return False
 
 
@@ -213,82 +213,82 @@ async def try_fast_toc(
     source = code_toc.get("source")
 
     if not toc_items or len(toc_items) < 2:
-        print("[FAST-TOC] No code TOC available")
+        print("[TOC-CODE] No code TOC available")
         return None
 
     page_count = analysis["page_count"]
     page_list = analysis.get("page_list", [])
 
-    print(f"[FAST-TOC] Code TOC: {len(toc_items)} items via {source}")
+    print(f"[TOC-CODE] Code TOC: {len(toc_items)} items via {source}")
 
     # 1. 正则提取的 TOC 页码是逻辑页码，先做 offset 校正
     if source == "regex":
         check = verify_content_match(toc_items, page_list)
         print(
-            f"[FAST-TOC] Pre-offset match: {check['match_rate']:.0%}, offset_median={check['offset_median']:+d}"
+            f"[TOC-CODE] Pre-offset match: {check['match_rate']:.0%}, offset_median={check['offset_median']:+d}"
         )
         if check["offset_median"] != 0:
             apply_offset(toc_items, check["offset_median"])
-            print(f"[FAST-TOC] Applied offset {check['offset_median']:+d}")
+            print(f"[TOC-CODE] Applied offset {check['offset_median']:+d}")
 
     # 2. 内容验证（区分来源）
     if source in ("bookmarks", "links"):
         # 书签/链接：直接信任元数据，只检查页码有效性
         valid_pages = all(1 <= (it.get("physical_index") or 0) <= page_count for it in toc_items)
         if not valid_pages:
-            print("[FAST-TOC] Bookmarks/links have invalid page numbers, rejecting")
+            print("[TOC-CODE] Bookmarks/links have invalid page numbers, rejecting")
             return None
         # 检查页码单调递增
         pages = [it.get("physical_index") or 0 for it in toc_items]
         is_monotonic = all(pages[i] <= pages[i+1] for i in range(len(pages)-1))
         if not is_monotonic:
-            print("[FAST-TOC] Bookmarks/links page numbers not monotonic, rejecting")
+            print("[TOC-CODE] Bookmarks/links page numbers not monotonic, rejecting")
             return None
-        print(f"[FAST-TOC] Bookmarks/links: trusted source, {len(toc_items)} items")
+        print(f"[TOC-CODE] Bookmarks/links: trusted source, {len(toc_items)} items")
         match_info = {"match_rate": 1.0, "total_checked": len(toc_items), "offset_median": 0}
     else:
         # 正则：需要内容验证
         match_info = verify_content_match(toc_items, page_list)
         print(
-            f"[FAST-TOC] Content match: {match_info['match_rate']:.0%} "
+            f"[TOC-CODE] Content match: {match_info['match_rate']:.0%} "
             f"({match_info['total_checked']} checked)"
         )
 
         # 匹配率太低直接拒绝
         if match_info["match_rate"] < 0.1:
-            print(f"[FAST-TOC] Match rate {match_info['match_rate']:.0%} < 10%, rejecting")
+            print(f"[TOC-CODE] Match rate {match_info['match_rate']:.0%} < 10%, rejecting")
             return None
 
         # 如果验证后仍有系统性偏移（可能 Level 1/2 也有偏移），再校正一次
         if match_info["offset_median"] != 0:
             apply_offset(toc_items, match_info["offset_median"])
             print(
-                f"[FAST-TOC] Secondary offset correction: {match_info['offset_median']:+d}"
+                f"[TOC-CODE] Secondary offset correction: {match_info['offset_median']:+d}"
             )
             # 重新验证
             match_info = verify_content_match(toc_items, page_list)
-            print(f"[FAST-TOC] Post-correction match: {match_info['match_rate']:.0%}")
+            print(f"[TOC-CODE] Post-correction match: {match_info['match_rate']:.0%}")
 
     # 3. 覆盖度预检（区分来源）
     last_page = max(((it.get("physical_index") or 0) for it in toc_items), default=0)
     if source in ("bookmarks", "links"):
         # 书签/链接：可能不包含封底/附录，放宽到10%
         if last_page < page_count * 0.1:
-            print(f"[FAST-TOC] Coverage {last_page}/{page_count} < 10%, rejecting")
+            print(f"[TOC-CODE] Coverage {last_page}/{page_count} < 10%, rejecting")
             return None
     else:
         # 正则：保持30%标准
         if last_page < page_count * 0.3:
-            print(f"[FAST-TOC] Coverage {last_page}/{page_count} < 30%, rejecting")
+            print(f"[TOC-CODE] Coverage {last_page}/{page_count} < 30%, rejecting")
             return None
 
     # 4. LLM 质检（所有来源）
     # bookmarks/links 也需要 LLM 质检，检查结构合理性和噪音
-    print("[FAST-TOC] Running LLM validation")
+    print("[TOC-CODE] Running LLM validation")
     valid = await llm_validate_toc(toc_items, page_count, match_info, model)
 
     if not valid:
-        print(f"[FAST-TOC] LLM validation failed, returning items for fallback")
+        print(f"[TOC-CODE] LLM validation failed, returning items for fallback")
         return {"toc_items": toc_items, "source": source, "quality_check_failed": True}
 
     return {"toc_items": toc_items, "source": source}

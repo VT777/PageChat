@@ -1,4 +1,7 @@
 import axios from 'axios'
+import type { ChatScopeRequest } from '@/types/retrieval'
+import type { ModelProviderCustomModelInput, ModelProviderInput, ModelProviderUpdateInput, ModelRouteMapping } from '@/types/modelSettings'
+import type { WebSearchSettingsUpdate } from '@/types/webSearchSettings'
 
 export interface ProcessingStep {
   step_type: string
@@ -126,8 +129,11 @@ export const chatApi = {
   stream: (data: {
     question: string
     document_ids?: string[]
+    attachment_ids?: string[]
     conversation_id?: string
-  }) => {
+    regenerate_from_message_id?: string
+    thinking_enabled?: boolean
+  } & ChatScopeRequest, options?: { signal?: AbortSignal }) => {
     const token = localStorage.getItem('token')
     const headers: Record<string, string> = { 'Content-Type': 'application/json' }
     if (token) {
@@ -137,6 +143,7 @@ export const chatApi = {
       method: 'POST',
       headers,
       body: JSON.stringify(data),
+      signal: options?.signal,
     })
   },
   
@@ -144,6 +151,25 @@ export const chatApi = {
   
   getMessages: (conversationId: string) =>
     api.get(`/chat/conversations/${conversationId}/messages`),
+
+  deleteConversation: (conversationId: string) =>
+    api.delete(`/chat/conversations/${conversationId}`),
+
+  uploadAttachment: (file: File) => {
+    const formData = new FormData()
+    formData.append('file', file)
+    return api.post('/chat/attachments', formData, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+    })
+  },
+
+  deleteAttachment: (attachmentId: string) =>
+    api.delete(`/chat/attachments/${attachmentId}`),
+
+  fetchAttachmentBlob: (attachmentId: string) =>
+    api.get(`/chat/attachments/${attachmentId}/content`, {
+      responseType: 'blob',
+    }),
 }
 
 // Auth API
@@ -165,6 +191,37 @@ export const settingsApi = {
   getPageIndexSettings: () => api.get('/settings/pageindex'),
   updatePageIndexSettings: (pageindex_mode: 'smart' | 'balanced' | 'fast') =>
     api.put('/settings/pageindex', { pageindex_mode }),
+  getQaSettings: () => api.get('/settings/qa'),
+  updateQaSettings: (payload: { qa_thinking_mode: 'off' | 'auto' | 'on' }) =>
+    api.put('/settings/qa', payload),
+  getWebSearchSettings: () => api.get('/settings/web-search'),
+  updateWebSearchSettings: (payload: WebSearchSettingsUpdate) =>
+    api.put('/settings/web-search', payload),
+  getModelProviderPresets: () => api.get('/settings/model-providers/presets'),
+  listModelProviders: () => api.get('/settings/model-providers'),
+  saveModelProvider: (payload: ModelProviderInput) =>
+    api.post('/settings/model-providers', payload),
+  updateModelProvider: (providerId: string, payload: ModelProviderUpdateInput) =>
+    api.patch(`/settings/model-providers/${providerId}`, payload),
+  deleteModelProvider: (providerId: string) =>
+    api.delete(`/settings/model-providers/${providerId}`),
+  listModelProviderModels: (providerId: string) =>
+    api.get(`/settings/model-providers/${providerId}/models`),
+  saveModelProviderCustomModel: (providerId: string, payload: ModelProviderCustomModelInput) =>
+    api.post(`/settings/model-providers/${providerId}/models`, payload),
+  testModelProvider: (providerId: string, model?: string) =>
+    api.post(`/settings/model-providers/${providerId}/test`, model ? { model } : {}),
+  listModelRoutes: () => api.get('/settings/model-routes'),
+  saveModelRoutes: (routes: ModelRouteMapping[]) =>
+    api.put('/settings/model-routes', { routes }),
+  listOcrEngines: () => api.get('/settings/ocr-engines'),
+  saveOcrEngine: (payload: Record<string, any>) =>
+    api.post('/settings/ocr-engines', payload),
+  updateOcrEngine: (profileId: string, payload: Record<string, any>) =>
+    api.patch(`/settings/ocr-engines/${profileId}`, payload),
+  listOcrRoutes: () => api.get('/settings/ocr-routes'),
+  saveOcrRoutes: (routes: Record<string, string | null>) =>
+    api.put('/settings/ocr-routes', { routes }),
 }
 
 export default api

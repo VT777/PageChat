@@ -7,7 +7,22 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from pageindex import page_index as page_index_module
+from pageindex import page_index_md as page_index_module
+
+
+pytestmark = pytest.mark.skipif(
+    not all(
+        hasattr(page_index_module, name)
+        for name in (
+            "detect_page_index",
+            "process_toc_with_page_numbers",
+            "tree_parser",
+            "_assess_no_toc_range_quality",
+            "fix_incorrect_toc",
+        )
+    ),
+    reason="legacy page_index fast gate API has been replaced by the TOC state machine",
+)
 
 
 class _Logger:

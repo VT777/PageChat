@@ -9,17 +9,27 @@
 
 import json
 import re
+from copy import deepcopy
 from typing import Any, Dict, List, Optional, Tuple
 
+from pageindex.catalog_classifier import (
+    AUXILIARY_CATALOG_TYPES,
+    CATALOG_FIGURE,
+    CATALOG_MAIN,
+    CATALOG_TABLE,
+    catalog_group_title,
+    detect_catalog_type,
+)
 
-def merge_toc_sources_v4_1(
+
+def merge_toc_sources(
     file_path: str,
     toc_from_page: Optional[List[Dict]],
     toc_from_search: Optional[List[Dict]],
     dividers: Optional[List[int]],
     extracted_items: Optional[List[Dict]],
 ) -> List[Dict]:
-    """Safely merge v4.1 TOC sources without dropping no-TOC extracted items."""
+    """Safely merge canonical TOC sources without dropping no-TOC extracted items."""
     base_items = toc_from_page or extracted_items or []
     merged: Dict[str, Dict] = {
         str(item.get("structure", index + 1)): dict(item)
@@ -37,33 +47,124 @@ def merge_toc_sources_v4_1(
     )
 
 
+
+def _to_positive_int(value: Any) -> Optional[int]:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value if value > 0 else None
+    if isinstance(value, float):
+        parsed = int(value)
+        return parsed if parsed > 0 else None
+    if isinstance(value, str):
+        match = re.search(r"\d+", value)
+        if match:
+            parsed = int(match.group())
+            return parsed if parsed > 0 else None
+    return None
+
+
+def _looks_like_toc_title(value: Any) -> bool:
+    title = str(value or "").strip()
+    if len(title) < 2 or len(title) > 240:
+        return False
+    compact = re.sub(r"\s+", "", title)
+    if not compact:
+        return False
+    if re.fullmatch(r"[\d\W_]+", compact, flags=re.UNICODE):
+        return False
+    if re.match(r"^(?:level|page|logical_page|physical_index|source_page|confidence)\s*[:=]", title, re.IGNORECASE):
+        return False
+    return bool(re.search(r"[A-Za-z\u4e00-\u9fff]", title))
+
 # ---------------------------------------------------------------------------
-# Step 1: 数据清洗
+# stage=clean: 数据清洗
 # ---------------------------------------------------------------------------
 
 
-def clean_toc_items(toc_items: List[Dict]) -> List[Dict]:
+def _is_catalog_group_item(item: Dict[str, Any]) -> bool:
+    return item.get("page_type") == "catalog_group" or item.get("node_type") == "catalog_group"
+
+
+def _toc_pages_from_analysis(analysis: Optional[Dict[str, Any]]) -> List[int]:
+    if not isinstance(analysis, dict):
+        return []
+
+    sources = [
+        analysis.get("toc_pages"),
+        (analysis.get("toc_page") or {}).get("pages") if isinstance(analysis.get("toc_page"), dict) else None,
+        (analysis.get("toc_page_detection") or {}).get("pages")
+        if isinstance(analysis.get("toc_page_detection"), dict)
+        else None,
+    ]
+    pages: List[int] = []
+    for source in sources:
+        if not isinstance(source, list):
+            continue
+        for value in source:
+            parsed = _to_positive_int(value)
+            if parsed is not None:
+                pages.append(parsed)
+    return sorted(set(pages))
+
+
+def _should_preserve_unpaged_toc_skeleton(analysis: Optional[Dict[str, Any]]) -> bool:
+    if not isinstance(analysis, dict):
+        return False
+    source = str(analysis.get("toc_source") or analysis.get("toc_frozen_source") or "")
+    if source not in {"llm_toc_page"}:
+        return False
+    toc_page = analysis.get("toc_page") or {}
+    has_toc_page = bool(toc_page.get("has_toc_page")) if isinstance(toc_page, dict) else False
+    return has_toc_page or bool(_toc_pages_from_analysis(analysis))
+
+
+def clean_toc_items(
+    toc_items: List[Dict],
+    page_count: Optional[int] = None,
+    *,
+    preserve_unpaged: bool = False,
+    provisional_start_page: int = 1,
+) -> List[Dict]:
     """清洗 TOC 条目：转 int、去重、排序、过滤无效。
     
     保留 catalog_group 节点（即使 physical_index 为 None）。
     """
     cleaned = []
     for item in toc_items:
-        pi = item.get("physical_index")
+        pi = _to_positive_int(item.get("physical_index"))
+        logical_page = _to_positive_int(item.get("logical_page")) or _to_positive_int(item.get("page"))
+        page_value = _to_positive_int(item.get("page"))
+        source_page = _to_positive_int(item.get("source_page"))
         page_type = item.get("page_type", "")
 
-        # 转 int
-        if isinstance(pi, str):
-            m = re.search(r"\d+", pi)
-            pi = int(m.group()) if m else None
-        elif isinstance(pi, float):
-            pi = int(pi)
+        # catalog_group nodes may be structural and legitimately lack a page.
+        is_catalog_group = _is_catalog_group_item(item)
+        provisional_mapping = False
 
-        # catalog_group 节点可以没有页码，但必须保留
-        is_catalog_group = page_type == "catalog_group" or item.get("node_type") == "catalog_group"
-        
+        if not is_catalog_group and pi is None:
+            if not _looks_like_toc_title(item.get("title")):
+                continue
+            if logical_page is not None:
+                pi = min(logical_page, page_count) if page_count and page_count > 0 else logical_page
+            elif preserve_unpaged:
+                upper = page_count if page_count and page_count > 0 else provisional_start_page
+                pi = max(1, min(int(provisional_start_page or 1), int(upper)))
+            else:
+                continue
+            provisional_mapping = True
+
         if not is_catalog_group and (pi is None or pi < 1):
             continue
+
+        repair_reasons = [str(reason) for reason in (item.get("repair_reasons") or []) if str(reason).strip()]
+        if provisional_mapping:
+            if "mapping_pending" not in repair_reasons:
+                repair_reasons.append("mapping_pending")
+            provisional_reason = "provisional_logical_page" if logical_page is not None else "unpaged_toc_skeleton"
+            if provisional_reason not in repair_reasons:
+                repair_reasons.append(provisional_reason)
+                repair_reasons.append("provisional_logical_page")
 
         cleaned_item = {
             "structure": str(item.get("structure", "")).strip(),
@@ -71,6 +172,23 @@ def clean_toc_items(toc_items: List[Dict]) -> List[Dict]:
             "physical_index": pi,
             "page_type": page_type,
         }
+        if page_value is not None:
+            cleaned_item["page"] = page_value
+        if logical_page is not None:
+            cleaned_item["logical_page"] = logical_page
+        if source_page is not None:
+            cleaned_item["source_page"] = source_page
+        catalog_type = item.get("catalog_type")
+        if catalog_type is not None:
+            cleaned_item["catalog_type"] = str(catalog_type).strip()
+        if repair_reasons:
+            cleaned_item["repair_reasons"] = repair_reasons
+        if provisional_mapping:
+            cleaned_item["needs_repair"] = True
+            cleaned_item["mapping_source"] = item.get("mapping_source") or (
+                "provisional_logical_page" if logical_page is not None else "unpaged_toc_skeleton"
+            )
+            cleaned_item["mapping_confidence"] = item.get("mapping_confidence") or 0.0
         if item.get("_fixed_range"):
             cleaned_item["_fixed_range"] = True
             if isinstance(item.get("start_index"), int):
@@ -87,7 +205,12 @@ def clean_toc_items(toc_items: List[Dict]) -> List[Dict]:
         # 保留 nodes（子节点）用于 catalog_group
         nodes = item.get("nodes")
         if nodes:
-            cleaned_item["nodes"] = clean_toc_items(nodes)
+            cleaned_item["nodes"] = clean_toc_items(
+                nodes,
+                page_count=page_count,
+                preserve_unpaged=preserve_unpaged,
+                provisional_start_page=provisional_start_page,
+            )
         cleaned.append(cleaned_item)
 
     if not cleaned:
@@ -95,8 +218,8 @@ def clean_toc_items(toc_items: List[Dict]) -> List[Dict]:
 
     # 按 physical_index 排序（稳定排序，保留原始顺序）
     # catalog_group 节点（physical_index 为 None）排在最前面，保持原始顺序
-    catalog_groups = [x for x in cleaned if x.get("page_type") == "catalog_group" or x.get("node_type") == "catalog_group"]
-    regular_items = [x for x in cleaned if not (x.get("page_type") == "catalog_group" or x.get("node_type") == "catalog_group")]
+    catalog_groups = [x for x in cleaned if _is_catalog_group_item(x)]
+    regular_items = [x for x in cleaned if not _is_catalog_group_item(x)]
     regular_items.sort(key=lambda x: x["physical_index"] or 0)
     cleaned = catalog_groups + regular_items
 
@@ -106,7 +229,7 @@ def clean_toc_items(toc_items: List[Dict]) -> List[Dict]:
         last = deduped[-1]
         same_title = item["title"][:20] == last["title"][:20]
         # catalog_group 节点不参与去重
-        if item.get("page_type") == "catalog_group" or item.get("node_type") == "catalog_group":
+        if _is_catalog_group_item(item):
             deduped.append(item)
             continue
         close_page = abs((item["physical_index"] or 0) - (last["physical_index"] or 0)) <= 1
@@ -118,11 +241,11 @@ def clean_toc_items(toc_items: List[Dict]) -> List[Dict]:
     result = [deduped[0]]
     for item in deduped[1:]:
         # catalog_group 节点直接保留，不参与单调性检查
-        if item.get("page_type") == "catalog_group" or item.get("node_type") == "catalog_group":
+        if _is_catalog_group_item(item):
             result.append(item)
             continue
         # 与前一个常规节点比较
-        last_regular = [x for x in result if not (x.get("page_type") == "catalog_group" or x.get("node_type") == "catalog_group")]
+        last_regular = [x for x in result if not _is_catalog_group_item(x)]
         if not last_regular:
             result.append(item)
             continue
@@ -130,14 +253,14 @@ def clean_toc_items(toc_items: List[Dict]) -> List[Dict]:
             result.append(item)
         else:
             print(
-                f"[POST] Removed non-monotonic item: {item['title'][:30]} p.{item['physical_index']}"
+                f"[TOC-POST] Removed non-monotonic item: {item['title'][:30]} p.{item['physical_index']}"
             )
 
     return result
 
 
 # ---------------------------------------------------------------------------
-# Step 2: 边界校验
+# stage=validate: 边界校验
 # ---------------------------------------------------------------------------
 
 
@@ -162,7 +285,7 @@ def filter_figure_catalogs(toc_items: List[Dict]) -> Tuple[List[Dict], List[Dict
         if catalog_pattern.match(title):
             # 纯目录节点（如"图目录"）—— 过滤
             figures.append(item)
-            print(f"[POST] Filtered figure/table catalog: {title[:50]}")
+            print(f"[TOC-POST] Filtered figure/table catalog: {title[:50]}")
         else:
             normal.append(item)
     
@@ -182,13 +305,13 @@ def validate_indices(toc_items: List[Dict], page_count: int) -> List[Dict]:
             valid.append(item)
         else:
             print(
-                f"[POST] Out of range: {item['title'][:30]} p.{pi} (max={page_count})"
+                f"[TOC-POST] Out of range: {item['title'][:30]} p.{pi} (max={page_count})"
             )
     return valid
 
 
 # ---------------------------------------------------------------------------
-# Step 3: 补充 Preface
+# stage=preface: 补充 Preface
 # ---------------------------------------------------------------------------
 
 
@@ -222,7 +345,7 @@ def promote_single_catalog_root(tree: List[Dict], page_count: int) -> List[Dict]
         return tree
     if any(child_pages[i] > child_pages[i + 1] for i in range(len(child_pages) - 1)):
         return tree
-    print(f"[POST] Promoted synthetic catalog root '{title}' with {len(children)} children")
+    print(f"[TOC-POST] Promoted synthetic catalog root '{title}' with {len(children)} children")
     return children
 
 
@@ -255,7 +378,7 @@ def repair_case_continuation_roots(tree: List[Dict]) -> List[Dict]:
                 previous.get("end_index") or node["end_index"],
                 node["end_index"],
             )
-        print(f"[POST] Moved continuation case '{title[:30]}' under '{previous_title[:30]}'")
+        print(f"[TOC-POST] Moved continuation case '{title[:30]}' under '{previous_title[:30]}'")
 
     return repaired
 
@@ -314,8 +437,204 @@ def add_preface(toc_items: List[Dict]) -> List[Dict]:
     return toc_items
 
 
+def normalize_sibling_page_ranges(
+    nodes: List[Dict],
+    *,
+    page_count: int,
+    parent_start: Optional[int] = None,
+    parent_end: Optional[int] = None,
+    copy_nodes: bool = True,
+) -> List[Dict]:
+    """Normalize one sibling list using physical page boundaries."""
+    normalized = deepcopy(nodes) if copy_nodes else nodes
+    if not normalized:
+        return normalized
+    max_page = max(1, int(page_count or 1))
+    lower = _clamp_page(parent_start or 1, max_page)
+    upper = _clamp_page(parent_end or max_page, max_page)
+    if upper < lower:
+        upper = lower
+
+    for node in normalized:
+        if _is_auxiliary_catalog_node(node):
+            _normalize_auxiliary_catalog_range(node, page_count=max_page, lower=lower, upper=upper)
+            continue
+        start = _node_start_page(node)
+        start = _clamp_page(start or lower, max_page)
+        start = max(lower, min(start, upper))
+        end = _node_end_page(node)
+        end = _clamp_page(end or upper, max_page)
+        end = max(start, min(end, upper))
+        node["start_index"] = start
+        node["end_index"] = end
+        if not _to_positive_int(node.get("physical_index")):
+            node["physical_index"] = start
+
+    for index, node in enumerate(normalized):
+        if _is_auxiliary_catalog_node(node):
+            continue
+        start = node["start_index"]
+        next_regular = next(
+            (
+                candidate
+                for candidate in normalized[index + 1:]
+                if isinstance(candidate, dict) and not _is_auxiliary_catalog_node(candidate)
+            ),
+            None,
+        )
+        if next_regular is not None:
+            next_start = next_regular["start_index"]
+            current_end = node.get("end_index") or upper
+            end = next_start if next_start == current_end else next_start - 1
+            node["end_index"] = max(start, min(end, upper))
+        else:
+            node["end_index"] = max(start, upper)
+
+        children = node.get("nodes") or []
+        if children:
+            child_parent_end = node["end_index"]
+            if _is_catalog_container(node):
+                child_parent_end = upper
+            node["nodes"] = normalize_sibling_page_ranges(
+                children,
+                page_count=max_page,
+                parent_start=node["start_index"],
+                parent_end=child_parent_end,
+                copy_nodes=False,
+            )
+            if _is_catalog_container(node):
+                child_ends = [
+                    child.get("end_index")
+                    for child in node["nodes"]
+                    if isinstance(child.get("end_index"), int)
+                ]
+                if child_ends:
+                    node["end_index"] = max(node["end_index"], max(child_ends))
+    return normalized
+
+
+def normalize_tree_page_ranges(tree: List[Dict], page_count: int) -> List[Dict]:
+    """Return a tree with valid recursive physical page ranges."""
+    return normalize_sibling_page_ranges(tree, page_count=page_count, copy_nodes=True)
+
+
+def _node_start_page(node: Dict[str, Any]) -> Optional[int]:
+    return (
+        _to_positive_int(node.get("start_index"))
+        or _to_positive_int(node.get("physical_index"))
+        or _to_positive_int(node.get("page"))
+    )
+
+
+def _node_end_page(node: Dict[str, Any]) -> Optional[int]:
+    return (
+        _to_positive_int(node.get("end_index"))
+        or _to_positive_int(node.get("start_index"))
+        or _to_positive_int(node.get("physical_index"))
+        or _to_positive_int(node.get("page"))
+    )
+
+
+def _clamp_page(value: Optional[int], page_count: int) -> int:
+    page = value if isinstance(value, int) and value > 0 else 1
+    return max(1, min(page, max(1, int(page_count or 1))))
+
+
+def _is_catalog_container(node: Dict[str, Any]) -> bool:
+    if node.get("node_type") in {"catalog_group", "auxiliary_catalog"}:
+        return True
+    if node.get("page_type") == "catalog_group":
+        return True
+    catalog_type = str(node.get("catalog_type") or "")
+    if catalog_type and catalog_type != CATALOG_MAIN:
+        return True
+    title = str(node.get("title") or "").strip().lower()
+    compact = re.sub(r"\s+", "", title)
+    return compact in {
+        "目录",
+        "contents",
+        "tableofcontents",
+        "图目录",
+        "插图目录",
+        "listoffigures",
+        "表目录",
+        "表格目录",
+        "listoftables",
+    }
+
+
+def _is_auxiliary_catalog_node(node: Dict[str, Any]) -> bool:
+    catalog_type = str(node.get("catalog_type") or "").strip().lower()
+    page_type = str(node.get("page_type") or "").strip().lower()
+    node_type = str(node.get("node_type") or "").strip().lower()
+    return bool(
+        node.get("is_auxiliary")
+        or node_type in {"auxiliary_catalog", "auxiliary_catalog_item"}
+        or catalog_type in {
+            CATALOG_FIGURE,
+            CATALOG_TABLE,
+            "figure",
+            "table",
+            "figure_toc",
+            "table_toc",
+        }
+        or page_type in {"figure_catalog", "table_catalog"}
+    )
+
+
+def _normalize_auxiliary_catalog_range(
+    node: Dict[str, Any],
+    *,
+    page_count: int,
+    lower: int,
+    upper: int,
+) -> None:
+    children = node.get("nodes") or []
+    if children:
+        normalized_children = []
+        for child in children:
+            if not isinstance(child, dict):
+                continue
+            start = _node_start_page(child)
+            start = max(lower, min(_clamp_page(start or lower, page_count), upper))
+            item = child
+            item["start_index"] = start
+            item["end_index"] = start
+            if not _to_positive_int(item.get("physical_index")):
+                item["physical_index"] = start
+            nested = item.get("nodes") or []
+            if nested:
+                item["nodes"] = normalize_sibling_page_ranges(
+                    nested,
+                    page_count=page_count,
+                    parent_start=start,
+                    parent_end=start,
+                    copy_nodes=False,
+                )
+            normalized_children.append(item)
+        node["nodes"] = normalized_children
+        starts = [
+            child.get("start_index")
+            for child in normalized_children
+            if isinstance(child.get("start_index"), int)
+        ]
+        if starts:
+            node["start_index"] = min(starts)
+            node["end_index"] = max(starts)
+            if not _to_positive_int(node.get("physical_index")):
+                node["physical_index"] = node["start_index"]
+            return
+
+    start = _node_start_page(node)
+    start = max(lower, min(_clamp_page(start or lower, page_count), upper))
+    node["start_index"] = start
+    node["end_index"] = start
+    if not _to_positive_int(node.get("physical_index")):
+        node["physical_index"] = start
+
+
 # ---------------------------------------------------------------------------
-# Step 4: 设置 start_index / end_index
+# stage=range: 设置 start_index / end_index
 # ---------------------------------------------------------------------------
 
 
@@ -343,11 +662,11 @@ def assign_page_ranges(toc_items: List[Dict], page_count: int) -> List[Dict]:
         else:
             item["end_index"] = page_count
 
-    return toc_items
+    return normalize_sibling_page_ranges(toc_items, page_count=page_count, copy_nodes=False)
 
 
 # ---------------------------------------------------------------------------
-# Step 5: 扁平列表 → 树结构
+# stage=tree: 扁平列表 → 树结构
 # ---------------------------------------------------------------------------
 
 
@@ -395,6 +714,134 @@ def build_tree(toc_items: List[Dict]) -> List[Dict]:
     return root_nodes
 
 
+def _ensure_level_structures(items: List[Dict]) -> List[Dict]:
+    """Fill missing ``structure`` from LLM-provided levels."""
+    counters: Dict[int, int] = {}
+    result: List[Dict] = []
+    for item in items:
+        node = dict(item)
+        structure = str(node.get("structure") or "").strip()
+        if structure:
+            result.append(node)
+            continue
+
+        level = node.get("level")
+        if not isinstance(level, int) or isinstance(level, bool) or level < 1:
+            level = 1
+        level = max(1, min(6, level))
+        while level > 1 and (level - 1) not in counters:
+            level -= 1
+        for depth in list(counters.keys()):
+            if depth > level:
+                counters.pop(depth, None)
+        counters[level] = counters.get(level, 0) + 1
+        for depth in range(1, level):
+            counters.setdefault(depth, 1)
+        node["structure"] = ".".join(str(counters[depth]) for depth in range(1, level + 1))
+        result.append(node)
+    return result
+
+
+def _is_pure_catalog_heading(item: Dict, catalog_type: str) -> bool:
+    title = re.sub(r"\s+", "", str(item.get("title") or "").strip().lower())
+    if catalog_type == CATALOG_FIGURE:
+        return title in {"图目录", "插图目录", "listoffigures", "figurecatalog", "figurescatalog"}
+    if catalog_type == CATALOG_TABLE:
+        return title in {"表目录", "表格目录", "listoftables", "tablecatalog", "tablescatalog"}
+    return title in {"目录", "目次", "contents", "tableofcontents"}
+
+
+def _prepare_catalog_items(items: List[Dict], catalog_type: str, page_count: int) -> List[Dict]:
+    prepared: List[Dict] = []
+    for item in _ensure_level_structures(items):
+        node = dict(item)
+        node["nodes"] = []
+        if catalog_type in AUXILIARY_CATALOG_TYPES:
+            node["catalog_type"] = catalog_type
+            node["node_type"] = "auxiliary_catalog_item"
+            node["is_auxiliary"] = True
+            node["exclude_from_coverage"] = True
+            node["exclude_from_llm_qc"] = True
+            node["exclude_from_text"] = True
+            page = node.get("physical_index") or node.get("start_index") or 1
+            page = max(1, min(page_count, int(page))) if isinstance(page, int) else 1
+            node["start_index"] = page
+            node["end_index"] = page
+            node["source_anchor"] = {"start_page": page, "end_page": page}
+        prepared.append(node)
+    if catalog_type not in AUXILIARY_CATALOG_TYPES:
+        prepared = assign_page_ranges(prepared, page_count)
+    return prepared
+
+
+def _build_catalog_group_root(catalog_type: str, nodes: List[Dict], page_count: int) -> Dict:
+    starts = [node.get("start_index") for node in _flatten_tree(nodes) if isinstance(node.get("start_index"), int)]
+    ends = [node.get("end_index") for node in _flatten_tree(nodes) if isinstance(node.get("end_index"), int)]
+    if catalog_type == CATALOG_MAIN:
+        root: Dict[str, Any] = {
+            "title": catalog_group_title(CATALOG_MAIN),
+            "structure": "contents",
+            "node_type": "catalog_group",
+            "start_index": 1,
+            "end_index": page_count,
+            "physical_index": starts[0] if starts else 1,
+            "nodes": nodes,
+        }
+        return root
+
+    start = min(starts) if starts else 1
+    end = max(ends) if ends else start
+    return {
+        "title": catalog_group_title(catalog_type),
+        "structure": catalog_type,
+        "node_type": "auxiliary_catalog",
+        "catalog_type": catalog_type,
+        "is_auxiliary": True,
+        "exclude_from_coverage": True,
+        "exclude_from_llm_qc": True,
+        "exclude_from_text": True,
+        "start_index": start,
+        "end_index": end,
+        "physical_index": start,
+        "nodes": nodes,
+    }
+
+
+def _flatten_tree(nodes: List[Dict]) -> List[Dict]:
+    flattened: List[Dict] = []
+    for node in nodes:
+        flattened.append(node)
+        flattened.extend(_flatten_tree(node.get("nodes") or []))
+    return flattened
+
+
+def _build_multi_catalog_tree_if_present(items: List[Dict], page_count: int) -> Optional[List[Dict]]:
+    groups: Dict[str, List[Dict]] = {
+        CATALOG_MAIN: [],
+        CATALOG_FIGURE: [],
+        CATALOG_TABLE: [],
+    }
+    for item in items:
+        catalog_type = detect_catalog_type(item)
+        if _is_pure_catalog_heading(item, catalog_type):
+            continue
+        groups.setdefault(catalog_type, []).append(item)
+
+    if not any(groups[catalog_type] for catalog_type in AUXILIARY_CATALOG_TYPES):
+        return None
+
+    tree: List[Dict] = []
+    for catalog_type in (CATALOG_MAIN, CATALOG_FIGURE, CATALOG_TABLE):
+        family_items = groups.get(catalog_type) or []
+        if not family_items:
+            continue
+        prepared = _prepare_catalog_items(family_items, catalog_type, page_count)
+        family_tree = build_tree(prepared)
+        fix_parent_ranges(family_tree)
+        tree.append(_build_catalog_group_root(catalog_type, family_tree, page_count))
+    return tree or None
+
+
 def _leaf_signature_stats(tree: List[Dict]) -> Dict[str, Any]:
     """Return leaf count and duplicate count for TOC integrity checks."""
     signatures = []
@@ -421,13 +868,13 @@ def _grouping_preserves_toc(original_tree: List[Dict], grouped_tree: List[Dict])
     grouped = _leaf_signature_stats(grouped_tree)
     if grouped["duplicate_count"] > 0:
         print(
-            f"[POST] Rejecting LLM grouping: "
+            f"[TOC-POST] Rejecting LLM grouping: "
             f"duplicates={grouped['duplicate_count']}"
         )
         return False
     if grouped["leaf_count"] < original["leaf_count"]:
         print(
-            f"[POST] Rejecting LLM grouping: "
+            f"[TOC-POST] Rejecting LLM grouping: "
             f"leaf_count {grouped['leaf_count']} < {original['leaf_count']}"
         )
         return False
@@ -469,7 +916,7 @@ def _group_frozen_case_catalogs(tree: List[Dict]) -> List[Dict]:
 
     if moved:
         print(
-            f"[POST] Frozen TOC deterministic grouping: "
+            f"[TOC-POST] Frozen TOC deterministic grouping: "
             f"{group_count} groups, {moved} case items"
         )
         fix_parent_ranges(grouped)
@@ -486,6 +933,9 @@ def _get_depth(structure: str) -> int:
     """
     if not structure or structure == "0":
         return 0
+
+    if "." in structure:
+        return structure.count(".") + 1
 
     # 标准阿拉伯数字层级（1, 1.1, 1.2.3）
     if re.match(r"^[\d.]+", structure):
@@ -504,7 +954,7 @@ def _get_depth(structure: str) -> int:
 
 
 # ---------------------------------------------------------------------------
-# Step 6: 修复父节点 end_index
+# stage=repair: 修复父节点 end_index
 # ---------------------------------------------------------------------------
 
 
@@ -519,8 +969,27 @@ def fix_parent_ranges(tree: List[Dict]) -> None:
                 node["end_index"] = last_child_end
 
 
+
+
+def _collect_repair_reasons(tree: List[Dict]) -> List[str]:
+    reasons = []
+
+    def visit(nodes: List[Dict]) -> None:
+        for node in nodes:
+            for reason in node.get("repair_reasons") or []:
+                reason_text = str(reason).strip()
+                if reason_text:
+                    reasons.append(reason_text)
+            if node.get("needs_repair"):
+                reasons.append("node_needs_repair")
+            children = node.get("nodes") or []
+            if children:
+                visit(children)
+
+    visit(tree or [])
+    return sorted(set(reasons))
 # ---------------------------------------------------------------------------
-# Step 7: 完整性检查
+# stage=quality: 完整性检查
 # ---------------------------------------------------------------------------
 
 
@@ -529,9 +998,10 @@ def check_completeness(tree: List[Dict], page_count: int) -> Dict[str, Any]:
     # 收集所有叶节点的页面范围
     ranges = []
     _collect_ranges(tree, ranges)
+    repair_reasons = _collect_repair_reasons(tree)
 
     if not ranges:
-        return {"coverage": 0, "gaps": [], "ok": False}
+        return {"coverage": 0, "gaps": [], "ok": False, "needs_repair": True, "repair_reasons": ["empty_ranges"]}
 
     # 计算覆盖的页面集合
     covered_pages = set()
@@ -575,10 +1045,14 @@ def check_completeness(tree: List[Dict], page_count: int) -> Dict[str, Any]:
 
     ok = quality in ("good", "ok")
     needs_repair = quality in ("warning", "bad")
+    if repair_reasons:
+        needs_repair = True
+        if quality in ("good", "ok"):
+            quality = "warning"
 
     if not ok:
         print(
-            f"[POST] Completeness: quality={quality}, coverage={coverage:.0%}, "
+            f"[TOC-POST] Completeness: quality={quality}, coverage={coverage:.0%}, "
             f"uncovered={uncovered_count}/{max_uncovered} allowed, "
             f"last_end={last_end}/{page_count}, gaps={len(gaps)}"
         )
@@ -592,23 +1066,40 @@ def check_completeness(tree: List[Dict], page_count: int) -> Dict[str, Any]:
         "needs_repair": needs_repair,
         "uncovered_count": uncovered_count,
         "max_uncovered": max_uncovered,
+        "repair_reasons": repair_reasons,
     }
 
 
 def _collect_ranges(tree: List[Dict], ranges: List[Tuple[int, int]]) -> None:
     """递归收集所有节点的 [start_index, end_index]。"""
     for node in tree:
+        if _excluded_subtree_from_coverage(node):
+            continue
         s = node.get("start_index")
         e = node.get("end_index")
-        if s is not None and e is not None:
+        if s is not None and e is not None and not _excluded_node_range_from_coverage(node):
             ranges.append((s, e))
         children = node.get("nodes", [])
         if children:
             _collect_ranges(children, ranges)
 
 
+def _excluded_subtree_from_coverage(node: Dict) -> bool:
+    if not isinstance(node, dict):
+        return False
+    if bool(node.get("exclude_from_coverage")) or bool(node.get("is_auxiliary")):
+        return True
+    return node.get("node_type") in {"auxiliary_catalog", "auxiliary_catalog_item"}
+
+
+def _excluded_node_range_from_coverage(node: Dict) -> bool:
+    if _excluded_subtree_from_coverage(node):
+        return True
+    return node.get("node_type") == "catalog_group" or node.get("page_type") == "catalog_group"
+
+
 # ---------------------------------------------------------------------------
-# Step 8: 格式化输出
+# stage=format: 格式化输出
 # ---------------------------------------------------------------------------
 
 
@@ -831,7 +1322,7 @@ def _llm_group_catalogs(tree: List[Dict], analysis: Dict, page_count: int, model
         return groups if groups else None
         
     except Exception as e:
-        print(f"[POST] Failed to parse LLM grouping response: {e}")
+        print(f"[TOC-POST] Failed to parse LLM grouping response: {e}")
         return None
 
 
@@ -872,81 +1363,6 @@ def _build_single_tree(tree: List[Dict], page_count: int) -> List[Dict]:
         }]
     
     return tree
-
-
-def _legacy_group_catalogs(tree: List[Dict], page_count: int) -> List[Dict]:
-    """旧的按类型分组逻辑（已废弃，仅向后兼容）。
-    
-    使用关键词匹配，容易误分类。
-    """
-    print("[POST] WARNING: Using deprecated legacy catalog grouping")
-    
-    def flatten_tree(nodes):
-        result = []
-        for node in nodes:
-            result.append(node)
-            children = node.get("nodes", [])
-            if children:
-                result.extend(flatten_tree(children))
-        return result
-    
-    def classify_node_type(node):
-        title = str(node.get("title", "")).lower()
-        if "图目录" in title or "表目录" in title:
-            return "other"
-        if any(k in title for k in ['图', 'figure', 'fig.']):
-            return "figure"
-        if any(k in title for k in ['表', 'table']):
-            return "table"
-        return "chapter"
-    
-    all_nodes = flatten_tree(tree)
-    chapters = [n for n in all_nodes if classify_node_type(n) == "chapter"]
-    figures = [n for n in all_nodes if classify_node_type(n) == "figure"]
-    tables = [n for n in all_nodes if classify_node_type(n) == "table"]
-    
-    grouped_tree = []
-    
-    if chapters:
-        for n in chapters:
-            n["nodes"] = []
-        chapter_tree = build_tree(chapters)
-        grouped_tree.append({
-            "title": "目录",
-            "node_type": "catalog_group",
-            "physical_index": chapters[0].get("physical_index", 1),
-            "start_index": chapters[0].get("start_index", 1),
-            "end_index": chapters[-1].get("end_index", page_count),
-            "nodes": chapter_tree,
-        })
-    
-    if figures:
-        for n in figures:
-            n["nodes"] = []
-        figure_tree = build_tree(figures)
-        grouped_tree.append({
-            "title": "图目录",
-            "node_type": "catalog_group",
-            "physical_index": figures[0].get("physical_index", 1),
-            "start_index": figures[0].get("start_index", 1),
-            "end_index": figures[-1].get("end_index", page_count),
-            "nodes": figure_tree,
-        })
-    
-    if tables:
-        for n in tables:
-            n["nodes"] = []
-        table_tree = build_tree(tables)
-        grouped_tree.append({
-            "title": "表目录",
-            "node_type": "catalog_group",
-            "physical_index": tables[0].get("physical_index", 1),
-            "start_index": tables[0].get("start_index", 1),
-            "end_index": tables[-1].get("end_index", page_count),
-            "nodes": table_tree,
-        })
-    
-    return grouped_tree if grouped_tree else tree
 
 
 # ---------------------------------------------------------------------------
@@ -1021,7 +1437,7 @@ def refine_toc_with_dividers(
                 "physical_index": d,
             }
             regular_items.insert(insert_idx, synthetic)
-            print(f"[POST-REFINE] Inserted synthetic chapter at p.{d}")
+            print(f"[TOC-POST] step=refine Inserted synthetic chapter at p.{d}")
     
     # 4. Re-sort after insertions
     regular_items.sort(key=lambda x: x["physical_index"] or 0)
@@ -1062,7 +1478,7 @@ def rebuild_structure_by_dividers(
 ) -> List[Dict]:
     """利用divider位置重建层级structure。
 
-    当VLM提取的TOC条目全部平铺（structure为"1","2"...）时，
+    当候选 TOC 条目全部平铺（structure为"1","2"...）时，
     利用已校验的divider位置将条目重新组织为层级结构：
     - divider页上的标题 → 顶级（"1","2"...）
     - 各范围内的其他标题 → 子级（"1.1","1.2"...）
@@ -1081,7 +1497,7 @@ def rebuild_structure_by_dividers(
     items = list(toc_items)  # 复制，避免修改原始数据
     sorted_dividers = sorted(dividers)
 
-    # Step 1: 识别divider页上的标题（精确匹配优先，±1容差兜底）
+    # stage=clean: 识别divider页上的标题（精确匹配优先，±1容差兜底）
     divider_items = {}  # divider -> item_index
     used_indices = set()
 
@@ -1114,9 +1530,9 @@ def rebuild_structure_by_dividers(
             divider_items[d] = best_match
             used_indices.add(best_match)
 
-    print(f"[POST-REBUILD] Found {len(divider_items)} divider chapters out of {len(dividers)}")
+    print(f"[TOC-POST] step=rebuild Found {len(divider_items)} divider chapters out of {len(dividers)}")
 
-    # Step 2: 为divider页的条目分配顶级structure
+    # stage=validate: 为divider页的条目分配顶级structure
     chapter_num = 1
     for d in sorted_dividers:
         if d in divider_items:
@@ -1124,7 +1540,7 @@ def rebuild_structure_by_dividers(
             items[idx]["structure"] = str(chapter_num)
             chapter_num += 1
 
-    # Step 3: 为范围内的其他条目分配子级structure
+    # stage=preface: 为范围内的其他条目分配子级structure
     sub_counters = {}  # parent_chapter -> count
 
     for i, item in enumerate(items):
@@ -1159,68 +1575,37 @@ def rebuild_structure_by_dividers(
 # LLM 目录分组 Prompt
 # ---------------------------------------------------------------------------
 
-CATALOG_GROUPING_PROMPT = """你是文档目录结构分析专家。
+CATALOG_GROUPING_PROMPT = """You are a document TOC grouping analyst.
 
-请分析以下文档的目录信息，提取所有目录条目（包括正文目录、图目录、表目录）。
+The current document has {page_count} physical PDF pages.
 
-## 任务
-
-1. **分析目录页原文**：从目录页文本中提取所有条目
-2. **分类**：将条目分为正文目录、图目录、表目录
-3. **提取图/表目录**：如果目录页中有"图目录"或"表目录"章节，必须提取其中的所有条目
-
-## 判断标准
-
-### 正文目录
-- 文档的主要章节结构
-- 如"第一章 引言"、"1.1 研究背景"
-- 即使标题含"图"或"表"字（如"流程图分析"），只要它是章节标题，就归为此类
-
-### 图目录（Figure Catalog）
-- 独立的"图目录"章节，列出所有图
-- 条目格式："图1 系统架构"、"Figure 1 System Architecture"
-- **必须从目录页原文中提取，不要遗漏**
-
-### 表目录（Table Catalog）
-- 独立的"表目录"章节，列出所有表
-- 条目格式："表1 实验数据"、"Table 1 Experimental Data"
-- **必须从目录页原文中提取，不要遗漏**
-
-## 重要提示
-- **必须仔细分析目录页原文**，不要只看提取的目录条目列表
-- 如果目录页原文中有"图目录"或"表目录"，has_figure_catalog/has_table_catalog 必须为 true
-- 图/表目录的条目必须从目录页原文中**逐条提取**
-- 章节标题即使含"图"字（如"第三章 数据图表分析"）也不是图目录条目
-
-## 输入
-
-文档总页数: {page_count}
-
-目录页原文（请仔细分析）:
+Catalog page text preview:
 {toc_page_text}
 
-已提取的目录条目（参考）:
+Current flattened TOC items, in order:
 {toc_items_json}
 
-## 输出
+Task:
+1. Classify the current TOC items into the main chapter catalog, figure catalog, and table catalog when those catalogs are clearly present.
+2. Preserve original titles and page values. Do not invent page numbers.
+3. If there is no dedicated figure or table catalog, set the corresponding has_* flag to false and return an empty list.
+4. A chapter title that contains the word figure or table is still a chapter item unless it belongs to a dedicated figure/table list.
 
-请输出JSON格式:
+Return JSON only:
 {{
-    "has_figure_catalog": true/false,
-    "has_table_catalog": true/false,
-    "reasoning": "说明判断理由，特别是图/表目录是否存在",
-    "chapter_catalog": [
-        {{"title": "...", "page": N, "level": 1}}
-    ],
-    "figure_catalog": [
-        {{"title": "...", "page": N}}
-    ],
-    "table_catalog": [
-        {{"title": "...", "page": N}}
-    ]
+  "chapter_catalog": [
+    {{"title": "Chapter title", "page": 1, "level": 1}}
+  ],
+  "has_figure_catalog": false,
+  "figure_catalog": [
+    {{"title": "Figure 1 System Architecture", "page": 5}}
+  ],
+  "has_table_catalog": false,
+  "table_catalog": [
+    {{"title": "Table 1 Experimental Data", "page": 8}}
+  ],
+  "reasoning": "brief classification rationale"
 }}
-
-注意：如果目录页原文中有图目录或表目录，请务必提取其中的所有条目！
 """
 
 
@@ -1245,10 +1630,19 @@ def post_process_toc(
     Returns:
         (tree, completeness_info)
     """
-    # Step 1: 清洗
-    items = clean_toc_items(toc_items)
+    # stage=clean: 清洗
+    preserve_unpaged = _should_preserve_unpaged_toc_skeleton(analysis)
+    toc_pages = _toc_pages_from_analysis(analysis)
+    provisional_start_page = max(toc_pages or [0]) + 1
+    provisional_start_page = max(1, min(page_count, provisional_start_page))
+    items = clean_toc_items(
+        toc_items,
+        page_count=page_count,
+        preserve_unpaged=preserve_unpaged,
+        provisional_start_page=provisional_start_page,
+    )
     if not items:
-        print("[POST] No valid items after cleaning")
+        print("[TOC-POST] No valid items after cleaning")
         items = [{"structure": "1", "title": "Document Content", "physical_index": 1}]
 
     top_level_frozen = bool(
@@ -1304,36 +1698,50 @@ def post_process_toc(
         )
     )
 
-    # Step 1.2: 过滤图录/表录节点
+    # stage=filter: 过滤图录/表录节点
     items, _ = filter_figure_catalogs(items)
     if not items:
-        print("[POST] No valid items after filtering figure catalogs")
+        print("[TOC-POST] No valid items after filtering figure catalogs")
         items = [{"structure": "1", "title": "Document Content", "physical_index": 1}]
 
-    # Step 1.5: P3 Unified Refinement (dividers-based)
+    # stage=refine: P3 Unified Refinement (dividers-based)
     if dividers and not text_rich_protected:
         items = refine_toc_with_dividers(items, dividers, page_count)
 
-    # Step 1.6: 基于divider重建层级structure（修复VLM平铺提取）
+    # stage=rebuild: 基于divider重建层级structure（修复候选 TOC 平铺结构）
     if dividers and len(dividers) >= 2 and not text_rich_protected:
         items = rebuild_structure_by_dividers(items, dividers, page_count)
 
-    # Step 2: 边界校验
+    # stage=validate: 边界校验
     items = validate_indices(items, page_count)
     if not items:
-        print("[POST] No valid items after validation")
+        print("[TOC-POST] No valid items after validation")
         items = [{"structure": "1", "title": "Document Content", "physical_index": 1}]
 
-    # Step 3: 补充 Preface
+    # stage=preface: 补充 Preface
+    items = _ensure_level_structures(items)
+
+    multi_catalog_tree = _build_multi_catalog_tree_if_present(items, page_count)
+    if multi_catalog_tree:
+        tree = multi_catalog_tree
+        fix_parent_ranges(tree)
+        tree = normalize_tree_page_ranges(tree, page_count)
+        completeness = check_completeness(tree, page_count)
+        print(
+            f"[TOC-POST] status=done {len(items)} items → tree with {len(tree)} top-level groups, "
+            f"coverage={completeness['coverage']:.0%}"
+        )
+        return tree, completeness
+
     items = add_preface(items)
 
-    # Step 4: 设置页面范围
+    # stage=range: 设置页面范围
     items = assign_page_ranges(items, page_count)
 
-    # Step 5: 构建树
+    # stage=tree: 构建树
     tree = build_tree(items)
     
-    # Step 5.5: 移除空结构的合成根节点，提升直接子节点
+    # stage=tree: 移除空结构的合成根节点，提升直接子节点
     def remove_synthetic_roots(nodes):
         result = []
         for node in nodes:
@@ -1341,11 +1749,11 @@ def post_process_toc(
                 # 提升直接子节点到当前层级
                 children = node.get("nodes", [])
                 if children:
-                    print(f"[POST] Removed synthetic root '{node['title']}', promoted {len(children)} children")
+                    print(f"[TOC-POST] Removed synthetic root '{node['title']}', promoted {len(children)} children")
                     # 递归处理子节点（它们可能也是合成根节点）
                     result.extend(remove_synthetic_roots(children))
                 else:
-                    print(f"[POST] Removed synthetic root '{node['title']}' (no children)")
+                    print(f"[TOC-POST] Removed synthetic root '{node['title']}' (no children)")
             else:
                 # 保留节点，但递归处理其子节点
                 if node.get("nodes"):
@@ -1355,7 +1763,7 @@ def post_process_toc(
     
     tree = remove_synthetic_roots(tree)
     
-    # Step 5.6: 移除所有"Chapter at page"合成节点
+    # stage=tree: 移除所有"Chapter at page"合成节点
     def remove_all_synthetic_nodes(nodes):
         result = []
         for node in nodes:
@@ -1363,10 +1771,10 @@ def post_process_toc(
                 # 移除合成节点，但保留其子节点
                 children = node.get("nodes", [])
                 if children:
-                    print(f"[POST] Removed synthetic chapter '{node['title']}', promoted {len(children)} children")
+                    print(f"[TOC-POST] Removed synthetic chapter '{node['title']}', promoted {len(children)} children")
                     result.extend(remove_all_synthetic_nodes(children))
                 else:
-                    print(f"[POST] Removed synthetic chapter '{node['title']}' (no children)")
+                    print(f"[TOC-POST] Removed synthetic chapter '{node['title']}' (no children)")
             else:
                 # 保留节点，但递归处理其子节点
                 if node.get("nodes"):
@@ -1376,7 +1784,7 @@ def post_process_toc(
     
     tree = remove_all_synthetic_nodes(tree)
     
-    # Step 5.7: 使用structure重建正确的父子关系
+    # stage=tree: 使用structure重建正确的父子关系
     def rebuild_tree_by_structure(nodes):
         """根据structure字段重建父子关系，确保子节点在正确的父节点下"""
         if not nodes:
@@ -1422,54 +1830,51 @@ def post_process_toc(
     
     tree = rebuild_tree_by_structure(tree)
 
-    # Step 6: 修复父节点范围
+    # stage=repair: 修复父节点范围
     fix_parent_ranges(tree)
+    tree = normalize_tree_page_ranges(tree, page_count)
 
-    # Step 6.5: LLM 目录分组（新架构）
+    # stage=group: LLM 目录分组（新架构）
     toc_frozen = top_level_frozen and not allow_child_expansion
     if toc_frozen:
         tree = _group_frozen_case_catalogs(tree)
-        print("[POST] TOC frozen, skipping LLM catalog grouping")
+        print("[TOC-POST] TOC frozen, skipping LLM catalog grouping")
     elif semi_frozen:
-        print("[POST] TOC semi-frozen, skipping LLM catalog grouping")
+        print("[TOC-POST] TOC semi-frozen, skipping LLM catalog grouping")
     elif use_llm_grouping and analysis and analysis.get("toc_page", {}).get("has_toc_page"):
         try:
-            print("[POST] Step 6.5: LLM catalog grouping")
+            print("[TOC-POST] action=llm_catalog_grouping status=started")
             grouped_result = _llm_group_catalogs(tree, analysis, page_count, model)
             if grouped_result:
                 if _grouping_preserves_toc(tree, grouped_result):
-                    print(f"[POST] LLM grouping success: {len(grouped_result)} groups")
+                    print(f"[TOC-POST] action=llm_catalog_grouping status=ok groups={len(grouped_result)}")
                     tree = grouped_result
                 else:
-                    print("[POST] LLM grouping rejected, keeping original tree")
+                    print("[TOC-POST] action=llm_catalog_grouping status=rejected fallback=original_tree")
             else:
-                print("[POST] LLM grouping returned empty, using single tree")
+                print("[TOC-POST] action=llm_catalog_grouping status=empty fallback=single_tree")
                 tree = _build_single_tree(tree, page_count)
         except Exception as e:
-            print(f"[POST] LLM grouping failed: {e}, using single tree")
+            print(f"[TOC-POST] action=llm_catalog_grouping status=error error={e} fallback=single_tree")
             tree = _build_single_tree(tree, page_count)
     elif use_llm_grouping:
         # 没有TOC页，但有divider且树结构良好（多个顶级节点），保持现有结构
         if dividers and len(tree) > 1:
-            print(f"[POST] No TOC page but has {len(dividers)} dividers and {len(tree)} top-level nodes, keeping tree structure")
+            print(f"[TOC-POST] No TOC page but has {len(dividers)} dividers and {len(tree)} top-level nodes, keeping tree structure")
         else:
             # 没有TOC页且树结构扁平，降级为单一目录树
-            print("[POST] No TOC page detected, using single tree")
+            print("[TOC-POST] No TOC page detected, using single tree")
             tree = _build_single_tree(tree, page_count)
-    else:
-        # 旧逻辑（向后兼容，已废弃）
-        print("[POST] Using legacy grouping (deprecated)")
-        tree = _legacy_group_catalogs(tree, page_count)
 
     tree = promote_single_catalog_root(tree, page_count)
     tree = repair_case_continuation_roots(tree)
     tree = repair_placeholder_chapter_titles(tree)
 
-    # Step 7: 完整性检查
+    # stage=quality: 完整性检查
     completeness = check_completeness(tree, page_count)
 
     print(
-        f"[POST] Done: {len(items)} items → tree with {len(tree)} top-level groups, "
+        f"[TOC-POST] status=done {len(items)} items → tree with {len(tree)} top-level groups, "
         f"coverage={completeness['coverage']:.0%}"
     )
     return tree, completeness
@@ -1490,7 +1895,7 @@ async def llm_quality_check(
         tree: TOC 树结构
         toc_items: 原始 TOC 条目
         page_count: 文档总页数
-        source: TOC 来源 (bookmarks/regex/vlm)
+        source: TOC 来源 (bookmarks/regex/ocr/text)
         has_dividers: 是否有章节分隔页
         divider_count: 章节分隔页数量
         model: LLM 模型名称
@@ -1521,7 +1926,7 @@ async def llm_quality_check(
             and (node.get("end_index") - node.get("start_index") + 1) > 20
         ]
         if completeness.get("ok") and child_count > 0 and not large_leaf_nodes:
-            print(f"[LLM-QC] {source} structure accepted locally")
+            print(f"[TOC-QUALITY] provider=llm_qc {source} structure accepted locally")
             return {
                 "structure_score": 90,
                 "large_nodes": [],
@@ -1532,7 +1937,7 @@ async def llm_quality_check(
             }
 
     try:
-        from pageindex.vlm_utils import parse_vlm_json
+        from pageindex.json_utils import parse_llm_json
         from pageindex.utils import ChatGPT_API_async
         from app.prompts.pageindex_prompts import TOC_QUALITY_CHECK_PROMPT
     except ImportError:
@@ -1569,27 +1974,47 @@ async def llm_quality_check(
         for it in toc_items[:20]  # 只取前 20 个避免过长
     )
     
+    try:
+        from pageindex.index_quality import build_toc_fidelity_digest
+
+        fidelity_digest = build_toc_fidelity_digest(
+            {"structure": tree, "page_count": page_count},
+            page_count=page_count,
+        )
+    except Exception:
+        fidelity_digest = {
+            "detected_style": "unknown",
+            "hard_fail_reasons": [],
+            "warnings": [],
+        }
+
     prompt = TOC_QUALITY_CHECK_PROMPT.format(
         page_count=page_count,
         source=source,
-        has_dividers="是" if has_dividers else "否",
+        has_dividers="yes" if has_dividers else "no",
         divider_count=divider_count,
         toc_tree_formatted=toc_tree_formatted,
         toc_items_formatted=toc_items_formatted,
+        fidelity_digest_json=json.dumps(fidelity_digest, ensure_ascii=False, indent=2),
     )
     
     try:
         response = await ChatGPT_API_async(model=model or "qwen3.6-flash", prompt=prompt)
-        result = parse_vlm_json(response)
+        result = parse_llm_json(response)
         
         if isinstance(result, dict):
-            print(f"[LLM-QC] Quality check: overall_score={result.get('overall_score', 'N/A')}, "
+            verdict = str(result.get("verdict") or "").strip().lower()
+            if verdict == "fail":
+                result["needs_repair"] = True
+            elif verdict == "pass" and "needs_repair" not in result:
+                result["needs_repair"] = False
+            print(f"[TOC-QUALITY] provider=llm_qc Quality check: overall_score={result.get('overall_score', 'N/A')}, "
                   f"needs_repair={result.get('needs_repair', False)}")
             if result.get("needs_repair"):
-                print(f"[LLM-QC] Suggestions: {result.get('suggestions', [])}")
+                print(f"[TOC-QUALITY] provider=llm_qc Suggestions: {result.get('suggestions', [])}")
             return result
     except Exception as e:
-        print(f"[LLM-QC] Failed: {e}")
+        print(f"[TOC-QUALITY] provider=llm_qc Failed: {e}")
     
     # 失败时返回默认结果
     return {

@@ -1,5 +1,5 @@
 from pydantic import BaseModel, validator
-from typing import Optional, List
+from typing import Optional, List, Dict, Any
 from datetime import datetime
 
 
@@ -98,6 +98,7 @@ class DocumentResponse(DocumentBase):
     parse_reasons: Optional[List[str]] = None
     parse_completion: Optional[str] = None
     parse_error_code: Optional[str] = None
+    quality_report: Optional[Dict[str, Any]] = None
     processing_duration: Optional[float] = None
     last_reindex_at: Optional[datetime] = None
     created_at: datetime
@@ -137,7 +138,16 @@ class ProcessingStepsResponse(BaseModel):
 class ChatRequest(BaseModel):
     question: str
     document_ids: Optional[List[str]] = None
+    attachment_ids: Optional[List[str]] = None
+    folder_id: Optional[str] = None
+    include_subfolders: bool = False
+    strict_scope: Optional[bool] = None
+    web_search_requested: bool = False
+    web_search_enabled: bool = False
+    thinking_enabled: Optional[bool] = None
     conversation_id: Optional[str] = None
+    regenerate_from_message_id: Optional[str] = None
+    web_search: bool = False
 
 
 class SourceInfo(BaseModel):

@@ -1,9 +1,31 @@
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
+import { useChatStore } from './chat'
 
 interface User {
   id: string
   username: string
+}
+
+function extractAuthError(data: any, fallback: string): string {
+  if (typeof data?.error === 'string' && data.error.trim()) {
+    return data.error
+  }
+
+  if (typeof data?.detail === 'string' && data.detail.trim()) {
+    return data.detail
+  }
+
+  if (Array.isArray(data?.detail)) {
+    const messages = data.detail
+      .map((item: any) => item?.msg || item?.message)
+      .filter((message: unknown): message is string => typeof message === 'string' && message.trim().length > 0)
+    if (messages.length > 0) {
+      return messages.join('；')
+    }
+  }
+
+  return fallback
 }
 
 export const useUserStore = defineStore('user', () => {
@@ -28,6 +50,11 @@ export const useUserStore = defineStore('user', () => {
 
   function setUser(userData: User | null) {
     user.value = userData
+    try {
+      useChatStore().setStorageUserId(userData?.id || null)
+    } catch (error) {
+      console.error('Failed to switch chat storage user:', error)
+    }
   }
 
   async function fetchUserInfo() {
@@ -42,7 +69,7 @@ export const useUserStore = defineStore('user', () => {
       
       if (response.ok) {
         const data = await response.json()
-        user.value = data
+        setUser(data)
       } else {
         // Token无效，清除登录状态
         logout()
@@ -68,12 +95,12 @@ export const useUserStore = defineStore('user', () => {
       const data = await response.json()
       
       // Handle wrapped response format
-      if (!data.success) {
-        throw new Error(data.error || '登录失败')
+      if (!response.ok || !data.success) {
+        throw new Error(extractAuthError(data, '登录失败'))
       }
 
       setToken(data.token)
-      user.value = { id: data.user.id, username: data.user.username }
+      setUser({ id: data.user.id, username: data.user.username })
       return true
     } catch (error) {
       throw error
@@ -99,12 +126,12 @@ export const useUserStore = defineStore('user', () => {
       const data = await response.json()
       
       // Handle wrapped response format
-      if (!data.success) {
-        throw new Error(data.error || '注册失败')
+      if (!response.ok || !data.success) {
+        throw new Error(extractAuthError(data, '注册失败'))
       }
 
       setToken(data.token)
-      user.value = { id: data.user.id, username: data.user.username }
+      setUser({ id: data.user.id, username: data.user.username })
       return true
     } catch (error) {
       throw error
@@ -115,7 +142,7 @@ export const useUserStore = defineStore('user', () => {
 
   function logout() {
     setToken(null)
-    user.value = null
+    setUser(null)
   }
 
   // Initialize on store creation

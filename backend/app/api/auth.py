@@ -1,5 +1,4 @@
 import re
-import secrets
 import uuid
 from datetime import datetime, timedelta
 from typing import Optional
@@ -11,12 +10,11 @@ import jwt
 import bcrypt
 
 from app.models.database import get_db
-from app.core.config import DATA_DIR
+from app.core.config import DATA_DIR, JWT_SECRET
 
 router = APIRouter(prefix="/api/auth", tags=["authentication"])
 
 # JWT 配置
-JWT_SECRET = secrets.token_hex(32)  # 生成随机密钥
 JWT_ALGORITHM = "HS256"
 JWT_EXPIRATION_DAYS = 7
 

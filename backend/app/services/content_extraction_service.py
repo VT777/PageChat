@@ -23,6 +23,7 @@ class ContentBlock:
     type: str  # 'text', 'heading', 'image', 'table', 'slide'
     content: Any
     metadata: Dict[str, Any]
+    source_anchor: Optional[Dict[str, Any]] = None
 
 
 class ContentExtractionService:
@@ -36,7 +37,6 @@ class ContentExtractionService:
             ".csv",
             ".tsv",
             ".xlsx",
-            ".xls",
             ".docx",
             ".pptx",
         }
@@ -56,6 +56,10 @@ class ContentExtractionService:
         """
         suffix = (format_hint or file_path.suffix).lower()
 
+        canonical = self._extract_canonical_content(file_path, suffix)
+        if canonical is not None:
+            return canonical
+
         if suffix == ".txt":
             return self._extract_txt_content(file_path)
         elif suffix in [".md", ".markdown"]:
@@ -73,6 +77,41 @@ class ContentExtractionService:
         else:
             raise ValueError(f"Unsupported format: {suffix}")
 
+    def _extract_canonical_content(
+        self, file_path: Path, suffix: str
+    ) -> Optional[Dict[str, Any]]:
+        try:
+            from app.services.format_adapters import (
+                parse_docx,
+                parse_markdown,
+                parse_pptx,
+                parse_table,
+                parse_text,
+            )
+
+            if suffix == ".txt":
+                content = parse_text(file_path)
+            elif suffix in {".md", ".markdown"}:
+                content = parse_markdown(file_path)
+            elif suffix in {".csv", ".tsv", ".xlsx"}:
+                content = parse_table(file_path)
+            elif suffix == ".docx":
+                content = parse_docx(file_path)
+            elif suffix == ".pptx":
+                content = parse_pptx(file_path)
+            else:
+                return None
+            payload: Dict[str, Any] = {
+                "format": content.format,
+                "blocks": [block.to_dict() for block in content.blocks],
+                "metadata": dict(content.metadata),
+            }
+            if "image_count" in content.metadata:
+                payload["images"] = []
+            return payload
+        except Exception:
+            return None
+
     def _extract_txt_content(self, file_path: Path) -> Dict[str, Any]:
         """提取 TXT 内容"""
         text = file_path.read_text(encoding="utf-8", errors="ignore")
@@ -86,6 +125,12 @@ class ContentExtractionService:
                     type="text",
                     content=line,
                     metadata={"line_number": i},
+                    source_anchor={
+                        "format": "txt",
+                        "unit_type": "line",
+                        "start_line": i,
+                        "end_line": i,
+                    },
                 )
             )
 
@@ -114,6 +159,12 @@ class ContentExtractionService:
                         type="heading",
                         content=line.lstrip("#").strip(),
                         metadata={"line_number": i, "level": level, "raw": line},
+                        source_anchor={
+                            "format": "markdown",
+                            "unit_type": "line",
+                            "start_line": i,
+                            "end_line": i,
+                        },
                     )
                 )
             else:
@@ -123,6 +174,12 @@ class ContentExtractionService:
                         type="text",
                         content=line,
                         metadata={"line_number": i},
+                        source_anchor={
+                            "format": "markdown",
+                            "unit_type": "line",
+                            "start_line": i,
+                            "end_line": i,
+                        },
                     )
                 )
 
@@ -156,6 +213,12 @@ class ContentExtractionService:
                     "type": "table_row",
                     "content": row,
                     "metadata": {"row_index": i},
+                    "source_anchor": {
+                        "format": "csv" if delimiter == "," else "tsv",
+                        "unit_type": "row_range",
+                        "start_row": i + 1,
+                        "end_row": i + 1,
+                    },
                 }
                 for i, row in enumerate(rows)
             ],
@@ -235,6 +298,13 @@ class ContentExtractionService:
                         "row_count": sheet["row_count"],
                         "col_count": sheet["col_count"],
                     },
+                    "source_anchor": {
+                        "format": "xlsx",
+                        "unit_type": "row_range",
+                        "sheet": sheet["name"],
+                        "start_row": sheet["rows"][0]["row_number"] if sheet["rows"] else 1,
+                        "end_row": sheet["rows"][-1]["row_number"] if sheet["rows"] else 1,
+                    },
                 }
                 for i, sheet in enumerate(sheets)
             ],
@@ -313,6 +383,12 @@ class ContentExtractionService:
                                 "paragraph_number": para_idx,
                                 "images": para_images,
                             },
+                            source_anchor={
+                                "format": "docx",
+                                "unit_type": "paragraph",
+                                "start_paragraph": para_idx,
+                                "end_paragraph": para_idx,
+                            },
                         )
                     )
 
@@ -379,6 +455,12 @@ class ContentExtractionService:
                         "slide_number": s["slide_number"],
                         "title": s["title"],
                     },
+                    "source_anchor": {
+                        "format": "pptx",
+                        "unit_type": "slide",
+                        "start_slide": s["slide_number"],
+                        "end_slide": s["slide_number"],
+                    },
                 }
                 for s in slides
             ],
@@ -392,6 +474,7 @@ class ContentExtractionService:
             "type": block.type,
             "content": block.content,
             "metadata": block.metadata,
+            "source_anchor": block.source_anchor,
         }
 
     def _xml_ns(self, tag: str) -> str:
@@ -443,6 +526,13 @@ class ContentExtractionService:
     def _cell_value(self, cell: ET.Element, shared_strings: List[str]) -> str:
         """获取 XLSX 单元格值"""
         ctype = cell.attrib.get("t")
+        if ctype == "inlineStr":
+            parts = []
+            for child in cell.iter():
+                if self._xml_ns(child.tag) == "t" and child.text:
+                    parts.append(child.text)
+            return "".join(parts).strip()
+
         value_el = None
         for child in cell:
             if self._xml_ns(child.tag) == "v":

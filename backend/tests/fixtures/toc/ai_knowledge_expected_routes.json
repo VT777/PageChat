@@ -1,0 +1,239 @@
+{
+  "input_dir": "D:\\chrome_download\\rag-skill-main\\rag-skill-main\\knowledge\\AI Knowledge",
+  "documents": [
+    {
+      "id": "T01",
+      "file": "2025全球人工智能技术应用洞察报告.pdf",
+      "page_count": 43,
+      "expected_path": "ocr -> embedded_toc",
+      "expected_route": {
+        "content_type": "ocr",
+        "selected_path": "embedded_toc"
+      },
+      "known_pages": {
+        "Chapter 1": 4,
+        "Chapter 2": 11,
+        "Chapter 3": 24,
+        "Chapter 4": 38
+      },
+      "key_assertions": [
+        "weak slide-export bookmarks must be cleaned or rejected before acceptance",
+        "flat slide outline is acceptable when it reflects the source document"
+      ]
+    },
+    {
+      "id": "T02",
+      "file": "2025年AI治理报告：回归现实主义.pdf",
+      "page_count": 76,
+      "expected_path": "ocr/hybrid -> embedded_toc",
+      "expected_route": {
+        "content_type_options": ["ocr", "hybrid"],
+        "selected_path": "embedded_toc"
+      },
+      "key_assertions": [
+        "garbled PDF text must not be used as final node content",
+        "node content must come from OCR-backed PageTextMap"
+      ]
+    },
+    {
+      "id": "T03",
+      "file": "2025年度重庆市人工智能应用场景典型案例集（压缩版）.pdf",
+      "page_count": 44,
+      "expected_path": "ocr -> visible_toc_with_pages",
+      "expected_route": {
+        "content_type": "ocr",
+        "selected_path": "visible_toc_with_pages"
+      },
+      "key_assertions": [
+        "full document OCR must cover all 44 pages",
+        "TOC must not collapse to a single full-document node",
+        "TOC items must not mostly map to TOC pages"
+      ]
+    },
+    {
+      "id": "T04",
+      "file": "2025年第五范式-人工智能驱动的科技创新报告.pdf",
+      "page_count": 68,
+      "expected_path": "text -> visible_toc_no_pages",
+      "expected_route": {
+        "content_type": "text",
+        "selected_path": "visible_toc_no_pages"
+      },
+      "expected_top_level": [
+        "AI驱动的第五科研范式",
+        "百花齐放的大模型时代",
+        "大模型辅助的科学假设生成",
+        "大模型辅助的论文与项目",
+        "未来科研范式展望"
+      ],
+      "key_assertions": [
+        "Chinese outline numbers must not be treated as physical page numbers",
+        "chapter internals should be built by LLM from page snippets"
+      ]
+    },
+    {
+      "id": "T05",
+      "file": "2026AI应用专题：各大厂新模型持续迭代，重视AI应用板块投资机会.pdf",
+      "page_count": 21,
+      "expected_path": "text -> visible_toc_no_pages",
+      "expected_route": {
+        "content_type": "text",
+        "selected_path": "visible_toc_no_pages"
+      },
+      "expected_top_level": [
+        "国外大厂AI应用落地",
+        "国内大厂AI应用落地",
+        "产业链梳理",
+        "风险提示"
+      ],
+      "key_assertions": [
+        "high-quality visible TOC should use rule extraction first",
+        "01-04 suffixes are section numbers rather than physical pages",
+        "duplicate visible TOC pages must be deduplicated"
+      ]
+    },
+    {
+      "id": "T06",
+      "file": "2026年AI Agent智能体技术发展报告.pdf",
+      "page_count": 85,
+      "expected_path": "text -> embedded_toc",
+      "expected_route": {
+        "content_type": "text",
+        "selected_path": "embedded_toc"
+      },
+      "known_pages": {
+        "PDF link TOC pages": "3-8"
+      },
+      "key_assertions": [
+        "PDF links should produce about 117 TOC entries",
+        "six chapter structure must be preserved",
+        "second chapter must not be nested under chapter one"
+      ]
+    },
+    {
+      "id": "T07",
+      "file": "2026年快消行业AI营销增长白皮书.pdf",
+      "page_count": 62,
+      "expected_path": "hybrid -> visible_toc_no_pages",
+      "expected_route": {
+        "content_type": "hybrid",
+        "selected_path": "visible_toc_no_pages"
+      },
+      "expected_top_level": ["Part01", "Part02", "Part03", "Part04", "Part05"],
+      "key_assertions": [
+        "pages 3-5 should be OCR repaired",
+        "physical page 4 should be detected as a visible TOC page",
+        "Part numbers are section numbers rather than physical pages"
+      ]
+    },
+    {
+      "id": "T08",
+      "file": "AI眼镜关键技术与产业生态研究报告（2025年）.pdf",
+      "page_count": 49,
+      "expected_path": "text -> visible_toc_with_pages",
+      "expected_route": {
+        "content_type": "text",
+        "selected_path": "visible_toc_with_pages"
+      },
+      "must_have_sections": ["main_toc", "figure_toc", "table_toc"],
+      "expected_top_level": ["目录", "图目录", "表目录"],
+      "key_assertions": [
+        "visible TOC pages should be pages 4-5",
+        "high-quality visible TOC should use rule extraction first"
+      ]
+    },
+    {
+      "id": "T09",
+      "file": "OpenAI深度报告：大模型王者，引领AGI之路.pdf",
+      "page_count": 26,
+      "expected_path": "text -> visible_toc_with_pages",
+      "expected_route": {
+        "content_type": "text",
+        "selected_path": "visible_toc_with_pages"
+      },
+      "must_have_sections": ["main_toc", "figure_toc", "table_toc"],
+      "expected_top_level": ["目录", "图目录", "表目录"],
+      "known_pages": {
+        "风险提示": 25
+      },
+      "key_assertions": [
+        "visible TOC pages should be pages 2-3",
+        "figure and table catalogs must not affect main TOC page mapping"
+      ]
+    },
+    {
+      "id": "T10",
+      "file": "中国AI+营销趋势洞察2026.pdf",
+      "page_count": 16,
+      "expected_path": "text -> embedded_toc",
+      "expected_route": {
+        "content_type": "text",
+        "selected_path": "embedded_toc"
+      },
+      "key_assertions": [
+        "embedded outline should be accepted as page-level slide outline",
+        "flat TOC is acceptable for this slide-like report"
+      ]
+    },
+    {
+      "id": "T11",
+      "file": "人工智能安全治理研究报告（2025年）.pdf",
+      "page_count": 50,
+      "expected_path": "text -> visible_toc_with_pages",
+      "expected_route": {
+        "content_type": "text",
+        "selected_path": "visible_toc_with_pages"
+      },
+      "must_have_sections": ["main_toc", "figure_toc"],
+      "expected_top_level": ["目录", "图目录"],
+      "key_assertions": [
+        "embedded bookmarks must not be accepted if figure catalog is missing",
+        "visible TOC rule extraction should be tried before LLM"
+      ]
+    },
+    {
+      "id": "T12",
+      "file": "清华大学：职业教育人工智能应用发展报告（2024-2025）.pdf",
+      "page_count": 201,
+      "expected_path": "text -> visible_toc_no_pages",
+      "expected_route": {
+        "content_type": "text",
+        "selected_path": "visible_toc_no_pages"
+      },
+      "expected_top_level": ["序言", "第一章", "第二章", "第三章", "第四章", "第五章", "第六章", "第七章", "第八章"],
+      "key_assertions": [
+        "physical page 2 should be detected as a no-page-number TOC",
+        "chapter internals should be built by LLM from page snippets"
+      ]
+    },
+    {
+      "id": "T13",
+      "file": "生成式人工智能服务合规备案指南（2026年）.pdf",
+      "page_count": 70,
+      "expected_path": "text -> embedded_toc",
+      "expected_route": {
+        "content_type": "text",
+        "selected_path": "embedded_toc"
+      },
+      "expected_route_options": [
+        {
+          "content_type": "text",
+          "selected_path": "embedded_toc"
+        },
+        {
+          "content_type": "text",
+          "selected_path": "visible_toc_with_pages"
+        }
+      ],
+      "must_have_sections": ["main_toc", "table_toc", "figure_toc"],
+      "expected_top_level": ["目录", "表目录", "图目录"],
+      "known_pages": {
+        "第一章总则": 10
+      },
+      "key_assertions": [
+        "bookmarks and PDF links must be collected independently and merged",
+        "embedded TOC must preserve main/table/figure sections"
+      ]
+    }
+  ]
+}

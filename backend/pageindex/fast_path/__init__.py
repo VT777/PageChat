@@ -1,0 +1,2 @@
+"""Fast-path TOC candidates."""
+

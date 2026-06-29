@@ -10,8 +10,8 @@ dist/
 downloads/
 eggs/
 .eggs/
-lib/
-lib64/
+/lib/
+/lib64/
 parts/
 sdist/
 var/
@@ -68,6 +68,7 @@ backend/tmp*/
 *_results.txt
 
 # Generated analysis artifacts
+/artifacts/
 /*.png
 /data/thumbnail_*.png
 /test_experiments/

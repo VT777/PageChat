@@ -1,0 +1,221 @@
+{
+  "source_markdown": "docs/architecture/ai_knowledge_expected_toc_reference.md",
+  "current_e2e_baseline": "docs/architecture/ai_knowledge_current_e2e_baseline_2026-06-21.md",
+  "input_dir": "D:\\chrome_download\\rag-skill-main\\rag-skill-main\\knowledge\\AI Knowledge",
+  "documents": [
+    {
+      "id": "T01",
+      "file": "2025全球人工智能技术应用洞察报告.pdf",
+      "page_count": 43,
+      "expected_path": "ocr -> embedded_toc",
+      "reference_status": "locked",
+      "expected_route": {"content_type": "ocr", "selected_path": "embedded_toc"},
+      "required_checks": {"min_node_count": 35, "allow_flat_slide_outline": true},
+      "must_have_nodes": [
+        {"title": "第一章", "start_index": 4, "end_index": 10},
+        {"title": "第二章", "start_index": 11, "end_index": 23},
+        {"title": "第三章", "start_index": 24, "end_index": 37},
+        {"title": "第四章", "start_index": 38, "end_index": 41}
+      ]
+    },
+    {
+      "id": "T02",
+      "file": "2025年AI治理报告：回归现实主义.pdf",
+      "page_count": 76,
+      "expected_path": "ocr -> embedded_toc",
+      "reference_status": "locked",
+      "expected_route": {
+        "content_type_options": ["ocr", "hybrid"],
+        "selected_path": "embedded_toc"
+      },
+      "required_checks": {"node_content_from_page_text_map": true, "min_node_count": 10},
+      "must_have_nodes": [
+        {"title": "总体态势", "start_index": 13, "end_index": 22},
+        {"title": "一、作为“原料”的数据：从供给瓶颈到使用边界", "start_index": 25, "end_index": 38},
+        {"title": "二、作为“底座”的模型：从路线选择到治理工具", "start_index": 39, "end_index": 53},
+        {"title": "三、作为“落地”的应用：从抽象风险到场景治理", "start_index": 54, "end_index": 76}
+      ]
+    },
+    {
+      "id": "T03",
+      "file": "2025年度重庆市人工智能应用场景典型案例集（压缩版）.pdf",
+      "page_count": 44,
+      "expected_path": "ocr -> visible_toc_with_pages",
+      "reference_status": "reject_current",
+      "expected_route": {"content_type": "ocr", "selected_path": "visible_toc_with_pages"},
+      "required_checks": {"expected_leaf_count": 41, "full_document_ocr": true, "physical_pages_only": true},
+      "must_have_nodes": [
+        {"title": "01 渝车出海——汽车全球化智慧交互体验与服务模式创新", "start_index": 3, "end_index": 3},
+        {"title": "10 企业破账户AI转型金融识别", "start_index": 12, "end_index": 12},
+        {"title": "38 智汇山城·AI数智赋能金融消保场景", "start_index": 40, "end_index": 40},
+        {"title": "41 “师道汉韵”——面向陆海新通道产教融合的跨语言技能教学空间", "start_index": 43, "end_index": 44}
+      ],
+      "forbidden_patterns": {
+        "max_nodes_on_same_non_toc_page": 3,
+        "forbidden_mass_page": 40,
+        "forbidden_logical_page_leakage": true
+      }
+    },
+    {
+      "id": "T04",
+      "file": "2025年第五范式-人工智能驱动的科技创新报告.pdf",
+      "page_count": 68,
+      "expected_path": "text -> visible_toc_no_pages",
+      "reference_status": "needs_child_expansion",
+      "expected_route": {"content_type": "text", "selected_path": "visible_toc_no_pages"},
+      "required_checks": {"requires_child_expansion": true, "min_children_per_long_chapter": 1},
+      "must_have_nodes": [
+        {"title": "AI驱动的第五科研范式", "start_index": 3, "end_index": 12},
+        {"title": "百花齐放的大模型时代", "start_index": 13, "end_index": 34},
+        {"title": "大模型辅助的科学假设生成", "start_index": 35, "end_index": 48},
+        {"title": "大模型辅助的论文与项目", "start_index": 49, "end_index": 60},
+        {"title": "未来科研范式展望", "start_index": 61, "end_index": 68}
+      ],
+      "forbidden_patterns": {"forbidden_start_pages": [4, 17, 30, 43, 56]}
+    },
+    {
+      "id": "T05",
+      "file": "2026AI应用专题：各大厂新模型持续迭代，重视AI应用板块投资机会.pdf",
+      "page_count": 21,
+      "expected_path": "text -> visible_toc_no_pages",
+      "reference_status": "needs_child_expansion",
+      "expected_route": {"content_type": "text", "selected_path": "visible_toc_no_pages"},
+      "required_checks": {"section_numbers_are_not_pages": true, "divider_pages_are_section_starts": true, "requires_child_expansion": true, "min_child_expansion_span": 6},
+      "must_have_nodes": [
+        {"title": "国外大厂AI应用落地", "start_index": 3, "end_index": 8},
+        {"title": "国内大厂AI应用落地", "start_index": 9, "end_index": 15},
+        {"title": "产业链梳理", "start_index": 16, "end_index": 17},
+        {"title": "风险提示", "start_index": 18, "end_index": 21}
+      ],
+      "forbidden_patterns": {"forbidden_start_pages": [4, 10, 17, 19]}
+    },
+    {
+      "id": "T06",
+      "file": "2026年AI Agent智能体技术发展报告.pdf",
+      "page_count": 85,
+      "expected_path": "text -> embedded_toc",
+      "reference_status": "locked",
+      "expected_route": {"content_type": "text", "selected_path": "embedded_toc"},
+      "required_checks": {"min_node_count": 100, "preserve_multilevel_links": true},
+      "must_have_nodes": [
+        {"title": "第一章：AI Agent 技术概述与发展现状", "start_index": 9, "end_index": 19},
+        {"title": "第二章：AI Agent 核心技术架构解析", "start_index": 20, "end_index": 32},
+        {"title": "第六章 AI Agent 的未来展望与算泥社区的生态布局", "start_index": 77, "end_index": 85}
+      ]
+    },
+    {
+      "id": "T07",
+      "file": "2026年快消行业AI营销增长白皮书.pdf",
+      "page_count": 62,
+      "expected_path": "hybrid -> visible_toc_no_pages",
+      "reference_status": "needs_child_expansion",
+      "expected_route": {"content_type": "hybrid", "selected_path": "visible_toc_no_pages"},
+      "required_checks": {"requires_child_expansion": true, "ocr_repaired_toc_page": 4},
+      "must_have_nodes": [
+        {"title": "Part01：市场分析：“M型”消费趋势与获客挑战", "start_index": 5, "end_index": 12},
+        {"title": "Part02：AI心智占位：预测式社交生态实战指南", "start_index": 13, "end_index": 24},
+        {"title": "Part03：内容营销工业化：标签思维驱动工业化增长", "start_index": 25, "end_index": 34},
+        {"title": "Part04：数据基建：驱动端到端进化的数字底座", "start_index": 35, "end_index": 40},
+        {"title": "Part05：AI变革落地：快消品牌AI营销案例", "start_index": 41, "end_index": 62}
+      ]
+    },
+    {
+      "id": "T08",
+      "file": "AI眼镜关键技术与产业生态研究报告（2025年）.pdf",
+      "page_count": 49,
+      "expected_path": "text -> visible_toc_with_pages",
+      "reference_status": "reject_current",
+      "expected_route": {"content_type": "text", "selected_path": "visible_toc_with_pages"},
+      "must_have_sections": ["main_toc", "figure_toc", "table_toc"],
+      "required_checks": {"preserve_parenthetical_children": true, "visible_toc_pages": [4, 5]},
+      "must_have_nodes": [
+        {"title": "一、AI 眼镜总体发展情况", "start_index": 6, "end_index": 10},
+        {"title": "（一）AI 眼镜开启信息增强新阶段", "start_index": 7, "end_index": 7},
+        {"title": "二、AI 眼镜关键技术", "start_index": 11, "end_index": 23},
+        {"title": "图 1 AI 眼镜概念", "start_index": 8, "end_index": 9},
+        {"title": "表1 AI 眼镜分类", "start_index": 9, "end_index": 25}
+      ]
+    },
+    {
+      "id": "T09",
+      "file": "OpenAI深度报告：大模型王者，引领AGI之路.pdf",
+      "page_count": 26,
+      "expected_path": "text -> visible_toc_with_pages",
+      "reference_status": "reject_current",
+      "expected_route": {"content_type": "text", "selected_path": "visible_toc_with_pages"},
+      "must_have_sections": ["main_toc", "figure_toc", "table_toc"],
+      "required_checks": {"printed_pages_are_physical": true, "visible_toc_pages": [2, 3]},
+      "must_have_nodes": [
+        {"title": "1. 复盘：AI 新物种，大模型时代的全球领航者", "start_index": 4, "end_index": 8},
+        {"title": "1.2、团队：激励显效，海纳AI 领域顶尖人才", "start_index": 4, "end_index": 6},
+        {"title": "1.3、估值：持续新高，最新估值7500 亿美元", "start_index": 7, "end_index": 8},
+        {"title": "4. 风险提示", "start_index": 25, "end_index": 26}
+      ],
+      "forbidden_patterns": {"forbid_outline_marker_override_for_printed_pages": true}
+    },
+    {
+      "id": "T10",
+      "file": "中国AI+营销趋势洞察2026.pdf",
+      "page_count": 16,
+      "expected_path": "text -> embedded_toc",
+      "reference_status": "locked",
+      "expected_route": {"content_type": "text", "selected_path": "embedded_toc"},
+      "required_checks": {"allow_flat_slide_outline": true, "min_node_count": 14},
+      "must_have_nodes": [
+        {"title": "趋势1：AI营销投资进入规模化阶段，投资回报（ROI）成为核心衡量标准", "start_index": 3, "end_index": 3},
+        {"title": "趋势10：随着AI深度介入，营销的透明度、可解释性及生成内容的真实性成为构建可信品牌体验的基础", "start_index": 12, "end_index": 12}
+      ]
+    },
+    {
+      "id": "T11",
+      "file": "人工智能安全治理研究报告（2025年）.pdf",
+      "page_count": 50,
+      "expected_path": "text -> visible_toc_with_pages",
+      "reference_status": "reject_current",
+      "expected_route": {"content_type": "text", "selected_path": "visible_toc_with_pages"},
+      "must_have_sections": ["main_toc", "figure_toc"],
+      "required_checks": {"preserve_parenthetical_children": true, "reject_embedded_if_figure_catalog_missing": true},
+      "must_have_nodes": [
+        {"title": "一、人工智能安全治理概述", "start_index": 7, "end_index": 9},
+        {"title": "（一）宏观规范要求迈向务实新阶段", "start_index": 7, "end_index": 7},
+        {"title": "四、人工智能安全治理通用实践框架", "start_index": 25, "end_index": 39},
+        {"title": "图1 人工智能安全治理产业实践框架", "start_index": 10, "end_index": 25}
+      ]
+    },
+    {
+      "id": "T12",
+      "file": "清华大学：职业教育人工智能应用发展报告（2024-2025）.pdf",
+      "page_count": 201,
+      "expected_path": "text -> visible_toc_no_pages",
+      "reference_status": "needs_child_expansion",
+      "expected_route": {"content_type": "text", "selected_path": "visible_toc_no_pages"},
+      "required_checks": {"requires_child_expansion": true, "no_page_toc_page": 2},
+      "must_have_nodes": [
+        {"title": "序言", "start_index": 3, "end_index": 4},
+        {"title": "第一章：发展学生智能素养", "start_index": 5, "end_index": 33},
+        {"title": "第八章：人工智能重塑职业教育生态：困境与展望", "start_index": 133, "end_index": 201}
+      ]
+    },
+    {
+      "id": "T13",
+      "file": "生成式人工智能服务合规备案指南（2026年）.pdf",
+      "page_count": 70,
+      "expected_path": "text -> embedded_toc",
+      "reference_status": "reject_current",
+      "expected_route": {"content_type": "text", "selected_path": "embedded_toc"},
+      "expected_route_options": [
+        {"content_type": "text", "selected_path": "embedded_toc"},
+        {"content_type": "text", "selected_path": "visible_toc_with_pages"}
+      ],
+      "must_have_sections": ["main_toc", "table_toc", "figure_toc"],
+      "required_checks": {"remove_noisy_appendix_table_cells": true, "visible_toc_pages": [7, 8, 9]},
+      "must_have_nodes": [
+        {"title": "第一章 总则", "start_index": 10, "end_index": 13},
+        {"title": "第五章 附录", "start_index": 52, "end_index": 70},
+        {"title": "表19 中央及各部委人工智能重要政策", "start_index": 52, "end_index": 53},
+        {"title": "图17 确认信息页面（示意图）", "start_index": 63, "end_index": 70}
+      ],
+      "forbidden_title_patterns": ["pure_digit", "date_only", "table_cell_org_name"]
+    }
+  ]
+}

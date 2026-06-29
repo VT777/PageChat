@@ -203,7 +203,12 @@ def _extract_txt(file_path: Path) -> Dict[str, Any]:
         start_line = i * 40 + 1
         end_line = start_line + len(chunk) - 1
         anchors.append(
-            {"format": "txt", "start_line": start_line, "end_line": end_line}
+            {
+                "format": "txt",
+                "unit_type": "line",
+                "start_line": start_line,
+                "end_line": end_line,
+            }
         )
 
     nodes = _build_nodes_with_anchor(chunks, "文本段", anchors)
@@ -308,6 +313,7 @@ def _extract_markdown(file_path: Path) -> Dict[str, Any]:
                 "text": section_text,
                 "source_anchor": {
                     "format": "markdown",
+                    "unit_type": "line",
                     "start_line": int(section["start_line"]),
                     "end_line": int(section["end_line"]),
                 },
@@ -315,59 +321,7 @@ def _extract_markdown(file_path: Path) -> Dict[str, Any]:
             }
         )
 
-    # 质量校验：低质量时使用 LLM 兜底（仅在规则明显失效时触发）
-    if _toc_quality_score(flat_nodes, "start_paragraph") < 0.45:
-        llm_items = _llm_build_toc_fallback(
-            [
-                {
-                    "start_paragraph": int(p.get("num") or 0),
-                    "text": str(p.get("text") or ""),
-                }
-                for p in paragraphs
-                if _safe_text(str(p.get("text") or ""))
-            ],
-            "docx",
-            "start_paragraph",
-        )
-        if llm_items:
-            para_map = {int(p["num"]): str(p["text"]) for p in paragraphs}
-            para_numbers = sorted(para_map.keys())
-            max_para = para_numbers[-1] if para_numbers else 1
-            llm_nodes: List[Dict[str, Any]] = []
-            for i, it in enumerate(llm_items, start=1):
-                start_p = int(it["start"])
-                end_p = (
-                    int(llm_items[i]["start"]) - 1 if i < len(llm_items) else max_para
-                )
-                lines = [
-                    para_map[n]
-                    for n in para_numbers
-                    if start_p <= n <= end_p and para_map[n]
-                ]
-                text_chunk = "\n".join(lines).strip()
-                if not text_chunk:
-                    continue
-                llm_nodes.append(
-                    {
-                        "node_id": f"node_{i}",
-                        "title": it["title"],
-                        "start_index": i,
-                        "end_index": i,
-                        "level": int(it["level"]),
-                        "summary": _short_summary(text_chunk),
-                        "text": text_chunk,
-                        "source_anchor": {
-                            "format": "docx",
-                            "start_paragraph": start_p,
-                            "end_paragraph": max(start_p, end_p),
-                        },
-                        "nodes": [],
-                    }
-                )
-            if llm_nodes:
-                flat_nodes = llm_nodes
-
-    # 低质量时尝试 LLM 兜底
+    # Low-quality Markdown can still use the line-based fallback.
     if _toc_quality_score(flat_nodes, "start_line") < 0.55:
         llm_items = _llm_build_toc_fallback(
             [
@@ -399,6 +353,7 @@ def _extract_markdown(file_path: Path) -> Dict[str, Any]:
                         "text": content_text,
                         "source_anchor": {
                             "format": "markdown",
+                            "unit_type": "line",
                             "start_line": start_line,
                             "end_line": max(start_line, end_line),
                         },
@@ -429,7 +384,12 @@ def _extract_markdown(file_path: Path) -> Dict[str, Any]:
             start_line = i * 40 + 1
             end_line = start_line + len(chunk) - 1
             anchors.append(
-                {"format": "markdown", "start_line": start_line, "end_line": end_line}
+                {
+                    "format": "markdown",
+                    "unit_type": "line",
+                    "start_line": start_line,
+                    "end_line": end_line,
+                }
             )
         nodes = _build_nodes_with_anchor(chunks, "Markdown 区块", anchors)
 
@@ -466,6 +426,7 @@ def _extract_csv_like(file_path: Path, delimiter: str) -> Dict[str, Any]:
         anchors.append(
             {
                 "format": fmt,
+                "unit_type": "row_range",
                 "start_row": int(num_chunk[0]),
                 "end_row": int(num_chunk[-1]),
             }
@@ -778,6 +739,7 @@ def _extract_docx(file_path: Path) -> Dict[str, Any]:
                 "text": section_text,
                 "source_anchor": {
                     "format": "docx",
+                    "unit_type": "paragraph",
                     "start_paragraph": int(section["start_paragraph"]),
                     "end_paragraph": int(section["end_paragraph"]),
                 },
@@ -816,6 +778,7 @@ def _extract_docx(file_path: Path) -> Dict[str, Any]:
             anchors.append(
                 {
                     "format": "docx",
+                    "unit_type": "paragraph",
                     "start_paragraph": start_paragraph,
                     "end_paragraph": end_paragraph,
                 }
@@ -870,7 +833,12 @@ def _extract_pptx(file_path: Path) -> Dict[str, Any]:
                     "end_index": i,
                     "summary": _short_summary(text),
                     "text": text,
-                    "source_anchor": {"format": "pptx", "slide": i},
+                    "source_anchor": {
+                        "format": "pptx",
+                        "unit_type": "slide",
+                        "start_slide": i,
+                        "end_slide": i,
+                    },
                     "nodes": [],
                 }
             )
@@ -1008,6 +976,7 @@ def _extract_xlsx(file_path: Path) -> Dict[str, Any]:
                         "text": text,
                         "source_anchor": {
                             "format": "xlsx",
+                            "unit_type": "row_range",
                             "sheet": sheet_name,
                             "start_row": start_row,
                             "end_row": end_row,
@@ -1021,20 +990,35 @@ def _extract_xlsx(file_path: Path) -> Dict[str, Any]:
     return _build_result(nodes, doc_description, file_path.suffix.lower())
 
 
-def generate_multi_format_index(file_path: Path) -> Optional[Dict[str, Any]]:
+def _parse_canonical_content(file_path: Path):
+    from app.services.format_adapters import (
+        document_content_to_index,
+        parse_docx,
+        parse_markdown,
+        parse_pptx,
+        parse_table,
+        parse_text,
+    )
+
     suffix = file_path.suffix.lower()
     if suffix == ".txt":
-        return _extract_txt(file_path)
+        return parse_text(file_path), document_content_to_index
     if suffix in {".md", ".markdown"}:
-        return _extract_markdown(file_path)
-    if suffix == ".csv":
-        return _extract_csv_like(file_path, delimiter=",")
-    if suffix == ".tsv":
-        return _extract_csv_like(file_path, delimiter="\t")
+        return parse_markdown(file_path), document_content_to_index
+    if suffix in {".csv", ".tsv", ".xlsx"}:
+        return parse_table(file_path), document_content_to_index
     if suffix == ".docx":
-        return _extract_docx(file_path)
+        return parse_docx(file_path), document_content_to_index
     if suffix == ".pptx":
-        return _extract_pptx(file_path)
-    if suffix == ".xlsx":
-        return _extract_xlsx(file_path)
+        return parse_pptx(file_path), document_content_to_index
     return None
+
+
+def generate_multi_format_index(file_path: Path) -> Optional[Dict[str, Any]]:
+    parsed = _parse_canonical_content(file_path)
+    if parsed is None:
+        return None
+    content, to_index = parsed
+    result = to_index(content)
+    result["format"] = file_path.suffix.lower()
+    return result

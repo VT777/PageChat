@@ -1,6 +1,19 @@
 <script setup lang="ts">
-import { ref, computed, watch, nextTick } from 'vue'
+import { computed, nextTick, ref, watch } from 'vue'
 import type { DocumentContent, SourceAnchor } from '@/types/preview'
+import { normalizePreviewBlocks } from '@/utils/documentWorkbench'
+
+type PreviewCell = {
+  col: string
+  value: string
+}
+
+type PreviewRow = {
+  id: string
+  rowNumber: number
+  sheet?: string
+  cells: PreviewCell[]
+}
 
 const props = defineProps<{
   content: DocumentContent
@@ -14,33 +27,46 @@ const emit = defineEmits<{
 const containerRef = ref<HTMLDivElement>()
 const activeRow = ref<number | null>(null)
 
-// 表格数据
-const tableData = computed(() => {
-  const rows = props.content.blocks.filter(b => b.type === 'table_row')
-  return rows.map(block => ({
-    id: block.id,
-    rowNumber: block.metadata.row_number as number,
-    cells: block.content as Array<{ col: string; value: string }>
-  }))
+const tableData = computed<PreviewRow[]>(() => {
+  return normalizePreviewBlocks(props.content)
+    .filter((block) => block.type === 'table_row')
+    .map((block) => ({
+      id: String(block.id),
+      rowNumber: Number(block.rowNumber),
+      sheet: block.sheet ? String(block.sheet) : undefined,
+      cells: block.cells as PreviewCell[],
+    }))
 })
 
-// 表头
 const headers = computed(() => {
-  return props.content.metadata.headers || []
+  const explicit = Array.isArray(props.content.metadata.headers) ? props.content.metadata.headers : []
+  if (explicit.length > 0) return explicit
+
+  const firstRow = tableData.value[0]
+  if (!firstRow) return []
+  return firstRow.cells.map((cell) => cell.col)
 })
 
-// 总行数
-const totalRows = computed(() => props.content.metadata.total_rows || tableData.value.length)
+const sheetNames = computed(() => {
+  return Array.from(new Set(tableData.value.map((row) => row.sheet).filter(Boolean))) as string[]
+})
 
-// 总列数
-const totalCols = computed(() => props.content.metadata.total_cols || headers.value.length)
+const totalRows = computed(() => {
+  const metadata = props.content.metadata as Record<string, unknown>
+  return Number(metadata.total_rows || metadata.row_count || tableData.value.length)
+})
 
-// 跳转到指定行
+const totalCols = computed(() => {
+  const metadata = props.content.metadata as Record<string, unknown>
+  const firstRowCols = tableData.value[0]?.cells.length || 0
+  return Number(metadata.total_cols || metadata.col_count || headers.value.length || firstRowCols)
+})
+
 async function scrollToRow(rowNumber: number) {
   activeRow.value = rowNumber
   await nextTick()
-  
-  const element = document.getElementById(`row-${rowNumber}`)
+
+  const element = document.getElementById(rowElementId(rowNumber))
   if (element && containerRef.value) {
     element.scrollIntoView({ behavior: 'smooth', block: 'center' })
     element.classList.add('highlight-row')
@@ -50,18 +76,23 @@ async function scrollToRow(rowNumber: number) {
   }
 }
 
-// 处理行点击
-function handleRowClick(rowNumber: number) {
+function rowElementId(rowNumber: number) {
+  return `row-${rowNumber}`
+}
+
+function handleRowClick(row: PreviewRow) {
+  const rowNumber = row.rowNumber
   activeRow.value = rowNumber
   const anchor: SourceAnchor = {
-    format: 'csv',
+    format: props.content.format,
+    unit_type: 'row_range',
+    sheet: row.sheet,
     start_row: rowNumber,
-    end_row: rowNumber
+    end_row: rowNumber,
   }
   emit('anchorClick', anchor)
 }
 
-// 监听初始锚点
 watch(() => props.initialAnchor, (anchor) => {
   if (anchor?.start_row) {
     scrollToRow(anchor.start_row)
@@ -69,24 +100,26 @@ watch(() => props.initialAnchor, (anchor) => {
 }, { immediate: true })
 
 defineExpose({
-  scrollToRow
+  scrollToRow,
 })
 </script>
 
 <template>
   <div class="table-viewer" ref="containerRef">
-    <!-- 工具栏 -->
     <div class="toolbar">
       <div class="stats">
-        <span>{{ totalRows }} 行</span>
-        <span class="separator">·</span>
-        <span>{{ totalCols }} 列</span>
+        <span>{{ totalRows }} rows</span>
+        <span class="separator">/</span>
+        <span>{{ totalCols }} columns</span>
+        <template v-if="sheetNames.length > 0">
+          <span class="separator">/</span>
+          <span>{{ sheetNames.join(', ') }}</span>
+        </template>
       </div>
     </div>
 
-    <!-- 表格内容 -->
     <div class="table-container">
-      <table class="data-table">
+      <table v-if="tableData.length > 0" class="data-table">
         <thead>
           <tr>
             <th class="row-number">#</th>
@@ -97,15 +130,17 @@ defineExpose({
           <tr
             v-for="row in tableData"
             :key="row.id"
-            :id="`row-${row.rowNumber}`"
+            :id="rowElementId(row.rowNumber)"
             :class="{ active: activeRow === row.rowNumber }"
-            @click="handleRowClick(row.rowNumber)"
+            @click="handleRowClick(row)"
           >
             <td class="row-number">{{ row.rowNumber }}</td>
-            <td v-for="cell in row.cells" :key="cell.col">{{ cell.value }}</td>
+            <td v-for="(cell, index) in row.cells" :key="`${row.id}-${index}`">{{ cell.value }}</td>
           </tr>
         </tbody>
       </table>
+
+      <div v-else class="empty-state">No table rows were extracted.</div>
     </div>
   </div>
 </template>
@@ -184,6 +219,15 @@ defineExpose({
   text-align: center;
   color: #9ca3af;
   font-size: 12px;
+}
+
+.empty-state {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 220px;
+  color: #9ca3af;
+  font-size: 14px;
 }
 
 .highlight-row {

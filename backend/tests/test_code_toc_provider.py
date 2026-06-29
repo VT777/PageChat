@@ -12,9 +12,8 @@ def test_bookmark_code_toc_provider_returns_frozen_skeleton():
         "code_toc": {
             "source": "bookmarks",
             "items": [
-                {"title": "1 Intro", "level": 1, "physical_index": 2},
-                {"title": "1.1 Scope", "level": 2, "physical_index": 4},
-                {"title": "2 Market", "level": 1, "physical_index": 10},
+                {"title": f"Section {idx:02d}", "level": 1, "physical_index": idx + 1}
+                for idx in range(1, 25)
             ],
         },
     }
@@ -44,7 +43,8 @@ def test_regex_code_toc_provider_rejects_year_like_false_positive():
     result = CodeTocProvider().run(analysis)
 
     assert result is None
-    assert analysis["code_toc_reject_reason"] == "weak_regex_page_values"
+    assert "invalid_pages" in analysis["code_toc_reject_reason"]
+    assert "weak_regex" in analysis["code_toc_reject_reason"]
 
 
 def test_regex_code_toc_provider_accepts_reasonable_unique_mapping():
@@ -52,11 +52,12 @@ def test_regex_code_toc_provider_accepts_reasonable_unique_mapping():
         "page_count": 80,
         "code_toc": {
             "source": "regex",
+            "quality": {"verified": True},
             "items": [
                 {"title": "1 Intro", "level": 1, "physical_index": 3},
                 {"title": "2 Market", "level": 1, "physical_index": 12},
                 {"title": "3 Models", "level": 1, "physical_index": 28},
-                {"title": "4 Applications", "level": 1, "physical_index": 50},
+                {"title": "4 Applications", "level": 1, "physical_index": 70},
             ],
         },
     }
@@ -70,9 +71,9 @@ def test_regex_code_toc_provider_accepts_reasonable_unique_mapping():
 
 def test_code_toc_provider_rejects_slide_export_bookmarks():
     items = [
-        {"title": "幻灯片 1", "level": 1, "physical_index": 1},
-        {"title": "幻灯片 2", "level": 1, "physical_index": 2},
-        {"title": "幻灯片 3", "level": 1, "physical_index": 3},
+        {"title": "Slide 1", "level": 1, "physical_index": 1},
+        {"title": "Slide 2", "level": 1, "physical_index": 2},
+        {"title": "Slide 3", "level": 1, "physical_index": 3},
     ]
     analysis = {
         "page_count": 10,
@@ -84,4 +85,4 @@ def test_code_toc_provider_rejects_slide_export_bookmarks():
     result = CodeTocProvider().run(analysis)
 
     assert result is None
-    assert analysis["code_toc_reject_reason"] == "weak_slide_bookmarks"
+    assert "weak_slide_bookmarks" in analysis["code_toc_reject_reason"]

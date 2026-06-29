@@ -91,10 +91,13 @@ function handleJump(pageNum: number | null) {
             v-if="node.start_page"
             class="text-xs text-muted-foreground mt-0.5 block"
           >
-            第 {{ node.start_page }} 页
+            Page {{ node.start_page }}
             <span v-if="node.end_page && node.end_page !== node.start_page">
-              - {{ node.end_page }} 页
+              - {{ node.end_page }}
             </span>
+          </span>
+          <span v-if="node.summary" class="summary-popover">
+            {{ node.summary }}
           </span>
         </button>
       </div>
@@ -115,5 +118,34 @@ function handleJump(pageNum: number | null) {
   font-size: 12px;
   margin-right: 6px;
   font-weight: 500;
+}
+
+button {
+  position: relative;
+}
+
+.summary-popover {
+  position: absolute;
+  left: 12px;
+  right: 12px;
+  top: calc(100% + 4px);
+  z-index: 20;
+  display: none;
+  max-height: 120px;
+  overflow-y: auto;
+  border: 1px solid #d1d5db;
+  border-radius: 6px;
+  background: #fff;
+  padding: 8px;
+  color: #374151;
+  box-shadow: 0 8px 20px rgb(15 23 42 / 0.14);
+  font-size: 12px;
+  line-height: 1.45;
+  white-space: normal;
+}
+
+button:hover .summary-popover,
+button:focus-visible .summary-popover {
+  display: block;
 }
 </style>

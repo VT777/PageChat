@@ -18,6 +18,8 @@ from typing import Any, Callable, Sequence
 
 from app.core import config
 from app.core.llm import async_chat_completion
+from app.agent.provider_adapter import ProviderCapabilityError, apply_provider_protocol
+from app.services.model_settings_service import ModelRouteNotConfiguredError
 
 
 CompletionFn = Callable[..., Any]
@@ -25,8 +27,15 @@ TIMEOUT_EXCEPTIONS = (asyncio.TimeoutError, TimeoutError)
 
 
 class ModelGateway:
-    def __init__(self, completion_fn: CompletionFn | None = None):
+    def __init__(
+        self,
+        completion_fn: CompletionFn | None = None,
+        model_settings_service: Any | None = None,
+        user_id: str | None = None,
+    ):
         self._completion_fn = completion_fn or async_chat_completion
+        self._model_settings_service = model_settings_service
+        self._user_id = user_id
 
     def timeout_for(self, route: str) -> int:
         if route == "flash":
@@ -145,10 +154,12 @@ class ModelGateway:
         try:
             return await self._call_with_timeout_retry(
                 route=route,
+                task=task,
                 messages=messages,
                 stream=stream,
                 tools=tools,
                 temperature=temperature,
+                needs_vision=needs_vision,
             )
         except TIMEOUT_EXCEPTIONS:
             if route != "plus":
@@ -157,24 +168,47 @@ class ModelGateway:
                 raise
             return await self._call_with_timeout_retry(
                 route="flash",
+                task=task,
                 messages=messages,
                 stream=stream,
                 tools=tools,
                 temperature=temperature,
+                needs_vision=needs_vision,
             )
 
     async def _call_with_timeout_retry(
         self,
         *,
         route: str,
+        task: str = "",
         messages: list[dict],
         stream: bool,
         tools: list[dict] | None,
         temperature: float,
+        needs_vision: bool = False,
     ) -> Any:
         retries_left = config.MODEL_TIMEOUT_RETRIES
         timeout = self.timeout_for(route)
-        model_name = self._model_for(route)
+        provider_config = await self._resolve_provider_config(
+            task=task,
+            route=route,
+            requires_streaming=stream,
+            requires_tool_calling=bool(tools),
+            requires_vision=needs_vision or task == "vision",
+        )
+        model_name = (
+            provider_config["model"] if provider_config else self._model_for(route)
+        )
+        if (
+            tools
+            and provider_config
+            and provider_config.get("tool_strategy") == "pagechat_deterministic_tools"
+        ):
+            raise ProviderCapabilityError(
+                "Model "
+                f"'{model_name}' requires PageChat deterministic tool execution before "
+                "ModelGateway.plan_with_tools; provider tool calling is disabled."
+            )
 
         while True:
             try:
@@ -188,6 +222,8 @@ class ModelGateway:
                 if tools:
                     params["tools"] = tools
                     params["tool_choice"] = "auto"
+                if provider_config:
+                    params["provider_config"] = provider_config
                 return await self._completion_fn(**params)
             except TIMEOUT_EXCEPTIONS:
                 if retries_left <= 0:
@@ -213,3 +249,39 @@ class ModelGateway:
         if route == "flash":
             return config.LLM_FLASH_MODEL
         return config.LLM_PLUS_MODEL
+
+    @staticmethod
+    def _route_slot_for_task(task: str, route: str) -> str:
+        if task == "vision" or route == "vision":
+            return "vision"
+        if task == "answer":
+            return "document_qa"
+        return "general_chat"
+
+    async def _resolve_provider_config(
+        self,
+        *,
+        task: str,
+        route: str,
+        requires_streaming: bool = False,
+        requires_tool_calling: bool = False,
+        requires_vision: bool = False,
+        requires_structured_output: bool = False,
+    ) -> dict[str, Any] | None:
+        route_slot = self._route_slot_for_task(task, route)
+        if self._user_id and not self._model_settings_service:
+            if not config.ALLOW_ENV_MODEL_FALLBACK:
+                raise ModelRouteNotConfiguredError(route_slot)
+            return None
+        if not self._model_settings_service or not self._user_id:
+            return None
+        provider_config = await self._model_settings_service.resolve_route(
+            self._user_id, route_slot
+        )
+        return apply_provider_protocol(
+            provider_config,
+            requires_streaming=requires_streaming,
+            requires_tool_calling=requires_tool_calling,
+            requires_vision=requires_vision or route_slot == "vision",
+            requires_structured_output=requires_structured_output,
+        )

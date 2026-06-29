@@ -6,6 +6,11 @@ import json
 import pytest
 import sys
 
+pytest.skip(
+    "legacy page_index fast TOC extraction API replaced by unified TOC state machine",
+    allow_module_level=True,
+)
+
 sys.path.insert(0, "E:/projects/knowclaw_v2_mvp_refactor/backend")
 
 from pageindex.page_index import (

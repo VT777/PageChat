@@ -5,6 +5,7 @@ import sqlite3
 import threading
 import traceback
 import asyncio
+from dataclasses import dataclass
 from datetime import date, datetime
 from pathlib import Path
 from typing import Any, List, Optional, Literal
@@ -37,9 +38,17 @@ _search_rebuild_lock = threading.Lock()
 _search_rebuild_running = False
 _search_rebuild_pending = False
 
+@dataclass(frozen=True)
+class IndexJob:
+    doc_id: str
+    file_path: str
+    mode_override: Optional[str] = None
+    user_id: Optional[str] = None
+
+
 _index_queue_lock = threading.Lock()
 _index_queue_condition = threading.Condition(_index_queue_lock)
-_index_queue: list[tuple[str, str, Optional[str]]] = []
+_index_queue: list[IndexJob] = []
 _index_worker_started = False
 _index_running_jobs = 0
 _index_queue_generation = 0
@@ -98,12 +107,16 @@ def _load_index_meta_brief(index_path: Optional[str]) -> dict:
         route = data.get("route_decision")
         if not isinstance(route, dict):
             route = {}
+        quality_report = data.get("quality_report")
+        if not isinstance(quality_report, dict):
+            quality_report = None
         return {
             "requested_mode": route.get("requested_mode"),
             "execution_mode": route.get("execution_mode"),
             "reasons": route.get("reasons")
             if isinstance(route.get("reasons"), list)
             else [],
+            "quality_report": quality_report,
         }
     except Exception:
         return {}
@@ -127,6 +140,8 @@ def _parse_error_code(status: str) -> Optional[str]:
 
 def _extract_failure_status_code(error_message: str) -> str:
     message = str(error_message or "")
+    if "OCR_ROUTE_NOT_CONFIGURED" in message:
+        return "ocr_not_configured"
     if ":" in message:
         prefix = message.split(":", 1)[0].strip()
         if re.fullmatch(r"[A-Z_]+", prefix):
@@ -174,6 +189,7 @@ def _attach_parse_meta(doc: DocumentResponse) -> DocumentResponse:
     doc.parse_reasons = meta.get("reasons") or []
     doc.parse_completion = _parse_completion_from_status(doc.status)
     doc.parse_error_code = _parse_error_code(doc.status)
+    doc.quality_report = meta.get("quality_report")
     doc.processing_duration = _calculate_processing_duration(doc)
     return doc
 
@@ -298,7 +314,10 @@ def recover_stuck_indexing_tasks_sync(db_path: str):
 
 
 def _run_index_job(
-    doc_id: str, file_path: str, mode_override: Optional[str] = None
+    doc_id: str,
+    file_path: str,
+    mode_override: Optional[str] = None,
+    user_id: Optional[str] = None,
 ) -> None:
     """Run one index job inside its own event loop."""
     if os.name == "nt":
@@ -308,7 +327,9 @@ def _run_index_job(
     asyncio.set_event_loop(loop)
     try:
         loop.run_until_complete(
-            _generate_index_async(doc_id, file_path, mode_override=mode_override)
+            _generate_index_async(
+                doc_id, file_path, mode_override=mode_override, user_id=user_id
+            )
         )
     except Exception as e:
         crash_msg = f"INDEX_RUNTIME_EVENT_LOOP_CRASH: {e}"
@@ -340,13 +361,18 @@ def _index_queue_worker(generation: int) -> None:
                 _index_queue_condition.wait()
                 if generation != _index_queue_generation:
                     return
-            doc_id, file_path, mode_override = _index_queue.pop(0)
+            job = _index_queue.pop(0)
             _index_running_jobs += 1
             _index_queue_condition.notify_all()
 
         try:
-            print(f"[INDEX] Starting queued job for {doc_id}")
-            _run_index_job(doc_id, file_path, mode_override=mode_override)
+            print(f"[INDEX] Starting queued job for {job.doc_id}")
+            _run_index_job(
+                job.doc_id,
+                job.file_path,
+                mode_override=job.mode_override,
+                user_id=job.user_id,
+            )
         finally:
             with _index_queue_condition:
                 _index_running_jobs = max(0, _index_running_jobs - 1)
@@ -371,7 +397,10 @@ def _ensure_index_queue_worker_started() -> None:
 
 
 def _enqueue_index_job(
-    doc_id: str, file_path: str, mode_override: Optional[str] = None
+    doc_id: str,
+    file_path: str,
+    mode_override: Optional[str] = None,
+    user_id: Optional[str] = None,
 ) -> None:
     try:
         _update_document_status_sync(
@@ -384,7 +413,14 @@ def _enqueue_index_job(
 
     _ensure_index_queue_worker_started()
     with _index_queue_condition:
-        _index_queue.append((doc_id, file_path, mode_override))
+        _index_queue.append(
+            IndexJob(
+                doc_id=doc_id,
+                file_path=file_path,
+                mode_override=mode_override,
+                user_id=user_id,
+            )
+        )
         queued = len(_index_queue)
         _index_queue_condition.notify_all()
     print(f"[INDEX] Queued index job for {doc_id} (queue={queued})")
@@ -416,11 +452,16 @@ def _wait_for_index_queue_state_for_tests(
 
 
 def start_index_process(
-    doc_id: str, file_path: str, mode_override: Optional[str] = None
+    doc_id: str,
+    file_path: str,
+    mode_override: Optional[str] = None,
+    user_id: Optional[str] = None,
 ):
     """启动索引生成（使用线程代替进程避免 Windows spawn 问题）"""
     if PAGEINDEX_QUEUE_ENABLED:
-        _enqueue_index_job(doc_id, file_path, mode_override=mode_override)
+        _enqueue_index_job(
+            doc_id, file_path, mode_override=mode_override, user_id=user_id
+        )
         return
 
     import threading
@@ -437,7 +478,9 @@ def start_index_process(
         asyncio.set_event_loop(loop)
         try:
             loop.run_until_complete(
-                _generate_index_async(doc_id, file_path, mode_override=mode_override)
+                _generate_index_async(
+                    doc_id, file_path, mode_override=mode_override, user_id=user_id
+                )
             )
         except Exception as e:
             crash_msg = f"INDEX_RUNTIME_EVENT_LOOP_CRASH: {e}"
@@ -471,7 +514,10 @@ async def _update_processed_pages(db, doc_id: int, processed_pages: int):
 
 
 async def _generate_index_async(
-    doc_id: str, file_path: str, mode_override: Optional[str] = None
+    doc_id: str,
+    file_path: str,
+    mode_override: Optional[str] = None,
+    user_id: Optional[str] = None,
 ):
     """异步生成索引（供线程调用）"""
     import aiosqlite
@@ -532,7 +578,7 @@ async def _generate_index_async(
                 print(f"[INDEX] Progress thread started for {doc_id}")
 
             # 执行索引
-            pageindex_service = PageIndexService()
+            pageindex_service = PageIndexService(user_id=user_id)
             if PAGEINDEX_MAX_INDEX_SECONDS > 0:
                 result = await asyncio.wait_for(
                     pageindex_service.generate_index(
@@ -647,7 +693,7 @@ async def _generate_index_async(
                         "UPDATE documents SET status = ?, error_message = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
                         (
                             "failed:indexing_timeout",
-                            f"处理超时：超过{PAGEINDEX_MAX_INDEX_SECONDS}秒未完成，可能是VLM调用超时",
+                            f"处理超时：超过{PAGEINDEX_MAX_INDEX_SECONDS}秒未完成，索引生成未能按时结束",
                             doc_id
                         ),
                     )
@@ -812,7 +858,9 @@ async def upload_document(
     # 使用独立进程后台生成索引
     # parse_mode: smart/fast/balanced, None defaults to smart
     mode_override = parse_mode if parse_mode in ("smart", "fast", "balanced") else None
-    start_index_process(doc.id, doc.file_path, mode_override=mode_override)
+    start_index_process(
+        doc.id, doc.file_path, mode_override=mode_override, user_id=user_id
+    )
 
     return doc
 
@@ -823,7 +871,7 @@ async def list_documents(
     page_size: int = Query(20, ge=1, le=100),
     search: Optional[str] = None,
     folder_id: Optional[str] = Query(None, description="文件夹ID，null表示根目录"),
-    include_subfolders: bool = Query(True, description="是否包含子文件夹"),
+    include_subfolders: bool = Query(False, description="是否包含子文件夹"),
     db: aiosqlite.Connection = Depends(get_db),
     current_user: dict = Depends(require_auth),
 ):
@@ -1083,7 +1131,12 @@ async def reindex_document(
     await db.commit()
 
     # 使用独立进程后台生成索引
-    start_index_process(doc_id, doc.file_path, mode_override=mode_override)
+    start_index_process(
+        doc_id,
+        doc.file_path,
+        mode_override=mode_override,
+        user_id=current_user["id"],
+    )
 
     return {
         "message": "已开始重新索引",
@@ -1110,7 +1163,12 @@ async def get_document_page(
 
     # 使用 ToolExecutor 获取页面内容
     pageindex_service = PageIndexService()
-    tool_executor = ToolExecutor(pageindex_service, doc_service)
+    tool_executor = ToolExecutor(
+        pageindex_service,
+        doc_service,
+        user_id=current_user["id"],
+        allowed_doc_ids=[doc_id],
+    )
 
     try:
         # 调用批量获取接口（传入单页数组）
@@ -1262,12 +1320,6 @@ async def get_document_preview(
     toc_quality = (
         index_data.get("toc_quality") if isinstance(index_data, dict) else None
     )
-    visual_page_summaries = (
-        index_data.get("visual_page_summaries")
-        if isinstance(index_data, dict)
-        else None
-    )
-
     return {
         "id": doc.id,
         "name": doc.original_name,
@@ -1285,7 +1337,6 @@ async def get_document_preview(
             "route_decision": route_decision,
             "pre_analysis": pre_analysis,
             "toc_quality": toc_quality,
-            "visual_page_summaries_count": len(visual_page_summaries or []),
         },
         "stats": {
             "node_count": node_count,

@@ -4,6 +4,11 @@ from types import SimpleNamespace
 import sys
 import pytest
 
+pytest.skip(
+    "legacy v1 page_index flow replaced by unified TOC state machine",
+    allow_module_level=True,
+)
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from pageindex import page_index as page_index_module

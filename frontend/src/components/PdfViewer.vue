@@ -12,6 +12,7 @@ import {
   ChevronDown
 } from 'lucide-vue-next'
 import { formatFileSize, formatDate } from '@/lib/utils'
+import { currentPdfRenderDimensions } from '@/utils/pdfRenderScale'
 import TocTree from './TocTree.vue'
 
 // 设置 PDF.js worker
@@ -173,23 +174,30 @@ const renderPage = async (pageIndex: number) => {
     const baseScale = availableWidth / viewport1.width
     const finalScale = baseScale * (zoomPercent.value / 100)
     
-    const viewport = page.getViewport({ scale: finalScale, rotation: rotation.value })
+    const cssViewport = page.getViewport({ scale: finalScale, rotation: rotation.value })
+    const dimensions = currentPdfRenderDimensions(cssViewport.width, cssViewport.height)
+    const renderViewport = page.getViewport({
+      scale: finalScale * dimensions.outputScale,
+      rotation: rotation.value,
+    })
     
     // 存储尺寸信息
-    pageInfo.width = viewport.width
-    pageInfo.height = viewport.height
+    pageInfo.width = dimensions.cssWidth
+    pageInfo.height = dimensions.cssHeight
     
     // 创建 canvas
     const canvas = document.createElement('canvas')
-    canvas.width = viewport.width
-    canvas.height = viewport.height
+    canvas.width = dimensions.backingWidth
+    canvas.height = dimensions.backingHeight
     canvas.style.display = 'block'
+    canvas.style.width = `${dimensions.cssWidth}px`
+    canvas.style.height = `${dimensions.cssHeight}px`
     
     // 渲染
     const ctx = canvas.getContext('2d')
     if (ctx) {
       ctx.clearRect(0, 0, canvas.width, canvas.height)
-      await page.render({ canvasContext: ctx, viewport, canvas } as any).promise
+      await page.render({ canvasContext: ctx, viewport: renderViewport, canvas } as any).promise
       
       // 存储 canvas（不放入响应式数据）
       renderedCanvases.set(pageInfo.pageNum, canvas)

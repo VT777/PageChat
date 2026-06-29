@@ -57,6 +57,7 @@ def normalize_tree_node(
 
     normalized["start_index"] = start
     normalized["end_index"] = end
+    _sync_page_source_anchor(normalized, start=start, end=end)
     normalized["source"] = str(normalized.get("source") or "unknown")
     normalized["evidence_pages"] = list(normalized.get("evidence_pages") or [])
     normalized["mapping_confidence"] = float(normalized.get("mapping_confidence") or 0.0)
@@ -82,6 +83,18 @@ def normalize_tree_node(
     ]
     normalized["children"] = normalized["nodes"]
     return normalized
+
+
+def _sync_page_source_anchor(node: Dict[str, Any], *, start: int, end: int) -> None:
+    anchor = node.get("source_anchor")
+    if not isinstance(anchor, dict) or anchor.get("unit_type") != "page":
+        return
+    synced = dict(anchor)
+    synced["start_page"] = start
+    synced["end_page"] = end
+    if "page" in synced:
+        synced["page"] = start
+    node["source_anchor"] = synced
 
 
 def _stable_node_id(node: Dict[str, Any], *, doc_id: str) -> str:

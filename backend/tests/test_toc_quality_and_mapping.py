@@ -1,7 +1,13 @@
 from pathlib import Path
 import sys
+import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+pytest.skip(
+    "legacy balanced_toc quality/mapping tests replaced by unified mapping tests",
+    allow_module_level=True,
+)
 
 from pageindex.balanced_toc import _map_toc_physical_pages
 from pageindex.quality_validation import TocQualityChecker, decide_extraction_path

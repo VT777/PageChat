@@ -70,5 +70,31 @@ def test_normalize_tree_node_marks_auxiliary_excluded_from_coverage():
     assert normalized["exclude_from_llm_qc"] is True
 
 
+def test_normalize_tree_node_syncs_page_source_anchor_to_final_range():
+    node = {
+        "title": "（五）我国加速扩大全球影响力",
+        "level": 2,
+        "start_index": 34,
+        "end_index": 34,
+        "source_anchor": {
+            "format": "pdf",
+            "unit_type": "page",
+            "start_page": 34,
+            "end_page": 33,
+        },
+    }
+
+    normalized = normalize_tree_node(node, doc_id="doc-e", page_count=49)
+
+    assert normalized["start_index"] == 34
+    assert normalized["end_index"] == 34
+    assert normalized["source_anchor"] == {
+        "format": "pdf",
+        "unit_type": "page",
+        "start_page": 34,
+        "end_page": 34,
+    }
+
+
 def test_normalize_title_removes_spacing_but_preserves_letters():
     assert normalize_title("AI 十大行业 技术应用") == "ai十大行业技术应用"

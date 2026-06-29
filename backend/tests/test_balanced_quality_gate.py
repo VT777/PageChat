@@ -52,7 +52,7 @@ def test_quality_gate_removes_extra_top_level_but_keeps_children():
 def test_quality_gate_flags_long_chapter_without_children():
     skeleton = {"items": [{"title": "第二章", "level": 1}]}
     tree = [
-        {"title": "第二章", "level": 1, "start_index": 11, "end_index": 24, "nodes": []},
+        {"title": "第二章", "level": 1, "start_index": 11, "end_index": 27, "nodes": []},
     ]
 
     _, result = run_balanced_quality_gate(
@@ -62,6 +62,189 @@ def test_quality_gate_flags_long_chapter_without_children():
         page_count=43,
     )
 
+    assert result["long_chapter_completeness"] is False
+    assert result["needs_repair"] is True
+    assert "long_chapter_without_children" in result["repair_actions"]
+
+
+def test_quality_gate_requires_child_expansion_for_unpaged_visible_toc():
+    skeleton = {
+        "items": [
+            {"title": "第一章", "level": 1},
+            {"title": "第二章", "level": 1},
+        ]
+    }
+    tree = [
+        {"title": "第一章", "level": 1, "start_index": 3, "end_index": 18, "nodes": []},
+        {"title": "第二章", "level": 1, "start_index": 19, "end_index": 34, "nodes": []},
+    ]
+
+    _, result = run_balanced_quality_gate(
+        tree,
+        {
+            "top_level_frozen": True,
+            "allow_child_expansion": True,
+            "selected_path": "visible_toc_no_pages",
+        },
+        skeleton,
+        page_count=40,
+    )
+
+    assert result["detected_style"] == "flat"
+    assert result["long_chapter_completeness"] is False
+    assert result["needs_repair"] is True
+    assert "long_chapter_without_children" in result["repair_actions"]
+
+
+def test_quality_gate_warns_for_medium_unexpanded_leaf_without_repairing():
+    tree = [
+        {"title": "Part02", "level": 1, "start_index": 13, "end_index": 24, "nodes": []},
+    ]
+
+    _, result = run_balanced_quality_gate(
+        tree,
+        {
+            "top_level_frozen": True,
+            "allow_child_expansion": True,
+            "selected_path": "visible_toc_no_pages",
+        },
+        None,
+        page_count=62,
+    )
+
+    assert result["child_expansion_required_count"] == 1
+    assert result["unexpanded_long_leaf_count"] == 1
+    assert result["unexpanded_long_leaf_hard_count"] == 0
+    assert result["needs_repair"] is False
+    assert "long_chapter_without_children_warning" in result["repair_actions"]
+
+
+def test_quality_gate_does_not_require_auxiliary_catalog_expansion():
+    tree = [
+        {
+            "title": "图目录",
+            "level": 1,
+            "start_index": 2,
+            "end_index": 30,
+            "is_auxiliary": True,
+            "nodes": [],
+        },
+    ]
+
+    _, result = run_balanced_quality_gate(
+        tree,
+        {
+            "top_level_frozen": True,
+            "allow_child_expansion": True,
+            "selected_path": "visible_toc_no_pages",
+        },
+        None,
+        page_count=40,
+    )
+
+    assert result["child_expansion_required_count"] == 0
+    assert result["unexpanded_long_leaf_count"] == 0
+    assert result["needs_repair"] is False
+
+
+def test_quality_gate_warns_for_nested_long_leaf_without_hard_repair():
+    tree = [
+        {
+            "title": "Chapter",
+            "level": 1,
+            "start_index": 10,
+            "end_index": 40,
+            "nodes": [
+                {"title": "Deep section", "level": 2, "start_index": 12, "end_index": 32, "nodes": []},
+            ],
+        },
+    ]
+
+    _, result = run_balanced_quality_gate(
+        tree,
+        {
+            "top_level_frozen": True,
+            "allow_child_expansion": True,
+            "selected_path": "visible_toc_no_pages",
+        },
+        None,
+        page_count=50,
+    )
+
+    assert result["unexpanded_long_leaf_count"] == 1
+    assert result["unexpanded_long_leaf_hard_count"] == 0
+    assert result["needs_repair"] is False
+    assert "long_chapter_without_children_warning" in result["repair_actions"]
+
+
+def test_quality_gate_ignores_preface_when_checking_child_expansion():
+    skeleton = None
+    tree = [
+        {"title": "Preface", "level": 1, "start_index": 1, "end_index": 2, "nodes": []},
+        {
+            "title": "一 AI驱动的第五科研范式",
+            "level": 1,
+            "start_index": 3,
+            "end_index": 12,
+            "nodes": [{"title": "1.1 第五范式", "start_index": 4, "end_index": 5}],
+        },
+        {
+            "title": "二 百花齐放的大模型时代",
+            "level": 1,
+            "start_index": 13,
+            "end_index": 34,
+            "nodes": [{"title": "2.1 大模型发展历程", "start_index": 15, "end_index": 17}],
+        },
+    ]
+
+    _, result = run_balanced_quality_gate(
+        tree,
+        {
+            "top_level_frozen": True,
+            "allow_child_expansion": True,
+            "selected_path": "visible_toc_no_pages",
+        },
+        skeleton,
+        page_count=68,
+    )
+
+    assert result["long_chapter_completeness"] is True
+    assert result["needs_repair"] is False
+
+
+def test_quality_gate_requires_child_expansion_for_paged_content_outline_fallback():
+    skeleton = {
+        "items": [
+            {"title": "AI+产业发展", "level": 1},
+            {"title": "AI+科学技术", "level": 1},
+            {"title": "AI+消费提质", "level": 1},
+        ]
+    }
+    tree = [
+        {
+            "title": "AI+产业发展",
+            "level": 1,
+            "start_index": 3,
+            "end_index": 16,
+            "nodes": [{"title": "01 case", "start_index": 3, "end_index": 3}],
+        },
+        {"title": "AI+科学技术", "level": 1, "start_index": 17, "end_index": 36, "nodes": []},
+        {"title": "AI+消费提质", "level": 1, "start_index": 40, "end_index": 42, "nodes": []},
+    ]
+
+    _, result = run_balanced_quality_gate(
+        tree,
+        {
+            "top_level_frozen": True,
+            "allow_child_expansion": True,
+            "selected_path": "visible_toc_with_pages",
+            "toc_source": "content_outline",
+        },
+        skeleton,
+        page_count=44,
+    )
+
+    assert result["child_expansion_expected"] is True
     assert result["long_chapter_completeness"] is False
     assert result["needs_repair"] is True
     assert "long_chapter_without_children" in result["repair_actions"]

@@ -1,7 +1,13 @@
 from pathlib import Path
 import sys
+import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+pytest.skip(
+    "legacy page_index payload normalization covered by unified TOC contract tests",
+    allow_module_level=True,
+)
 
 from pageindex import page_index as page_index_module
 

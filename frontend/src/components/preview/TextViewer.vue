@@ -1,12 +1,15 @@
 <script setup lang="ts">
-import { ref, computed, watch, nextTick } from 'vue'
+import { computed, nextTick, ref, watch } from 'vue'
 import type { DocumentContent, SourceAnchor, TocItem } from '@/types/preview'
 
-const props = defineProps<{
+const props = withDefaults(defineProps<{
   content: DocumentContent
   toc?: TocItem[]
   initialAnchor?: SourceAnchor | null
-}>()
+  showToc?: boolean
+}>(), {
+  showToc: true,
+})
 
 const emit = defineEmits<{
   anchorClick: [anchor: SourceAnchor]
@@ -16,32 +19,30 @@ const containerRef = ref<HTMLDivElement>()
 const activeLine = ref<number | null>(null)
 const activeTocLine = ref<number | null>(null)
 
-// 文本行
 const lines = computed(() => {
-  return props.content.blocks.map(block => ({
+  return props.content.blocks.map((block, index) => ({
     id: block.id,
-    lineNumber: block.metadata.line_number as number,
-    text: block.content as string,
-    isHeading: block.type === 'heading'
+    lineNumber: Number(block.metadata?.line_number || block.source_anchor?.start_line || index + 1),
+    text: String(block.content || ''),
+    isHeading: block.type === 'heading',
   }))
 })
 
 function inferHeadingLevel(text: string): number | null {
-  const t = String(text || '').trim()
-  if (!t) return null
-  if (/^第[一二三四五六七八九十百千万0-9]+[章节部篇]/.test(t)) return 1
-  if (/^[一二三四五六七八九十百千万]+[、\.．]/.test(t)) return 1
-  if (/^[（(][一二三四五六七八九十百千万0-9]+[)）]/.test(t)) return 2
-  if (/^\d+(?:\.\d+){0,3}[、\.．]/.test(t)) return Math.min((t.match(/\./g)?.length || 0) + 1, 3)
+  const trimmed = text.trim()
+  if (!trimmed) return null
+  if (/^#{1,6}\s+/.test(trimmed)) return Math.min(trimmed.match(/^#+/)?.[0].length || 1, 3)
+  if (/^\d+(?:\.\d+){0,3}\s+/.test(trimmed)) return Math.min((trimmed.match(/\./g)?.length || 0) + 1, 3)
+  if (/^(chapter|section)\s+\d+/i.test(trimmed)) return 1
   return null
 }
 
 function flattenToc(items: TocItem[] = []): TocItem[] {
   const result: TocItem[] = []
   const walk = (nodes: TocItem[]) => {
-    for (const n of nodes) {
-      result.push(n)
-      if (n.children && n.children.length > 0) walk(n.children)
+    for (const node of nodes) {
+      result.push(node)
+      if (node.children?.length) walk(node.children)
     }
   }
   walk(items)
@@ -51,11 +52,11 @@ function flattenToc(items: TocItem[] = []): TocItem[] {
 const tocItems = computed(() => {
   if (props.toc && props.toc.length > 0) {
     return flattenToc(props.toc).map((item) => {
-      const a = item.source_anchor || {}
+      const anchor = item.source_anchor || {}
       return {
         id: item.node_id,
         title: item.title,
-        lineNumber: Number(a.start_line || item.start_page || 1),
+        lineNumber: Number(anchor.start_line || item.start_page || 1),
         level: Math.max(1, (item.level || 0) + 1),
       }
     })
@@ -67,12 +68,12 @@ const tocItems = computed(() => {
       if (!level) return null
       return {
         id: line.id,
-        title: line.text.trim() || `第 ${line.lineNumber} 行`,
+        title: line.text.trim().replace(/^#{1,6}\s+/, '') || `Line ${line.lineNumber}`,
         lineNumber: line.lineNumber,
         level,
       }
     })
-    .filter((x): x is { id: string; title: string; lineNumber: number; level: number } => Boolean(x))
+    .filter((item): item is { id: string; title: string; lineNumber: number; level: number } => Boolean(item))
 
   if (headingItems.length > 0) return headingItems
 
@@ -82,7 +83,7 @@ const tocItems = computed(() => {
     if (!lineNumber) continue
     fallback.push({
       id: `chunk_${Math.floor(i / 40) + 1}`,
-      title: `文本段 ${Math.floor(i / 40) + 1}`,
+      title: `Text block ${Math.floor(i / 40) + 1}`,
       lineNumber,
       level: 1,
     })
@@ -90,15 +91,13 @@ const tocItems = computed(() => {
   return fallback
 })
 
-// 总字符数
-const charCount = computed(() => props.content.metadata.char_count || 0)
+const charCount = computed(() => props.content.metadata.char_count || lines.value.reduce((sum, line) => sum + line.text.length, 0))
 
-// 跳转到指定行
 async function scrollToLine(lineNumber: number) {
   activeLine.value = lineNumber
   activeTocLine.value = lineNumber
   await nextTick()
-  
+
   const element = document.getElementById(`line-${lineNumber}`)
   if (element && containerRef.value) {
     element.scrollIntoView({ behavior: 'smooth', block: 'center' })
@@ -109,20 +108,21 @@ async function scrollToLine(lineNumber: number) {
   }
 }
 
-// 处理行点击
 function handleLineClick(lineNumber: number) {
   activeTocLine.value = lineNumber
   const anchor: SourceAnchor = {
-    format: 'txt',
+    format: props.content.format,
+    unit_type: 'line',
     start_line: lineNumber,
-    end_line: lineNumber
+    end_line: lineNumber,
   }
   emit('anchorClick', anchor)
 }
 
 function handleTocClick(lineNumber: number) {
   const anchor: SourceAnchor = {
-    format: 'txt',
+    format: props.content.format,
+    unit_type: 'line',
     start_line: lineNumber,
     end_line: lineNumber,
   }
@@ -130,38 +130,34 @@ function handleTocClick(lineNumber: number) {
   scrollToLine(lineNumber)
 }
 
-// 监听初始锚点
 watch(() => props.initialAnchor, (anchor) => {
   if (anchor?.start_line) {
     scrollToLine(anchor.start_line)
   }
 }, { immediate: true })
 
-// 格式化行号
 function formatLineNumber(n: number): string {
   return n.toString().padStart(4, '0')
 }
 
 defineExpose({
-  scrollToLine
+  scrollToLine,
 })
 </script>
 
 <template>
   <div class="text-viewer" ref="containerRef">
-    <!-- 工具栏 -->
     <div class="toolbar">
       <div class="stats">
-        <span>{{ lines.length }} 行</span>
-        <span class="separator">·</span>
-        <span>{{ charCount.toLocaleString() }} 字符</span>
+        <span>{{ lines.length }} lines</span>
+        <span class="separator">/</span>
+        <span>{{ charCount.toLocaleString() }} chars</span>
       </div>
     </div>
-    
-    <!-- 内容区域 -->
+
     <div class="main-content">
-      <aside class="toc-sidebar">
-        <div class="toc-title">目录</div>
+      <aside v-if="showToc" class="toc-sidebar">
+        <div class="toc-title">Contents</div>
         <div class="toc-nav">
           <button
             v-for="item in tocItems"
@@ -324,7 +320,7 @@ defineExpose({
   flex: 1;
   color: #374151;
   white-space: pre-wrap;
-  word-break: break-all;
+  word-break: break-word;
 }
 
 .line.heading .line-content {

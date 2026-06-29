@@ -1,17 +1,80 @@
-from fastapi import APIRouter, Depends, HTTPException
-from fastapi.responses import StreamingResponse
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
+from fastapi.responses import FileResponse, StreamingResponse
 import aiosqlite
 import asyncio
 import uuid
 
+from app.core.config import CHAT_ATTACHMENTS_DIR
 from app.models.database import get_db, DB_PATH
 from app.models.schemas import ChatRequest
+from app.services.chat_attachment_service import ChatAttachmentService
+from app.services.chat_run_repository import ChatRunRepository
 from app.services.chat_service import ChatService
+from app.services.model_settings_service import (
+    ModelRouteNotConfiguredError,
+    model_route_not_configured_payload,
+)
 from app.api.auth import require_auth
+from app.agent.events import PageChatEventEmitter, sse_frame, utc_now_iso
 
 router = APIRouter(prefix="/api/chat", tags=["chat"])
 
 _RUN_TASKS = set()
+
+
+@router.post("/attachments")
+async def upload_chat_attachment(
+    file: UploadFile = File(...),
+    db: aiosqlite.Connection = Depends(get_db),
+    current_user: dict = Depends(require_auth),
+):
+    """Upload an image attachment for a draft chat message."""
+    try:
+        data = await file.read()
+        service = ChatAttachmentService(db, storage_dir=CHAT_ATTACHMENTS_DIR)
+        return await service.save_upload(
+            user_id=current_user["id"],
+            filename=file.filename or "image",
+            content_type=file.content_type or "",
+            data=data,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.get("/attachments/{attachment_id}/content")
+async def get_chat_attachment_content(
+    attachment_id: str,
+    db: aiosqlite.Connection = Depends(get_db),
+    current_user: dict = Depends(require_auth),
+):
+    """Return image bytes for authenticated UI previews."""
+    service = ChatAttachmentService(db, storage_dir=CHAT_ATTACHMENTS_DIR)
+    try:
+        metadata = await service.get_attachment(current_user["id"], attachment_id)
+        path = await service.content_path_for_user(current_user["id"], attachment_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail="附件不存在或无权访问") from exc
+    return FileResponse(path, media_type=metadata["mime_type"])
+
+
+@router.delete("/attachments/{attachment_id}")
+async def delete_chat_attachment(
+    attachment_id: str,
+    db: aiosqlite.Connection = Depends(get_db),
+    current_user: dict = Depends(require_auth),
+):
+    """Delete an uploaded attachment before it is bound to a message."""
+    service = ChatAttachmentService(db, storage_dir=CHAT_ATTACHMENTS_DIR)
+    try:
+        deleted = await service.delete_unbound_attachment(
+            current_user["id"], attachment_id
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail="附件不存在或无权访问") from exc
+    if not deleted:
+        raise HTTPException(status_code=409, detail="附件已绑定到消息，不能删除")
+    return {"success": True}
 
 
 @router.post("/stream")
@@ -33,15 +96,87 @@ async def chat_stream(
                 async for event in chat_service.stream_chat(
                     question=request.question,
                     document_ids=request.document_ids,
+                    folder_id=request.folder_id,
+                    include_subfolders=request.include_subfolders,
+                    strict_scope=request.strict_scope,
+                    web_search_requested=request.web_search_requested,
+                    web_search_enabled=request.web_search_enabled,
                     conversation_id=request.conversation_id,
+                    web_search=request.web_search,
+                    thinking_enabled=request.thinking_enabled,
+                    attachment_ids=request.attachment_ids,
+                    regenerate_from_message_id=request.regenerate_from_message_id,
                     user_id=current_user["id"],
                 ):
                     if stream_state["active"]:
                         await queue.put(event)
         except Exception as e:
             if stream_state["active"]:
-                error_event = f'event: content\ndata: {{"content": "抱歉，处理请求时发生错误：{str(e).replace('"', '\\"')}"}}\n\n'
-                await queue.put(error_event)
+                if isinstance(e, ModelRouteNotConfiguredError):
+                    failure_payload = model_route_not_configured_payload(e)
+                    error_message = failure_payload["message"]
+                else:
+                    error_message = str(e)
+                    failure_payload = {
+                        "status": "failed",
+                        "error": error_message,
+                    }
+                try:
+                    async with aiosqlite.connect(str(DB_PATH)) as db:
+                        db.row_factory = aiosqlite.Row
+                        chat_service = ChatService(db)
+                        repository = ChatRunRepository(db)
+                        conversation_id = await chat_service.ensure_conversation(
+                            request.conversation_id,
+                            user_id=current_user["id"],
+                        )
+                        transport_run_id = f"run_{run_id}"
+                        user_message_id = await repository.create_user_message(
+                            conversation_id,
+                            request.question,
+                        )
+                        assistant_message_id = await repository.create_assistant_placeholder(
+                            conversation_id,
+                            transport_run_id,
+                        )
+                        await repository.create_run(
+                            run_id=transport_run_id,
+                            conversation_id=conversation_id,
+                            user_message_id=user_message_id,
+                            assistant_message_id=assistant_message_id,
+                            protocol="transport",
+                        )
+                        emitter = PageChatEventEmitter(
+                            run_id=transport_run_id,
+                            conversation_id=conversation_id,
+                            message_id=assistant_message_id,
+                        )
+                        event_type, payload = emitter.build(
+                            "run_failed",
+                            failure_payload,
+                        )
+                        await repository.append_run_event(
+                            transport_run_id,
+                            event_type,
+                            payload,
+                        )
+                        await repository.fail_run(transport_run_id, error_message)
+                        await queue.put(sse_frame(event_type, payload))
+                except Exception:
+                    fallback_payload = {
+                        "run_id": f"transport_{run_id}",
+                        "conversation_id": request.conversation_id or "transport_error",
+                        "message_id": "transport_error",
+                        "seq": 1,
+                        "ts": utc_now_iso(),
+                        **failure_payload,
+                    }
+                    await queue.put(
+                        sse_frame(
+                            "run_failed",
+                            fallback_payload,
+                        )
+                    )
         finally:
             if stream_state["active"]:
                 await queue.put(None)
@@ -59,9 +194,13 @@ async def chat_stream(
                 yield event
         except asyncio.CancelledError:
             stream_state["active"] = False
+            if not task.done():
+                task.cancel()
             raise
         finally:
             stream_state["active"] = False
+            if not task.done():
+                task.cancel()
 
     return StreamingResponse(
         event_generator(),
@@ -74,6 +213,29 @@ async def chat_stream(
     )
 
 
+@router.get("/runs/{run_id}/events")
+async def list_run_events(
+    run_id: str,
+    after_seq: int = 0,
+    db: aiosqlite.Connection = Depends(get_db),
+    current_user: dict = Depends(require_auth),
+):
+    """Replay persisted PageChat run events owned by the current user."""
+    cursor = await db.execute(
+        """
+        SELECT r.id
+        FROM agent_runs r
+        JOIN conversations c ON c.id = r.conversation_id
+        WHERE r.id = ? AND c.user_id = ?
+        """,
+        (run_id, current_user["id"]),
+    )
+    if not await cursor.fetchone():
+        raise HTTPException(status_code=404, detail="run not found")
+
+    return await ChatRunRepository(db).list_run_events(run_id, after_seq=after_seq)
+
+
 @router.get("/conversations")
 async def list_conversations(
     db: aiosqlite.Connection = Depends(get_db),
@@ -81,11 +243,39 @@ async def list_conversations(
 ):
     """获取会话列表（仅当前用户）"""
     cursor = await db.execute(
-        "SELECT id, title, created_at FROM conversations WHERE user_id = ? ORDER BY created_at DESC",
+        """
+        SELECT
+            c.id,
+            CASE
+                WHEN c.title IN ('新对话', 'New chat', 'New Chat', '鏂板璇?')
+                     OR TRIM(COALESCE(c.title, '')) = ''
+                THEN COALESCE(
+                    (
+                        SELECT m.content
+                        FROM messages m
+                        WHERE m.conversation_id = c.id
+                          AND m.role = 'user'
+                          AND TRIM(COALESCE(m.content, '')) != ''
+                        ORDER BY COALESCE(m.sequence, 999999), m.created_at, m.id
+                        LIMIT 1
+                    ),
+                    c.title
+                )
+                ELSE c.title
+            END AS display_title,
+            c.created_at,
+            c.updated_at
+        FROM conversations c
+        WHERE c.user_id = ?
+        ORDER BY updated_at DESC, created_at DESC
+        """,
         (current_user["id"],),
     )
     rows = await cursor.fetchall()
-    return [{"id": row[0], "title": row[1], "created_at": row[2]} for row in rows]
+    return [
+        {"id": row[0], "title": row[1], "created_at": row[2], "updated_at": row[3]}
+        for row in rows
+    ]
 
 
 @router.get("/conversations/{conversation_id}/messages")
@@ -102,27 +292,90 @@ async def get_conversation_messages(
     if not await cursor.fetchone():
         raise HTTPException(status_code=404, detail="会话不存在或无权访问")
 
+    return await ChatRunRepository(db).list_messages_for_user(
+        conversation_id, current_user["id"]
+    )
+
+
+@router.get("/conversations/{conversation_id}/export")
+async def export_conversation(
+    conversation_id: str,
+    db: aiosqlite.Connection = Depends(get_db),
+    current_user: dict = Depends(require_auth),
+):
+    """Export one owned conversation with ordered messages."""
     cursor = await db.execute(
-        "SELECT id, role, content, thinking_content, sources, agent_steps, status, created_at FROM messages WHERE conversation_id = ? ORDER BY created_at, id",
+        """
+        SELECT id, title, created_at, updated_at
+        FROM conversations
+        WHERE id = ? AND user_id = ?
+        """,
+        (conversation_id, current_user["id"]),
+    )
+    row = await cursor.fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="浼氳瘽涓嶅瓨鍦ㄦ垨鏃犳潈璁块棶")
+
+    return {
+        "conversation": {
+            "id": row[0],
+            "title": row[1],
+            "created_at": row[2],
+            "updated_at": row[3],
+        },
+        "messages": await ChatRunRepository(db).list_messages_for_user(
+            conversation_id, current_user["id"]
+        ),
+    }
+
+
+@router.delete("/conversations/{conversation_id}")
+async def delete_conversation(
+    conversation_id: str,
+    db: aiosqlite.Connection = Depends(get_db),
+    current_user: dict = Depends(require_auth),
+):
+    """Delete one owned conversation and its durable run data."""
+    cursor = await db.execute(
+        "SELECT id FROM conversations WHERE id = ? AND user_id = ?",
+        (conversation_id, current_user["id"]),
+    )
+    if not await cursor.fetchone():
+        raise HTTPException(status_code=404, detail="浼氳瘽涓嶅瓨鍦ㄦ垨鏃犳潈璁块棶")
+
+    await db.execute(
+        """
+        DELETE FROM message_citations
+        WHERE message_id IN (
+            SELECT id FROM messages WHERE conversation_id = ?
+        )
+        """,
         (conversation_id,),
     )
-    rows = await cursor.fetchall()
-
-    import json
-
-    messages = []
-    for row in rows:
-        messages.append(
-            {
-                "id": row[0],
-                "role": row[1],
-                "content": row[2],
-                "thinking": row[3] or "",
-                "sources": json.loads(row[4]) if row[4] else [],
-                "agent_steps": json.loads(row[5]) if row[5] else [],
-                "status": row[6] or "completed",
-                "created_at": row[7],
-            }
+    await db.execute(
+        """
+        DELETE FROM agent_run_events
+        WHERE run_id IN (
+            SELECT id FROM agent_runs WHERE conversation_id = ?
         )
-
-    return messages
+        """,
+        (conversation_id,),
+    )
+    await db.execute(
+        "DELETE FROM conversation_evidence WHERE conversation_id = ?",
+        (conversation_id,),
+    )
+    await db.execute(
+        "DELETE FROM agent_runs WHERE conversation_id = ?",
+        (conversation_id,),
+    )
+    await db.execute(
+        "DELETE FROM messages WHERE conversation_id = ?",
+        (conversation_id,),
+    )
+    await db.execute(
+        "DELETE FROM conversations WHERE id = ?",
+        (conversation_id,),
+    )
+    await db.commit()
+    return {"success": True}

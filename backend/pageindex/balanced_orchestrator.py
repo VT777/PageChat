@@ -1,4 +1,4 @@
-"""Provider registry and lightweight orchestration for balanced TOC v4.2."""
+"""Provider registry and lightweight orchestration for TOC candidates."""
 
 from __future__ import annotations
 

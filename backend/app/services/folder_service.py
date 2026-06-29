@@ -1,9 +1,12 @@
 import aiosqlite
 import uuid
 from pathlib import Path
+from types import SimpleNamespace
 from typing import List, Optional, Tuple
 from app.core.config import DATA_DIR
 from app.models.schemas import FolderResponse, FolderTreeResponse
+from app.services.cache_service import cache_service
+from app.services.document_service import DocumentService
 
 DB_PATH = DATA_DIR / "knowclaw.db"
 
@@ -209,6 +212,198 @@ class FolderService:
                     root_folders.append(folder)
             return root_folders
 
+    async def get_compact_folder_tree(self, user_id: str = None) -> List[dict]:
+        """Return a user-scoped folder tree with compact counts for agent tools."""
+        async with aiosqlite.connect(self._db_path) as db:
+            query = (
+                "SELECT id, name, parent_id, path, created_at, updated_at "
+                "FROM folders"
+            )
+            params = []
+            if user_id:
+                query += " WHERE user_id = ?"
+                params.append(user_id)
+            else:
+                query += " WHERE user_id IS NULL"
+            query += " ORDER BY path"
+            cursor = await db.execute(query, params)
+            folder_rows = await cursor.fetchall()
+
+            count_query = "SELECT folder_id, COUNT(*) FROM documents"
+            count_params = []
+            if user_id:
+                count_query += " WHERE user_id = ?"
+                count_params.append(user_id)
+            else:
+                count_query += " WHERE user_id IS NULL"
+            count_query += " GROUP BY folder_id"
+            cursor = await db.execute(count_query, count_params)
+            document_counts = {
+                row[0]: int(row[1] or 0) for row in await cursor.fetchall()
+            }
+
+        folders = {}
+        for row in folder_rows:
+            folders[row[0]] = {
+                "id": row[0],
+                "name": row[1],
+                "parent_id": row[2],
+                "path": row[3],
+                "created_at": row[4],
+                "updated_at": row[5],
+                "child_count": 0,
+                "document_count": document_counts.get(row[0], 0),
+                "children": [],
+            }
+
+        roots = []
+        for folder in folders.values():
+            parent_id = folder.get("parent_id")
+            if parent_id and parent_id in folders:
+                folders[parent_id]["children"].append(folder)
+            else:
+                roots.append(folder)
+
+        for folder in folders.values():
+            folder["child_count"] = len(folder["children"])
+        return roots
+
+    async def get_compact_folder_contents(
+        self,
+        folder_id: Optional[str],
+        page: int = 1,
+        page_size: int = 20,
+        user_id: str = None,
+    ) -> dict:
+        """Return compact child-folder and paginated document metadata."""
+        page = max(int(page or 1), 1)
+        page_size = min(max(int(page_size or 20), 1), 100)
+        offset = (page - 1) * page_size
+
+        async with aiosqlite.connect(self._db_path) as db:
+            if folder_id:
+                validate_query = "SELECT id FROM folders WHERE id = ?"
+                validate_params = [folder_id]
+                if user_id:
+                    validate_query += " AND user_id = ?"
+                    validate_params.append(user_id)
+                else:
+                    validate_query += " AND user_id IS NULL"
+                cursor = await db.execute(validate_query, validate_params)
+                if not await cursor.fetchone():
+                    raise ValueError("Folder not found or access denied")
+
+            if folder_id:
+                folder_query = (
+                    "SELECT id, name, parent_id, path, created_at, updated_at "
+                    "FROM folders WHERE parent_id = ?"
+                )
+                folder_params = [folder_id]
+                doc_where = "folder_id = ?"
+                doc_params = [folder_id]
+            else:
+                folder_query = (
+                    "SELECT id, name, parent_id, path, created_at, updated_at "
+                    "FROM folders WHERE parent_id IS NULL"
+                )
+                folder_params = []
+                doc_where = "folder_id IS NULL"
+                doc_params = []
+
+            if user_id:
+                folder_query += " AND user_id = ?"
+                folder_params.append(user_id)
+            else:
+                folder_query += " AND user_id IS NULL"
+            folder_query += " ORDER BY name"
+            cursor = await db.execute(folder_query, folder_params)
+            folder_rows = await cursor.fetchall()
+
+            count_query = f"SELECT COUNT(*) FROM documents WHERE {doc_where}"
+            count_params = list(doc_params)
+            if user_id:
+                count_query += " AND user_id = ?"
+                count_params.append(user_id)
+            else:
+                count_query += " AND user_id IS NULL"
+            cursor = await db.execute(count_query, count_params)
+            total_documents = int((await cursor.fetchone())[0] or 0)
+
+            doc_query = (
+                "SELECT id, original_name, file_type, status, page_count, "
+                "folder_path, description, updated_at "
+                f"FROM documents WHERE {doc_where}"
+            )
+            document_params = list(doc_params)
+            if user_id:
+                doc_query += " AND user_id = ?"
+                document_params.append(user_id)
+            else:
+                doc_query += " AND user_id IS NULL"
+            doc_query += " ORDER BY updated_at DESC LIMIT ? OFFSET ?"
+            document_params.extend([page_size, offset])
+            cursor = await db.execute(doc_query, document_params)
+            document_rows = await cursor.fetchall()
+
+            child_count_query = "SELECT parent_id, COUNT(*) FROM folders"
+            child_count_params = []
+            if user_id:
+                child_count_query += " WHERE user_id = ?"
+                child_count_params.append(user_id)
+            else:
+                child_count_query += " WHERE user_id IS NULL"
+            child_count_query += " GROUP BY parent_id"
+            cursor = await db.execute(child_count_query, child_count_params)
+            child_counts = {
+                row[0]: int(row[1] or 0) for row in await cursor.fetchall()
+            }
+
+            doc_count_query = "SELECT folder_id, COUNT(*) FROM documents"
+            doc_count_params = []
+            if user_id:
+                doc_count_query += " WHERE user_id = ?"
+                doc_count_params.append(user_id)
+            else:
+                doc_count_query += " WHERE user_id IS NULL"
+            doc_count_query += " GROUP BY folder_id"
+            cursor = await db.execute(doc_count_query, doc_count_params)
+            document_counts = {
+                row[0]: int(row[1] or 0) for row in await cursor.fetchall()
+            }
+
+        return {
+            "folder_id": folder_id,
+            "page": page,
+            "page_size": page_size,
+            "total_documents": total_documents,
+            "child_folders": [
+                {
+                    "id": row[0],
+                    "name": row[1],
+                    "parent_id": row[2],
+                    "path": row[3],
+                    "created_at": row[4],
+                    "updated_at": row[5],
+                    "child_count": child_counts.get(row[0], 0),
+                    "document_count": document_counts.get(row[0], 0),
+                }
+                for row in folder_rows
+            ],
+            "documents": [
+                {
+                    "doc_id": row[0],
+                    "doc_name": row[1],
+                    "file_type": row[2],
+                    "status": row[3],
+                    "page_count": row[4],
+                    "folder_path": row[5],
+                    "description": row[6],
+                    "updated_at": row[7],
+                }
+                for row in document_rows
+            ],
+        }
+
     async def rename_folder(
         self, folder_id: str, new_name: str, user_id: str = None
     ) -> FolderResponse:
@@ -258,6 +453,15 @@ class FolderService:
                 await db.execute(update_query, update_params)
 
                 await self._update_child_paths(db, old_path, new_path, user_id)
+
+                direct_doc_query = (
+                    "UPDATE documents SET folder_path = ? WHERE folder_id = ?"
+                )
+                direct_doc_params = [new_path, folder_id]
+                if user_id:
+                    direct_doc_query += " AND user_id = ?"
+                    direct_doc_params.append(user_id)
+                await db.execute(direct_doc_query, direct_doc_params)
 
                 doc_query = (
                     "UPDATE documents SET folder_path = ? || SUBSTR(folder_path, ?) "
@@ -360,6 +564,15 @@ class FolderService:
 
                 await self._update_child_paths(db, old_path, new_path, user_id)
 
+                direct_doc_query = (
+                    "UPDATE documents SET folder_path = ? WHERE folder_id = ?"
+                )
+                direct_doc_params = [new_path, folder_id]
+                if user_id:
+                    direct_doc_query += " AND user_id = ?"
+                    direct_doc_params.append(user_id)
+                await db.execute(direct_doc_query, direct_doc_params)
+
                 doc_query = (
                     "UPDATE documents SET folder_path = ? || SUBSTR(folder_path, ?) "
                     "WHERE folder_path LIKE ?"
@@ -430,6 +643,50 @@ class FolderService:
                 child_ids = [row[0] for row in await cursor.fetchall()]
                 all_ids = [folder_id] + child_ids
 
+                placeholders = ",".join("?" for _ in all_ids)
+                docs_query = f"""
+                    SELECT id, name, original_name, file_path, index_path, file_size,
+                           file_type, status, page_count, processed_pages, error_message,
+                           folder_id, folder_path, description, user_id, created_at, updated_at
+                    FROM documents
+                    WHERE folder_id IN ({placeholders})
+                """
+                docs_params = list(all_ids)
+                if user_id:
+                    docs_query += " AND user_id = ?"
+                    docs_params.append(user_id)
+                else:
+                    docs_query += " AND user_id IS NULL"
+                cursor = await db.execute(docs_query, docs_params)
+                document_rows = await cursor.fetchall()
+                documents = [
+                    SimpleNamespace(
+                        id=row[0],
+                        name=row[1],
+                        original_name=row[2],
+                        file_path=row[3],
+                        index_path=row[4],
+                        file_size=row[5],
+                        file_type=row[6],
+                        status=row[7],
+                        page_count=row[8],
+                        processed_pages=row[9],
+                        error_message=row[10],
+                        folder_id=row[11],
+                        folder_path=row[12],
+                        description=row[13],
+                        user_id=row[14],
+                        created_at=row[15],
+                        updated_at=row[16],
+                    )
+                    for row in document_rows
+                ]
+
+                document_service = DocumentService(db)
+                for doc in documents:
+                    await document_service.cleanup_document_artifacts(doc)
+                    cache_service.clear_document(doc.user_id or user_id or "", doc.id)
+
                 for fid in all_ids:
                     doc_query = "DELETE FROM documents WHERE folder_id = ?"
                     doc_params = [fid]
@@ -447,6 +704,9 @@ class FolderService:
                     await db.execute(folder_query, folder_params)
 
                 await db.execute("COMMIT")
+                from app.services.agent_service import clear_conversation_cache
+
+                clear_conversation_cache()
                 return True
             except Exception:
                 await db.execute("ROLLBACK")

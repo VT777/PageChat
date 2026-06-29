@@ -1,55 +1,67 @@
 import sys
 import json
 import asyncio
+import inspect
 import re
 import time
-import base64
+from copy import deepcopy
 from pathlib import Path
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any, List, Tuple
 
-# 娣诲姞 pageindex 鍒?Python 璺緞
+# 濠电儑缍€濠?pageindex 闂?Python 闁荤姳璀﹂崹鎵?
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-import PyPDF2
-
-from pageindex.page_index import page_index_main, page_index_main_with_page_list
 from pageindex.utils import config, get_nodes, get_page_tokens, structure_to_list
 from pageindex.page_index_md import md_to_tree
-from pageindex.quality_validation import TocQualityChecker
+from pageindex.index_quality import TocQualityChecker, build_index_quality_report
+from app.models.retrieval import build_source_display_label
 from app.core.config import (
+    DATA_DIR,
     INDEXES_DIR,
     build_effective_pageindex_config,
     PAGEINDEX_FAST_LIGHT_SUMMARY_ENABLED,
     PAGEINDEX_FAST_LIGHT_SUMMARY_MAX_TITLES,
     PAGEINDEX_FAST_LIGHT_SUMMARY_TIMEOUT_SECONDS,
-    PAGEINDEX_FAST_TOC_QUALITY_ESCALATE_THRESHOLD,
     PAGEINDEX_UNPARSEABLE_PAGES_BALANCED_THRESHOLD,
     PAGEINDEX_UNPARSEABLE_RATIO_BALANCED_THRESHOLD,
-    VISION_TOC_STRICT_TARGET_RATIO,
-    VISION_TOC_STRICT_MAX_GAP_PAGES,
-    VISION_TOC_STRICT_MAX_RECOVERY_ROUNDS,
-    VISUAL_MAX_CONSECUTIVE_FAIL_PAGES,
-    VISUAL_VLM_MAX_CONCURRENCY,
-    VISUAL_VLM_PAGE_MAX_ATTEMPTS,
-    VISUAL_PAGE_TIMEOUT_SECONDS,
+    PAGEINDEX_TOC_LLM_MAX_TOKENS,
+    PAGEINDEX_TOC_LLM_TIMEOUT_SECONDS,
     OCR_MAX_CONCURRENCY,
-    OCR_MIN_IMAGE_AREA_RATIO,
-    OCR_MIN_IMAGE_SIDE_PX,
 )
 from app.prompts.pageindex_prompts import (
     QUERY_VERIFICATION_PROMPT,
     FAST_DOC_LIGHT_SUMMARY_PROMPT,
+    TOC_DETECTOR_SINGLE_PROMPT,
 )
 from app.services.multi_format_adapter import generate_multi_format_index
-from app.services.ocr_service import OCRService
+from app.services.model_gateway import ModelGateway
 from app.services.runtime_settings_service import runtime_settings_service
 
 
+TREE_HIGH_CONFIDENCE_THRESHOLD = 0.65
+TREE_FALLBACK_CONFIDENCE_THRESHOLD = 0.35
+
+
+class _ModelSettingsResolverProxy:
+    async def resolve_route(self, user_id: str | None, route_slot: str) -> Dict[str, Any]:
+        import aiosqlite
+
+        from app.models.database import DB_PATH
+        from app.services.model_settings_service import ModelSettingsService
+
+        async with aiosqlite.connect(str(DB_PATH)) as db:
+            db.row_factory = aiosqlite.Row
+            return await ModelSettingsService(db).resolve_route(user_id, route_slot)
+
+
 async def check_query_appearance(
-    query: str, node_text: str, model: str = "qwen3.6-flash"
+    query: str,
+    node_text: str,
+    model: str = "qwen3.6-flash",
+    provider_config: Optional[Dict[str, Any]] = None,
 ) -> dict:
     """
-    楠岃瘉鐢ㄦ埛鏌ヨ鏄惁鍑虹幇鍦ㄨ妭鐐规枃鏈腑
+    ?? query ???????????
 
     Returns:
         {
@@ -76,6 +88,7 @@ async def check_query_appearance(
             messages=[{"role": "user", "content": prompt}],
             temperature=0,
             model=model,
+            provider_config=provider_config,
         )
         content = response.choices[0].message.content
 
@@ -98,16 +111,17 @@ async def verify_candidate_nodes(
     query: str,
     nodes: List[dict],
     model: str = "qwen3.6-flash",
+    provider_config: Optional[Dict[str, Any]] = None,
 ) -> List[dict]:
     """
-    楠岃瘉 LLM 閫夋嫨鐨勫€欓€夎妭鐐规槸鍚︾湡鐨勫寘鍚煡璇㈠唴瀹?
+    濡ょ姴鐭侀惁?LLM 闂佺€氥劑鎯冮崟鍋撳▎鎾亾婢跺骸螡闁绘劘濡叉悂宕ラ敂鐐焸闁汇劌瀚€垫﹢宕ラ锝囧弨閻犲洢鍨归崬瀵糕偓?
     Args:
-        candidates: LLM 杩斿洖鐨勫€欓€夊垪琛?        query: 鐢ㄦ埛鏌ヨ
-        nodes: 鎵€鏈夎妭鐐圭殑瀹屾暣淇℃伅 (from structure_to_list)
-        model: 楠岃瘉鐢ㄧ殑妯″瀷
+        candidates: LLM 閺夆晜鏌ㄥú鏍儍閸曞亾濞嗘挴鍋撴径濠傜仚閻?        query: 闁诲妽閸╂盯寮婚妷鍤?
+        nodes: 闁圭鍋撻柡鍫濇俊鎮欓崷鐣遍悗鐟版湰閺嗭絾绌遍埄鍐х礀 (from structure_to_list)
+        model: 濡ょ姴鐭侀惁澶愭偨閵娧勭暠婵♀偓宕団偓?
 
     Returns:
-        甯﹂獙璇佸垎鏁扮殑鍊欓€夊垪琛?    """
+        閻㈢畵閻涙瑧鎷犳担绋跨€婚柡浣瑰濞堟垿宕愬▎鎾亾婢跺﹤鐏欓悶?    """
     node_dict = {n.get("node_id"): n for n in nodes}
     verified_results = []
 
@@ -116,7 +130,9 @@ async def verify_candidate_nodes(
         if node_id in node_dict:
             node = node_dict[node_id]
             text = node.get("text", "") or ""
-            return await check_query_appearance(query, text, model)
+            return await check_query_appearance(
+                query, text, model, provider_config=provider_config
+            )
         else:
             return {
                 "query_appears": "no",
@@ -153,8 +169,89 @@ async def verify_candidate_nodes(
 class PageIndexService:
     """PageIndex service - generate and query tree indexes."""
 
-    def __init__(self):
+    def __init__(self, user_id: str | None = None):
+        self.user_id = user_id
+        self._model_route_cache: Dict[str, Optional[Dict[str, Any]]] = {}
         self.opt = self._build_opt()
+
+    async def _resolve_model_route(self, route_slot: str) -> Optional[Dict[str, Any]]:
+        if not self.user_id:
+            return None
+        if route_slot in self._model_route_cache:
+            return self._model_route_cache[route_slot]
+        try:
+            import aiosqlite
+
+            from app.models.database import DB_PATH
+            from app.services.model_settings_service import (
+                ModelRouteNotConfiguredError,
+                ModelSettingsService,
+            )
+
+            async with aiosqlite.connect(str(DB_PATH)) as db:
+                db.row_factory = aiosqlite.Row
+                route = await ModelSettingsService(db).resolve_route(
+                    self.user_id, route_slot
+                )
+                if route.get("source") not in {"user", "environment"}:
+                    route = None
+        except ModelRouteNotConfiguredError:
+            raise
+        except Exception as exc:
+            print(
+                f"[TOC-MODEL] fallback route_slot={route_slot} user_id={self.user_id} error_type={type(exc).__name__}"
+            )
+            route = None
+        self._model_route_cache[route_slot] = route
+        return route
+
+    async def _indexing_completion(
+        self,
+        *,
+        messages: list[dict],
+        model: str | None = None,
+        **kwargs,
+    ):
+        from app.core.llm import async_chat_completion
+
+        route = await self._resolve_model_route("indexing")
+        if route:
+            return await async_chat_completion(
+                messages=messages,
+                model=route.get("model") or model,
+                provider_config=route,
+                **kwargs,
+            )
+        return await async_chat_completion(messages=messages, model=model, **kwargs)
+
+    async def _build_model_gateway(self):
+        route = await self._resolve_model_route("vision")
+        if not route:
+            return ModelGateway()
+        return ModelGateway(
+            model_settings_service=_ModelSettingsResolverProxy(),
+            user_id=self.user_id,
+        )
+
+    @staticmethod
+    def _sanitize_model_route_metadata(route: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+        if not isinstance(route, dict):
+            return {}
+        metadata = {}
+        for key in ("route_slot", "source", "model", "route_version"):
+            value = route.get(key)
+            if value is not None:
+                metadata[key] = value
+        return metadata
+
+    async def _model_route_metadata(self) -> Dict[str, Dict[str, Any]]:
+        metadata: Dict[str, Dict[str, Any]] = {}
+        for slot in ("indexing",):
+            route = await self._resolve_model_route(slot)
+            clean = self._sanitize_model_route_metadata(route)
+            if clean:
+                metadata[slot] = clean
+        return metadata
 
     @staticmethod
     def _persist_failure_diagnostics(doc_id: str, payload: Dict[str, Any]) -> None:
@@ -164,7 +261,7 @@ class PageIndexService:
             with open(index_path, "w", encoding="utf-8") as f:
                 json.dump(payload, f, indent=2, ensure_ascii=False)
         except Exception as e:
-            print(f"[VISION_DIAG] failed to persist diagnostics doc={doc_id}: {e}")
+            print(f"[TOC-DIAG] failed to persist diagnostics doc={doc_id}: {e}")
 
     def _build_opt(self, mode_override: Optional[str] = None):
         condition = mode_override in {"smart", "fast", "balanced"}
@@ -179,210 +276,1243 @@ class PageIndexService:
 
     @staticmethod
     def _normalize_page_text_for_ocr(text: str) -> str:
-        t = re.sub(r"\s+", " ", str(text or "")).strip()
-        return t
+        raw = str(text or "").strip()
+        if not raw:
+            return ""
 
-    async def _ocr_pages_for_toc_validation(
-        self, file_path: Path, page_indices: List[int]
-    ) -> Dict[int, str]:
-        """Phase 0.5: run lightweight OCR for selected pages.
+        stripped = PageIndexService._strip_ocr_code_fences(raw)
+        json_text = PageIndexService._extract_reading_order_text_from_json(stripped)
+        if json_text:
+            return json_text
+        html_text = PageIndexService._extract_reading_order_text_from_html(stripped)
+        if html_text:
+            return html_text
+        return PageIndexService._normalize_reading_order_text(stripped)
 
-        Returns: {physical_page_number(1-indexed): OCR text}
-        """
-        if not page_indices:
+    @staticmethod
+    def _strip_ocr_code_fences(text: str) -> str:
+        lines = str(text or "").strip().splitlines()
+        if lines and lines[0].strip().startswith("```"):
+            lines = lines[1:]
+        if lines and lines[-1].strip() == "```":
+            lines = lines[:-1]
+        return "\n".join(lines).strip()
+
+    @staticmethod
+    def _normalize_reading_order_text(text: str) -> str:
+        output: List[str] = []
+        for line in str(text or "").splitlines():
+            cleaned = line.strip()
+            if not cleaned or cleaned.startswith("```"):
+                continue
+            cleaned = re.sub(r"\s+", " ", cleaned).strip()
+            if cleaned:
+                output.append(cleaned)
+        if output:
+            joined = "\n".join(output)
+            if PageIndexService._looks_like_coordinate_dump(joined):
+                return ""
+            return joined
+        return re.sub(r"\s+", " ", str(text or "")).strip()
+
+    @staticmethod
+    def _looks_like_coordinate_dump(text: str) -> bool:
+        lines = [line.strip() for line in str(text or "").splitlines() if line.strip()]
+        if len(lines) < 2:
+            return False
+
+        coord_like = 0
+        for line in lines:
+            if re.fullmatch(r"[\d,\s.-]{8,}", line) and len(re.findall(r"\d", line)) >= 5:
+                coord_like += 1
+                continue
+            if re.fullmatch(r"\d{1,4}(?:\s*,\s*\d{1,4}){2,}", line):
+                coord_like += 1
+        return coord_like >= max(2, len(lines) - 1)
+
+    @staticmethod
+    def _extract_reading_order_text_from_json(text: str) -> str:
+        value = str(text or "").strip()
+        if not value or value[0] not in "[{":
+            return ""
+        try:
+            payload = json.loads(value)
+        except Exception:
+            return ""
+
+        preferred_keys = ("text", "title", "content", "markdown", "plain_text", "block_content")
+        child_keys = ("children", "nodes", "items", "data", "result", "results", "pages")
+        skip_keys = {
+            "level", "page", "page_num", "pos_list", "bbox", "box", "score",
+            "width", "height", "model", "label", "type", "role", "id",
+        }
+        lines: List[str] = []
+
+        def add_text(value: Any) -> None:
+            normalized = PageIndexService._normalize_reading_order_text(str(value or ""))
+            for line in normalized.splitlines():
+                if line:
+                    lines.append(line)
+
+        def walk(value: Any) -> None:
+            if isinstance(value, list):
+                for item in value:
+                    walk(item)
+                return
+            if isinstance(value, dict):
+                consumed = set()
+                for key in preferred_keys:
+                    field = value.get(key)
+                    if isinstance(field, str) and field.strip():
+                        add_text(field)
+                        consumed.add(key)
+                for key in child_keys:
+                    if key in value:
+                        walk(value.get(key))
+                        consumed.add(key)
+                for key, field in value.items():
+                    if key in consumed or key in skip_keys:
+                        continue
+                    if isinstance(field, (dict, list)):
+                        walk(field)
+                return
+            if isinstance(value, str) and value.strip():
+                add_text(value)
+
+        walk(payload)
+        seen: set[str] = set()
+        deduped: List[str] = []
+        for line in lines:
+            key = line.strip()
+            if not key or key in seen:
+                continue
+            seen.add(key)
+            deduped.append(key)
+        return "\n".join(deduped)
+
+    @staticmethod
+    def _extract_reading_order_text_from_html(text: str) -> str:
+        value = str(text or "").strip()
+        if not re.search(r"<\s*[A-Za-z][^>]*>", value):
+            return ""
+        from html.parser import HTMLParser
+
+        class TextExtractor(HTMLParser):
+            block_tags = {"br", "p", "div", "section", "article", "li", "tr", "table", "h1", "h2", "h3", "h4", "h5", "h6"}
+
+            def __init__(self) -> None:
+                super().__init__()
+                self.parts: List[str] = []
+
+            def _break(self) -> None:
+                if self.parts and self.parts[-1] != "\n":
+                    self.parts.append("\n")
+
+            def handle_starttag(self, tag: str, attrs) -> None:
+                if tag.lower() in self.block_tags:
+                    self._break()
+
+            def handle_endtag(self, tag: str) -> None:
+                if tag.lower() in self.block_tags:
+                    self._break()
+
+            def handle_data(self, data: str) -> None:
+                cleaned = re.sub(r"\s+", " ", data).strip()
+                if cleaned:
+                    self.parts.append(cleaned)
+
+        parser = TextExtractor()
+        try:
+            parser.feed(value)
+        except Exception:
+            return ""
+        return PageIndexService._normalize_reading_order_text("".join(parser.parts))
+
+    async def _resolve_ocr_engine(self, task: str):
+        import aiosqlite
+
+        from app.models.database import DB_PATH
+        from app.services.ocr_engines.resolver import OCREngineResolver
+        from app.services.ocr_settings_service import OCRSettingsService
+
+        async with aiosqlite.connect(str(DB_PATH)) as db:
+            db.row_factory = aiosqlite.Row
+            return await OCREngineResolver(
+                settings_service=OCRSettingsService(db)
+            ).resolve(self.user_id, task)
+
+    @staticmethod
+    def _ocr_call_diagnostics(resolved, response, task: str) -> Dict[str, Any]:
+        route = dict(getattr(resolved, "route", {}) or {})
+        diagnostics = dict(getattr(response, "diagnostics", {}) or {})
+        raw = getattr(response, "raw", {}) or {}
+        if isinstance(raw.get("diagnostics"), dict):
+            diagnostics = {**raw["diagnostics"], **diagnostics}
+        pages = list(getattr(response, "pages", []) or [])
+        evidence_levels = sorted(
+            {
+                str(getattr(page, "evidence_level", "") or "")
+                for page in pages
+                if getattr(page, "evidence_level", "")
+            }
+        )
+        merged = {
+            "task": task,
+            "source": route.get("source"),
+            "engine_type": route.get("engine_type"),
+            "model": route.get("model"),
+            "profile_version": route.get("profile_version"),
+        }
+        for key in (
+            "profile_id",
+            "prompt_name",
+            "prompt_version",
+            "prompt_text",
+            "prompt_sha256",
+            "prompt_chars",
+            "input_type",
+            "elapsed_ms",
+            "result_pages",
+            "job_id",
+            "requested_pages",
+            "rendered_pages",
+            "rendered_page_inputs",
+            "fallback_reason",
+            "fallback_error_type",
+        ):
+            if diagnostics.get(key) is not None:
+                merged[key] = diagnostics[key]
+        if diagnostics.get("evidence_level"):
+            merged["evidence_level"] = diagnostics["evidence_level"]
+        elif evidence_levels:
+            merged["evidence_level"] = evidence_levels[0] if len(evidence_levels) == 1 else ",".join(evidence_levels)
+        if "result_pages" not in merged:
+            merged["result_pages"] = len(pages)
+        return {key: value for key, value in merged.items() if value is not None}
+
+    @staticmethod
+    def _is_non_recoverable_ocr_error(exc: Exception) -> bool:
+        message = str(exc or "")
+        return any(
+            marker in message
+            for marker in (
+                "OCR_ROUTE_NOT_CONFIGURED",
+                "MODEL_ROUTE_NOT_CONFIGURED",
+            )
+        )
+
+    @staticmethod
+    def _record_ocr_call(
+        analysis: Optional[Dict[str, Any]],
+        call_diagnostics: Dict[str, Any],
+        *,
+        page_num: Optional[int] = None,
+        status: Optional[str] = None,
+    ) -> None:
+        if analysis is None:
+            return
+        record = PageIndexService._compact_ocr_call_diagnostics(call_diagnostics or {})
+        if page_num is not None:
+            record["page_num"] = page_num
+        if status:
+            record["status"] = status
+        analysis.setdefault("ocr_calls", []).append(record)
+        analysis["ocr_route"] = dict(record)
+
+        task = str(record.get("task") or "")
+        if not task:
+            return
+        summaries = analysis.setdefault("ocr_calls_summary", {})
+        summary = summaries.setdefault(task, {})
+        if task == "page_text":
+            summary["calls"] = int(summary.get("calls") or 0) + 1
+            if page_num is not None:
+                seen = list(summary.get("page_nums") or [])
+                if page_num not in seen:
+                    seen.append(page_num)
+                summary["page_nums"] = sorted(seen)
+                summary["pages"] = len(seen)
+            if not summary.get("primary_engine"):
+                summary["primary_engine"] = record.get("engine_type")
+            if not summary.get("primary_model"):
+                summary["primary_model"] = record.get("model")
+            if status == "ok":
+                summary["success"] = int(summary.get("success") or 0) + 1
+            elif status == "missing":
+                summary["missing"] = int(summary.get("missing") or 0) + 1
+            if record.get("fallback_reason") or str(record.get("engine_type") or "").startswith("legacy"):
+                summary["fallback"] = int(summary.get("fallback") or 0) + 1
+            if record.get("diagnostics_path"):
+                summary["diagnostics_dir"] = str(Path(str(record["diagnostics_path"])).parent).replace("\\", "/")
+            return
+
+        summary["engine"] = record.get("engine_type")
+        summary["model"] = record.get("model")
+        summary["pages"] = record.get("result_pages")
+        summary["status"] = status or "done"
+
+    @staticmethod
+    def _compact_ocr_call_diagnostics(call_diagnostics: Dict[str, Any]) -> Dict[str, Any]:
+        blocked_keys = {
+            "api_key",
+            "token",
+            "api_key_ciphertext",
+            "authorization",
+            "prompt_text",
+            "raw",
+            "raw_preview",
+            "content",
+            "content_preview",
+            "content_head",
+            "markdown",
+            "markdown_preview",
+            "plain_text",
+            "page_results",
+            "rendered_page_inputs",
+        }
+        compact: Dict[str, Any] = {}
+        for key, value in dict(call_diagnostics or {}).items():
+            key_str = str(key)
+            if key_str in blocked_keys or key_str.lower() in blocked_keys:
+                continue
+            if isinstance(value, dict):
+                nested = PageIndexService._compact_ocr_call_diagnostics(value)
+                if nested:
+                    compact[key_str] = nested
+            elif isinstance(value, list):
+                compact[key_str] = [
+                    item for item in value if isinstance(item, (str, int, float, bool)) or item is None
+                ][:20]
+            elif isinstance(value, (str, int, float, bool)) or value is None:
+                compact[key_str] = value
+            else:
+                compact[key_str] = str(value)
+        return compact
+
+    @staticmethod
+    def _update_content_ocr_summary(
+        analysis: Optional[Dict[str, Any]],
+        *,
+        page_count: int,
+        success: int,
+        missing: List[int],
+    ) -> Dict[str, Any]:
+        if analysis is None:
             return {}
+        summaries = analysis.setdefault("ocr_calls_summary", {})
+        summary = summaries.setdefault("page_text", {})
+        summary["pages"] = page_count
+        summary["success"] = success
+        summary["missing"] = len(missing)
+        summary["missing_pages"] = list(missing[:10])
+        summary.setdefault("fallback", 0)
+        return summary
 
-        import base64
-        import io
-        from pageindex.vlm_utils import render_pages_to_images
+    @staticmethod
+    async def _close_ocr_adapter(adapter: Any) -> None:
+        close = getattr(adapter, "aclose", None) or getattr(adapter, "close", None)
+        if close is None:
+            return
+        result = close()
+        if inspect.isawaitable(result):
+            await result
 
-        images = render_pages_to_images(str(file_path), page_indices, dpi=150)
-        if not images:
-            return {}
+    async def _ocr_image_with_resolver(
+        self,
+        image_base64: str,
+        page_num: int,
+        analysis: Optional[Dict[str, Any]] = None,
+        prompt: Optional[str] = None,
+        image_mime_type: str = "image/png",
+    ):
+        from app.services.ocr_service import OCRPageResult
 
-        ocr_service = OCRService()
-        sem = asyncio.Semaphore(max(1, int(OCR_MAX_CONCURRENCY)))
-
-        async def ocr_single(img_info):
-            page_num = img_info["page_index"] + 1  # 0-indexed 鈫?1-indexed
-            async with sem:
-                result = await ocr_service.ocr_image_base64(
-                    img_info["image_base64"], page_num=page_num
+        resolved = await self._resolve_ocr_engine("page_text")
+        try:
+            safe_mime_type = str(image_mime_type or "image/png").strip() or "image/png"
+            if not safe_mime_type.startswith("image/"):
+                safe_mime_type = "image/png"
+            image_url = f"data:{safe_mime_type};base64,{image_base64}"
+            route_options = dict((resolved.route or {}).get("options") or {})
+            if prompt:
+                route_options["prompt"] = prompt
+                route_options.setdefault("prompt_name", "page_text_reading_order_v1")
+            response = resolved.adapter.recognize(
+                image_url,
+                task="page_text",
+                options=route_options,
+            )
+            if hasattr(response, "__await__"):
+                response = await response
+            call_diagnostics = self._ocr_call_diagnostics(resolved, response, "page_text")
+            text = ""
+            for page in getattr(response, "pages", []) or []:
+                if int(getattr(page, "page_num", page_num) or page_num) == page_num:
+                    text = getattr(page, "plain_text", "") or getattr(page, "markdown", "") or ""
+                    break
+            if not text and getattr(response, "pages", None):
+                first_page = response.pages[0]
+                text = getattr(first_page, "plain_text", "") or getattr(first_page, "markdown", "") or ""
+            doc_id = self._ocr_diagnostics_doc_id(analysis)
+            if doc_id:
+                diag_path = self._persist_ocr_page_diagnostics(
+                    doc_id,
+                    task="page_text",
+                    page_num=page_num,
+                    response=response,
+                    call_diagnostics=call_diagnostics,
+                    text=text.strip(),
+                    status="ok" if text.strip() else "missing",
                 )
-            return page_num, result.text if result.ok else ""
+                if diag_path is not None:
+                    call_diagnostics = {
+                        **call_diagnostics,
+                        "diagnostics_path": str(diag_path),
+                    }
+            self._record_ocr_call(
+                analysis,
+                call_diagnostics,
+                page_num=page_num,
+                status="ok" if text.strip() else "missing",
+            )
+            return OCRPageResult(page_num=page_num, text=text.strip(), ok=bool(text.strip()))
+        finally:
+            await self._close_ocr_adapter(getattr(resolved, "adapter", None))
 
-        results = await asyncio.gather(*[ocr_single(img) for img in images])
+    @staticmethod
+    def _safe_ocr_diagnostics_id(value: str) -> str:
+        safe = re.sub(r"[^\w.-]+", "_", str(value or "").strip(), flags=re.UNICODE)
+        return safe.strip("._ ")
+
+    @staticmethod
+    def _ocr_diagnostics_doc_id(analysis: Optional[Dict[str, Any]]) -> str:
+        if not isinstance(analysis, dict):
+            return ""
+        for key in ("doc_id", "document_id"):
+            value = str(analysis.get(key) or "").strip()
+            if value:
+                return PageIndexService._safe_ocr_diagnostics_id(value)
+        for key in ("file_path", "document_path"):
+            value = str(analysis.get(key) or "").strip()
+            if value:
+                return PageIndexService._safe_ocr_diagnostics_id(Path(value).stem)
+        return ""
+
+    @staticmethod
+    def _persist_ocr_page_diagnostics(
+        doc_id: str,
+        *,
+        task: str,
+        page_num: int,
+        response: Any,
+        call_diagnostics: Dict[str, Any],
+        text: str,
+        status: str,
+    ) -> Optional[Path]:
+        try:
+            safe_doc_id = PageIndexService._safe_ocr_diagnostics_id(str(doc_id or ""))
+            if not safe_doc_id:
+                return None
+            diagnostics_dir = DATA_DIR / "ocr_diagnostics" / safe_doc_id
+            diagnostics_dir.mkdir(parents=True, exist_ok=True)
+            path = diagnostics_dir / f"{task}-{int(page_num):04d}.json"
+            text_value = str(text or "")
+            payload = {
+                "doc_id": safe_doc_id,
+                "task": task,
+                "page_num": int(page_num),
+                "status": status,
+                "diagnostics": PageIndexService._sanitize_ocr_artifact(call_diagnostics),
+                "output": {
+                    "text_chars": len(text_value),
+                    "text_preview": text_value[:2000],
+                    "content_type_guess": PageIndexService._guess_ocr_content_type(text_value),
+                },
+                "pages": [
+                    PageIndexService._ocr_page_diagnostic(page)
+                    for page in list(getattr(response, "pages", []) or [])
+                ],
+                "raw_preview": PageIndexService._raw_ocr_preview(getattr(response, "raw", {}) or {}),
+            }
+            path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+            return path
+        except Exception as exc:
+            print(f"[TOC-DIAG] failed to persist OCR page diagnostics doc={doc_id}: {type(exc).__name__}")
+            return None
+
+    @staticmethod
+    def _persist_ocr_diagnostics(
+        doc_id: str,
+        *,
+        task: str,
+        response: Any,
+        call_diagnostics: Dict[str, Any],
+    ) -> Optional[Path]:
+        try:
+            safe_doc_id = PageIndexService._safe_ocr_diagnostics_id(str(doc_id or ""))
+            if not safe_doc_id:
+                return None
+            diagnostics_dir = DATA_DIR / "ocr_diagnostics" / safe_doc_id
+            diagnostics_dir.mkdir(parents=True, exist_ok=True)
+            path = diagnostics_dir / f"{task}.json"
+            existing: Dict[str, Any] = {}
+            if path.exists():
+                try:
+                    existing = json.loads(path.read_text(encoding="utf-8"))
+                except Exception:
+                    existing = {}
+            calls = list(existing.get("calls") or [])
+            calls.append(
+                {
+                    "task": task,
+                    "diagnostics": PageIndexService._sanitize_ocr_artifact(call_diagnostics),
+                    "pages": [
+                        PageIndexService._ocr_page_diagnostic(page)
+                        for page in list(getattr(response, "pages", []) or [])
+                    ],
+                    "raw_preview": PageIndexService._raw_ocr_preview(
+                        getattr(response, "raw", {}) or {}
+                    ),
+                }
+            )
+            payload = {
+                "doc_id": safe_doc_id,
+                "calls": calls,
+            }
+            path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+            return path
+        except Exception as exc:
+            print(f"[TOC-DIAG] failed to persist OCR diagnostics doc={doc_id}: {type(exc).__name__}")
+            return None
+
+    @staticmethod
+    def _ocr_page_diagnostic(page: Any) -> Dict[str, Any]:
+        markdown = str(getattr(page, "markdown", "") or getattr(page, "plain_text", "") or "")
+        structured_items = list(getattr(page, "structured_items", []) or [])
+        return PageIndexService._sanitize_ocr_artifact(
+            {
+                "page_num": getattr(page, "page_num", None),
+                "evidence_level": getattr(page, "evidence_level", None),
+                "width": getattr(page, "width", None),
+                "height": getattr(page, "height", None),
+                "markdown_chars": len(markdown),
+                "markdown_preview": markdown[:2000],
+                "content_head": markdown[:200],
+                "content_type_guess": PageIndexService._guess_ocr_content_type(markdown),
+                "structured_item_count": len(structured_items),
+                "structured_items_preview": structured_items[:20],
+                "raw": getattr(page, "raw", {}) or {},
+            }
+        )
+
+    @staticmethod
+    def _raw_ocr_preview(raw: Dict[str, Any]) -> Dict[str, Any]:
+        raw = dict(raw or {})
+        preview: Dict[str, Any] = {}
+        content = raw.get("content")
+        if isinstance(content, str):
+            preview["content_chars"] = len(content)
+            preview["content_head"] = content[:200]
+            preview["content_preview"] = content[:2000]
+            preview["content_type_guess"] = PageIndexService._guess_ocr_content_type(content)
+        rendered_input = raw.get("rendered_input")
+        if isinstance(rendered_input, dict):
+            preview["rendered_input"] = rendered_input
+        page_results = raw.get("page_results")
+        if isinstance(page_results, list):
+            preview["page_results"] = [
+                PageIndexService._raw_ocr_preview(item)
+                for item in page_results[:20]
+                if isinstance(item, dict)
+            ]
+        diagnostics = raw.get("diagnostics")
+        if isinstance(diagnostics, dict):
+            preview["diagnostics"] = diagnostics
+        return PageIndexService._sanitize_ocr_artifact(preview)
+
+    @staticmethod
+    def _guess_ocr_content_type(text: str) -> str:
+        value = str(text or "").strip()
+        lower = value.lower()
+        if lower.startswith("```json"):
+            return "json"
+        if lower.startswith("```markdown") or lower.startswith("```md"):
+            return "markdown"
+        if lower.startswith("```"):
+            value = re.sub(r"^```\w*\s*", "", value).strip()
+            lower = value.lower()
+        if lower.startswith(("{", "[")):
+            return "json"
+        if lower.startswith("<") or "<table" in lower:
+            return "html"
+        if lower.startswith(("#", "|", "- ", "* ")):
+            return "markdown"
+        return "text"
+
+    @staticmethod
+    def _sanitize_ocr_artifact(value: Any) -> Any:
+        secret_keys = {
+            "api_key",
+            "token",
+            "api_key_ciphertext",
+            "authorization",
+            "password",
+            "secret",
+        }
+        if isinstance(value, dict):
+            sanitized = {}
+            for key, item in value.items():
+                key_str = str(key)
+                if key_str.lower() in secret_keys:
+                    continue
+                sanitized[key_str] = PageIndexService._sanitize_ocr_artifact(item)
+            return sanitized
+        if isinstance(value, list):
+            return [PageIndexService._sanitize_ocr_artifact(item) for item in value]
+        if isinstance(value, (str, int, float, bool)) or value is None:
+            return value
+        return str(value)
+
+    @staticmethod
+    def _toc_probe_page_indices(analysis: Dict[str, Any], page_count: int) -> List[int]:
+        pages = []
+        toc_page = analysis.get("toc_page") if isinstance(analysis.get("toc_page"), dict) else {}
+        sources = (
+            (analysis.get("toc_pages"), False),
+            (toc_page.get("pages"), False),
+            (toc_page.get("page_indices"), True),
+        )
+        for source, zero_based in sources:
+            if not isinstance(source, list):
+                continue
+            for item in source:
+                if isinstance(item, bool):
+                    continue
+                try:
+                    page = int(item)
+                except (TypeError, ValueError):
+                    continue
+                if zero_based:
+                    if 0 <= page < page_count:
+                        pages.append(page)
+                elif 1 <= page <= page_count:
+                    pages.append(page - 1)
+        if not pages:
+            pages = list(range(min(max(1, page_count), 5)))
+        return sorted(set(pages))
+
+    @staticmethod
+    def _detect_toc_pages_from_layout(
+        layout: Any,
+        *,
+        page_count: int,
+        analysis: Optional[Dict[str, Any]] = None,
+        log: bool = False,
+    ) -> Dict[str, Any]:
+        if not layout or not getattr(layout, "pages", None):
+            report = {
+                "source": "layout",
+                "status": "not_found",
+                "pages": [],
+                "candidates": [],
+                "reason": "empty_layout",
+            }
+            if analysis is not None:
+                analysis["toc_page_detection"] = report
+            if log:
+                print("[TOC-PAGE] source=layout status=not_found pages=[] candidates=0 reason=empty_layout")
+            return report
+
+        from pageindex.pipeline.toc_page_detector import detect_toc_pages_from_layout
+
+        report = detect_toc_pages_from_layout(layout, page_count=page_count)
+        pages = list(report.get("pages") or [])
+        status = str(report.get("status") or ("detected" if pages else "not_found"))
+        reason = str(report.get("reason") or ("confirmed_by_layout_signals" if pages else "no_confirmed_toc_pages"))
+        if analysis is not None:
+            analysis["toc_page_detection"] = report
+            if pages:
+                analysis["toc_pages"] = pages
+                analysis["page_text"] = {
+                    **(analysis.get("toc_page") if isinstance(analysis.get("toc_page"), dict) else {}),
+                    "has_toc_page": True,
+                    "pages": pages,
+                    "source": "layout_detection",
+                }
+        if log:
+            print(
+                f"[TOC-PAGE] source=layout status={status} "
+                f"pages={PageIndexService._format_compact_pages(pages)} "
+                f"candidates={len(report.get('candidates') or [])} reason={reason}"
+            )
+        return report
+
+    @staticmethod
+    def _confirmed_toc_pages_from_analysis(
+        analysis: Optional[Dict[str, Any]],
+        page_count: int,
+    ) -> List[int]:
+        if not isinstance(analysis, dict):
+            return []
+        sources: List[Any] = []
+        detection = analysis.get("toc_page_detection")
+        if isinstance(detection, dict) and str(detection.get("status") or "") == "detected":
+            sources.append(detection.get("pages"))
+        sources.append(analysis.get("toc_pages"))
+        toc_page = analysis.get("toc_page")
+        if isinstance(toc_page, dict):
+            sources.append(toc_page.get("pages"))
+        pages: List[int] = []
+        for source in sources:
+            if not isinstance(source, list):
+                continue
+            for value in source:
+                if isinstance(value, bool):
+                    continue
+                try:
+                    page = int(value)
+                except (TypeError, ValueError):
+                    continue
+                if 1 <= page <= int(page_count or 0) and page not in pages:
+                    pages.append(page)
+        return pages
+
+    @staticmethod
+    def _toc_detector_scan_limit(analysis: Optional[Dict[str, Any]], page_count: int) -> int:
+        if isinstance(analysis, dict):
+            value = analysis.get("toc_check_page_num")
+            if not value:
+                value = (analysis.get("pageindex_config") or {}).get("toc_check_page_num") if isinstance(analysis.get("pageindex_config"), dict) else None
+        else:
+            value = None
+        if not value:
+            value = 15
+        try:
+            limit = int(value)
+        except (TypeError, ValueError):
+            limit = 15
+        return max(1, min(int(page_count or 0) or limit, limit))
+
+    @staticmethod
+    def _toc_detector_batch_size(analysis: Optional[Dict[str, Any]]) -> int:
+        value = None
+        if isinstance(analysis, dict):
+            value = analysis.get("toc_detector_batch_size")
+            if not value and isinstance(analysis.get("pageindex_config"), dict):
+                value = analysis["pageindex_config"].get("toc_detector_batch_size")
+        if not value:
+            value = 5
+        try:
+            size = int(value)
+        except (TypeError, ValueError):
+            size = 5
+        return max(1, min(5, size))
+
+    @staticmethod
+    def _toc_detector_page_number(page: Any) -> int:
+        return int(getattr(page, "page", 0) or getattr(page, "page_num", 0) or 0)
+
+    @staticmethod
+    def _toc_detector_page_text(page: Any) -> str:
+        return str(getattr(page, "markdown", "") or getattr(page, "plain_text", "") or "").strip()
+
+    @staticmethod
+    def _sync_llm_toc_detection_report(
+        analysis: Optional[Dict[str, Any]],
+        report: Dict[str, Any],
+        *,
+        page_count: int,
+    ) -> None:
+        if analysis is None:
+            return
+        detected_pages = [
+            int(page)
+            for page in report.get("pages") or []
+            if isinstance(page, int) and 1 <= int(page) <= int(page_count or 0)
+        ]
+        analysis["toc_page_detection"] = report
+        if detected_pages:
+            analysis["toc_pages"] = detected_pages
+            existing_toc_page = analysis.get("toc_page") if isinstance(analysis.get("toc_page"), dict) else {}
+            analysis["page_text"] = {
+                **existing_toc_page,
+                "has_toc_page": True,
+                "pages": detected_pages,
+                "source": "llm_classifier",
+            }
+        else:
+            analysis.pop("toc_pages", None)
+
+    async def _classify_toc_pages_with_llm(
+        self,
+        pages: List[Any],
+        *,
+        model: str,
+        batch_index: int,
+    ) -> List[Dict[str, Any]]:
+        async def classify_one(page: Any) -> Dict[str, Any]:
+            page_num = self._toc_detector_page_number(page)
+            text = self._toc_detector_page_text(page)
+            candidate: Dict[str, Any] = {
+                "page": page_num,
+                "source": "llm_classifier",
+                "is_toc": False,
+                "score": 0.0,
+                "decision": "no",
+                "batch_index": batch_index,
+                "batch_size": len(pages),
+            }
+            if page_num <= 0 or not text:
+                candidate["decision"] = "empty"
+                return candidate
+            try:
+                prompt = TOC_DETECTOR_SINGLE_PROMPT.format(content=text[:3500])
+                response = await self._indexing_completion(
+                    messages=[{"role": "user", "content": prompt}],
+                    temperature=0,
+                    timeout=min(PAGEINDEX_TOC_LLM_TIMEOUT_SECONDS, 30),
+                    max_tokens=64,
+                    model=model,
+                )
+                content = self._extract_llm_text_content(response)
+                payload = self._parse_json_payload(content)
+                from pageindex.toc_detector import normalize_llm_toc_page_payload
+
+                candidate.update(
+                    normalize_llm_toc_page_payload(
+                        payload,
+                        page=page_num,
+                        batch_index=batch_index,
+                        batch_size=len(pages),
+                    )
+                )
+            except Exception as exc:
+                candidate.update(
+                    {
+                        "is_toc": False,
+                        "score": 0.0,
+                        "decision": "error",
+                        "error_type": type(exc).__name__,
+                    }
+                )
+            return candidate
+
+        return list(await asyncio.gather(*(classify_one(page) for page in pages)))
+
+    @staticmethod
+    def _consume_toc_detection_candidates(
+        batch_candidates: List[Dict[str, Any]],
+        *,
+        detected_pages: List[int],
+        candidates: List[Dict[str, Any]],
+        seen_toc: bool,
+    ) -> tuple[bool, bool, str]:
+        stop_reason = "scan_exhausted"
+        for candidate in batch_candidates:
+            candidates.append(candidate)
+            page_num = int(candidate.get("page") or 0)
+            if candidate.get("is_toc"):
+                if not seen_toc or not detected_pages or page_num == detected_pages[-1] + 1:
+                    if page_num not in detected_pages:
+                        detected_pages.append(page_num)
+                    seen_toc = True
+                    continue
+                return seen_toc, True, "contiguous_toc_run_ended"
+            if seen_toc:
+                return seen_toc, True, "contiguous_toc_run_ended"
+        return seen_toc, False, stop_reason
+
+    async def _detect_toc_pages_with_llm_from_layout(
+        self,
+        layout: Any,
+        *,
+        page_count: int,
+        model: str,
+        analysis: Optional[Dict[str, Any]] = None,
+        log: bool = False,
+    ) -> Dict[str, Any]:
+        existing = analysis.get("toc_page_detection") if isinstance(analysis, dict) else None
+        if isinstance(existing, dict) and existing.get("source") == "llm_classifier" and existing.get("classification_complete"):
+            return existing
+
+        if not layout or not getattr(layout, "pages", None):
+            report = {
+                "source": "llm_classifier",
+                "status": "not_found",
+                "pages": [],
+                "candidates": [],
+                "reason": "empty_layout",
+                "classification_complete": True,
+            }
+            self._sync_llm_toc_detection_report(analysis, report, page_count=page_count)
+            if log:
+                print("[TOC-PAGE] source=llm_classifier status=not_found pages=[] candidates=0 reason=empty_layout")
+            return report
+
+        scan_limit = self._toc_detector_scan_limit(analysis, page_count)
+        batch_size = self._toc_detector_batch_size(analysis)
+        pages = [
+            page
+            for page in sorted(list(getattr(layout, "pages", []) or []), key=lambda item: self._toc_detector_page_number(item))
+            if self._toc_detector_page_number(page) > 0
+        ]
+        candidates: List[Dict[str, Any]] = []
+        detected_pages: List[int] = []
+        seen_toc = False
+        classified_count = 0
+        stop_reason = "scan_exhausted"
+        cursor = 0
+        batch_count = 0
+
+        while cursor < len(pages):
+            if not seen_toc and classified_count >= scan_limit:
+                stop_reason = "scan_limit_reached"
+                break
+            remaining = len(pages) - cursor
+            if seen_toc:
+                take = min(batch_size, remaining)
+            else:
+                take = min(batch_size, remaining, scan_limit - classified_count)
+            if take <= 0:
+                stop_reason = "scan_limit_reached"
+                break
+
+            batch_pages = pages[cursor : cursor + take]
+            batch_count += 1
+            batch_candidates = await self._classify_toc_pages_with_llm(
+                batch_pages,
+                model=model,
+                batch_index=batch_count,
+            )
+            classified_count += len(batch_pages)
+            cursor += len(batch_pages)
+            seen_toc, should_stop, stop_reason = self._consume_toc_detection_candidates(
+                batch_candidates,
+                detected_pages=detected_pages,
+                candidates=candidates,
+                seen_toc=seen_toc,
+            )
+            if should_stop:
+                break
+            if seen_toc:
+                last_batch_page = self._toc_detector_page_number(batch_pages[-1])
+                if last_batch_page in detected_pages:
+                    stop_reason = "scan_exhausted"
+                    continue
+                stop_reason = "contiguous_toc_run_ended"
+                break
+
+        status = "detected" if detected_pages else "not_found"
+        reason = "confirmed_by_llm_classifier" if detected_pages else stop_reason
+        from pageindex.toc_detector import aggregate_toc_sections
+
+        report = {
+            "source": "llm_classifier",
+            "status": status,
+            "pages": detected_pages,
+            "sections": aggregate_toc_sections(candidates, pages=detected_pages),
+            "has_page_numbers": any(
+                bool(candidate.get("has_page_numbers"))
+                for candidate in candidates
+                if int(candidate.get("page") or 0) in set(detected_pages)
+            ),
+            "candidates": candidates,
+            "reason": reason,
+            "scan_limit": scan_limit,
+            "batch_size": batch_size,
+            "batch_count": batch_count,
+            "classified_pages": classified_count,
+            "classification_complete": True,
+        }
+        self._sync_llm_toc_detection_report(analysis, report, page_count=page_count)
+        if log:
+            print(
+                f"[TOC-PAGE] source=llm_classifier status={status} "
+                f"pages={PageIndexService._format_compact_pages(detected_pages)} "
+                f"candidates={len(candidates)} batches={batch_count} reason={reason}"
+            )
+        return report
+    @staticmethod
+    def _layout_with_pages(layout: Any, pages: List[int]) -> Any:
+        from pageindex.layout.document_layout import DocumentLayout
+
+        selected = set(int(page) for page in pages if int(page) > 0)
+        return DocumentLayout(
+            doc_id=str(getattr(layout, "doc_id", "") or ""),
+            page_count=int(getattr(layout, "page_count", 0) or 0),
+            source_type=str(getattr(layout, "source_type", "ocr") or "ocr"),
+            pages=[
+                page
+                for page in list(getattr(layout, "pages", []) or [])
+                if int(getattr(page, "page", 0) or 0) in selected
+            ],
+        )
+
+    @staticmethod
+    def _select_detected_toc_page_run(candidates: List[Dict[str, Any]]) -> List[int]:
+        detected = [
+            candidate
+            for candidate in sorted(candidates, key=lambda item: int(item.get("page") or 0))
+            if candidate.get("is_toc") and int(candidate.get("page") or 0) > 0
+        ]
+        if not detected:
+            return []
+        runs: List[List[Dict[str, Any]]] = []
+        current: List[Dict[str, Any]] = []
+        for candidate in detected:
+            page = int(candidate.get("page") or 0)
+            if current and page != int(current[-1].get("page") or 0) + 1:
+                runs.append(current)
+                current = []
+            current.append(candidate)
+        if current:
+            runs.append(current)
+        best = max(
+            runs,
+            key=lambda run: (
+                len(run),
+                sum(float(candidate.get("score") or 0.0) for candidate in run),
+            ),
+        )
+        return [int(candidate.get("page") or 0) for candidate in best]
+
+    @staticmethod
+    def _strip_ocr_markdown_fences(text: str) -> str:
+        value = str(text or "").strip()
+        if not value.startswith("```"):
+            return value
+        lines = value.splitlines()
+        if lines and lines[0].startswith("```"):
+            lines = lines[1:]
+        if lines and lines[-1].strip() == "```":
+            lines = lines[:-1]
+        return "\n".join(lines).strip()
+
+    @staticmethod
+    def _has_toc_page_heading(text: str) -> bool:
+        normalized = re.sub(r"\s+", "", str(text or "").lower())
+        return any(
+            marker in normalized
+            for marker in (
+                "\u76ee\u5f55",
+                "contents",
+                "tableofcontents",
+                "\u9432\ue1c6\u7dbd",
+                "\u9429\uff46\u5f55",
+            )
+        )
+
+    @staticmethod
+    def _count_catalog_like_lines(text: str) -> int:
+        lines = [
+            re.sub(r"^#{1,6}\s+", "", line).strip()
+            for line in PageIndexService._strip_ocr_markdown_fences(text).splitlines()
+        ]
+        lines = [line for line in lines if line]
+        count = 0
+        for index, line in enumerate(lines):
+            compact = re.sub(r"\s+", " ", line)
+            if re.search(r"(?:\.{2,}|_{2,}|\u2026{1,})\s*\d{1,4}\s*$", compact):
+                count += 1
+                continue
+            if compact.startswith("|") and "|" in compact[1:] and len(re.findall(r"\b\d{1,4}\b", compact)) >= 2:
+                count += 1
+                continue
+            if (
+                len(compact) <= 150
+                and re.match(r"^(?:[-*+]\s*)?(?:\d{1,3}[\s.)\u3001\uff0e-]+)?\S.{2,}", compact)
+                and re.search(r"\s+\d{1,4}\s*$", compact)
+            ):
+                count += 1
+                continue
+            if index + 1 < len(lines) and re.fullmatch(r"\d{1,4}", lines[index + 1].strip()) and 4 <= len(compact) <= 150:
+                count += 1
+        return count
+
+    @staticmethod
+    def _body_page_signal(text: str) -> float:
+        lines = [line.strip() for line in PageIndexService._strip_ocr_markdown_fences(text).splitlines() if line.strip()]
+        if not lines:
+            return 0.0
+        long_lines = sum(1 for line in lines if len(line) >= 90)
+        paragraph_lines = sum(1 for line in lines if len(line) >= 45 and not re.search(r"(?:\.{2,}|_{2,}|\u2026{1,})\s*\d{1,4}\s*$", line))
+        image_lines = sum(1 for line in lines if "<img" in line.lower() or line.lower().startswith("<div"))
+        signal = 0.0
+        if long_lines >= 2:
+            signal += 0.16
+        if paragraph_lines / max(1, len(lines)) >= 0.35:
+            signal += 0.14
+        if image_lines:
+            signal += 0.04
+        return min(0.36, signal)
+
+    @staticmethod
+    def _format_compact_pages(pages: List[int]) -> str:
+        if not pages:
+            return "[]"
+        sorted_pages = sorted(set(int(page) for page in pages))
+        ranges: List[str] = []
+        start = sorted_pages[0]
+        prev = sorted_pages[0]
+        for page in sorted_pages[1:]:
+            if page == prev + 1:
+                prev = page
+                continue
+            ranges.append(str(start) if start == prev else f"{start}-{prev}")
+            start = prev = page
+        ranges.append(str(start) if start == prev else f"{start}-{prev}")
+        return "[" + ",".join(ranges) + "]"
+
+    async def _run_pdf_ocr_pages_by_images(
+        self,
+        file_path: Path,
+        page_indices: List[int],
+        analysis: Optional[Dict[str, Any]] = None,
+        prompt: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        page_indices = sorted({int(idx) for idx in page_indices if int(idx) >= 0})
+        if not page_indices:
+            return {
+                "ocr_pages": [],
+                "ocr_coverage": 0.0,
+                "ocr_missing_pages": [],
+                "overlay_all_pages": False,
+            }
+
+        try:
+            from pageindex.layout.page_renderer import render_pages_to_images
+        except Exception:
+            requested = [idx + 1 for idx in page_indices]
+            return {
+                "ocr_pages": [],
+                "ocr_coverage": 0.0,
+                "ocr_missing_pages": requested,
+                "overlay_all_pages": False,
+            }
+
+        sem = asyncio.Semaphore(max(1, int(OCR_MAX_CONCURRENCY)))
+        render_batch_size = max(1, min(int(OCR_MAX_CONCURRENCY), 20))
+
+        async def parse_page(image_input: Dict[str, Any]) -> Dict[str, Any]:
+            page_num = int(image_input.get("page_index") or 0) + 1
+            image_b64 = str(image_input.get("image_base64") or "")
+            if not image_b64:
+                return {
+                    "page_num": page_num,
+                    "text": "",
+                    "ok": False,
+                    "ocr_image_targets": 1,
+                    "ocr_image_hits": 0,
+                    "error": "empty_rendered_page_image",
+                }
+
+            async with sem:
+                try:
+                    r = await self._ocr_image_with_resolver(
+                        image_b64,
+                        page_num,
+                        analysis=analysis,
+                        prompt=prompt,
+                        image_mime_type=str(image_input.get("image_mime_type") or "image/jpeg"),
+                    )
+                except Exception as exc:
+                    if self._is_non_recoverable_ocr_error(exc):
+                        raise
+                    self._record_ocr_call(
+                        analysis,
+                        {
+                            "task": "page_text",
+                            "engine_type": "page_text_ocr",
+                            "model": "unavailable",
+                            "error_type": type(exc).__name__,
+                        },
+                        page_num=page_num,
+                        status="missing",
+                    )
+                    return {
+                        "page_num": page_num,
+                        "text": "",
+                        "ok": False,
+                        "ocr_image_targets": 1,
+                        "ocr_image_hits": 0,
+                        "error": f"ocr_failed:{type(exc).__name__}",
+                    }
+
+            text = self._normalize_page_text_for_ocr(r.text if getattr(r, "ok", False) else "")
+            return {
+                "page_num": page_num,
+                "text": text,
+                "ok": bool(text),
+                "ocr_image_targets": 1,
+                "ocr_image_hits": 1 if text else 0,
+                "error": "" if text else "no_page_ocr_text",
+            }
+
+        rows: List[Dict[str, Any]] = []
+        for offset in range(0, len(page_indices), render_batch_size):
+            batch_indices = page_indices[offset : offset + render_batch_size]
+            images = render_pages_to_images(str(file_path), batch_indices, dpi=150)
+            batch_rows = await asyncio.gather(*(parse_page(image) for image in images))
+            rows.extend(batch_rows)
+        rows = sorted(rows, key=lambda x: int(x.get("page_num") or 0))
+
+        requested_pages = [idx + 1 for idx in page_indices]
+        returned_pages = {int(row.get("page_num") or 0) for row in rows}
+        success = sum(1 for x in rows if x.get("text"))
+        missing = [
+            page_num
+            for page_num in requested_pages
+            if page_num not in returned_pages
+        ] + [int(x["page_num"]) for x in rows if not x.get("text")]
+        summary = self._update_content_ocr_summary(
+            analysis,
+            page_count=len(requested_pages),
+            success=success,
+            missing=missing,
+        )
+        if summary is not None:
+            summary["concurrency"] = int(OCR_MAX_CONCURRENCY)
+        if analysis is not None:
+            model = summary.get("primary_model") or "unknown"
+            engine = summary.get("primary_engine") or "unknown"
+            print(
+                f"[TOC-OCR] task=page_text model={model} "
+                f"pages={summary.get('pages', len(requested_pages))} "
+                f"concurrency={summary.get('concurrency', int(OCR_MAX_CONCURRENCY))} "
+                f"status=done engine={engine} "
+                f"success={summary.get('success', success)} "
+                f"missing={summary.get('missing', len(missing))} "
+                f"fallback={summary.get('fallback', 0)}"
+            )
         return {
-            page_num: text for page_num, text in results if text
+            "ocr_pages": rows,
+            "overlay_all_pages": False,
+            "ocr_coverage": (success / len(requested_pages)) if requested_pages else 0.0,
+            "ocr_missing_pages": missing,
         }
 
     async def _run_full_pdf_ocr_by_images(
-        self, file_path: Path, page_count: int
+        self,
+        file_path: Path,
+        page_count: int,
+        analysis: Optional[Dict[str, Any]] = None,
+        prompt: Optional[str] = None,
     ) -> Dict[str, Any]:
         if page_count <= 0:
             return {
                 "ocr_pages": [],
                 "ocr_coverage": 0.0,
                 "ocr_missing_pages": [],
+                "overlay_all_pages": True,
             }
-
-        try:
-            import pymupdf
-        except Exception:
-            return {
-                "ocr_pages": [],
-                "ocr_coverage": 0.0,
-                "ocr_missing_pages": list(range(1, page_count + 1)),
-            }
-
-        ocr_service = OCRService()
-        sem = asyncio.Semaphore(max(1, int(OCR_MAX_CONCURRENCY)))
-
-        def _block_sort_key(bbox: List[float]) -> tuple[float, float]:
-            try:
-                x0, y0, _, _ = [float(v) for v in bbox]
-                return (y0, x0)
-            except Exception:
-                return (0.0, 0.0)
-
-        def collect_page_blocks(page) -> List[Dict[str, Any]]:
-            d = page.get_text("dict") or {}
-            blocks = d.get("blocks") or []
-            out: List[Dict[str, Any]] = []
-            for blk in blocks:
-                if not isinstance(blk, dict):
-                    continue
-                btype = int(blk.get("type") or 0)
-                bbox = blk.get("bbox") or [0, 0, 0, 0]
-                if len(bbox) != 4:
-                    bbox = [0, 0, 0, 0]
-                if btype == 0:
-                    texts: List[str] = []
-                    for ln in blk.get("lines") or []:
-                        for sp in ln.get("spans") or []:
-                            tx = str(sp.get("text") or "")
-                            if tx.strip():
-                                texts.append(tx)
-                    txt = re.sub(r"\s+", " ", "".join(texts)).strip()
-                    if txt:
-                        out.append({"kind": "text", "bbox": bbox, "text": txt})
-                elif btype == 1:
-                    img_bytes = blk.get("image")
-                    if isinstance(img_bytes, (bytes, bytearray)) and img_bytes:
-                        out.append(
-                            {"kind": "image", "bbox": bbox, "image": bytes(img_bytes)}
-                        )
-            out.sort(key=lambda item: _block_sort_key(item.get("bbox") or [0, 0, 0, 0]))
-            return out
-
-        def should_ocr_image_block(page_rect, bbox) -> bool:
-            try:
-                x0, y0, x1, y1 = [float(v) for v in bbox]
-            except Exception:
-                return False
-            w = max(0.0, x1 - x0)
-            h = max(0.0, y1 - y0)
-            if w < float(OCR_MIN_IMAGE_SIDE_PX) or h < float(OCR_MIN_IMAGE_SIDE_PX):
-                return False
-            page_area = max(1.0, float(page_rect.width) * float(page_rect.height))
-            ratio = (w * h) / page_area
-            return ratio >= float(OCR_MIN_IMAGE_AREA_RATIO)
-
-        page_inputs: List[Dict[str, Any]] = []
-        doc = pymupdf.open(str(file_path))
-        try:
-            for page_num in range(1, min(page_count, len(doc)) + 1):
-                page = doc[page_num - 1]
-                blocks = collect_page_blocks(page)
-                page_rect = page.rect
-                ordered_blocks: List[Dict[str, Any]] = []
-                for blk in blocks:
-                    if blk.get("kind") == "text":
-                        ordered_blocks.append(
-                            {
-                                "kind": "text",
-                                "bbox": blk.get("bbox") or [0, 0, 0, 0],
-                                "text": str(blk.get("text") or ""),
-                            }
-                        )
-                        continue
-                    if blk.get("kind") != "image":
-                        continue
-                    bbox = blk.get("bbox") or [0, 0, 0, 0]
-                    should_ocr = should_ocr_image_block(page_rect, bbox)
-                    image_b64 = ""
-                    if should_ocr:
-                        img_bytes = blk.get("image") or b""
-                        if img_bytes:
-                            image_b64 = base64.b64encode(img_bytes).decode("utf-8")
-                    ordered_blocks.append(
-                        {
-                            "kind": "image",
-                            "bbox": bbox,
-                            "ocr_target": should_ocr and bool(image_b64),
-                            "image_b64": image_b64,
-                        }
-                    )
-                page_inputs.append(
-                    {
-                        "page_num": page_num,
-                        "ordered_blocks": ordered_blocks,
-                    }
-                )
-        finally:
-            doc.close()
-
-        async def parse_page(page_input: Dict[str, Any]) -> Dict[str, Any]:
-            page_num = int(page_input.get("page_num") or 0)
-            ordered_blocks = list(page_input.get("ordered_blocks") or [])
-            merged_text_parts: List[str] = []
-            image_targets = 0
-            image_ocr_hits = 0
-
-            for blk in ordered_blocks:
-                kind = blk.get("kind")
-                if kind == "text":
-                    tx = str(blk.get("text") or "")
-                    if tx.strip():
-                        merged_text_parts.append(tx)
-                    continue
-                if kind != "image":
-                    continue
-                if not bool(blk.get("ocr_target")):
-                    continue
-
-                image_targets += 1
-                image_b64 = str(blk.get("image_b64") or "")
-                if not image_b64:
-                    continue
-                async with sem:
-                    r = await ocr_service.ocr_image_base64(image_b64, page_num)
-                if r.ok and r.text:
-                    merged_text_parts.append(r.text)
-                    image_ocr_hits += 1
-
-            merged_text = self._normalize_page_text_for_ocr(
-                "\n".join(merged_text_parts)
-            )
-            return {
-                "page_num": page_num,
-                "text": merged_text,
-                "ok": bool(image_ocr_hits > 0 or merged_text),
-                "ocr_image_targets": image_targets,
-                "ocr_image_hits": image_ocr_hits,
-                "error": "" if merged_text else "no_image_block_ocr_text",
-            }
-
-        rows = await asyncio.gather(*(parse_page(x) for x in page_inputs))
-        rows = sorted(rows, key=lambda x: int(x.get("page_num") or 0))
-
-        success = sum(1 for x in rows if x.get("text"))
-        missing = [int(x["page_num"]) for x in rows if not x.get("text")]
-        return {
-            "ocr_pages": rows,
-            "ocr_coverage": (success / page_count) if page_count > 0 else 0.0,
-            "ocr_missing_pages": missing,
-        }
+        result = await self._run_pdf_ocr_pages_by_images(
+            file_path,
+            list(range(page_count)),
+            analysis=analysis,
+            prompt=prompt,
+        )
+        result["overlay_all_pages"] = True
+        return result
 
     @staticmethod
     def _build_page_list_with_ocr_overlay(
@@ -438,13 +1568,13 @@ class PageIndexService:
     ) -> str:
         if not PAGEINDEX_FAST_LIGHT_SUMMARY_ENABLED:
             print(
-                f"[FAST_SUMMARY] skipped disabled doc={file_path.name} mode={getattr(self.opt, 'index_mode', 'unknown')}"
+                f"[TOC-SUMMARY] skipped disabled doc={file_path.name} mode={getattr(self.opt, 'index_mode', 'unknown')}"
             )
             return ""
 
         toc_outline = self._build_toc_outline_text(structure_data)
         if not toc_outline:
-            print(f"[FAST_SUMMARY] skipped empty_toc doc={file_path.name}")
+            print(f"[TOC-SUMMARY] skipped empty_toc doc={file_path.name}")
             return ""
 
         prompt = FAST_DOC_LIGHT_SUMMARY_PROMPT.format(
@@ -456,21 +1586,19 @@ class PageIndexService:
         deadline = start_time + PAGEINDEX_FAST_LIGHT_SUMMARY_TIMEOUT_SECONDS
         attempt = 0
 
-        from app.core.llm import async_chat_completion
-
         while True:
             attempt += 1
             remaining = deadline - time.perf_counter()
             if remaining <= 0:
                 elapsed_ms = int((time.perf_counter() - start_time) * 1000)
                 print(
-                    f"[FAST_SUMMARY] status=timeout doc={file_path.name} mode={getattr(self.opt, 'index_mode', 'unknown')} model={self.opt.model} timeout_s={PAGEINDEX_FAST_LIGHT_SUMMARY_TIMEOUT_SECONDS} attempts={attempt - 1} toc_len={len(toc_outline)} prompt_len={len(prompt)} elapsed_ms={elapsed_ms}"
+                    f"[TOC-SUMMARY] status=timeout doc={file_path.name} mode={getattr(self.opt, 'index_mode', 'unknown')} model={self.opt.model} timeout_s={PAGEINDEX_FAST_LIGHT_SUMMARY_TIMEOUT_SECONDS} attempts={attempt - 1} toc_len={len(toc_outline)} prompt_len={len(prompt)} elapsed_ms={elapsed_ms}"
                 )
                 return ""
 
             try:
                 response = await asyncio.wait_for(
-                    async_chat_completion(
+                    self._indexing_completion(
                         messages=[{"role": "user", "content": prompt}],
                         model=self.opt.model,
                         temperature=0,
@@ -483,17 +1611,17 @@ class PageIndexService:
                 elapsed_ms = int((time.perf_counter() - start_time) * 1000)
                 if summary:
                     print(
-                        f"[FAST_SUMMARY] status=ok doc={file_path.name} mode={getattr(self.opt, 'index_mode', 'unknown')} model={self.opt.model} timeout_s={PAGEINDEX_FAST_LIGHT_SUMMARY_TIMEOUT_SECONDS} attempts={attempt} toc_len={len(toc_outline)} prompt_len={len(prompt)} elapsed_ms={elapsed_ms}"
+                        f"[TOC-SUMMARY] status=ok doc={file_path.name} mode={getattr(self.opt, 'index_mode', 'unknown')} model={self.opt.model} timeout_s={PAGEINDEX_FAST_LIGHT_SUMMARY_TIMEOUT_SECONDS} attempts={attempt} toc_len={len(toc_outline)} prompt_len={len(prompt)} elapsed_ms={elapsed_ms}"
                     )
                     return summary
 
                 print(
-                    f"[FAST_SUMMARY] status=empty_output doc={file_path.name} attempt={attempt} remaining_s={round(max(0.0, deadline - time.perf_counter()), 2)}"
+                    f"[TOC-SUMMARY] status=empty_output doc={file_path.name} attempt={attempt} remaining_s={round(max(0.0, deadline - time.perf_counter()), 2)}"
                 )
             except Exception as e:
                 elapsed_ms = int((time.perf_counter() - start_time) * 1000)
                 print(
-                    f"[FAST_SUMMARY] status=retry_error doc={file_path.name} mode={getattr(self.opt, 'index_mode', 'unknown')} model={self.opt.model} attempt={attempt} timeout_s={PAGEINDEX_FAST_LIGHT_SUMMARY_TIMEOUT_SECONDS} toc_len={len(toc_outline)} prompt_len={len(prompt)} elapsed_ms={elapsed_ms} error_type={type(e).__name__} error={e}"
+                    f"[TOC-SUMMARY] status=retry_error doc={file_path.name} mode={getattr(self.opt, 'index_mode', 'unknown')} model={self.opt.model} attempt={attempt} timeout_s={PAGEINDEX_FAST_LIGHT_SUMMARY_TIMEOUT_SECONDS} toc_len={len(toc_outline)} prompt_len={len(prompt)} elapsed_ms={elapsed_ms} error_type={type(e).__name__} error={e}"
                 )
 
             sleep_time = min(0.8, max(0.1, deadline - time.perf_counter()))
@@ -508,19 +1636,20 @@ class PageIndexService:
             return ""
 
         watermark_fragments = [
-            "请务必阅读正文之后的免责声明及其项下所有内容",
-            "获取更多维度报告数据，请访问亿欧网",
-            "获取更多维度报告数据 ，请访问亿欧网",
+            "disclaimer",
+            "www.iyiou.com",
+            "iyiou",
             "www.iyiou.com",
         ]
         for fragment in watermark_fragments:
             t = t.replace(fragment, " ")
 
-        t = re.sub(r"^[◆•●\-*u\s]+", "", t)
-        t = re.sub(r"(?i)^chapter\s*\d+[a-zA-Z]*[\s:：.\-]*", "", t)
-        t = re.sub(r"^第\s*\d+\s*[章节部分卷篇]\s*", "", t)
-        t = re.sub(r"^\d+(?:\.\d+)*[\s:：.\-]*", "", t)
-        t = re.sub(r"\s+", " ", t).strip(" -:：|·")
+        t = re.sub(r"^请务必阅读正文之后的免责声明及其项下所有内容\s*", "", t)
+        t = re.sub(r"^[•·\-\*\s]+", "", t)
+        t = re.sub(r"(?i)^chapter\s*\d+[a-zA-Z]*[\s:：\-]*", "", t)
+        t = re.sub(r"^第\s*[一二三四五六七八九十百千万\d]+\s*[章节部分卷篇]\s*", "", t)
+        t = re.sub(r"^\d+(?:\.\d+)*[\s:：\-]*", "", t)
+        t = re.sub(r"\s+", " ", t).strip(" -:;,.，。:：")
         return t
 
     @staticmethod
@@ -531,7 +1660,7 @@ class PageIndexService:
             ch.isalnum() or ch in " \n\t.,:;!?()[]{}<>-_/\\'\"%&+*#@$"
         ):
             return True
-        if ch in "·—：，。、《》；（）【】“”‘’、":
+        if ch in "\u00b7\u2014\uff1a\uff0c\u3002\u3001\uff1b\uff08\uff09\u3010\u3011\u201c\u201d\u2018\u2019":
             return True
         return False
 
@@ -552,6 +1681,9 @@ class PageIndexService:
 
     @staticmethod
     def _is_noise_title(title: str) -> bool:
+        stripped = (title or "").strip()
+        if re.fullmatch(r"\d{4}[-/.]\d{1,2}[-/.]\d{1,2}", stripped):
+            return True
         t = PageIndexService._normalize_title(title)
         if not t:
             return True
@@ -576,7 +1708,7 @@ class PageIndexService:
         if re.fullmatch(r"[A-Za-z]{1,6}", t):
             return True
 
-        noise_keywords = ["免责声明", "风险提示", "分析师", "邮箱", "电话", "版权", "www.", "@"]
+        noise_keywords = ["risk", "disclaimer", "email", "phone", "copyright", "www.", "@", "notice", "warning", "contact"]
         if any(k in t for k in noise_keywords):
             return True
 
@@ -695,31 +1827,18 @@ class PageIndexService:
         return structure_data
 
     @staticmethod
-    def _build_segment_fallback_toc(page_count: Optional[int]) -> List[Dict[str, Any]]:
-        total = int(page_count or 0)
-        if total <= 0:
-            return []
-        segment = 8 if total >= 40 else 5
-        nodes = []
-        idx = 1
-        for start in range(1, total + 1, segment):
-            end = min(total, start + segment - 1)
-            nodes.append(
-                {
-                    "node_id": f"{idx:04d}",
-                    "title": f"Part {idx} (pages {start}-{end})",
-                    "start_index": start,
-                    "end_index": end,
-                    "nodes": [],
-                }
-            )
-            idx += 1
-        return nodes
-
-    @staticmethod
     def _extract_llm_text_content(content: Any) -> str:
         if isinstance(content, str):
             return content.strip()
+        choices = getattr(content, "choices", None)
+        if choices:
+            try:
+                message = choices[0].message
+                text = getattr(message, "content", None)
+                if isinstance(text, str):
+                    return text.strip()
+            except Exception:
+                pass
         if isinstance(content, list):
             parts: List[str] = []
             for item in content:
@@ -730,155 +1849,15 @@ class PageIndexService:
             return "\n".join(parts).strip()
         return ""
 
-    async def _generate_fast_visual_page_summaries(
-        self,
-        file_path: Path,
-        page_numbers: List[int],
-        max_attempts_override: Optional[int] = None,
-        per_page_timeout_override: Optional[int] = None,
-    ) -> List[Dict[str, Any]]:
-        if not page_numbers:
-            return []
-
-        from app.core.llm import pdf_page_to_base64
-        from app.services.model_gateway import ModelGateway
-
-        gateway = ModelGateway()
-        max_concurrency = max(1, int(VISUAL_VLM_MAX_CONCURRENCY))
-        max_attempts = max(
-            1,
-            int(
-                max_attempts_override
-                if max_attempts_override is not None
-                else VISUAL_VLM_PAGE_MAX_ATTEMPTS
-            ),
-        )
-        per_page_timeout = max(
-            5,
-            int(
-                per_page_timeout_override
-                if per_page_timeout_override is not None
-                else VISUAL_PAGE_TIMEOUT_SECONDS
-            ),
-        )
-        semaphore = asyncio.Semaphore(max_concurrency)
-
-        async def summarize_one(page_num: int) -> Optional[Dict[str, Any]]:
-            async with semaphore:
-                image_b64 = pdf_page_to_base64(str(file_path), page_num)
-                if not image_b64:
-                    return None
-
-                prompt = (
-                    "Read this PDF page image and write one concise searchable summary. "
-                    "Keep the topic, key terms, chart/table conclusions, and do not invent facts. "
-                    "Output no more than 60 Chinese characters when possible."
-                )
-                image_url = f"data:image/jpeg;base64,{image_b64}"
-                for _ in range(max_attempts):
-                    try:
-                        response = await asyncio.wait_for(
-                            gateway.vision_enrich_pdf_page(prompt, image_url),
-                            timeout=per_page_timeout,
-                        )
-                        content = self._extract_llm_text_content(
-                            response.choices[0].message.content
-                        )
-                        content = re.sub(r"\s+", " ", content).strip().strip('"')
-                        if content:
-                            return {"page_num": page_num, "summary": content[:120]}
-                    except Exception:
-                        continue
-                return None
-
-        unique_pages = sorted({int(p) for p in page_numbers if int(p) > 0})
-        batch_size = max(2, max_concurrency * 2)
-        results: List[Optional[Dict[str, Any]]] = []
-        for i in range(0, len(unique_pages), batch_size):
-            batch = unique_pages[i : i + batch_size]
-            batch_results = await asyncio.gather(*(summarize_one(p) for p in batch))
-            results.extend(batch_results)
-
-        summaries = [r for r in results if r]
-        summaries.sort(key=lambda x: x["page_num"])
-        return summaries
-
-    @staticmethod
-    def _inject_visual_summaries_into_structure(
-        structure_data: Any, visual_summaries: List[Dict[str, Any]]
-    ) -> None:
-        if not visual_summaries:
-            return
-
-        nodes = structure_to_list(structure_data)
-        if not nodes:
-            return
-
-        def _safe_int(v: Any) -> Optional[int]:
-            try:
-                return int(v)
-            except Exception:
-                return None
-
-        for item in visual_summaries:
-            page_num = _safe_int(item.get("page_num"))
-            summary = (item.get("summary") or "").strip()
-            if not page_num or not summary:
-                continue
-
-            candidates = []
-            for n in nodes:
-                start = _safe_int(n.get("start_index"))
-                end = _safe_int(n.get("end_index"))
-                if start is None or end is None:
-                    continue
-                if start <= page_num <= end:
-                    candidates.append((end - start, n))
-
-            if not candidates:
-                continue
-
-            _, target = min(candidates, key=lambda x: x[0])
-            marker = f"[visual summary p.{page_num}] {summary}"
-
-            text = (target.get("text") or "").strip()
-            if marker not in text:
-                target["text"] = (text + "\n" + marker).strip()
-
-            node_summary = (target.get("summary") or "").strip()
-            if not node_summary:
-                target["summary"] = summary
-            elif summary not in node_summary:
-                target["summary"] = (node_summary + "; " + summary)[:260]
-
-    @staticmethod
-    def _looks_like_segment_fallback_toc(structure_data: Any) -> bool:
-        nodes = structure_to_list(structure_data)
-        if not nodes:
-            return False
-        sample = nodes[: min(6, len(nodes))]
-        fallback_hits = 0
-        for node in sample:
-            title = (node.get("title") or "").strip()
-            if re.match(r"^Part\s+\d+\s+\(pages\s+\d+-\d+\)$", title) or re.match(
-                r"^Part\s+\d+\s*:", title
-            ):
-                fallback_hits += 1
-        return fallback_hits >= max(2, len(sample) - 1)
-
     @staticmethod
     def _summary_to_toc_title(summary: str, max_len: int = 30) -> str:
         text = re.sub(r"\s+", " ", (summary or "").strip())
         if not text:
             return ""
 
-        text = re.sub(
-            r"^(该文档|本页|本案例|该案例|该报告|案例展示|文档显示|内容展示)[：:，,\s]*",
-            "",
-            text,
-        )
-        first_clause = re.split(r"[。；;]", text, maxsplit=1)[0]
-        first_clause = first_clause.strip("，,:：。;； ")
+        text = re.sub(r"^(本文档|本案例|该报告|文档显示|内容展示)[：:，,\s]*", "", text)
+        first_clause = re.split(r"[。！？；;.!?]", text, maxsplit=1)[0]
+        first_clause = first_clause.strip(" ：:，,；;。 ")
         if len(first_clause) < 8:
             first_clause = text[: max_len + 8]
         if len(first_clause) > max_len:
@@ -986,1084 +1965,6 @@ class PageIndexService:
             if fallback:
                 node["summary"] = fallback[:220]
 
-    @staticmethod
-    def _merge_visual_summaries_for_section(summaries: List[str]) -> str:
-        cleaned: List[str] = []
-        seen = set()
-        for item in summaries:
-            s = re.sub(r"\s+", " ", str(item or "")).strip().strip("銆傦紱; ")
-            if not s:
-                continue
-            key = s[:80]
-            if key in seen:
-                continue
-            seen.add(key)
-            cleaned.append(s)
-
-        if not cleaned:
-            return ""
-        if len(cleaned) == 1:
-            return cleaned[0][:220]
-        merged = "; ".join(cleaned[:3])
-        return merged[:260]
-
-    @staticmethod
-    def _enrich_toc_nodes_with_visual_evidence(
-        toc_nodes: List[Dict[str, Any]], visual_summaries: List[Dict[str, Any]]
-    ) -> None:
-        if not toc_nodes:
-            return
-
-        page_summary: Dict[int, str] = {}
-        for item in visual_summaries or []:
-            try:
-                p = int(item.get("page_num") or 0)
-            except Exception:
-                continue
-            s = re.sub(r"\s+", " ", str(item.get("summary") or "")).strip()
-            if p > 0 and s and p not in page_summary:
-                page_summary[p] = s
-
-        for node in toc_nodes:
-            try:
-                start = int(node.get("start_index") or 0)
-                end = int(node.get("end_index") or 0)
-            except Exception:
-                start, end = 0, 0
-
-            evidence_pages: List[int] = []
-            evidence_summaries: List[str] = []
-            if start > 0 and end >= start:
-                for p in range(start, end + 1):
-                    if p in page_summary:
-                        evidence_pages.append(p)
-                        evidence_summaries.append(page_summary[p])
-
-            section_summary = PageIndexService._merge_visual_summaries_for_section(
-                evidence_summaries
-            )
-            if section_summary:
-                node["summary"] = section_summary
-                node["summary_source"] = "vision_segment"
-            else:
-                fallback = (node.get("summary") or "").strip() or (
-                    node.get("title") or ""
-                ).strip()
-                if fallback:
-                    node["summary"] = fallback[:260]
-                    node["summary_source"] = "fallback"
-
-            node["evidence_pages"] = evidence_pages
-
-    @staticmethod
-    def _collect_node_evidence(
-        node: Dict[str, Any],
-        page_summary: Dict[int, str],
-        page_count: int,
-    ) -> tuple[List[int], List[str]]:
-        try:
-            start = int(node.get("start_index") or 0)
-            end = int(node.get("end_index") or 0)
-        except Exception:
-            start, end = 0, 0
-
-        if start <= 0 or end < start:
-            return [], []
-
-        pages = [p for p in range(start, end + 1) if p in page_summary]
-
-        min_evidence = 3 if (end - start + 1) <= 2 else 2
-        if len(pages) < min_evidence:
-            for delta in (1, 2, 3):
-                left = start - delta
-                right = end + delta
-                if left >= 1 and left in page_summary and left not in pages:
-                    pages.append(left)
-                if right <= page_count and right in page_summary and right not in pages:
-                    pages.append(right)
-                if len(pages) >= min_evidence:
-                    break
-
-        pages = sorted(set(pages))
-        summaries = [page_summary[p] for p in pages if p in page_summary]
-        return pages, summaries
-
-    @staticmethod
-    def _fallback_node_summary(
-        node: Dict[str, Any], evidence_summaries: List[str]
-    ) -> str:
-        merged = PageIndexService._merge_visual_summaries_for_section(
-            evidence_summaries
-        )
-        if merged:
-            return merged[:260]
-        title = (node.get("title") or "").strip()
-        text = re.sub(r"\s+", " ", str(node.get("text") or "")).strip()
-        fallback = title or text[:180]
-        return fallback[:260]
-
-    async def _rewrite_balanced_node_summaries(
-        self,
-        structure_data: Any,
-        visual_summaries: List[Dict[str, Any]],
-        page_count: int,
-    ) -> None:
-        nodes = structure_to_list(structure_data)
-        if not nodes:
-            return
-
-        from app.core.llm import async_chat_completion
-
-        page_summary: Dict[int, str] = {}
-        for item in visual_summaries or []:
-            try:
-                p = int(item.get("page_num") or 0)
-            except Exception:
-                continue
-            s = re.sub(r"\s+", " ", str(item.get("summary") or "")).strip()
-            if p > 0 and s and p not in page_summary:
-                page_summary[p] = s
-
-        sem = asyncio.Semaphore(8)
-
-        async def rewrite_one(node: Dict[str, Any]) -> None:
-            evidence_pages, evidence_summaries = self._collect_node_evidence(
-                node=node,
-                page_summary=page_summary,
-                page_count=page_count,
-            )
-            node["evidence_pages"] = evidence_pages
-
-            title = (node.get("title") or "").strip()
-            start = node.get("start_index")
-            end = node.get("end_index")
-            node_text = re.sub(r"\s+", " ", str(node.get("text") or "")).strip()[:500]
-
-            evidence_block = "\n".join(
-                f"- p.{p}: {page_summary.get(p, '')}" for p in evidence_pages[:6]
-            )
-            if not evidence_block:
-                evidence_block = "- no visual evidence"
-
-            prompt = (
-                "You are a document summarization assistant. Generate a node-level summary "
-                "for one chapter or page range based only on the given evidence.\n"
-                f"Title: {title or 'Untitled section'}\n"
-                f"Page range: {start}-{end}\n"
-                f"Text evidence: {node_text or 'none'}\n"
-                "Visual evidence:\n"
-                f"{evidence_block}\n\n"
-                "Requirements:\n"
-                "1. Output 1-2 concise Chinese sentences, 40-160 characters when possible.\n"
-                "2. Summarize the whole page range, not a single page.\n"
-                "3. Do not invent facts. Output only the summary text."
-            )
-
-            summary = ""
-            try:
-                async with sem:
-                    resp = await asyncio.wait_for(
-                        async_chat_completion(
-                            messages=[{"role": "user", "content": prompt}],
-                            temperature=0.1,
-                            model=self.opt.model,
-                        ),
-                        timeout=8,
-                    )
-                summary = self._extract_llm_text_content(
-                    resp.choices[0].message.content
-                )
-                summary = re.sub(r"\s+", " ", summary).strip().strip('"')
-                if summary == title or "本页" in summary:
-                    summary = ""
-            except Exception:
-                summary = ""
-
-            if not summary:
-                summary = self._fallback_node_summary(node, evidence_summaries)
-
-            node["summary"] = summary[:260]
-            node["summary_source"] = "llm_node"
-
-        await asyncio.gather(*(rewrite_one(node) for node in nodes))
-
-    @staticmethod
-    def _max_visual_gap(page_count: int, visual_summaries: List[Dict[str, Any]]) -> int:
-        if page_count <= 0:
-            return 0
-        pages = sorted(
-            {
-                int(item.get("page_num"))
-                for item in visual_summaries
-                if item.get("page_num")
-            }
-        )
-        if not pages:
-            return page_count
-
-        max_gap = max(0, pages[0] - 1, page_count - pages[-1])
-        for i in range(len(pages) - 1):
-            gap = pages[i + 1] - pages[i] - 1
-            if gap > max_gap:
-                max_gap = gap
-        return max_gap
-
-    @staticmethod
-    def _build_visual_recovery_targets(
-        page_count: int,
-        existing_pages: set[int],
-        gate_reason: Optional[str],
-        target_ratio: float,
-        max_gap_target: int = 2,
-    ) -> List[int]:
-        if page_count <= 0:
-            return []
-
-        needed = max(1, int(round(page_count * target_ratio)))
-        targets: set[int] = set()
-
-        sample_count = min(page_count, max(needed, 12))
-        if sample_count <= 1:
-            targets.add(page_count)
-        else:
-            for i in range(sample_count):
-                p = int(round(1 + i * (page_count - 1) / (sample_count - 1)))
-                if p not in existing_pages:
-                    targets.add(p)
-
-        # Fill large gaps first using midpoint and quartiles.
-        all_pages = sorted(existing_pages)
-        boundaries = [0] + all_pages + [page_count + 1]
-        for i in range(len(boundaries) - 1):
-            left = boundaries[i]
-            right = boundaries[i + 1]
-            gap = right - left - 1
-            if gap <= max(1, int(max_gap_target)):
-                continue
-            candidates = [
-                left + (gap // 2),
-                left + (gap // 4),
-                left + ((gap * 3) // 4),
-            ]
-            for p in candidates:
-                if 1 <= p <= page_count and p not in existing_pages:
-                    targets.add(p)
-
-        # Strengthen tail sampling.
-        tail_start = max(1, int(page_count * 0.7))
-        for p in range(tail_start, page_count + 1, 2):
-            if p not in existing_pages:
-                targets.add(p)
-
-        # Strengthen front sampling when the structure is sparse.
-        if gate_reason in {
-            "node_sparse",
-            "visual_summary_sparse",
-            "coverage_gap_high",
-            "coverage_gap_strict",
-            "visual_summary_insufficient",
-            "node_evidence_sparse",
-        }:
-            head_end = min(page_count, max(8, int(page_count * 0.25)))
-            for p in range(1, head_end + 1, 2):
-                if p not in existing_pages:
-                    targets.add(p)
-
-        return sorted(targets)
-
-    @staticmethod
-    def _build_vision_first_toc_from_visual_summaries(
-        page_count: Optional[int], visual_summaries: List[Dict[str, Any]]
-    ) -> List[Dict[str, Any]]:
-        total = int(page_count or 0)
-        if total <= 0:
-            return []
-
-        source = sorted(
-            [s for s in visual_summaries if s.get("page_num") and s.get("summary")],
-            key=lambda x: int(x["page_num"]),
-        )
-        if not source:
-            return []
-
-        anchors: List[Dict[str, Any]] = []
-        prev_title = ""
-        for item in source:
-            page_num = int(item["page_num"])
-            raw_summary = str(item.get("summary") or "").strip()
-            title = PageIndexService._summary_to_toc_title(raw_summary)
-            if not title:
-                continue
-            if not anchors:
-                anchors.append(
-                    {"page_num": page_num, "title": title, "summary": raw_summary}
-                )
-                prev_title = title
-                continue
-
-            prev_page = int(anchors[-1]["page_num"])
-            sim = PageIndexService._title_similarity(prev_title, title)
-            has_signal_word = any(
-                kw in title
-                for kw in [
-                    "案例",
-                    "场景",
-                    "系统",
-                    "平台",
-                    "应用",
-                    "项目",
-                    "治理",
-                    "智能",
-                    "模型",
-                ]
-            )
-            if page_num - prev_page >= 2 or sim < 0.62 or has_signal_word:
-                anchors.append(
-                    {"page_num": page_num, "title": title, "summary": raw_summary}
-                )
-                prev_title = title
-
-        # 绗簩杞細濡傛灉閿氱偣杩囧皯锛屾斁瀹界浉浼煎害闃堝€艰ˉ閿氱偣
-        min_nodes = min(max(6, total // 8), 18)
-        if len(anchors) < min_nodes:
-            anchors = []
-            prev_title = ""
-            for item in source:
-                page_num = int(item["page_num"])
-                raw_summary = str(item.get("summary") or "").strip()
-                title = PageIndexService._summary_to_toc_title(raw_summary)
-                if not title:
-                    continue
-                if not anchors:
-                    anchors.append(
-                        {
-                            "page_num": page_num,
-                            "title": title,
-                            "summary": raw_summary,
-                        }
-                    )
-                    prev_title = title
-                    continue
-                sim = PageIndexService._title_similarity(prev_title, title)
-                if sim < 0.78:
-                    anchors.append(
-                        {
-                            "page_num": page_num,
-                            "title": title,
-                            "summary": raw_summary,
-                        }
-                    )
-                    prev_title = title
-
-        # 鎺у埗鑺傜偣涓婇檺锛岄伩鍏嶇洰褰曡繃瀵嗭紙淇濈暀鏂囨湯閿氱偣锛岄槻姝㈠熬閮ㄥ唴瀹逛涪澶憋級
-        max_nodes = 80 if total <= 80 else 60
-        if len(anchors) > max_nodes:
-            if max_nodes <= 1:
-                anchors = [anchors[-1]]
-            else:
-                n = len(anchors)
-                sampled_indices = sorted(
-                    {
-                        int(round(i * (n - 1) / (max_nodes - 1)))
-                        for i in range(max_nodes)
-                    }
-                )
-                anchors = [anchors[i] for i in sampled_indices]
-
-        if not anchors:
-            return []
-
-        nodes: List[Dict[str, Any]] = []
-        for idx, anchor in enumerate(anchors):
-            start = int(anchor["page_num"])
-            end = (
-                int(anchors[idx + 1]["page_num"]) - 1
-                if idx < len(anchors) - 1
-                else total
-            )
-            end = max(start, min(total, end))
-            title = anchor["title"]
-            if not PageIndexService._is_semantic_toc_title(title):
-                title = f"Part {idx + 1}: {title}" if title else f"Part {idx + 1}"
-            nodes.append(
-                {
-                    "node_id": f"{idx + 1:04d}",
-                    "title": title,
-                    "summary": str(anchor.get("summary") or title)[:220],
-                    "start_index": start,
-                    "end_index": end,
-                    "nodes": [],
-                }
-            )
-        return PageIndexService._densify_toc_by_max_span(nodes, total)
-
-    @staticmethod
-    def _vision_first_toc_quality_ok(
-        toc_nodes: List[Dict[str, Any]], page_count: int
-    ) -> bool:
-        metrics = PageIndexService._compute_vision_toc_gate_metrics(
-            toc_nodes=toc_nodes,
-            page_count=page_count,
-            # 鍏煎鏃ф祴璇曡涔夛細浠呰瘎浼扮粨鏋勮川閲忥紝涓嶅洜瑙嗚瑕嗙洊鐜囪鍚﹀喅
-            visual_summaries=(
-                [{"page_num": i + 1, "summary": "ok"} for i in range(page_count)]
-                if page_count > 0
-                else []
-            ),
-        )
-        ok, _ = PageIndexService._evaluate_vision_toc_gate(metrics)
-        return ok
-
-    @staticmethod
-    def _compute_vision_toc_gate_metrics(
-        toc_nodes: List[Dict[str, Any]],
-        page_count: int,
-        visual_summaries: List[Dict[str, Any]],
-    ) -> Dict[str, Any]:
-        q = PageIndexService._compute_structure_quality(toc_nodes)
-        node_count = int(q.get("node_count") or 0)
-        semantic_ratio = (
-            sum(
-                1
-                for n in toc_nodes
-                if PageIndexService._is_semantic_toc_title(n.get("title") or "")
-            )
-            / max(1, node_count)
-            if node_count > 0
-            else 0.0
-        )
-        last_end = int(toc_nodes[-1].get("end_index") or 0) if toc_nodes else 0
-        coverage_ratio = (last_end / page_count) if page_count > 0 else 0.0
-
-        tail_start = max(1, int(page_count * 0.7)) if page_count > 0 else 1
-        tail_anchor_count = sum(
-            1 for n in toc_nodes if int(n.get("start_index") or 0) >= tail_start
-        )
-        tail_anchor_ratio = (
-            tail_anchor_count / max(1, node_count) if node_count > 0 else 0.0
-        )
-
-        visual_summary_ratio = (
-            len(visual_summaries) / page_count if page_count > 0 else 0.0
-        )
-
-        max_gap_pages = PageIndexService._max_visual_gap(page_count, visual_summaries)
-        adjacent_sims: List[float] = []
-        for i in range(max(0, len(toc_nodes) - 1)):
-            t1 = str(toc_nodes[i].get("title") or "")
-            t2 = str(toc_nodes[i + 1].get("title") or "")
-            adjacent_sims.append(PageIndexService._title_similarity(t1, t2))
-        if adjacent_sims:
-            ranked = sorted(adjacent_sims)
-            p95_idx = int(round(0.95 * (len(ranked) - 1)))
-            adjacent_title_similarity_p95 = ranked[p95_idx]
-        else:
-            adjacent_title_similarity_p95 = 0.0
-
-        evidence_ok = 0
-        for n in toc_nodes:
-            start = int(n.get("start_index") or 0)
-            end = int(n.get("end_index") or 0)
-            span = (end - start + 1) if (start > 0 and end >= start) else 1
-            min_evidence = 1 if span <= 2 else 2
-            evidence_pages = n.get("evidence_pages") or []
-            try:
-                evidence_count = len([int(p) for p in evidence_pages])
-            except Exception:
-                evidence_count = 0
-            if evidence_count >= min_evidence:
-                evidence_ok += 1
-        node_evidence_ratio = (
-            evidence_ok / max(1, node_count) if node_count > 0 else 0.0
-        )
-
-        return {
-            "node_count": node_count,
-            "quality_score": float(q.get("score") or 0.0),
-            "semantic_ratio": semantic_ratio,
-            "coverage_ratio": coverage_ratio,
-            "tail_anchor_ratio": tail_anchor_ratio,
-            "tail_anchor_count": tail_anchor_count,
-            "visual_summary_ratio": visual_summary_ratio,
-            "max_gap_pages": max_gap_pages,
-            "adjacent_title_similarity_p95": adjacent_title_similarity_p95,
-            "node_evidence_ratio": node_evidence_ratio,
-            "page_count": page_count,
-        }
-
-    @staticmethod
-    def _evaluate_vision_toc_gate(metrics: Dict[str, Any]) -> tuple[bool, str]:
-        node_count = int(metrics.get("node_count") or 0)
-        quality_score = float(metrics.get("quality_score") or 0.0)
-        semantic_ratio = float(metrics.get("semantic_ratio") or 0.0)
-        coverage_ratio = float(metrics.get("coverage_ratio") or 0.0)
-        tail_anchor_ratio = float(metrics.get("tail_anchor_ratio") or 0.0)
-        visual_summary_ratio = float(metrics.get("visual_summary_ratio") or 0.0)
-        max_gap_pages = int(metrics.get("max_gap_pages") or 0)
-        adjacent_title_similarity_p95 = float(
-            metrics.get("adjacent_title_similarity_p95") or 0.0
-        )
-        page_count = int(metrics.get("page_count") or 0)
-
-        min_nodes = 4 if page_count <= 40 else 5
-        if node_count < min_nodes:
-            return False, "node_sparse"
-        if quality_score < 0.45:
-            return False, "quality_low"
-        if semantic_ratio < 0.6:
-            return False, "semantic_low"
-        if coverage_ratio < 0.9:
-            return False, "coverage_low"
-        if page_count >= 24 and max_gap_pages > max(6, page_count // 5):
-            return False, "coverage_gap_high"
-        if page_count >= 24 and tail_anchor_ratio < 0.12:
-            return False, "anchor_sparse_tail"
-        if visual_summary_ratio < 0.12:
-            return False, "visual_summary_sparse"
-        if page_count >= 24 and adjacent_title_similarity_p95 > 0.92:
-            return False, "title_redundant"
-        return True, "ok"
-
-    @staticmethod
-    def _evaluate_vision_toc_gate_strict(metrics: Dict[str, Any]) -> tuple[bool, str]:
-        ok, reason = PageIndexService._evaluate_vision_toc_gate(metrics)
-        if not ok:
-            return ok, reason
-
-        visual_summary_ratio = float(metrics.get("visual_summary_ratio") or 0.0)
-        max_gap_pages = int(metrics.get("max_gap_pages") or 0)
-        node_evidence_ratio = float(metrics.get("node_evidence_ratio") or 0.0)
-
-        if visual_summary_ratio < float(VISION_TOC_STRICT_TARGET_RATIO):
-            return False, "visual_summary_insufficient"
-        if max_gap_pages > int(VISION_TOC_STRICT_MAX_GAP_PAGES):
-            return False, "coverage_gap_strict"
-        if node_evidence_ratio < 0.9:
-            return False, "node_evidence_sparse"
-        return True, "ok"
-
-    async def _repair_vision_tail_once(
-        self,
-        file_path: Path,
-        page_count: int,
-        visual_summaries: List[Dict[str, Any]],
-        gate_reason: Optional[str] = None,
-    ) -> List[Dict[str, Any]]:
-        if page_count <= 0:
-            return visual_summaries
-
-        target_ratio = float(VISION_TOC_STRICT_TARGET_RATIO)
-        max_gap_target = int(VISION_TOC_STRICT_MAX_GAP_PAGES)
-        max_rounds = max(1, int(VISION_TOC_STRICT_MAX_RECOVERY_ROUNDS))
-        merged = list(visual_summaries)
-
-        for _ in range(max_rounds):
-            existing_pages = {
-                int(item.get("page_num")) for item in merged if item.get("page_num")
-            }
-            coverage_ratio = len(existing_pages) / max(1, page_count)
-            max_gap_pages = self._max_visual_gap(page_count, merged)
-            if coverage_ratio >= target_ratio and max_gap_pages <= max_gap_target:
-                break
-
-            target_pages = self._build_visual_recovery_targets(
-                page_count=page_count,
-                existing_pages=existing_pages,
-                gate_reason=gate_reason,
-                target_ratio=target_ratio,
-                max_gap_target=max_gap_target,
-            )
-            if not target_pages:
-                break
-
-            extra = await self._generate_fast_visual_page_summaries(
-                file_path,
-                target_pages,
-                max_attempts_override=max(3, int(VISUAL_VLM_PAGE_MAX_ATTEMPTS)),
-                per_page_timeout_override=max(18, int(VISUAL_PAGE_TIMEOUT_SECONDS)),
-            )
-            if not extra:
-                break
-
-            before = len(existing_pages)
-            for item in extra:
-                p = int(item.get("page_num") or 0)
-                if p > 0 and p not in existing_pages:
-                    merged.append(item)
-                    existing_pages.add(p)
-            if len(existing_pages) == before:
-                break
-
-            merged.sort(key=lambda x: int(x["page_num"]))
-        return merged
-
-    @staticmethod
-    def _vision_gate_reason_to_error(reason: str) -> str:
-        mapping = {
-            "coverage_low": "VISION_TOC_COVERAGE_LOW",
-            "coverage_gap_high": "VISION_TOC_COVERAGE_LOW",
-            "coverage_gap_strict": "VISION_TOC_COVERAGE_LOW",
-            "anchor_sparse_tail": "VISION_TOC_ANCHOR_SPARSE_TAIL",
-            "semantic_low": "VISION_TOC_EVIDENCE_MISMATCH",
-            "visual_summary_sparse": "VISION_TOC_INSUFFICIENT_STRUCTURE",
-            "visual_summary_insufficient": "VISION_TOC_INSUFFICIENT_STRUCTURE",
-            "node_sparse": "VISION_TOC_INSUFFICIENT_STRUCTURE",
-            "node_evidence_sparse": "VISION_TOC_EVIDENCE_MISMATCH",
-            "title_redundant": "VISION_TOC_EVIDENCE_MISMATCH",
-            "quality_low": "VISION_TOC_QUALITY_TOO_LOW",
-        }
-        return mapping.get(reason, "VISION_TOC_QUALITY_TOO_LOW")
-
-    @staticmethod
-    def _build_visual_fallback_toc(
-        page_count: Optional[int], visual_summaries: List[Dict[str, Any]]
-    ) -> List[Dict[str, Any]]:
-        total = int(page_count or 0)
-        if total <= 0:
-            return []
-
-        if not visual_summaries:
-            return PageIndexService._build_segment_fallback_toc(total)
-
-        sorted_summaries = sorted(
-            [s for s in visual_summaries if s.get("page_num") and s.get("summary")],
-            key=lambda x: int(x["page_num"]),
-        )
-        if not sorted_summaries:
-            return PageIndexService._build_segment_fallback_toc(total)
-
-        segment = 6 if total >= 36 else 4
-        nodes: List[Dict[str, Any]] = []
-        idx = 1
-        for start in range(1, total + 1, segment):
-            end = min(total, start + segment - 1)
-            anchor = next(
-                (
-                    item
-                    for item in sorted_summaries
-                    if start <= int(item["page_num"]) <= end
-                ),
-                None,
-            )
-            anchor_text = ""
-            if anchor:
-                anchor_text = re.sub(
-                    r"\s+", " ", str(anchor.get("summary") or "")
-                ).strip()
-            if anchor_text:
-                title = f"Part {idx}: {anchor_text[:24]}"
-            else:
-                title = f"Part {idx} (pages {start}-{end})"
-
-            nodes.append(
-                {
-                    "node_id": f"{idx:04d}",
-                    "title": title,
-                    "summary": (anchor_text or title)[:220],
-                    "start_index": start,
-                    "end_index": end,
-                    "nodes": [],
-                }
-            )
-            idx += 1
-        return nodes
-
-    async def _enhance_balanced_fallback_with_visual(
-        self,
-        result: Dict[str, Any],
-        file_path: Path,
-        pre_analysis: Dict[str, Any],
-    ) -> None:
-        if not self._looks_like_segment_fallback_toc(result.get("structure", result)):
-            return
-        if float(pre_analysis.get("unparseable_ratio") or 0.0) <= 0.5:
-            return
-
-        vlm_needed_pages = [
-            int(p) for p in (pre_analysis.get("vlm_needed_pages") or [])
-        ]
-        if not vlm_needed_pages:
-            return
-
-        visual_summaries = await self._generate_fast_visual_page_summaries(
-            file_path, vlm_needed_pages
-        )
-        if not visual_summaries:
-            return
-
-        result["visual_page_summaries"] = visual_summaries
-        result["structure"] = self._build_visual_fallback_toc(
-            result.get("page_count"), visual_summaries
-        )
-
-        q = self._compute_structure_quality(result.get("structure", []))
-        tq = (
-            result.get("toc_quality")
-            if isinstance(result.get("toc_quality"), dict)
-            else {}
-        )
-        tq["after"] = q
-        tq["visual_enhanced"] = True
-        result["toc_quality"] = tq
-
-    @staticmethod
-    def _score_text_quality(text: str) -> float:
-        t = (text or "").strip()
-        if not t:
-            return 0.0
-
-        length = len(t)
-        readable = sum(1 for ch in t if PageIndexService._is_common_readable_char(ch))
-        readable_ratio = readable / max(1, length)
-
-        cjk_count = sum(1 for ch in t if "\u4e00" <= ch <= "\u9fff")
-        ascii_alpha = sum(1 for ch in t if ch.isascii() and ch.isalpha())
-        alpha_count = cjk_count + ascii_alpha
-        digit_count = sum(1 for ch in t if ch.isdigit())
-
-        structure_signal = 0.0
-        if re.search(r"第\s*\d+\s*[章节部分卷篇]", t):
-            structure_signal += 0.12
-        if re.search(r"\b\d+(?:\.\d+){1,3}\b", t):
-            structure_signal += 0.08
-
-        density = min(1.0, length / 280.0)
-        alpha_ratio = alpha_count / max(1, length)
-        digit_penalty = 0.2 if digit_count / max(1, length) > 0.35 else 0.0
-        short_penalty = 0.2 if length < 24 else 0.0
-
-        score = (
-            0.42 * readable_ratio
-            + 0.22 * alpha_ratio
-            + 0.18 * density
-            + structure_signal
-            - digit_penalty
-            - short_penalty
-        )
-        return max(0.0, min(1.0, score))
-
-    @staticmethod
-    def _extract_pdf_text_pypdf2(file_path: Path) -> List[str]:
-        texts: List[str] = []
-        with open(file_path, "rb") as f:
-            reader = PyPDF2.PdfReader(f)
-            for page in reader.pages:
-                try:
-                    texts.append((page.extract_text() or "").strip())
-                except Exception:
-                    texts.append("")
-        return texts
-
-    @staticmethod
-    def _extract_pdf_text_pymupdf(file_path: Path) -> tuple[List[str], List[bool]]:
-        import pymupdf
-
-        texts: List[str] = []
-        has_images: List[bool] = []
-        doc = pymupdf.open(str(file_path))
-        try:
-            for page in doc:
-                texts.append((page.get_text("text") or "").strip())
-                has_images.append(len(page.get_images(full=True)) > 0)
-        finally:
-            doc.close()
-        return texts, has_images
-
-    @staticmethod
-    def _pre_analyze_pdf(file_path: Path) -> Dict[str, Any]:
-        try:
-            texts_pymupdf, has_images = PageIndexService._extract_pdf_text_pymupdf(
-                file_path
-            )
-            texts_pypdf2 = PageIndexService._extract_pdf_text_pypdf2(file_path)
-        except Exception:
-            return {
-                "page_count": 0,
-                "unparseable_pages": 0,
-                "unparseable_ratio": 0.0,
-                "vlm_needed_pages": [],
-                "preferred_parser": "PyPDF2",
-                "parser_quality": {"PyPDF2": 0.0, "PyMuPDF": 0.0},
-            }
-
-        page_count = min(len(texts_pymupdf), len(texts_pypdf2))
-        unparseable_pages = 0
-        vlm_needed_pages: List[int] = []
-        parser_scores = {"PyPDF2": 0.0, "PyMuPDF": 0.0}
-
-        for idx in range(page_count):
-            text_mu = texts_pymupdf[idx]
-            text_py = texts_pypdf2[idx]
-            score_mu = PageIndexService._score_text_quality(text_mu)
-            score_py = PageIndexService._score_text_quality(text_py)
-            parser_scores["PyMuPDF"] += score_mu
-            parser_scores["PyPDF2"] += score_py
-
-            best_score = score_mu if score_mu >= score_py else score_py
-            parseable = best_score >= 0.42
-            if not parseable:
-                unparseable_pages += 1
-
-            has_visual = has_images[idx] if idx < len(has_images) else False
-            if has_visual or not parseable:
-                vlm_needed_pages.append(idx + 1)
-
-        if page_count > 0:
-            parser_scores = {
-                "PyPDF2": parser_scores["PyPDF2"] / page_count,
-                "PyMuPDF": parser_scores["PyMuPDF"] / page_count,
-            }
-
-        preferred_parser = (
-            "PyMuPDF"
-            if parser_scores["PyMuPDF"] >= parser_scores["PyPDF2"]
-            else "PyPDF2"
-        )
-
-        return {
-            "page_count": page_count,
-            "unparseable_pages": unparseable_pages,
-            "unparseable_ratio": (unparseable_pages / page_count)
-            if page_count
-            else 0.0,
-            "vlm_needed_pages": vlm_needed_pages,
-            "preferred_parser": preferred_parser,
-            "parser_quality": parser_scores,
-            "image_pages": sum(1 for x in has_images[:page_count] if x),
-        }
-
-    @staticmethod
-    def _decide_pdf_route(
-        requested_mode: str, pre_analysis: Dict[str, Any]
-    ) -> Dict[str, Any]:
-        requested = (requested_mode or "balanced").strip().lower()
-        if requested not in {"smart", "fast", "balanced"}:
-            requested = "balanced"
-
-        execution_mode = "fast" if requested == "smart" else requested
-        reasons: List[str] = []
-
-        return {
-            "requested_mode": requested,
-            "execution_mode": execution_mode,
-            "escalated_from_pre_analysis": execution_mode == "balanced"
-            and requested == "smart",
-            "escalated_from_fast_quality": False,
-            "reasons": reasons,
-        }
-
-    @staticmethod
-    def _should_escalate_fast_by_toc_quality(toc_quality_score: float) -> bool:
-        try:
-            score = float(toc_quality_score)
-        except (TypeError, ValueError):
-            score = 0.0
-        return score < PAGEINDEX_FAST_TOC_QUALITY_ESCALATE_THRESHOLD
-
-    @staticmethod
-    def _flatten_structure_nodes(nodes: Any) -> List[Dict[str, Any]]:
-        if not isinstance(nodes, list):
-            return []
-        out: List[Dict[str, Any]] = []
-        for node in nodes:
-            if not isinstance(node, dict):
-                continue
-            out.append(node)
-            out.extend(
-                PageIndexService._flatten_structure_nodes(node.get("nodes") or [])
-            )
-        return out
-
-    @staticmethod
-    def _evaluate_fast_toc_readiness(result: Any) -> Dict[str, Any]:
-        structure = result.get("structure") if isinstance(result, dict) else result
-        nodes = PageIndexService._flatten_structure_nodes(structure)
-        if not nodes:
-            return {"ok": False, "reason": "empty_structure"}
-
-        missing_ranges = 0
-        invalid_ranges = 0
-        max_end = 0
-        for node in nodes:
-            start = node.get("start_index")
-            end = node.get("end_index")
-            if not isinstance(start, int) or not isinstance(end, int):
-                missing_ranges += 1
-                continue
-            if end < start:
-                invalid_ranges += 1
-            if end > max_end:
-                max_end = end
-
-        if missing_ranges > 0:
-            return {
-                "ok": False,
-                "reason": f"missing_ranges={missing_ranges}",
-                "missing_ranges": missing_ranges,
-                "invalid_ranges": invalid_ranges,
-            }
-        if invalid_ranges > 0:
-            return {
-                "ok": False,
-                "reason": f"invalid_ranges={invalid_ranges}",
-                "missing_ranges": missing_ranges,
-                "invalid_ranges": invalid_ranges,
-            }
-
-        page_count = (
-            int(result.get("page_count") or 0) if isinstance(result, dict) else 0
-        )
-        if page_count > 0 and max_end < page_count:
-            return {
-                "ok": False,
-                "reason": f"coverage_end_lt_page_count={max_end}/{page_count}",
-                "max_end": max_end,
-                "page_count": page_count,
-            }
-
-        return {
-            "ok": True,
-            "reason": "ok",
-            "node_count": len(nodes),
-            "max_end": max_end,
-            "page_count": page_count,
-        }
-
-    @staticmethod
-    def _vision_first_required(pre_analysis: Dict[str, Any]) -> bool:
-        unparseable_pages = int(pre_analysis.get("unparseable_pages") or 0)
-        unparseable_ratio = float(pre_analysis.get("unparseable_ratio") or 0.0)
-        return unparseable_ratio >= 0.8 or unparseable_pages >= 60
-
-    @staticmethod
-    def _compute_pdf_text_health(
-        file_path: Path, pre_analysis: Optional[Dict[str, Any]] = None
-    ) -> Dict[str, Any]:
-        pre = pre_analysis or PageIndexService._pre_analyze_pdf(file_path)
-        total = int(pre.get("page_count") or 0)
-        unparseable = int(pre.get("unparseable_pages") or 0)
-        ratio = float(pre.get("unparseable_ratio") or 0.0)
-        return {
-            "total_pages": total,
-            "empty_ratio": ratio,
-            "short_ratio": ratio,
-            "weird_ratio": ratio,
-            "garbled_ratio": ratio,
-            "unparseable_pages": unparseable,
-            "unparseable_ratio": ratio,
-        }
-
-    @staticmethod
-    def calculate_visual_coverage(page_results: List[Dict[str, Any]]) -> Dict[str, Any]:
-        """Calculate visual coverage and downgrade reasons for one document."""
-        visual_required_pages = 0
-        visual_success_pages = 0
-        consecutive_failures = 0
-        downgrade_reasons: List[Dict[str, Any]] = []
-
-        for index, page in enumerate(page_results, start=1):
-            if not page.get("needs_visual", True):
-                continue
-
-            visual_required_pages += 1
-            page_number = page.get("page", index)
-            visual_success = bool(page.get("visual_success", False))
-            parseable = page.get("parseable", True)
-
-            processing_seconds = page.get("processing_seconds")
-            try:
-                processing_seconds = float(processing_seconds)
-            except (TypeError, ValueError):
-                processing_seconds = None
-
-            timeout_hit = (
-                processing_seconds is not None
-                and processing_seconds > VISUAL_PAGE_TIMEOUT_SECONDS
-            )
-            failure = (not visual_success) or (not parseable) or timeout_hit
-
-            if failure:
-                consecutive_failures += 1
-            else:
-                consecutive_failures = 0
-                visual_success_pages += 1
-
-            reason: Optional[Dict[str, Any]] = None
-            if not parseable:
-                reason = {"page": page_number, "code": "UNPARSEABLE_PAGE"}
-            elif timeout_hit:
-                reason = {
-                    "page": page_number,
-                    "code": "PAGE_TIMEOUT",
-                    "processing_seconds": processing_seconds,
-                    "threshold_seconds": VISUAL_PAGE_TIMEOUT_SECONDS,
-                }
-            elif failure and consecutive_failures >= VISUAL_MAX_CONSECUTIVE_FAIL_PAGES:
-                reason = {
-                    "page": page_number,
-                    "code": "CONSECUTIVE_PAGE_FAILURES",
-                    "consecutive_failures": consecutive_failures,
-                    "threshold": VISUAL_MAX_CONSECUTIVE_FAIL_PAGES,
-                }
-
-            if reason is not None:
-                downgrade_reasons.append(reason)
-
-        if visual_required_pages == 0:
-            visual_coverage = 1.0
-            downgrade_rate = 0.0
-        else:
-            visual_coverage = visual_success_pages / visual_required_pages
-            downgrade_rate = len(downgrade_reasons) / visual_required_pages
-
-        return {
-            "visual_required_pages": visual_required_pages,
-            "visual_success_pages": visual_success_pages,
-            "visual_coverage": visual_coverage,
-            "downgraded": bool(downgrade_reasons),
-            "downgraded_pages": len(downgrade_reasons),
-            "daily_downgrade_rate": downgrade_rate,
-            "downgrade_reasons": downgrade_reasons,
-        }
-
-    async def _extract_toc_visual(
-        self,
-        file_path: str,
-        toc_pages: List[int],
-        page_count: int,
-        model: str,
-    ) -> Optional[Dict]:
-        """Extract TOC from rendered TOC page images using VLM."""
-        try:
-            from pageindex.vlm_utils import render_pages_to_images, vlm_call_with_images, parse_vlm_json
-            
-            images = render_pages_to_images(file_path, [p - 1 for p in toc_pages])
-            
-            prompt = """You are analyzing rendered PDF TOC pages. Extract all catalog entries.
-Requirements:
-1. Keep the original title text.
-2. Return physical PDF page numbers as physical_index and hierarchy as level.
-3. Return JSON only.
-
-Example:
-{
-  "toc_items": [
-    {"title": "Chapter 1", "level": 1, "physical_index": 5},
-    {"title": "1.1 Introduction", "level": 2, "physical_index": 6}
-  ]
-}"""
-            
-            raw = await vlm_call_with_images(images, prompt, model=model, max_tokens=3000)
-            result = parse_vlm_json(raw)
-            
-            if isinstance(result, dict) and "toc_items" in result:
-                return result
-            return None
-            
-        except Exception as e:
-            print(f"[EXTRACT-VISUAL] Failed: {e}")
-            return None
-
     async def _extract_toc_text(
         self,
         analysis: Dict,
@@ -2073,48 +1974,341 @@ Example:
     ) -> Optional[Dict]:
         """Extract TOC from TOC page text using LLM."""
         try:
-            from app.core.llm import async_chat_completion
-            
             page_texts = analysis.get("page_texts", [])
-            toc_text = "\n".join([page_texts[p - 1] for p in toc_pages if p - 1 < len(page_texts)])
-            
-            prompt = f"""Extract catalog entries from the following TOC page text.
+            from pageindex.candidates.llm_toc_page_extractor import build_llm_toc_prompt
 
-TOC text:
-{toc_text[:3000]}
+            page_blocks = [
+                {"page": p, "text": page_texts[p - 1]}
+                for p in toc_pages
+                if p - 1 < len(page_texts)
+            ]
+            prompt = build_llm_toc_prompt(page_blocks)
 
-Requirements:
-1. Keep original titles.
-2. Return physical PDF page numbers as physical_index and hierarchy as level.
-3. Return JSON only.
-
-Example:
-{{
-  "toc_items": [
-    {{"title": "Chapter 1", "level": 1, "physical_index": 5}},
-    {{"title": "1.1 Introduction", "level": 2, "physical_index": 6}}
-  ]
-}}"""
-            
-            response = await async_chat_completion(
+            response = await self._indexing_completion(
                 messages=[{"role": "user", "content": prompt}],
                 temperature=0,
+                timeout=PAGEINDEX_TOC_LLM_TIMEOUT_SECONDS,
+                max_tokens=PAGEINDEX_TOC_LLM_MAX_TOKENS,
                 model=model,
             )
             content = response.choices[0].message.content
-            
+
             import json
             import re
             json_match = re.search(r"\{.*\}", content, re.DOTALL)
             if json_match:
                 result = json.loads(json_match.group())
-                if "toc_items" in result:
-                    return result
+                if "toc_sections" in result or "toc_items" in result or "items" in result:
+                    from pageindex.candidates.llm_toc_page_extractor import normalize_llm_toc_payload
+
+                    extraction = normalize_llm_toc_payload(result)
+                    if not extraction.items:
+                        return None
+                    sections: List[Dict[str, Any]] = []
+                    for section in extraction.toc_sections:
+                        draft_items: List[Dict[str, Any]] = []
+                        kind = str(section.get("kind") or "main_toc")
+                        for item in section.get("items") or []:
+                            draft_item = {
+                                "title": item.get("title"),
+                                "level": item.get("level") or 1,
+                                "section_kind": item.get("section_kind") or kind,
+                                "raw_page_label": item.get("page"),
+                            }
+                            if item.get("structure"):
+                                draft_item["structure"] = item.get("structure")
+                            draft_items.append(draft_item)
+                        if draft_items:
+                            sections.append(
+                                {
+                                    "kind": kind,
+                                    "title": section.get("title") or kind,
+                                    "items": draft_items,
+                                }
+                            )
+                    return {
+                        "toc_draft": {
+                            "type": "toc_draft",
+                            "source": "llm_toc_page",
+                            "section_kind": "main_toc",
+                            "toc_pages": list(toc_pages or []),
+                            "has_page_numbers": extraction.has_printed_page_numbers,
+                            "toc_sections": sections,
+                            "items": [
+                                item
+                                for section in sections
+                                if section.get("kind") == "main_toc"
+                                for item in (section.get("items") or [])
+                            ] or [
+                                item
+                                for section in sections
+                                for item in (section.get("items") or [])
+                            ],
+                        },
+                        "source": "llm_toc_page",
+                        "has_printed_page_numbers": extraction.has_printed_page_numbers,
+                        "llm_normalization": extraction.diagnostics,
+                    }
             return None
-            
+
         except Exception as e:
-            print(f"[EXTRACT-TEXT] Failed: {e}")
+            print(f"[TOC-TEXT] Failed: {e}")
             return None
+
+    @staticmethod
+    def _try_text_heading_toc(analysis: Dict) -> Optional[Dict]:
+        """Build a deterministic text-heading TOC candidate for the new pipeline."""
+        if analysis.get("text_coverage", 0) < 0.8:
+            return None
+
+        page_texts = analysis.get("page_texts") or []
+        toc_pages = analysis.get("toc_pages") or analysis.get("toc_page", {}).get("pages") or []
+        if not page_texts or not toc_pages:
+            return None
+
+        try:
+            from pageindex.text_heading_extractor import (
+                extract_text_headings,
+                is_chapter_skeleton_toc,
+                merge_chapter_skeleton_with_headings,
+            )
+        except Exception:
+            return None
+
+        toc_text = "\n".join(
+            page_texts[p - 1]
+            for p in toc_pages
+            if isinstance(p, int) and 0 <= p - 1 < len(page_texts)
+        )
+        skeleton = is_chapter_skeleton_toc(toc_text)
+        if not skeleton.get("is_skeleton"):
+            return None
+
+        headings = extract_text_headings(page_texts, start_page=1)
+        body_headings = [
+            item for item in headings
+            if item.get("physical_index") not in toc_pages
+        ]
+        if len(body_headings) < 5:
+            return None
+
+        merged = merge_chapter_skeleton_with_headings(skeleton, body_headings)
+        if len(merged) < 5:
+            return None
+
+        return {
+            "toc_items": merged,
+            "source": "text_heading",
+            "mapped": True,
+            "semi_frozen": True,
+            "prevalidated": True,
+        }
+
+    async def _extract_content_outline_candidate(
+        self,
+        analysis: Dict,
+        *,
+        page_count: int,
+        model: str,
+    ) -> Optional[Dict[str, Any]]:
+        """Build the deterministic ``content_outline`` path using internal LLM outline logic."""
+        page_texts = analysis.get("page_texts") or []
+        if not page_texts or page_count <= 0:
+            return None
+        try:
+            from pageindex.hierarchical_extractor import extract_hierarchical_toc
+
+            result = await extract_hierarchical_toc(page_texts, model)
+        except Exception as exc:
+            print(
+                "[TOC-CANDIDATE] provider=content_outline "
+                f"stage=internal_outline status=error error_type={type(exc).__name__}"
+            )
+            return self._content_outline_from_text_headings(page_texts, page_count)
+        if not isinstance(result, dict):
+            return self._content_outline_from_text_headings(page_texts, page_count)
+        toc_items = result.get("toc_items") or result.get("items") or []
+        if self._content_outline_result_is_weak(toc_items):
+            heading_result = self._content_outline_from_text_headings(page_texts, page_count)
+            if heading_result:
+                return heading_result
+        if not toc_items:
+            return None
+        toc_items = self._prepend_front_matter_node_if_needed(
+            toc_items,
+            page_count,
+            page_texts=page_texts,
+        )
+        return {
+            "toc_items": toc_items,
+            "items": toc_items,
+            "source": "content_outline",
+            "internal_source": str(result.get("source") or "hierarchical"),
+            "mapped": True,
+            "top_level_frozen": True,
+            "allow_child_expansion": True,
+        }
+
+    @staticmethod
+    def _content_outline_result_is_weak(toc_items: Any) -> bool:
+        if not isinstance(toc_items, list) or not toc_items:
+            return True
+        if len(toc_items) > 1:
+            return False
+        first = toc_items[0] if isinstance(toc_items[0], dict) else {}
+        title = re.sub(r"\s+", " ", str(first.get("title") or "").strip().lower())
+        return title in {
+            "",
+            "document content",
+            "full document",
+            "document",
+            "content",
+        }
+
+    @staticmethod
+    def _content_outline_from_text_headings(
+        page_texts: List[str],
+        page_count: int,
+    ) -> Optional[Dict[str, Any]]:
+        try:
+            from pageindex.text_heading_extractor import extract_text_headings
+        except Exception:
+            return None
+
+        headings = extract_text_headings(page_texts, start_page=1)
+        headings = [
+            item
+            for item in headings
+            if isinstance(item, dict)
+            and item.get("title")
+            and isinstance(item.get("physical_index"), int)
+            and 1 <= int(item.get("physical_index")) <= page_count
+        ]
+        if len(headings) < 3:
+            return None
+        unique_titles = {
+            re.sub(r"[\s\W_]+", "", str(item.get("title") or "").casefold())
+            for item in headings
+            if item.get("title")
+        }
+        if len(unique_titles) < 3:
+            return None
+        headings = PageIndexService._prepend_front_matter_node_if_needed(
+            headings,
+            page_count,
+            page_texts=page_texts,
+        )
+        return {
+            "toc_items": headings,
+            "items": headings,
+            "source": "content_outline",
+            "internal_source": "text_heading",
+            "mapped": True,
+            "top_level_frozen": True,
+            "allow_child_expansion": True,
+        }
+
+    @staticmethod
+    def _prepend_front_matter_node_if_needed(
+        items: List[Dict[str, Any]],
+        page_count: int,
+        page_texts: Optional[List[str]] = None,
+    ) -> List[Dict[str, Any]]:
+        normalized = [dict(item) for item in items if isinstance(item, dict)]
+        if not normalized or page_count <= 1:
+            return normalized
+        first_page = PageIndexService._coerce_positive_int(
+            normalized[0].get("physical_index") or normalized[0].get("start_index")
+        )
+        if first_page is None:
+            return normalized
+        first_title = str(normalized[0].get("title") or "").strip().casefold()
+        if first_title in {"preface", "foreword", "front matter"}:
+            return normalized
+        if (
+            first_page == 1
+            and len(normalized) >= 2
+            and PageIndexService._looks_like_document_title_front_matter(normalized[0].get("title"))
+            and PageIndexService._coerce_positive_int(
+                normalized[1].get("physical_index") or normalized[1].get("start_index")
+            )
+            and (
+                PageIndexService._content_outline_next_root_starts_numbered_body(
+                    normalized,
+                    page_texts or [],
+                )
+                or PageIndexService._content_outline_first_page_is_short_cover(page_texts or [])
+            )
+        ):
+            renamed = [dict(item) for item in normalized]
+            original_title = str(renamed[0].get("title") or "").strip()
+            metadata = dict(renamed[0].get("metadata") or {})
+            if original_title:
+                metadata.setdefault("original_title", original_title)
+            renamed[0]["metadata"] = metadata
+            renamed[0]["title"] = "Preface"
+            renamed[0]["structure"] = renamed[0].get("structure") or "0"
+            return renamed
+        if first_page <= 1:
+            return normalized
+        return [
+            {
+                "title": "Preface",
+                "structure": "0",
+                "level": 1,
+                "physical_index": 1,
+                "nodes": [],
+            },
+            *normalized,
+        ]
+
+    @staticmethod
+    def _looks_like_document_title_front_matter(title: Any) -> bool:
+        value = re.sub(r"\s+", " ", str(title or "").strip())
+        if not value:
+            return False
+        if re.match(r"^\s*(?:\d{1,2}(?:\.\d{1,2})*|[IVXLCDM]{1,8})[.)]?\s+\S", value, flags=re.IGNORECASE):
+            return False
+        words = [word for word in re.split(r"\s+", value) if re.search(r"[A-Za-z\u4e00-\u9fff]", word)]
+        return len(words) >= 3
+
+    @staticmethod
+    def _content_outline_next_root_starts_numbered_body(
+        items: List[Dict[str, Any]],
+        page_texts: List[str],
+    ) -> bool:
+        if len(items) < 2 or not page_texts:
+            return False
+        second_page = PageIndexService._coerce_positive_int(
+            items[1].get("physical_index") or items[1].get("start_index")
+        )
+        if second_page is None or second_page <= 1 or second_page > len(page_texts):
+            return False
+        second_text = PageIndexService._normalize_ocr_heading_probe_text(page_texts[second_page - 1])
+        return bool(
+            re.match(r"^\s*(?:\d{1,2}(?:\.\d{1,2})*|[IVXLCDM]{1,8})[.)]?\s+\S", second_text, flags=re.IGNORECASE)
+        )
+
+    @staticmethod
+    def _normalize_ocr_heading_probe_text(text: Any) -> str:
+        value = str(text or "")
+        value = re.sub(r"\\text\s*\{([^}]*)\}", r"\1", value)
+        value = re.sub(r"[$\\{}]", " ", value)
+        value = re.sub(r"\s+", " ", value).strip()
+        return value
+
+    @staticmethod
+    def _content_outline_first_page_is_short_cover(page_texts: List[str]) -> bool:
+        if not page_texts:
+            return False
+        text = str(page_texts[0] or "").strip()
+        if not text:
+            return False
+        lines = [line.strip() for line in text.splitlines() if line.strip()]
+        if len(text) > 800 or len(lines) > 12:
+            return False
+        paragraph_like = sum(1 for line in lines if len(line.split()) >= 12)
+        return paragraph_like == 0
 
     @staticmethod
     def _normalize_and_map_fallback_toc(
@@ -2124,21 +2318,21 @@ Example:
         ocr_text_map: Optional[Dict[int, str]] = None,
         dividers: Optional[List[int]] = None,
     ) -> Optional[Dict]:
-        """Normalize legacy TOC fallback output before post-processing.
+        """Normalize degraded TOC candidate output before post-processing.
 
-        Older VLM/text fallback prompts may put TOC logical page numbers in
-        physical_index. The balanced mapper already knows how to detect and map
-        that shape, so route fallback results through it before accepting them.
+        Older text fallback prompts may put TOC logical page numbers in
+        physical_index. The page-mapping verifier detects and maps that shape
+        before the candidate is accepted.
         """
         if not fallback_result or not fallback_result.get("toc_items"):
             return fallback_result
 
-        from pageindex.balanced_toc import _map_toc_physical_pages
+        from pageindex.judge.page_mapping_verifier import map_toc_physical_pages
 
         last_toc_page = max(toc_pages) if toc_pages else 0
         first_content_page = last_toc_page + 1 if last_toc_page else 1
 
-        _map_toc_physical_pages(
+        map_toc_physical_pages(
             fallback_result["toc_items"],
             page_count=page_count,
             first_content_page=first_content_page,
@@ -2146,9 +2340,104 @@ Example:
             ocr_text_map=ocr_text_map,
             dividers=dividers or [],
         )
+        fallback_result.setdefault("source", "llm_toc_page")
         fallback_result["mapped"] = True
-        fallback_result["mapping_source"] = "legacy_fallback_normalizer"
+        fallback_result["mapping_source"] = "page_mapping_verifier"
         return fallback_result
+
+    @staticmethod
+    def _map_toc_draft_result_through_s5(
+        result: Optional[Dict[str, Any]],
+        *,
+        page_texts: List[str],
+        page_count: int,
+        toc_pages: List[int],
+        selected_path: str,
+        analysis: Optional[Dict[str, Any]] = None,
+    ) -> Optional[Dict[str, Any]]:
+        if not result:
+            return None
+
+        draft = result.get("toc_draft")
+        if not isinstance(draft, dict) and result.get("type") == "toc_draft":
+            draft = result
+        if not isinstance(draft, dict):
+            items = result.get("toc_items") or result.get("items") or []
+            if not isinstance(items, list) or not items:
+                return result
+            section_kind = str(result.get("section_kind") or "main_toc")
+            draft = {
+                "type": "toc_draft",
+                "source": result.get("source") or "toc_candidate",
+                "section_kind": section_kind,
+                "toc_pages": list(toc_pages or []),
+                "items": [
+                    {
+                        "title": item.get("title"),
+                        "level": item.get("level") or 1,
+                        "section_kind": item.get("section_kind") or section_kind,
+                        "raw_page_label": (
+                            item.get("raw_page_label")
+                            if "raw_page_label" in item
+                            else item.get("page") or item.get("logical_page") or item.get("physical_index")
+                        ),
+                        "structure": item.get("structure"),
+                        "source_page": item.get("source_page"),
+                    }
+                    for item in items
+                    if isinstance(item, dict) and str(item.get("title") or "").strip()
+                ],
+            }
+
+        from pageindex.toc_mapping import derive_toc_ranges, map_toc_draft_to_physical
+
+        mapped_items, mapping_report = map_toc_draft_to_physical(
+            draft,
+            page_texts=page_texts,
+            page_count=page_count,
+            toc_pages=toc_pages,
+            selected_path=selected_path,
+        )
+        mapping_report = dict(mapping_report or {})
+        mapping_report["source"] = "unified_s5"
+        if analysis is not None:
+            analysis["toc_content_mapping"] = mapping_report
+            analysis.setdefault("toc_judge", {})
+            analysis["toc_judge"]["content_mapping"] = mapping_report
+
+        if mapping_report.get("status") != "ok" or not mapped_items:
+            mapped_result = dict(result)
+            mapped_result["mapping_report"] = mapping_report
+            mapped_result["mapped"] = False
+            return mapped_result
+
+        source = str(result.get("source") or draft.get("source") or "toc_candidate")
+        mapped_items = derive_toc_ranges(mapped_items, page_count=page_count)
+        if source == "toc_page_text_rule":
+            from pageindex.visible_toc_rule_extractor import build_visible_toc_result_from_mapped_items
+
+            mapped_result = build_visible_toc_result_from_mapped_items(
+                mapped_items,
+                mapping_report=mapping_report,
+                raw_items=list(draft.get("items") or []),
+                source=source,
+            )
+            if not mapped_result:
+                return None
+        else:
+            mapped_result = {
+                **result,
+                "items": mapped_items,
+                "toc_items": mapped_items,
+                "source": source,
+                "mapped": True,
+                "prevalidated": True,
+                "top_level_frozen": True,
+                "allow_child_expansion": bool(result.get("allow_child_expansion", True)),
+            }
+        mapped_result["mapping_report"] = mapping_report
+        mapped_result["mapping_source"] = "unified_s5"
+        return mapped_result
 
     @staticmethod
     def _sync_toc_context(
@@ -2162,11 +2451,110 @@ Example:
             return
 
         analysis["toc_pages"] = pages
-        analysis["toc_page"] = {
+        analysis["page_text"] = {
             "has_toc_page": True,
             "pages": pages,
             "confidence": confidence,
         }
+
+    async def _resolve_pre_route_toc_page_signal(
+        self,
+        *,
+        analysis: Dict[str, Any],
+        file_path: Path,
+        page_count: int,
+        model: str,
+    ) -> List[int]:
+        """Resolve cheap visible-TOC facts before choosing fast/balanced route."""
+        if self._has_completed_toc_page_detection(analysis):
+            report = analysis.get("toc_page_detection") or {}
+            return [
+                int(page)
+                for page in (report.get("pages") or [])
+                if isinstance(page, int) and 1 <= page <= page_count
+            ]
+        return await self._resolve_balanced_toc_pages(
+            analysis=analysis,
+            file_path=file_path,
+            page_count=page_count,
+            model=model,
+        )
+
+    @staticmethod
+    def _has_completed_toc_page_detection(analysis: Dict[str, Any]) -> bool:
+        detection = analysis.get("toc_page_detection")
+        return bool(
+            isinstance(detection, dict)
+            and detection.get("classification_complete") is True
+            and str(detection.get("status") or "").strip()
+        )
+
+    async def _resolve_balanced_toc_pages(
+        self,
+        *,
+        analysis: Dict[str, Any],
+        file_path: Path,
+        page_count: int,
+        model: str,
+    ) -> List[int]:
+        """Resolve TOC pages for balanced mode and sync shared analysis fields."""
+        from pageindex.toc_detector import find_toc_pages
+
+        pages = await find_toc_pages(analysis, str(file_path), model)
+        normalized: List[int] = []
+        for page in pages or []:
+            if isinstance(page, bool):
+                continue
+            try:
+                value = int(page)
+            except (TypeError, ValueError):
+                continue
+            if 1 <= value <= page_count:
+                normalized.append(value)
+        resolved = sorted(set(normalized))
+        existing_report = analysis.get("toc_page_detection") if isinstance(analysis.get("toc_page_detection"), dict) else {}
+        existing_pages = [int(page) for page in (existing_report.get("pages") or []) if isinstance(page, int)]
+        if resolved and sorted(set(existing_pages)) == resolved:
+            report = dict(existing_report)
+            report["pages"] = resolved
+            report["status"] = "detected"
+            report.setdefault("source", "text_detector")
+            report.setdefault("classification_complete", True)
+            report.setdefault("reason", "detected_by_text_toc_detector")
+            report.setdefault(
+                "candidates",
+                [
+                    {
+                        "page": page,
+                        "source": "text_detector",
+                        "is_toc": True,
+                        "score": 1.0,
+                    }
+                    for page in resolved
+                ],
+            )
+        else:
+            report = {
+                "source": "text_detector",
+                "status": "detected" if resolved else "not_found",
+                "pages": resolved,
+                "has_page_numbers": False,
+                "candidates": [
+                    {
+                        "page": page,
+                        "source": "text_detector",
+                        "is_toc": True,
+                        "score": 1.0,
+                        "has_page_numbers": False,
+                    }
+                    for page in resolved
+                ],
+                "reason": "detected_by_text_toc_detector" if resolved else "no_text_toc_pages",
+                "classification_complete": True,
+            }
+        analysis["toc_page_detection"] = report
+        self._sync_toc_context(analysis, resolved, confidence="detected")
+        return resolved
 
     @staticmethod
     def _try_text_heading_shortcut(
@@ -2210,7 +2598,7 @@ Example:
         analysis: Dict,
         page_count: int,
     ) -> Optional[Dict]:
-        """Run v4.2 providers and adapt a trusted skeleton to legacy result shape."""
+        """Run deterministic providers and adapt a trusted skeleton to candidate shape."""
         from pageindex.balanced_orchestrator import ProviderRegistry, build_balanced_state
         from pageindex.page_mapping_service import map_skeleton_pages
         from pageindex.providers.code_toc_provider import CodeTocProvider
@@ -2220,12 +2608,15 @@ Example:
         )
         from pageindex.providers.toc_page_provider import TocPageTextProvider
 
-        registry = ProviderRegistry([
-            CodeTocProvider(),
+        providers = []
+        if not analysis.get("disable_code_toc_fast_path"):
+            providers.append(CodeTocProvider())
+        providers.extend([
             TocPageTextProvider(),
             default_slide_outline_provider(),
             default_agenda_outline_provider(),
         ])
+        registry = ProviderRegistry(providers)
         state = build_balanced_state(analysis, registry)
         PageIndexService._sync_build_state_to_analysis(analysis, state)
         skeleton = state.get("skeleton")
@@ -2284,7 +2675,7 @@ Example:
 
     @staticmethod
     def _sync_build_state_to_analysis(analysis: Dict, state: Dict) -> None:
-        """Expose canonical build state while keeping legacy analysis aliases."""
+        """Expose canonical build state to downstream post-processing."""
         analysis["build_state"] = state
         analysis["top_level_frozen"] = bool(state.get("top_level_frozen"))
         analysis["allow_child_expansion"] = bool(state.get("allow_child_expansion", True))
@@ -2295,7 +2686,7 @@ Example:
 
     @staticmethod
     def _apply_balanced_result_state(analysis: Dict, balanced_result: Optional[Dict]) -> None:
-        """Propagate trusted balanced extraction state to legacy post-processing."""
+        """Propagate trusted candidate state to downstream post-processing."""
         if not balanced_result:
             return
 
@@ -2305,7 +2696,7 @@ Example:
                 "top_level_frozen",
                 balanced_result.get("mapped")
                 or balanced_result.get("semi_frozen")
-                or source in {"text_heading", "slide_outline", "agenda_outline", "vlm_toc_skeleton"},
+                or source in {"text_heading", "slide_outline", "agenda_outline", "llm_toc_page"},
             )
         )
         allow_child_expansion = bool(
@@ -2348,66 +2739,610 @@ Example:
                 "bookmarks",
                 "links",
                 "regex",
-                "vlm_toc_skeleton",
+                "llm_toc_page",
             }
             and result.get("prevalidated")
             and result.get("items")
         )
 
     @staticmethod
-    def _should_skip_legacy_toc_detection(
-        analysis: Dict,
-        new_architecture_result: Optional[Dict],
+    def _should_skip_redundant_toc_detection(
+        analysis: Optional[Dict],
+        result: Optional[Dict],
     ) -> bool:
-        """Avoid repeating TOC detection when canonical/anchored result already succeeded."""
-        return bool(
-            new_architecture_result
-            and new_architecture_result.get("items")
-            and new_architecture_result.get("prevalidated")
-            and (
-                analysis.get("toc_pages")
-                or (analysis.get("toc_page") or {}).get("pages")
-            )
-        )
+        if not isinstance(analysis, dict):
+            return False
+        if not PageIndexService._is_prevalidated_outline_result(result):
+            return False
+        source = str((result or {}).get("source") or "")
+        if source not in {"toc_page_text", "toc_page_text_rule", "llm_toc_page"}:
+            return False
+        toc_meta = analysis.get("toc_page") if isinstance(analysis.get("toc_page"), dict) else {}
+        toc_pages = analysis.get("toc_pages") or toc_meta.get("pages") or []
+        return bool(toc_pages or toc_meta.get("has_toc_page"))
 
     @staticmethod
-    def _try_text_heading_shortcut_legacy(
-        analysis: Dict,
-        balanced_result: Optional[Dict],
-    ) -> Optional[Dict]:
-        """Deprecated compatibility shim."""
-        if not balanced_result or balanced_result.get("source") != "text_heading":
+    def _build_state_machine_route_decision(
+        requested_mode: str,
+        analysis: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        from pageindex.pipeline.toc_state_machine import TocStateMachine
+
+        plan = TocStateMachine().plan(analysis, requested_mode=requested_mode)
+        route = plan.to_dict()
+        analysis["toc_state_machine"] = route
+        return route
+
+    @staticmethod
+    def _toc_result_to_candidate(
+        result: Optional[Dict[str, Any]],
+        *,
+        candidate_id: str,
+        source: Optional[str] = None,
+        cost_level: str = "medium",
+        confidence: Optional[float] = None,
+        evidence: Optional[Dict[str, Any]] = None,
+    ) -> Optional[Dict[str, Any]]:
+        if not result:
             return None
-        items = balanced_result.get("toc_items") or []
-        if not items:
+        items = result.get("items") or result.get("toc_items") or result.get("structure") or []
+        if not isinstance(items, list) or not items:
+            return None
+        candidate_source = source or result.get("source") or candidate_id
+        try:
+            raw_confidence = float(
+                confidence if confidence is not None else result.get("confidence", 0.68)
+            )
+        except (TypeError, ValueError):
+            raw_confidence = 0.68
+        return {
+            "candidate_id": candidate_id,
+            "source": candidate_source,
+            "cost_level": cost_level,
+            "items": items,
+            "raw_confidence": max(0.0, min(1.0, raw_confidence)),
+            "evidence": {
+                "provider_source": result.get("source") or candidate_source,
+                "prevalidated": bool(result.get("prevalidated")),
+                "mapped": bool(result.get("mapped")),
+                "semi_frozen": bool(result.get("semi_frozen")),
+                "top_level_frozen": bool(
+                    result.get("top_level_frozen")
+                    or result.get("mapped")
+                    or result.get("prevalidated")
+                ),
+                **(evidence or {}),
+            },
+            "reasons": list(result.get("reasons") or []),
+            "result_meta": {
+                key: value
+                for key, value in result.items()
+                if key not in {"items", "toc_items", "structure"}
+            },
+        }
+
+    async def _build_llm_toc_page_candidate(
+        self,
+        *,
+        layout: Any,
+        page_count: int,
+        model: str,
+        analysis: Optional[Dict[str, Any]] = None,
+    ) -> Optional[Dict[str, Any]]:
+        from pageindex.candidates.llm_toc_page_extractor import (
+            build_llm_toc_candidate,
+            build_llm_toc_prompt,
+            normalize_llm_toc_payload,
+        )
+
+        if not layout or not getattr(layout, "pages", None):
+            return None
+        detected_pages = self._confirmed_toc_pages_from_analysis(analysis, page_count)
+        if not detected_pages:
+            detection = await self._detect_toc_pages_with_llm_from_layout(
+                layout,
+                page_count=page_count,
+                model=model,
+                analysis=analysis,
+            )
+            detected_pages = list(detection.get("pages") or [])
+        if not detected_pages:
+            if analysis is not None:
+                analysis["llm_toc_page"] = {
+                    "status": "skipped",
+                    "reason": "no_confirmed_toc_pages",
+                    "source": "llm_toc_page",
+                }
+            print("[TOC-LLM] provider=toc_page action=skip reason=no_confirmed_toc_pages")
+            return None
+        selected_pages = set(int(page) for page in detected_pages)
+        blocks: List[Dict[str, Any]] = []
+        toc_pages: List[int] = []
+        for page in list(getattr(layout, "pages", []) or []):
+            page_num = int(getattr(page, "page", 0) or 0)
+            if page_num not in selected_pages:
+                continue
+            text = str(
+                getattr(page, "markdown", "")
+                or getattr(page, "plain_text", "")
+                or ""
+            ).strip()
+            if not text:
+                continue
+            toc_pages.append(page_num)
+            blocks.append({"page": page_num, "text": text})
+        if not blocks:
             return None
 
-        analysis["toc_frozen"] = True
-        analysis["toc_frozen_source"] = "text_heading"
+        prompt = build_llm_toc_prompt(blocks)
+
+        try:
+            response = await self._indexing_completion(
+                messages=[{"role": "user", "content": prompt}],
+                timeout=PAGEINDEX_TOC_LLM_TIMEOUT_SECONDS,
+                max_tokens=PAGEINDEX_TOC_LLM_MAX_TOKENS,
+                temperature=0,
+                model=model,
+            )
+            content = self._extract_llm_text_content(response)
+            payload = self._parse_json_payload(content)
+        except Exception as exc:
+            error_type = type(exc).__name__
+            if analysis is not None:
+                status = "timeout" if "timeout" in error_type.lower() else "error"
+                analysis["llm_toc_page"] = {
+                    "status": status,
+                    "error_type": error_type,
+                    "source": "llm_toc_page",
+                }
+            print(f"[TOC-LLM] provider=toc_page action=skip error_type={error_type}")
+            return None
+
+        extraction = normalize_llm_toc_payload(payload)
+        if not extraction.items:
+            if analysis is not None:
+                analysis["llm_toc_page"] = {
+                    "status": "empty",
+                    "source": "llm_toc_page",
+                    "toc_pages": toc_pages,
+                }
+            return None
+        candidate = build_llm_toc_candidate(extraction, toc_pages=toc_pages)
+        if analysis is not None:
+            analysis["llm_toc_page"] = {
+                "status": "ok",
+                "source": "llm_toc_page",
+                "toc_pages": toc_pages,
+                "item_count": len(extraction.items),
+                "has_printed_page_numbers": extraction.has_printed_page_numbers,
+                "raw_numeric_labels": list(extraction.raw_numeric_labels),
+                "extracted_numeric_labels": list(extraction.raw_numeric_labels),
+                "missing_numeric_labels": list(extraction.missing_numeric_labels),
+                "numeric_label_gap_count": extraction.numeric_label_gap_count,
+                "max_level": extraction.diagnostics.get("max_level"),
+                "level_distribution": extraction.diagnostics.get("level_distribution"),
+                "timeout_seconds": PAGEINDEX_TOC_LLM_TIMEOUT_SECONDS,
+                "max_tokens": PAGEINDEX_TOC_LLM_MAX_TOKENS,
+            }
+        print(
+            f"[TOC-LLM] provider=toc_page status=ok model={model} "
+            f"toc_pages={PageIndexService._format_compact_pages(toc_pages)} "
+            f"items={len(extraction.items)}"
+        )
+        return candidate
+
+    @staticmethod
+    def _parse_json_payload(content: str) -> Dict[str, Any]:
+        text = str(content or "").strip()
+        if text.startswith("```"):
+            lines = text.splitlines()
+            if lines and lines[0].startswith("```"):
+                lines = lines[1:]
+            if lines and lines[-1].strip() == "```":
+                lines = lines[:-1]
+            text = "\n".join(lines).strip()
+        try:
+            payload = json.loads(text)
+        except Exception:
+            match = re.search(r"\{.*\}", text, re.DOTALL)
+            if not match:
+                raise
+            payload = json.loads(match.group())
+        if not isinstance(payload, dict):
+            raise ValueError("LLM TOC payload must be a JSON object")
+        return payload
+
+    @staticmethod
+    def _normalize_llm_ocr_toc_items(items: Any) -> List[Dict[str, Any]]:
+        normalized: List[Dict[str, Any]] = []
+        if not isinstance(items, list):
+            return normalized
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            title = re.sub(r"\s+", " ", str(item.get("title") or "").strip())
+            if not title or len(title) > 140:
+                continue
+            page = PageIndexService._coerce_positive_int(item.get("page"))
+            physical_index = PageIndexService._coerce_positive_int(item.get("physical_index"))
+            if page is None and physical_index is None:
+                continue
+            normalized.append(
+                {
+                    "title": title,
+                    "level": PageIndexService._coerce_positive_int(item.get("level")) or 1,
+                    "page": page,
+                    "physical_index": physical_index,
+                    "confidence": PageIndexService._coerce_float(item.get("confidence"), default=0.58),
+                    "nodes": [],
+                }
+            )
+        return normalized
+
+    @staticmethod
+    def _coerce_positive_int(value: Any) -> Optional[int]:
+        if isinstance(value, bool):
+            return None
+        try:
+            parsed = int(value)
+        except (TypeError, ValueError):
+            return None
+        return parsed if parsed > 0 else None
+
+    @staticmethod
+    def _coerce_float(value: Any, *, default: float) -> float:
+        try:
+            parsed = float(value)
+        except (TypeError, ValueError):
+            return default
+        return max(0.0, min(1.0, parsed))
+
+    async def _run_toc_attempt_chain(
+        self,
+        *,
+        analysis: Dict,
+        route_decision: Dict[str, Any],
+        page_count: int,
+        model: str,
+        anchors: Dict[str, Any],
+    ) -> Optional[Dict[str, Any]]:
+        from pageindex.pipeline.toc_attempt_runner import TocAttemptRunner
+
+        page_texts = self._analysis_page_texts(analysis)
+        if page_texts and not isinstance(analysis.get("page_texts"), list):
+            analysis["page_texts"] = page_texts
+        toc_pages = list(
+            anchors.get("toc_pages")
+            or analysis.get("toc_pages")
+            or (analysis.get("toc_page") or {}).get("pages")
+            or []
+        )
+        context = {
+            "analysis": analysis,
+            "page_texts": page_texts,
+            "page_count": page_count,
+            "model": model,
+            "toc_pages": toc_pages,
+        }
+
+        async def build_embedded(ctx: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+            return self._build_embedded_toc_draft(ctx["analysis"])
+
+        async def build_visible_with_pages(ctx: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+            return await self._build_visible_toc_draft(
+                ctx["analysis"],
+                page_texts=ctx["page_texts"],
+                page_count=ctx["page_count"],
+                toc_pages=ctx["toc_pages"],
+                model=ctx["model"],
+                selected_path="visible_toc_with_pages",
+            )
+
+        async def build_visible_no_pages(ctx: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+            return await self._build_visible_toc_draft(
+                ctx["analysis"],
+                page_texts=ctx["page_texts"],
+                page_count=ctx["page_count"],
+                toc_pages=ctx["toc_pages"],
+                model=ctx["model"],
+                selected_path="visible_toc_no_pages",
+            )
+
+        async def build_content_outline(ctx: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+            result = await self._extract_content_outline_candidate(
+                ctx["analysis"],
+                page_count=ctx["page_count"],
+                model=ctx["model"],
+            )
+            return self._result_to_toc_draft(result, source="content_outline")
+
+        async def map_attempt(
+            draft: Dict[str, Any],
+            ctx: Dict[str, Any],
+            attempt: Dict[str, Any],
+        ) -> Dict[str, Any]:
+            selected_path = str(attempt.get("path") or route_decision.get("selected_path") or "")
+            mapped_result = self._map_toc_draft_result_through_s5(
+                {
+                    "toc_draft": draft,
+                    "source": draft.get("source") or selected_path,
+                    "confidence": draft.get("confidence", 0.72),
+                    "allow_child_expansion": selected_path != "embedded_toc",
+                },
+                page_texts=ctx["page_texts"],
+                page_count=ctx["page_count"],
+                toc_pages=ctx["toc_pages"],
+                selected_path=selected_path,
+                analysis=ctx["analysis"],
+            )
+            mapping_report = dict((mapped_result or {}).get("mapping_report") or {})
+            items = list((mapped_result or {}).get("items") or (mapped_result or {}).get("toc_items") or [])
+            return {
+                **(mapped_result or {}),
+                "type": "mapped_toc",
+                "source": "unified_s5",
+                "provider_source": (mapped_result or {}).get("source") or draft.get("source") or selected_path,
+                "items": items,
+                "mapping_report": mapping_report or {"status": "failed", "reasons": ["mapping_empty"]},
+            }
+
+        def quality_gate(
+            mapped: Dict[str, Any],
+            _ctx: Dict[str, Any],
+            _attempt: Dict[str, Any],
+        ) -> Dict[str, Any]:
+            mapping_report = mapped.get("mapping_report") if isinstance(mapped, dict) else {}
+            reasons = list((mapping_report or {}).get("reasons") or [])
+            if str((mapping_report or {}).get("status") or "") != "ok":
+                return {"status": "failed", "hard_fail_reasons": reasons or ["mapping_failed"]}
+            if not mapped.get("items"):
+                return {"status": "failed", "hard_fail_reasons": ["empty_mapped_toc"]}
+            return {"status": "ok", "hard_fail_reasons": [], "facts": {"mapping": mapping_report}}
+
+        runner = TocAttemptRunner(
+            builders={
+                "embedded_toc": build_embedded,
+                "visible_toc_with_pages": build_visible_with_pages,
+                "visible_toc_no_pages": build_visible_no_pages,
+                "content_outline": build_content_outline,
+            },
+            mapper=map_attempt,
+            quality_gate=quality_gate,
+        )
+        result = await runner.run(route_decision, context)
+        analysis["toc_attempt_chain"] = result.get("attempt_chain") or []
+        analysis["toc_candidates_summary"] = {"attempt_chain": result.get("attempt_chain") or []}
+        if result.get("status") == "failed":
+            compact_attempts = [
+                {
+                    "path": item.get("path"),
+                    "mapping": item.get("mapping_status"),
+                    "quality": item.get("quality_status"),
+                    "reasons": item.get("failure_reasons"),
+                }
+                for item in result.get("attempt_chain") or []
+            ]
+            print(f"[TOC-ROUTE] status=failed attempts={compact_attempts}")
+        return result
+
+    @staticmethod
+    def _build_embedded_toc_draft(analysis: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        code_toc = analysis.get("code_toc") if isinstance(analysis.get("code_toc"), dict) else {}
+        if not code_toc:
+            return None
+        return PageIndexService._result_to_toc_draft(code_toc, source="code_toc")
+
+    async def _build_visible_toc_draft(
+        self,
+        analysis: Dict[str, Any],
+        *,
+        page_texts: List[str],
+        page_count: int,
+        toc_pages: List[int],
+        model: str,
+        selected_path: str,
+    ) -> Optional[Dict[str, Any]]:
+        if not page_texts or not toc_pages:
+            return None
+        try:
+            from pageindex.visible_toc_rule_extractor import (
+                extract_visible_toc_no_pages_draft,
+                extract_visible_toc_with_pages_draft,
+            )
+
+            if selected_path == "visible_toc_with_pages":
+                rule_draft = extract_visible_toc_with_pages_draft(
+                    page_texts,
+                    toc_pages=toc_pages,
+                    page_count=page_count,
+                )
+            else:
+                rule_draft = extract_visible_toc_no_pages_draft(
+                    page_texts,
+                    toc_pages=toc_pages,
+                    page_count=page_count,
+                )
+        except Exception as exc:
+            print(
+                "[TOC-DRAFT] provider=visible_rule "
+                f"status=error error_type={type(exc).__name__}"
+            )
+            rule_draft = None
+
+        if rule_draft:
+            analysis["visible_toc_rule"] = {
+                "status": "ok",
+                "source": "toc_page_text_rule",
+                "item_count": len(rule_draft.get("items") or []),
+            }
+            return rule_draft
+
+        analysis["visible_toc_rule"] = {
+            "status": "rejected",
+            "reason": "not_high_confidence_standard_toc",
+        }
+        llm_result = await self._extract_toc_text(analysis, toc_pages, page_count, model)
+        draft = (llm_result or {}).get("toc_draft") if isinstance(llm_result, dict) else None
+        if isinstance(draft, dict):
+            analysis["llm_toc_page"] = {
+                "status": "ok",
+                "source": "llm_toc_page",
+                "toc_pages": list(toc_pages or []),
+                "has_printed_page_numbers": bool(llm_result.get("has_printed_page_numbers")),
+                "item_count": len(draft.get("items") or []),
+            }
+            return draft
+        return None
+
+    @staticmethod
+    def _result_to_toc_draft(
+        result: Optional[Dict[str, Any]],
+        *,
+        source: str,
+    ) -> Optional[Dict[str, Any]]:
+        if not isinstance(result, dict):
+            return None
+        if result.get("type") == "toc_draft":
+            return result
+        raw_sections = result.get("toc_sections")
+        if isinstance(raw_sections, list) and raw_sections:
+            sections = []
+            for raw_section in raw_sections:
+                if not isinstance(raw_section, dict):
+                    continue
+                kind = str(raw_section.get("kind") or raw_section.get("section_kind") or "main_toc")
+                items = PageIndexService._items_to_draft_items(raw_section.get("items") or [], section_kind=kind)
+                if items:
+                    sections.append(
+                        {
+                            "kind": kind,
+                            "title": raw_section.get("title") or kind,
+                            "items": items,
+                        }
+                    )
+            if sections:
+                return {
+                    "type": "toc_draft",
+                    "source": source,
+                    "toc_sections": sections,
+                    "items": [
+                        item
+                        for section in sections
+                        if section.get("kind") == "main_toc"
+                        for item in (section.get("items") or [])
+                    ] or [
+                        item
+                        for section in sections
+                        for item in (section.get("items") or [])
+                    ],
+                    "confidence": result.get("confidence", 0.72),
+                }
+
+        items = PageIndexService._items_to_draft_items(
+            result.get("items") or result.get("toc_items") or result.get("structure") or [],
+            section_kind=str(result.get("section_kind") or "main_toc"),
+        )
+        if not items:
+            return None
         return {
+            "type": "toc_draft",
+            "source": source,
+            "section_kind": str(result.get("section_kind") or "main_toc"),
             "items": items,
-            "source": "text_heading",
-            "mapped": bool(balanced_result.get("mapped")),
-            "semi_frozen": bool(balanced_result.get("semi_frozen")),
-            "prevalidated": True,
+            "confidence": result.get("confidence", 0.72),
         }
 
     @staticmethod
-    def _is_prevalidated_text_heading_result(result: Optional[Dict]) -> bool:
-        return PageIndexService._is_prevalidated_outline_result(result)
+    def _items_to_draft_items(items: Any, *, section_kind: str) -> List[Dict[str, Any]]:
+        draft_items: List[Dict[str, Any]] = []
+        for raw in items or []:
+            if not isinstance(raw, dict):
+                continue
+            title = str(raw.get("title") or "").strip()
+            if not title:
+                continue
+            draft_item: Dict[str, Any] = {
+                "title": title,
+                "level": PageIndexService._coerce_positive_int(raw.get("level")) or 1,
+                "section_kind": raw.get("section_kind") or raw.get("toc_section_kind") or section_kind,
+            }
+            raw_page = (
+                raw.get("raw_page_label")
+                if "raw_page_label" in raw
+                else raw.get("page")
+                or raw.get("logical_page")
+                or raw.get("physical_index")
+                or raw.get("start_index")
+            )
+            if raw_page not in (None, ""):
+                draft_item["raw_page_label"] = raw_page
+            metadata = dict(raw.get("metadata") or {})
+            raw_source = str(raw.get("source") or "").strip()
+            if raw_source:
+                metadata.setdefault("page_source", raw_source)
+            if raw_source in {"bookmarks", "links", "pdf_outline", "outline"}:
+                metadata.setdefault("page_label_kind", "physical")
+                metadata.setdefault("trusted_page_source", True)
+            if metadata:
+                draft_item["metadata"] = metadata
+            for key in ("structure", "source_page", "confidence"):
+                if key in raw:
+                    draft_item[key] = deepcopy(raw[key])
+            children = raw.get("children") or raw.get("nodes")
+            if isinstance(children, list) and children:
+                draft_item["children"] = PageIndexService._items_to_draft_items(
+                    children,
+                    section_kind=str(draft_item["section_kind"]),
+                )
+            draft_items.append(draft_item)
+        return draft_items
 
-    @staticmethod
-    def _prevalidated_skip_validation_message(result: Dict) -> str:
-        source = result.get("source") or "outline"
-        return f"[INDEX-V3-NEW] {source} shortcut prevalidated, skipping generic validation"
-
-    @staticmethod
-    def _is_effectively_image_doc(analysis: Dict) -> bool:
-        text_coverage = float(analysis.get("text_coverage") or 0.0)
-        image_coverage = float(analysis.get("image_coverage") or 0.0)
-        return bool(analysis.get("is_image_only_pdf", False)) or (
-            text_coverage < 0.3 and image_coverage >= 0.3
+    def _confirmed_toc_pages_require_llm(analysis: Optional[Dict[str, Any]]) -> bool:
+        if not isinstance(analysis, dict):
+            return False
+        detection = analysis.get("toc_page_detection")
+        if not isinstance(detection, dict):
+            return False
+        if str(detection.get("status") or "") != "detected":
+            return False
+        if not detection.get("pages"):
+            return False
+        try:
+            text_coverage = float(analysis.get("text_coverage") or 0.0)
+        except (TypeError, ValueError):
+            text_coverage = 0.0
+        content_type = str(analysis.get("content_type") or "").lower()
+        return bool(
+            analysis.get("is_image_only_pdf")
+            or analysis.get("is_garbled_pdf")
+            or content_type == "ocr"
+            or text_coverage < 0.3
         )
+
+    @staticmethod
+    def _legacy_ppocr_diagnostics(
+        legacy_client: Any,
+        *,
+        pages: List[Any],
+        requested_pages: List[int],
+        fallback_error: Exception,
+    ) -> Dict[str, Any]:
+        return {
+            "task": "page_text",
+            "source": "legacy_fallback",
+            "engine_type": "ppocr_legacy",
+            "model": getattr(legacy_client, "model", "PP-OCRv6"),
+            "backend": getattr(legacy_client, "backend", None),
+            "evidence_level": "line_box",
+            "result_pages": len(pages),
+            "requested_pages": list(requested_pages),
+            "fallback_reason": "ocr_resolver_failed",
+            "fallback_error_type": type(fallback_error).__name__,
+        }
+
+    @staticmethod
+    def _toc_probe_pages_1_based(analysis: Dict[str, Any], page_count: int) -> List[int]:
+        return [index + 1 for index in PageIndexService._toc_probe_page_indices(analysis, page_count)]
 
     @staticmethod
     def _is_weak_slide_bookmark_toc(analysis: Dict, items: List[Dict]) -> bool:
@@ -2416,13 +3351,9 @@ Example:
         titles = [str(item.get("title", "")).strip() for item in items]
         weak_count = 0
         for title in titles:
-            if not title:
+            if PageIndexService._is_slide_export_bookmark_title(title):
                 weak_count += 1
-            elif re.match(r"^(?:幻灯片|Slide)\s*\d+(?:\s*[:：].*)?$", title, re.IGNORECASE):
-                weak_count += 1
-            elif title in {"默认节", "Default Section"}:
-                weak_count += 1
-            elif re.match(r"^第[一二三四五六七八九十]+章$", title):
+            elif re.match(r"^缁楃悳娑撯偓娴滃奔绗侀崶娑楃安閸忣厺绔烽崗顐＄瘈閸椾箽+缁?", title):
                 weak_count += 1
             elif re.match(r"^Chapter\s*\d+$", title, re.IGNORECASE):
                 weak_count += 1
@@ -2443,67 +3374,26 @@ Example:
         return weak_ratio >= 0.3 and low_text_quality
 
     @staticmethod
-    def _has_reliable_code_toc(analysis: Dict) -> bool:
-        code_toc = analysis.get("code_toc") or {}
-        items = code_toc.get("items") or []
-        source = code_toc.get("source")
-        if not items:
-            return False
-        if source in {"bookmarks", "links"}:
-            if source == "bookmarks" and PageIndexService._is_weak_slide_bookmark_toc(analysis, items):
-                print("[CODE-TOC] Ignoring weak slide-export bookmarks")
-                analysis["code_toc_reject_reason"] = "weak_slide_bookmarks"
-                return False
+    def _is_slide_export_bookmark_title(title: str) -> bool:
+        value = str(title or "").strip()
+        if not value:
             return True
-        if source != "regex":
-            return False
-        if analysis.get("agenda_outline_candidate"):
-            print("[CODE-TOC] Ignoring weak regex TOC: agenda_outline_candidate=True")
-            return False
+        lower = value.lower()
+        if lower == "default section":
+            return True
+        slide_prefixes = ("slide", "幻灯片", "页面")
+        if lower.startswith("page "):
+            return True
+        return any(lower.startswith(prefix.lower()) for prefix in slide_prefixes)
 
-        page_count = int(analysis.get("page_count") or 0)
-        if page_count <= 0:
-            return False
+    @staticmethod
+    def _has_reliable_code_toc(analysis: Dict) -> bool:
+        from pageindex.code_toc_quality import evaluate_code_toc
 
-        physical_pages = [
-            item.get("physical_index")
-            for item in items
-            if isinstance(item.get("physical_index"), int)
-        ]
-        if len(physical_pages) < 3:
-            return False
-
-        out_of_range_ratio = sum(1 for page in physical_pages if page > page_count) / len(physical_pages)
-        year_like_ratio = sum(1 for page in physical_pages if 1900 <= page <= 2100) / len(physical_pages)
-        if out_of_range_ratio >= 0.3 or year_like_ratio >= 0.3:
-            print(
-                f"[CODE-TOC] Ignoring weak regex TOC: "
-                f"out_of_range={out_of_range_ratio:.0%}, years={year_like_ratio:.0%}"
-            )
-            return False
-
-        compressed_ratio = max(physical_pages) / page_count if physical_pages else 1.0
-        figure_title_ratio = sum(
-            1
-            for item in items
-            if str(item.get("title", "")).strip().startswith(("图：", "表：", "图:", "表:"))
-        ) / len(items)
-        if page_count > 15 and compressed_ratio <= 0.35:
-            print(
-                f"[CODE-TOC] Ignoring weak regex TOC: "
-                f"compressed_pages={compressed_ratio:.0%}"
-            )
-            return False
-        if figure_title_ratio >= 0.2:
-            print(
-                f"[CODE-TOC] Ignoring weak regex TOC: "
-                f"figure_titles={figure_title_ratio:.0%}"
-            )
-            return False
-
-        in_range_pages = [page for page in physical_pages if 1 <= page <= page_count]
-        unique_ratio = len(set(in_range_pages)) / len(in_range_pages) if in_range_pages else 0.0
-        return len(in_range_pages) >= 3 and unique_ratio >= 0.6
+        report = evaluate_code_toc(analysis)
+        if not report.get("accepted") and report.get("reasons"):
+            analysis["code_toc_reject_reason"] = ",".join(report.get("reasons") or [])
+        return bool(report.get("accepted"))
 
     @staticmethod
     def _select_initial_execution_mode(requested_mode: str, analysis: Dict) -> str:
@@ -2518,7 +3408,7 @@ Example:
             if value is not None
         )
         suffix = f" {detail_text}" if detail_text else ""
-        print(f"[INDEX] Stage {stage_no}/7 {name}: {status}{suffix}")
+        print(f"[TOC-PIPELINE] stage={stage_no}/7 name={name} status={status}{suffix}")
 
     @staticmethod
     def _content_ocr_stage_name() -> str:
@@ -2548,43 +3438,88 @@ Example:
 
     @staticmethod
     def _build_auxiliary_catalog_nodes(analysis: Dict) -> List[Dict]:
+        from pageindex.catalog_classifier import (
+            CATALOG_FIGURE,
+            CATALOG_TABLE,
+            catalog_group_title,
+            detect_catalog_type,
+        )
+
         code_toc = analysis.get("code_toc") or {}
-        if code_toc.get("source") != "regex":
+        if not PageIndexService._should_add_auxiliary_catalog_nodes(analysis):
             return []
-        items = code_toc.get("items") or []
         groups = {
-            "figure": {"title": "图目录", "prefix": "图", "items": []},
-            "table": {"title": "表目录", "prefix": "表", "items": []},
+            CATALOG_FIGURE: {"title": catalog_group_title(CATALOG_FIGURE), "items": []},
+            CATALOG_TABLE: {"title": catalog_group_title(CATALOG_TABLE), "items": []},
         }
-        for item in items:
-            title = str(item.get("title", "")).strip()
-            if re.match(r"^图\s*\d+[.、：:\s]", title):
-                groups["figure"]["items"].append(item)
-            elif re.match(r"^表\s*\d+[.、：:\s]", title):
-                groups["table"]["items"].append(item)
+        pure_catalog_headings = {
+            "figurecatalog",
+            "figurescatalog",
+            "listoffigures",
+            "tablecatalog",
+            "tablescatalog",
+            "listoftables",
+            "\u56fe\u76ee\u5f55",
+            "\u63d2\u56fe\u76ee\u5f55",
+            "\u8868\u76ee\u5f55",
+            "\u8868\u683c\u76ee\u5f55",
+        }
+        section_items: List[Dict[str, Any]] = []
+        for section in code_toc.get("toc_sections") or []:
+            if not isinstance(section, dict):
+                continue
+            kind = str(section.get("kind") or "").strip()
+            if kind == "figure_toc":
+                section_items.extend(
+                    dict(item, catalog_type=CATALOG_FIGURE)
+                    for item in section.get("items") or []
+                    if isinstance(item, dict)
+                )
+            elif kind == "table_toc":
+                section_items.extend(
+                    dict(item, catalog_type=CATALOG_TABLE)
+                    for item in section.get("items") or []
+                    if isinstance(item, dict)
+                )
+        source_items = section_items or list(code_toc.get("items") or [])
+        for item in source_items:
+            if not isinstance(item, dict):
+                continue
+            catalog_type = detect_catalog_type(item)
+            if catalog_type not in groups:
+                continue
+            compact_title = re.sub(r"\s+", "", str(item.get("title", "")).strip().lower())
+            if compact_title in pure_catalog_headings:
+                continue
+            groups[catalog_type]["items"].append(item)
 
         catalogs: List[Dict[str, Any]] = []
-        for catalog_type in ("figure", "table"):
+        for catalog_type in (CATALOG_FIGURE, CATALOG_TABLE):
             group = groups[catalog_type]
             if not group["items"]:
                 continue
             children = []
             for idx, item in enumerate(group["items"], start=1):
+                page = (
+                    item.get("physical_index")
+                    or item.get("start_index")
+                    or item.get("page")
+                )
                 children.append(
                     {
                         "structure": f"{catalog_type}.{idx}",
                         "title": str(item.get("title", "")).strip(),
-                        "physical_index": item.get("physical_index"),
-                        "start_index": item.get("physical_index"),
-                        "end_index": item.get("physical_index"),
+                        "physical_index": page,
+                        "start_index": page,
+                        "end_index": page,
                         "node_type": "auxiliary_catalog_item",
                         "catalog_type": catalog_type,
                         "exclude_from_coverage": True,
                         "exclude_from_llm_qc": True,
                         "exclude_from_text": True,
                         "source_anchor": {
-                            "start_page": item.get("physical_index"),
-                            "end_page": item.get("physical_index"),
+                            "start_page": page,
+                            "end_page": page,
                         },
                     }
                 )
@@ -2604,12 +3539,87 @@ Example:
         return catalogs
 
     @staticmethod
+    def _should_add_auxiliary_catalog_nodes(analysis: Dict) -> bool:
+        if not isinstance(analysis, dict):
+            return False
+        source = str(analysis.get("toc_source") or "").strip()
+        if source in {"llm_toc_page", "toc_page_text", "toc_page_text_rule"}:
+            return False
+        code_toc = analysis.get("code_toc") if isinstance(analysis.get("code_toc"), dict) else {}
+        sections = code_toc.get("toc_sections") or []
+        if any(
+            isinstance(section, dict)
+            and section.get("kind") in {"figure_toc", "table_toc"}
+            and section.get("items")
+            for section in sections
+        ):
+            return True
+        return code_toc.get("source") == "regex"
+
+    @staticmethod
     def _merge_auxiliary_catalog_nodes(
         tree: List[Dict],
         catalogs: List[Dict],
     ) -> List[Dict]:
         if not catalogs:
             return tree
+        def _is_auxiliary(node: Dict) -> bool:
+            node_type = str(node.get("node_type") or "")
+            catalog_type = str(node.get("catalog_type") or "")
+            return bool(
+                node.get("is_auxiliary")
+                or node_type == "auxiliary_catalog"
+                or catalog_type in {"figure", "table"}
+            )
+
+        def _is_main_catalog_group(node: Dict) -> bool:
+            title = str(node.get("title") or "").strip().lower()
+            compact_title = re.sub(r"\s+", "", title)
+            metadata = node.get("metadata") if isinstance(node.get("metadata"), dict) else {}
+            return bool(
+                metadata.get("toc_section_kind") == "main_toc"
+                or (
+                    compact_title in {"目录", "目次", "contents", "tableofcontents"}
+                    and node.get("nodes")
+                )
+            )
+
+        regular_nodes = [node for node in tree if isinstance(node, dict) and not _is_auxiliary(node)]
+        existing_aux_nodes = [node for node in tree if isinstance(node, dict) and _is_auxiliary(node)]
+        if (
+            len(regular_nodes) > 1
+            and not any(_is_main_catalog_group(node) for node in regular_nodes)
+        ):
+            starts = [
+                value
+                for value in (
+                    node.get("start_index") or node.get("physical_index")
+                    for node in regular_nodes
+                )
+                if isinstance(value, int)
+            ]
+            ends = [
+                value
+                for value in (
+                    node.get("end_index") or node.get("start_index") or node.get("physical_index")
+                    for node in regular_nodes
+                )
+                if isinstance(value, int)
+            ]
+            tree = [
+                {
+                    "title": "目录",
+                    "node_type": "catalog_group",
+                    "page_type": "catalog_group",
+                    "metadata": {"toc_section_kind": "main_toc"},
+                    "physical_index": min(starts) if starts else None,
+                    "start_index": min(starts) if starts else None,
+                    "end_index": max(ends) if ends else None,
+                    "nodes": regular_nodes,
+                },
+                *existing_aux_nodes,
+            ]
+
         def _catalog_key(node: Dict) -> tuple[Any, Any]:
             return (
                 node.get("node_type"),
@@ -2631,8 +3641,9 @@ Example:
     @staticmethod
     def _normalize_auxiliary_catalog_nodes(tree: List[Dict]) -> List[Dict]:
         def normalize_item_title(title: str) -> str:
-            text = re.sub(r"\s+", "", str(title or "").strip().lower())
-            return re.sub(r"[：:，,、。.·\-\s]+", "", text)
+            from pageindex.tree_schema import normalize_title
+
+            return normalize_title(title)
 
         def range_quality(node: Dict) -> int:
             start = node.get("start_index") or node.get("physical_index")
@@ -2797,6 +3808,219 @@ Example:
         ]
 
     @staticmethod
+    def _prepare_prebuilt_toc_tree(toc_items: List[Dict], page_count: int) -> List[Dict]:
+        """Normalize a provider-returned tree before QC/enrichment uses it."""
+        from pageindex.toc_mapping import derive_toc_ranges
+
+        normalized = derive_toc_ranges(toc_items or [], page_count=page_count)
+        PageIndexService._sync_page_source_anchors_to_ranges(normalized)
+        return normalized
+
+    @staticmethod
+    def _build_s5_toc_tree(
+        toc_items: List[Dict[str, Any]],
+        *,
+        page_count: int,
+        analysis: Optional[Dict[str, Any]] = None,
+    ) -> tuple[List[Dict[str, Any]], Dict[str, Any]]:
+        """Build the saved TOC tree without re-owning S5 page mapping."""
+        from copy import deepcopy
+
+        from pageindex.catalog_classifier import (
+            AUXILIARY_CATALOG_TYPES,
+            CATALOG_FIGURE,
+            CATALOG_MAIN,
+            CATALOG_TABLE,
+            catalog_group_title,
+            detect_catalog_type,
+        )
+        from pageindex.post_processing import _ensure_level_structures, build_tree, check_completeness
+        from pageindex.toc_mapping import derive_toc_ranges
+
+        page_count = max(1, int(page_count or 1))
+        items = [
+            deepcopy(item)
+            for item in (toc_items or [])
+            if isinstance(item, dict) and str(item.get("title") or "").strip()
+        ]
+        if not items:
+            tree = [
+                {
+                    "structure": "1",
+                    "title": "Document Content",
+                    "physical_index": 1,
+                    "start_index": 1,
+                    "end_index": page_count,
+                    "nodes": [],
+                }
+            ]
+            return tree, check_completeness(tree, page_count)
+
+        if any(isinstance(item.get("nodes"), list) and item.get("nodes") for item in items):
+            items = PageIndexService._prepend_front_matter_to_prebuilt_toc_tree(
+                items,
+                page_count,
+                page_texts=(analysis or {}).get("page_texts") or [],
+            )
+            tree = derive_toc_ranges(items, page_count=page_count)
+            PageIndexService._sync_page_source_anchors_to_ranges(tree)
+            return tree, check_completeness(tree, page_count)
+
+        def build_family_tree(family_items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+            prepared = _ensure_level_structures(deepcopy(family_items))
+            return derive_toc_ranges(build_tree(prepared), page_count=page_count)
+
+        groups: Dict[str, List[Dict[str, Any]]] = {
+            CATALOG_MAIN: [],
+            CATALOG_FIGURE: [],
+            CATALOG_TABLE: [],
+        }
+        for item in items:
+            catalog_type = detect_catalog_type(item)
+            item["catalog_type"] = catalog_type
+            groups.setdefault(catalog_type, []).append(item)
+
+        tree: List[Dict[str, Any]]
+        if any(groups.get(catalog_type) for catalog_type in AUXILIARY_CATALOG_TYPES):
+            tree = []
+            for catalog_type in (CATALOG_MAIN, CATALOG_FIGURE, CATALOG_TABLE):
+                family_items = groups.get(catalog_type) or []
+                if not family_items:
+                    continue
+                if catalog_type == CATALOG_MAIN:
+                    family_items = PageIndexService._prepend_front_matter_node_if_needed(
+                        family_items,
+                        page_count,
+                        page_texts=(analysis or {}).get("page_texts") or [],
+                    )
+                family_tree = build_family_tree(family_items)
+                starts = [
+                    node.get("start_index")
+                    for node in PageIndexService._flatten_toc_nodes(family_tree)
+                    if isinstance(node.get("start_index"), int)
+                ]
+                ends = [
+                    node.get("end_index")
+                    for node in PageIndexService._flatten_toc_nodes(family_tree)
+                    if isinstance(node.get("end_index"), int)
+                ]
+                is_auxiliary = catalog_type in AUXILIARY_CATALOG_TYPES
+                tree.append(
+                    {
+                        "title": catalog_group_title(catalog_type),
+                        "structure": "contents" if catalog_type == CATALOG_MAIN else catalog_type,
+                        "node_type": "auxiliary_catalog" if is_auxiliary else "catalog_group",
+                        "catalog_type": catalog_type,
+                        "is_auxiliary": is_auxiliary,
+                        "exclude_from_coverage": is_auxiliary,
+                        "exclude_from_llm_qc": is_auxiliary,
+                        "exclude_from_text": is_auxiliary,
+                        "physical_index": min(starts) if starts else 1,
+                        "start_index": min(starts) if starts else 1,
+                        "end_index": max(ends) if ends else page_count,
+                        "nodes": family_tree,
+                    }
+                )
+        else:
+            main_items = PageIndexService._prepend_front_matter_node_if_needed(
+                groups.get(CATALOG_MAIN) or items,
+                page_count,
+                page_texts=(analysis or {}).get("page_texts") or [],
+            )
+            tree = build_family_tree(main_items)
+
+        tree = derive_toc_ranges(tree, page_count=page_count)
+        PageIndexService._sync_page_source_anchors_to_ranges(tree)
+        return tree, check_completeness(tree, page_count)
+
+    @staticmethod
+    def _prepend_front_matter_to_prebuilt_toc_tree(
+        items: List[Dict[str, Any]],
+        page_count: int,
+        *,
+        page_texts: Optional[List[str]] = None,
+    ) -> List[Dict[str, Any]]:
+        from copy import deepcopy
+
+        from pageindex.catalog_classifier import (
+            AUXILIARY_CATALOG_TYPES,
+            CATALOG_MAIN,
+            detect_catalog_type,
+        )
+
+        roots = [
+            deepcopy(item)
+            for item in (items or [])
+            if isinstance(item, dict) and str(item.get("title") or "").strip()
+        ]
+        if not roots:
+            return roots
+
+        updated: List[Dict[str, Any]] = []
+        found_main_container = False
+        for root in roots:
+            children = root.get("nodes")
+            catalog_type = detect_catalog_type(root)
+            if (
+                isinstance(children, list)
+                and children
+                and catalog_type == CATALOG_MAIN
+                and not bool(root.get("is_auxiliary"))
+            ):
+                found_main_container = True
+                root["nodes"] = PageIndexService._prepend_front_matter_node_if_needed(
+                    children,
+                    page_count,
+                    page_texts=page_texts or [],
+                )
+            updated.append(root)
+
+        if found_main_container:
+            return updated
+
+        if all(detect_catalog_type(root) not in AUXILIARY_CATALOG_TYPES for root in updated):
+            return PageIndexService._prepend_front_matter_node_if_needed(
+                updated,
+                page_count,
+                page_texts=page_texts or [],
+            )
+        return updated
+
+    @staticmethod
+    def _flatten_toc_nodes(nodes: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        flattened: List[Dict[str, Any]] = []
+        for node in nodes or []:
+            if not isinstance(node, dict):
+                continue
+            flattened.append(node)
+            flattened.extend(PageIndexService._flatten_toc_nodes(node.get("nodes") or []))
+        return flattened
+
+    @staticmethod
+    def _sync_page_source_anchors_to_ranges(nodes: List[Dict]) -> None:
+        for node in nodes or []:
+            if not isinstance(node, dict):
+                continue
+            anchor = node.get("source_anchor")
+            start = node.get("start_index")
+            end = node.get("end_index")
+            if (
+                isinstance(anchor, dict)
+                and anchor.get("unit_type") == "page"
+                and isinstance(start, int)
+                and isinstance(end, int)
+            ):
+                synced = dict(anchor)
+                synced["start_page"] = start
+                synced["end_page"] = end
+                if "page" in synced:
+                    synced["page"] = start
+                node["source_anchor"] = synced
+            children = node.get("nodes") or node.get("children") or []
+            if isinstance(children, list):
+                PageIndexService._sync_page_source_anchors_to_ranges(children)
+
+    @staticmethod
     def _allows_child_outline_expansion(analysis: Dict) -> bool:
         build_state = analysis.get("build_state") or {}
         top_level_frozen = bool(
@@ -2813,311 +4037,754 @@ Example:
         return top_level_frozen and allow_child_expansion
 
     @staticmethod
-    def _expand_visual_page_outline_if_needed(
-        toc_tree: List[Dict],
+    def _enable_child_outline_expansion_for_shallow_toc(
         analysis: Dict,
+        toc_items: List[Dict[str, Any]],
+        *,
         page_count: int,
         toc_source: Optional[str],
-        page_list: Optional[List[Any]] = None,
-    ) -> int:
-        """Expand a top-level-frozen TOC skeleton with child page titles."""
-        if not PageIndexService._allows_child_outline_expansion(analysis):
-            return 0
-        from pageindex.visual_page_outline_extractor import (
-            expand_flat_toc_with_page_titles,
-            expand_toc_with_page_evidence,
-        )
-
-        page_evidence = analysis.get("page_evidence") or analysis.get("page_evidences") or []
-        if PageIndexService._requires_visual_outline_provider(analysis) and not page_evidence:
-            reason = PageIndexService._flat_text_outline_skip_reason(analysis)
-            analysis["outline_expansion"] = {
-                "source": "none",
-                "reason": reason,
-                "added_children": 0,
-                "quality": "bad",
-                "expected_children": 0,
-                "actual_children": 0,
-                "needs_repair": True,
-            }
-            print(f"[OUTLINE-EXPAND] skipped provider=flat_text_fallback reason={reason}")
-            return 0
-
-        if page_evidence:
-            print(f"[OUTLINE-EXPAND] provider=page_evidence chapters={len(toc_tree)}")
-            expansion = expand_toc_with_page_evidence(toc_tree, page_evidence, page_count)
-            expansion["source"] = "page_evidence"
-        else:
-            print(f"[OUTLINE-EXPAND] provider=flat_text_fallback chapters={len(toc_tree)}")
-            page_texts = [
-                str(page[0] or "")
-                for page in (page_list or [])
-                if isinstance(page, (list, tuple)) and len(page) >= 1
-            ]
-            if not page_texts:
-                print("[OUTLINE-EXPAND] skipped reason=no_page_texts")
-                return 0
-            expansion = expand_flat_toc_with_page_titles(toc_tree, page_texts, page_count)
-            expansion["source"] = "flat_text_fallback"
-
-        added = int(expansion.get("added_children") or 0)
-        analysis["outline_expansion"] = expansion
-        if added:
-            print(
-                f"[OUTLINE-EXPAND] done added_children={added} "
-                f"quality={expansion.get('quality')} "
-                f"source_distribution={expansion.get('source_distribution')} "
-                f"avg_confidence={expansion.get('avg_title_confidence')} "
-                f"low_confidence_ratio={expansion.get('low_confidence_ratio')}"
-            )
-        else:
-            print(
-                f"[OUTLINE-EXPAND] skipped reason=no_visual_titles "
-                f"quality={expansion.get('quality')} "
-                f"expected_children={expansion.get('expected_children')} "
-                f"actual_children={expansion.get('actual_children')}"
-            )
-        return added
-
-    @staticmethod
-    def _should_skip_flat_text_outline_expansion(analysis: Dict) -> bool:
-        """Return true when extracted page text is not trustworthy for structure."""
-        if PageIndexService._requires_visual_outline_provider(analysis):
-            return True
-
-        text_quality = analysis.get("text_quality") or {}
-        if bool(text_quality.get("is_low_quality")):
-            return True
-        if bool(analysis.get("is_garbled_pdf")):
-            return True
-
-        try:
-            text_coverage = float(analysis.get("text_coverage") or 0.0)
-        except Exception:
-            text_coverage = 0.0
-        try:
-            duplicate_ratio = float(text_quality.get("duplicate_ratio") or 0.0)
-        except Exception:
-            duplicate_ratio = 0.0
-        try:
-            meaningful_ratio = float(text_quality.get("meaningful_ratio") or 1.0)
-        except Exception:
-            meaningful_ratio = 1.0
-
-        return text_coverage <= 0.35 and (
-            duplicate_ratio >= 0.65
-            or meaningful_ratio <= 0.35
-            or bool(analysis.get("garbled_pages"))
-        )
-
-    @staticmethod
-    def _requires_visual_outline_provider(analysis: Dict) -> bool:
-        """Return true when structure must come from visual evidence, not OCR text."""
-        if str(analysis.get("structure_policy") or "").lower() == "visual_required":
-            return True
-        if str(analysis.get("layout_type") or "").lower() in {
-            "scanned_image_pdf",
-            "mixed_visual_report",
-            "slide_like_report",
-        }:
-            return True
-        return False
-
-    @staticmethod
-    def _flat_text_outline_skip_reason(analysis: Dict) -> str:
-        if PageIndexService._requires_visual_outline_provider(analysis):
-            return "visual_required"
-        return "low_quality_text"
-
-    @staticmethod
-    async def _expand_visual_page_outline_with_vlm_fallback(
-        toc_tree: List[Dict],
-        analysis: Dict,
-        page_count: int,
-        toc_source: Optional[str],
-        page_list: Optional[List[Any]] = None,
-        model: Optional[str] = None,
-    ) -> int:
-        """Run deterministic expansion, then bounded VLM fallback if quality is bad."""
-        if not PageIndexService._allows_child_outline_expansion(analysis):
-            return 0
-        if (
-            PageIndexService._should_skip_flat_text_outline_expansion(analysis)
-            and analysis.get("document_path")
-        ):
-            skip_reason = PageIndexService._flat_text_outline_skip_reason(analysis)
-            print(f"[OUTLINE-EXPAND] skip flat_text_fallback reason={skip_reason}")
-            visual_expansion = await PageIndexService._extract_visual_child_titles_for_flat_skeleton(
-                file_path=str(analysis["document_path"]),
-                tree=toc_tree,
-                page_count=page_count,
-                model=model,
-            )
-            visual_expansion["source"] = "vlm_page_titles"
-            visual_expansion["reason"] = skip_reason
-            analysis["outline_expansion"] = visual_expansion
-            visual_added = int(visual_expansion.get("added_children") or 0)
-            print(
-                f"[OUTLINE-EXPAND] vlm_page_titles added_children={visual_added} "
-                f"quality={visual_expansion.get('quality')}"
-            )
-            return visual_added
-
-        added = PageIndexService._expand_visual_page_outline_if_needed(
-            toc_tree=toc_tree,
-            analysis=analysis,
+    ) -> bool:
+        """Unlock child expansion when a confirmed TOC page only provides a shallow skeleton."""
+        if not PageIndexService._is_shallow_toc_requiring_child_expansion(
+            toc_items,
             page_count=page_count,
             toc_source=toc_source,
-            page_list=page_list,
-        )
-        expansion = analysis.get("outline_expansion") or {}
-        if not expansion.get("needs_repair") or not analysis.get("document_path"):
-            return added
+        ):
+            return False
 
-        visual_expansion = await PageIndexService._extract_visual_child_titles_for_flat_skeleton(
-            file_path=str(analysis["document_path"]),
-            tree=toc_tree,
-            page_count=page_count,
-            model=model,
+        build_state = dict(analysis.get("build_state") or {})
+        build_state.update(
+            {
+                "top_level_frozen": True,
+                "allow_child_expansion": True,
+                "children_locked": False,
+                "top_level_source": toc_source or analysis.get("toc_source") or "toc_page",
+                "tree_complete": False,
+            }
         )
-        visual_added = int(visual_expansion.get("added_children") or 0)
-        if visual_added > added:
-            visual_expansion["source"] = "vlm_page_titles"
-            analysis["outline_expansion"] = visual_expansion
-            print(
-                f"[OUTLINE-EXPAND] vlm fallback added_children={visual_added} "
-                f"quality={visual_expansion.get('quality')}"
+        analysis["build_state"] = build_state
+        analysis["top_level_frozen"] = True
+        analysis["allow_child_expansion"] = True
+        analysis["toc_frozen"] = False
+        analysis["toc_semi_frozen"] = True
+        if toc_source:
+            analysis["toc_frozen_source"] = toc_source
+        analysis["shallow_toc_expansion"] = {
+            "status": "enabled",
+            "source": toc_source,
+            "reason": "long_leaf_ranges",
+        }
+        return True
+
+    @staticmethod
+    def _is_shallow_toc_requiring_child_expansion(
+        toc_items: List[Dict[str, Any]],
+        *,
+        page_count: int,
+        toc_source: Optional[str],
+    ) -> bool:
+        source = str(toc_source or "")
+        if source not in {
+            "llm_toc_page",
+            "toc_page_text",
+            "toc_page_text_rule",
+        }:
+            return False
+        if not isinstance(toc_items, list) or page_count <= 0:
+            return False
+        from pageindex.catalog_classifier import CATALOG_MAIN, detect_catalog_type
+
+        effective_items: List[Dict[str, Any]] = []
+        for item in toc_items:
+            if not isinstance(item, dict):
+                continue
+            children = [
+                child
+                for child in (item.get("nodes") or item.get("children") or [])
+                if isinstance(child, dict)
+            ]
+            title_key = re.sub(r"\s+", "", str(item.get("title") or "")).casefold()
+            catalog_type = str(item.get("catalog_type") or detect_catalog_type(item))
+            is_main_catalog_container = bool(children) and (
+                item.get("page_type") == "catalog_group"
+                or item.get("node_type") == "catalog_group"
+                or title_key in {"目录", "目次", "contents", "tableofcontents"}
+                or catalog_type == CATALOG_MAIN
             )
-            return visual_added
+            if is_main_catalog_container:
+                effective_items.extend(children)
+                continue
+            if children:
+                return False
+            effective_items.append(item)
+
+        if len(effective_items) < 2:
+            return False
+
+        body_pages: List[int] = []
+        for item in effective_items:
+            if not isinstance(item, dict):
+                continue
+            catalog_type = str(item.get("catalog_type") or detect_catalog_type(item))
+            if catalog_type != CATALOG_MAIN:
+                continue
+            page = (
+                PageIndexService._coerce_positive_int(item.get("physical_index"))
+                or PageIndexService._coerce_positive_int(item.get("start_index"))
+            )
+            if page is not None:
+                body_pages.append(page)
+        if len(body_pages) < 2:
+            return False
+        dense_limit = max(8, page_count // 6)
+        if len(body_pages) > dense_limit:
+            return False
+        if any(left > right for left, right in zip(body_pages, body_pages[1:])):
+            return False
+        spans = [
+            max(1, next_page - page)
+            for page, next_page in zip(body_pages, body_pages[1:] + [page_count + 1])
+        ]
+        return bool(spans and max(spans) >= 6)
+
+    @staticmethod
+    def _analysis_page_texts(analysis: Dict[str, Any]) -> List[str]:
+        page_texts = analysis.get("page_texts") if isinstance(analysis, dict) else None
+        if isinstance(page_texts, list):
+            normalized: List[str] = []
+            for item in page_texts:
+                if isinstance(item, (list, tuple)) and item:
+                    normalized.append(str(item[0] or ""))
+                else:
+                    normalized.append(str(item or ""))
+            return normalized
+
+        page_text_map = analysis.get("page_text_map") if isinstance(analysis, dict) else None
+        if hasattr(page_text_map, "page_texts"):
+            try:
+                return [str(text or "") for text in page_text_map.page_texts()]
+            except Exception:
+                return []
+        if isinstance(page_text_map, dict):
+            entries = page_text_map.get("entries") or []
+            if isinstance(entries, list):
+                def page_number(entry: Any) -> int:
+                    if isinstance(entry, dict):
+                        try:
+                            return int(entry.get("physical_page") or 0)
+                        except (TypeError, ValueError):
+                            return 0
+                    return 0
+
+                return [
+                    str(entry.get("text") or "")
+                    for entry in sorted(
+                        [entry for entry in entries if isinstance(entry, dict)],
+                        key=page_number,
+                    )
+                ]
+        return []
+
+    @staticmethod
+    def _page_texts_for_llm_outline_expansion(
+        analysis: Dict[str, Any],
+        page_list: Optional[List[Any]],
+        page_count: int,
+    ) -> List[str]:
+        page_texts = PageIndexService._analysis_page_texts(analysis)
+        if not page_texts and isinstance(page_list, list):
+            page_texts = []
+            for item in page_list:
+                if isinstance(item, (list, tuple)) and item:
+                    page_texts.append(str(item[0] or ""))
+                else:
+                    page_texts.append(str(item or ""))
+        if page_count > 0:
+            page_texts = page_texts[:page_count] + [""] * max(0, page_count - len(page_texts))
+        return [str(text or "")[:200] for text in page_texts]
+
+    @staticmethod
+    def _is_main_catalog_container_node(node: Dict[str, Any]) -> bool:
+        if not isinstance(node, dict):
+            return False
+        if str(node.get("node_type") or "") == "catalog_group":
+            return True
+        if str(node.get("page_type") or "") == "catalog_group":
+            return True
+        if node.get("is_auxiliary"):
+            return False
+        catalog_type = str(node.get("catalog_type") or "").strip().lower()
+        if catalog_type in {"figure", "table", "figure_toc", "table_toc"}:
+            return False
+        title = re.sub(r"\s+", "", str(node.get("title") or "").strip().lower())
+        return title in {"目录", "目次", "contents", "tableofcontents"}
+
+    @staticmethod
+    def _is_auxiliary_outline_node(node: Dict[str, Any]) -> bool:
+        if not isinstance(node, dict):
+            return True
+        if node.get("is_auxiliary") or node.get("exclude_from_llm_qc"):
+            return True
+        kind = str(node.get("toc_section_kind") or node.get("section_kind") or "").strip()
+        if kind in {"figure_toc", "table_toc"}:
+            return True
+        catalog_type = str(node.get("catalog_type") or "").strip().lower()
+        return catalog_type in {"figure", "table", "figure_toc", "table_toc"}
+
+    @staticmethod
+    def _is_preface_outline_node(node: Dict[str, Any]) -> bool:
+        title = str(node.get("title") or "").strip().lower()
+        structure = str(node.get("structure") or "").strip().upper()
+        return structure in {"0", "P"} or "preface" in title or "搴忚█" in title or "鍓嶈█" in title
+
+    @staticmethod
+    def _llm_outline_expandable_parents(
+        toc_tree: List[Dict[str, Any]],
+        page_count: int,
+        analysis: Optional[Dict[str, Any]] = None,
+    ) -> List[Dict[str, Any]]:
+        from pageindex.child_expansion_policy import collect_child_expansion_parents
+
+        return collect_child_expansion_parents(
+            toc_tree,
+            page_count=page_count,
+            min_span=PageIndexService._llm_outline_expansion_min_span(analysis or {}),
+        )
+
+    @staticmethod
+    def _llm_outline_expansion_min_span(analysis: Dict[str, Any]) -> int:
+        route_decision = analysis.get("route_decision") or {}
+        build_state = analysis.get("build_state") or {}
+        selected_path = str(
+            route_decision.get("selected_path")
+            or analysis.get("selected_path")
+            or analysis.get("toc_selected_path")
+            or ""
+        )
+        if selected_path != "visible_toc_no_pages":
+            return 8
+        toc_source = str(
+            analysis.get("toc_source")
+            or build_state.get("top_level_source")
+            or route_decision.get("toc_source")
+            or ""
+        )
+        if toc_source in {"slide_outline", "agenda_outline"}:
+            return 1
+        if toc_source in {"toc_page_text", "toc_page_text_rule"}:
+            return 6
+        layout_type = str(analysis.get("layout_type") or "").lower()
+        content_type = str(analysis.get("content_type") or "").lower()
+        image_coverage = float(analysis.get("image_coverage") or 0.0)
+        if layout_type in {"mixed_layout_report", "slide_like_report"}:
+            return 6
+        if content_type == "hybrid" and image_coverage >= 0.5:
+            return 6
+        return 8
+
+    @staticmethod
+    def _normalize_outline_title_key(title: str) -> str:
+        return re.sub(r"[\s\W_]+", "", str(title or "").lower(), flags=re.UNICODE)
+
+    @staticmethod
+    def _outline_sequence_marker_family(title: str) -> str:
+        value = re.sub(r"\s+", " ", str(title or "")).strip()
+        if re.match(r"^step\s*\d+\b", value, flags=re.IGNORECASE):
+            return "step"
+        if re.match(r"^场景[一二三四五六七八九十百千万\d]+\b", value):
+            return "scenario"
+        return ""
+
+    @staticmethod
+    def _looks_like_clean_outline_child_title(title: str) -> bool:
+        value = re.sub(r"\s+", " ", str(title or "")).strip()
+        if not value:
+            return False
+        has_strong_marker = bool(
+            re.match(
+                r"^(?:step\s*\d+|part\s*\d+|\d+(?:\.\d+)*|"
+                r"第[一二三四五六七八九十百千万\d]+[章节篇部分]|"
+                r"场景[一二三四五六七八九十百千万\d]+|"
+                r"[（(]?[一二三四五六七八九十\d]+[）)])",
+                value,
+                flags=re.IGNORECASE,
+            )
+        )
+        max_length = 120 if has_strong_marker else 60
+        if len(value) > max_length:
+            return False
+        if re.match(r"^[\\/|•·>]+", value):
+            return False
+        if len(value) > 40 and any(token in value for token in ("=>", "->", "→", "⇒")):
+            return False
+        sentence_punctuation = sum(value.count(token) for token in ("。", "；", ";"))
+        if len(value) > 50 and sentence_punctuation >= 2:
+            return False
+        return True
+
+    @staticmethod
+    def _count_outline_nodes(nodes: List[Dict[str, Any]]) -> int:
+        total = 0
+        for node in nodes or []:
+            if not isinstance(node, dict):
+                continue
+            total += 1
+            total += PageIndexService._count_outline_nodes(node.get("nodes") or [])
+        return total
+
+    @staticmethod
+    def _build_llm_outline_child_tree(
+        parent: Dict[str, Any],
+        sub_chapters: List[Dict[str, Any]],
+        *,
+        parent_start: int,
+        parent_end: int,
+        page_texts: Optional[List[str]] = None,
+        page_count: Optional[int] = None,
+    ) -> List[Dict[str, Any]]:
+        parent_structure = str(parent.get("structure") or "").strip()
+        indexed: List[tuple[int, Dict[str, Any]]] = [
+            (index, sub)
+            for index, sub in enumerate(sub_chapters or [])
+            if isinstance(sub, dict)
+        ]
+        indexed.sort(
+            key=lambda pair: (
+                PageIndexService._coerce_positive_int(
+                    pair[1].get("page") or pair[1].get("physical_index") or pair[1].get("start_index")
+                )
+                or parent_end,
+                pair[0],
+            )
+        )
+
+        drafts: List[Dict[str, Any]] = []
+        counters: Dict[int, int] = {}
+        seen: set[str] = set()
+        parent_key = PageIndexService._normalize_outline_title_key(str(parent.get("title") or ""))
+
+        for _, sub in indexed:
+            title = str(sub.get("title") or "").strip()
+            if not title:
+                continue
+            if not PageIndexService._looks_like_clean_outline_child_title(title):
+                continue
+            key = PageIndexService._normalize_outline_title_key(title)
+            if not key or key in seen or key == parent_key:
+                continue
+            page = (
+                PageIndexService._coerce_positive_int(sub.get("page"))
+                or PageIndexService._coerce_positive_int(sub.get("physical_index"))
+                or PageIndexService._coerce_positive_int(sub.get("start_index"))
+            )
+            if page is None or page < parent_start or page > parent_end:
+                continue
+            level = PageIndexService._coerce_positive_int(sub.get("level")) or 2
+            level = max(2, min(6, level))
+
+            for existing_level in list(counters):
+                if existing_level > level:
+                    counters.pop(existing_level, None)
+            counters[level] = counters.get(level, 0) + 1
+            for missing_level in range(2, level):
+                counters.setdefault(missing_level, 1)
+            parts = [parent_structure] if parent_structure else []
+            parts.extend(str(counters[depth]) for depth in sorted(counters) if depth >= 2 and depth <= level)
+            structure = str(sub.get("structure") or ".".join(part for part in parts if part)).strip()
+            draft = {
+                "title": title,
+                "structure": structure,
+                "level": level,
+                "confidence": float(sub.get("confidence") or 0.72),
+                "metadata": {
+                    "outline_source": "llm_chapter_snippet",
+                    "llm_page_hint": page,
+                },
+            }
+            drafts.append(draft)
+            seen.add(key)
+
+        return PageIndexService._map_outline_child_drafts_to_parent(
+            parent,
+            drafts,
+            page_texts=page_texts or [],
+            parent_start=parent_start,
+            parent_end=parent_end,
+            page_count=page_count or len(page_texts or []) or parent_end,
+        )
+
+    @staticmethod
+    def _map_outline_child_drafts_to_parent(
+        parent: Dict[str, Any],
+        drafts: List[Dict[str, Any]],
+        *,
+        page_texts: List[str],
+        parent_start: int,
+        parent_end: int,
+        page_count: int,
+        exclude_parent_start: bool = True,
+        allow_parent_start_retry: bool = False,
+    ) -> List[Dict[str, Any]]:
+        if not drafts or not page_texts:
+            return []
+
+        from pageindex.post_processing import _ensure_level_structures, build_tree
+        from pageindex.toc_mapping import derive_toc_ranges, map_toc_draft_to_physical
+
+        def run_mapping(*, exclude_start: bool) -> tuple[List[Dict[str, Any]], Dict[str, Any]]:
+            return map_toc_draft_to_physical(
+                {
+                    "type": "toc_draft",
+                    "source": "llm_chapter_snippet",
+                    "section_kind": "main_toc",
+                    "items": drafts,
+                },
+                page_texts=page_texts,
+                page_count=page_count,
+                toc_pages=[parent_start] if exclude_start else [],
+                selected_path="visible_toc_no_pages",
+                allowed_page_range=(parent_start, parent_end),
+            )
+
+        def has_enough_mapped_items(items: List[Dict[str, Any]]) -> bool:
+            mapped_count = sum(
+                1
+                for item in items
+                if (
+                    PageIndexService._coerce_positive_int(item.get("start_index"))
+                    or PageIndexService._coerce_positive_int(item.get("physical_index"))
+                )
+                and str(item.get("mapping_source") or "") != "unmapped"
+            )
+            required = max(2, (len(drafts) + 1) // 2)
+            return mapped_count >= required
+
+        mapped_items, report = run_mapping(exclude_start=exclude_parent_start)
+        if str(report.get("status") or "") != "ok" and not has_enough_mapped_items(mapped_items):
+            if allow_parent_start_retry and exclude_parent_start:
+                retry_items, retry_report = run_mapping(exclude_start=False)
+                if str(retry_report.get("status") or "") == "ok" or has_enough_mapped_items(retry_items):
+                    mapped_items, report = retry_items, retry_report
+                else:
+                    return []
+            else:
+                return []
+
+        parent_key = PageIndexService._normalize_outline_title_key(str(parent.get("title") or ""))
+        scoped_items: List[Dict[str, Any]] = []
+        for item in mapped_items:
+            title = str(item.get("title") or "").strip()
+            key = PageIndexService._normalize_outline_title_key(title)
+            if str(item.get("mapping_source") or "") == "unmapped":
+                continue
+            start = (
+                PageIndexService._coerce_positive_int(item.get("start_index"))
+                or PageIndexService._coerce_positive_int(item.get("physical_index"))
+            )
+            if not title or not key or key == parent_key:
+                continue
+            if start is None or start < parent_start or start > parent_end:
+                continue
+            normalized = dict(item)
+            normalized["source"] = "llm_chapter_snippet"
+            normalized["title_confidence"] = float(normalized.get("confidence") or 0.72)
+            scoped_items.append(normalized)
+
+        if not scoped_items:
+            return []
+
+        scoped_items = PageIndexService._assign_parent_scoped_child_structures(
+            scoped_items,
+            parent_structure=str(parent.get("structure") or "").strip(),
+        )
+        tree = build_tree(_ensure_level_structures(scoped_items))
+        tree = derive_toc_ranges(
+            tree,
+            page_count=page_count,
+            parent_start=parent_start,
+            parent_end=parent_end,
+        )
+        PageIndexService._sync_page_source_anchors_to_ranges(tree)
+        return tree
+
+    @staticmethod
+    def _assign_parent_scoped_child_structures(
+        items: List[Dict[str, Any]],
+        *,
+        parent_structure: str,
+    ) -> List[Dict[str, Any]]:
+        counters: Dict[int, int] = {}
+        assigned: List[Dict[str, Any]] = []
+        parent_structure = str(parent_structure or "").strip()
+        for item in items or []:
+            node = dict(item)
+            structure = str(node.get("structure") or "").strip()
+            if structure and (
+                not parent_structure
+                or structure == parent_structure
+                or structure.startswith(f"{parent_structure}.")
+            ):
+                assigned.append(node)
+                continue
+
+            level = PageIndexService._coerce_positive_int(node.get("level")) or 2
+            relative_depth = max(1, min(5, level - 1))
+            while relative_depth > 1 and (relative_depth - 1) not in counters:
+                relative_depth -= 1
+            for depth in list(counters):
+                if depth > relative_depth:
+                    counters.pop(depth, None)
+            counters[relative_depth] = counters.get(relative_depth, 0) + 1
+            for depth in range(1, relative_depth):
+                counters.setdefault(depth, 1)
+            parts = [parent_structure] if parent_structure else []
+            parts.extend(str(counters[depth]) for depth in range(1, relative_depth + 1))
+            node["structure"] = ".".join(part for part in parts if part)
+            assigned.append(node)
+        return assigned
+
+    @staticmethod
+    async def _build_content_outline_child_tree_for_parent(
+        parent: Dict[str, Any],
+        page_texts: List[str],
+        *,
+        parent_start: int,
+        parent_end: int,
+        model: Optional[str],
+    ) -> List[Dict[str, Any]]:
+        from pageindex.hierarchical_extractor import extract_page_labeled_content_outline
+
+        page_slice = page_texts[parent_start - 1 : parent_end]
+        if not page_slice:
+            return []
+        result = await extract_page_labeled_content_outline(
+            page_slice,
+            model,
+            physical_start_page=parent_start,
+        )
+        if not isinstance(result, dict):
+            return []
+        nodes = result.get("toc_items") or result.get("items") or []
+        if not isinstance(nodes, list):
+            return []
+
+        parent_key = PageIndexService._normalize_outline_title_key(str(parent.get("title") or ""))
+        candidates: List[Dict[str, Any]]
+        if (
+            nodes
+            and isinstance(nodes[0], dict)
+            and PageIndexService._normalize_outline_title_key(str(nodes[0].get("title") or "")) == parent_key
+        ):
+            candidates = list(nodes[0].get("nodes") or [])
+            candidates.extend(node for node in nodes[1:] if isinstance(node, dict))
+        else:
+            candidates = [node for node in nodes if isinstance(node, dict)]
+
+        child_drafts: List[Dict[str, Any]] = []
+        seen: set[str] = set()
+
+        def append_candidate(node: Dict[str, Any]) -> None:
+            title = str(node.get("title") or "").strip()
+            key = PageIndexService._normalize_outline_title_key(title)
+            if not title or not key or key == parent_key or key in seen:
+                return
+            start = (
+                PageIndexService._coerce_positive_int(node.get("page"))
+                or PageIndexService._coerce_positive_int(node.get("raw_page_label"))
+                or PageIndexService._coerce_positive_int(node.get("start_index"))
+                or PageIndexService._coerce_positive_int(node.get("physical_index"))
+            )
+            if start is None or start < parent_start or start > parent_end:
+                return
+            child_drafts.append(
+                {
+                    "title": title,
+                    "level": max(2, PageIndexService._coerce_positive_int(node.get("level")) or 2),
+                    "structure": str(node.get("structure") or "").strip(),
+                    "confidence": float(node.get("confidence") or 0.62),
+                    "metadata": {
+                        "outline_source": "llm_content_outline_child",
+                        "llm_page_hint": start,
+                    },
+                }
+            )
+            seen.add(key)
+            for child in node.get("nodes") or []:
+                if isinstance(child, dict):
+                    append_candidate(child)
+
+        for node in candidates:
+            append_candidate(node)
+
+        return PageIndexService._map_outline_child_drafts_to_parent(
+            parent,
+            child_drafts,
+            page_texts=page_texts,
+            parent_start=parent_start,
+            parent_end=parent_end,
+            page_count=len(page_texts),
+            exclude_parent_start=True,
+            allow_parent_start_retry=str(parent.get("mapping_source") or "") != "section_divider_sequence",
+        )
+
+    @staticmethod
+    async def _expand_page_outline_with_llm_snippets(
+        toc_tree: List[Dict],
+        analysis: Dict,
+        page_count: int,
+        page_list: Optional[List[Any]] = None,
+        model: Optional[str] = None,
+    ) -> int:
+        if not PageIndexService._allows_child_outline_expansion(analysis):
+            return 0
+        full_page_texts = PageIndexService._analysis_page_texts(analysis)
+        if not full_page_texts and isinstance(page_list, list):
+            full_page_texts = []
+            for item in page_list:
+                if isinstance(item, (list, tuple)) and item:
+                    full_page_texts.append(str(item[0] or ""))
+                else:
+                    full_page_texts.append(str(item or ""))
+        if page_count > 0:
+            full_page_texts = full_page_texts[:page_count] + [""] * max(0, page_count - len(full_page_texts))
+
+        page_texts = PageIndexService._page_texts_for_llm_outline_expansion(
+            analysis,
+            page_list,
+            page_count,
+        )
+        parents = PageIndexService._llm_outline_expandable_parents(toc_tree, page_count, analysis=analysis)
+        if not parents:
+            analysis["outline_expansion"] = {
+                "source": "llm_chapter_snippets",
+                "reason": "no_expandable_chapters",
+                "added_children": 0,
+                "expanded_chapters": 0,
+                "expected_chapters": 0,
+                "quality": "warning",
+                "needs_repair": False,
+            }
+            return 0
+        if not any(text.strip() for text in page_texts):
+            analysis["outline_expansion"] = {
+                "source": "llm_chapter_snippets",
+                "reason": "no_page_texts",
+                "added_children": 0,
+                "expanded_chapters": 0,
+                "expected_chapters": len(parents),
+                "quality": "bad",
+                "needs_repair": True,
+            }
+            return 0
+
+        from pageindex.hierarchical_extractor import expand_chapter
+
+        semaphore = asyncio.Semaphore(3)
+
+        async def expand_one(parent: Dict[str, Any]) -> tuple[Dict[str, Any], List[Dict[str, Any]]]:
+            start = (
+                PageIndexService._coerce_positive_int(parent.get("start_index"))
+                or PageIndexService._coerce_positive_int(parent.get("physical_index"))
+                or 1
+            )
+            end = PageIndexService._coerce_positive_int(parent.get("end_index")) or page_count
+            async with semaphore:
+                result = await expand_chapter(
+                    str(parent.get("title") or ""),
+                    start,
+                    end,
+                    page_texts,
+                    model,
+                )
+            return parent, result if isinstance(result, list) else []
+
+        print(f"[TOC-OUTLINE] provider=llm_chapter_snippets chapters={len(parents)}")
+        results = await asyncio.gather(*(expand_one(parent) for parent in parents), return_exceptions=True)
+
+        added = 0
+        expanded = 0
+        errors = 0
+        for result in results:
+            if isinstance(result, Exception):
+                errors += 1
+                continue
+            parent, sub_chapters = result
+            start = (
+                PageIndexService._coerce_positive_int(parent.get("start_index"))
+                or PageIndexService._coerce_positive_int(parent.get("physical_index"))
+                or 1
+            )
+            end = PageIndexService._coerce_positive_int(parent.get("end_index")) or page_count
+            children = PageIndexService._build_llm_outline_child_tree(
+                parent,
+                sub_chapters,
+                parent_start=start,
+                parent_end=end,
+                page_texts=full_page_texts,
+                page_count=page_count,
+            )
+            if not children:
+                try:
+                    children = await PageIndexService._build_content_outline_child_tree_for_parent(
+                        parent,
+                        full_page_texts,
+                        parent_start=start,
+                        parent_end=end,
+                        model=model,
+                    )
+                except Exception as exc:
+                    print(
+                        "[TOC-OUTLINE] provider=content_outline_child "
+                        f"status=error error_type={type(exc).__name__}"
+                    )
+            if not children:
+                continue
+            parent["nodes"] = children
+            child_count = PageIndexService._count_outline_nodes(children)
+            added += child_count
+            expanded += 1
+
+        if added:
+            from pageindex.toc_mapping import derive_toc_ranges
+
+            toc_tree[:] = derive_toc_ranges(toc_tree, page_count=page_count)
+            PageIndexService._sync_page_source_anchors_to_ranges(toc_tree)
+
+        expected = len(parents)
+        needs_repair = expected > 0 and expanded < max(1, expected // 2)
+        analysis["outline_expansion"] = {
+            "source": "llm_chapter_snippets",
+            "added_children": added,
+            "expanded_chapters": expanded,
+            "expected_chapters": expected,
+            "actual_children": added,
+            "errors": errors,
+            "quality": "bad" if needs_repair else ("good" if added else "warning"),
+            "needs_repair": needs_repair,
+        }
+        print(
+            f"[TOC-OUTLINE] done added_children={added} "
+            f"expanded={expanded}/{expected} source=llm_chapter_snippets"
+        )
         return added
 
     @staticmethod
-    async def _extract_visual_child_titles_for_flat_skeleton(
-        *,
-        file_path: str,
-        tree: List[Dict],
+    async def _expand_page_outline(
+        toc_tree: List[Dict],
+        analysis: Dict,
         page_count: int,
+        toc_source: Optional[str],
+        page_list: Optional[List[Any]] = None,
         model: Optional[str] = None,
-    ) -> Dict:
-        """Use VLM page images to extract child titles for long flat visual chapters."""
-        from pageindex.visual_page_outline_extractor import expand_toc_with_page_evidence
-
-        evidence = await PageIndexService._build_visual_page_title_evidence(
-            file_path=file_path,
-            tree=tree,
-            page_count=page_count,
+    ) -> int:
+        """Expand shallow TOC skeletons with LLM-built chapter snippets."""
+        return await PageIndexService._expand_page_outline_with_llm_snippets(
+            toc_tree,
+            analysis,
+            page_count,
+            page_list=page_list,
             model=model,
         )
-        if not evidence:
-            return {
-                "added_children": 0,
-                "quality": "bad",
-                "expected_children": 0,
-                "actual_children": 0,
-                "needs_repair": True,
-            }
-        result = expand_toc_with_page_evidence(tree, evidence, page_count)
-        result["evidence_pages"] = [item.get("page") for item in evidence]
-        return result
-
-    @staticmethod
-    async def _build_visual_page_title_evidence(
-        *,
-        file_path: str,
-        tree: List[Dict],
-        page_count: int,
-        model: Optional[str] = None,
-    ) -> List[Dict]:
-        """Render bounded chapter pages and ask VLM for visible slide/page titles."""
-        from pageindex.vlm_utils import render_pages_to_images, vlm_call_with_images, parse_vlm_json
-
-        def safe_confidence(value: Any, default: float = 0.75) -> float:
-            try:
-                return float(value)
-            except Exception:
-                text = str(value or "").strip().lower()
-                if text in {"high", "yes", "true"}:
-                    return 0.85
-                if text in {"medium", "mid"}:
-                    return 0.65
-                if text in {"low", "weak"}:
-                    return 0.45
-                return default
-
-        pages: List[int] = []
-        for node in tree or []:
-            if node.get("nodes"):
-                continue
-            title = str(node.get("title") or "").lower()
-            if str(node.get("structure") or "") == "0" or "preface" in title:
-                continue
-            start = node.get("start_index") or node.get("physical_index")
-            end = node.get("end_index") or page_count
-            if not isinstance(start, int) or not isinstance(end, int):
-                continue
-            if end - start + 1 < 6:
-                continue
-            pages.extend(range(max(1, start), min(page_count, end) + 1))
-
-        page_indices = sorted({p - 1 for p in pages})
-        if not page_indices:
-            return []
-
-        evidence: List[Dict] = []
-        batch_size = 6
-        for offset in range(0, len(page_indices), batch_size):
-            batch = page_indices[offset : offset + batch_size]
-            images = render_pages_to_images(file_path, batch, dpi=120)
-            if not images:
-                continue
-            labels = "\n".join(f"- image {idx + 1}: PDF page {img['page_index'] + 1}" for idx, img in enumerate(images))
-            prompt = f"""You are extracting visible page/slide titles from a PDF report.
-
-For each image, read only the main visible title of that page. Ignore footers, page numbers, website URLs, chart axis labels, body paragraphs, and decorative text.
-If a page is a chapter cover whose title duplicates the parent chapter, still return it; downstream logic will filter duplicates.
-If no reliable page title exists, return an empty title.
-
-Images:
-{labels}
-
-Return strict JSON only:
-{{
-  "pages": [
-    {{"page": 11, "title": "visible title", "confidence": 0.0}}
-  ]
-}}
-"""
-            try:
-                raw = await vlm_call_with_images(images, prompt, model=model, max_tokens=2000, timeout=45)
-                parsed = parse_vlm_json(raw)
-            except Exception as exc:
-                print(f"[OUTLINE-EXPAND] VLM page title batch failed: {exc}")
-                continue
-            for item in (parsed.get("pages") if isinstance(parsed, dict) else []) or []:
-                try:
-                    page = int(item.get("page") or 0)
-                except Exception:
-                    continue
-                title = str(item.get("title") or "").strip()
-                if not page or not title:
-                    continue
-                confidence = safe_confidence(item.get("confidence"))
-                evidence.append(
-                    {
-                        "page": page,
-                        "primary_role": "content_slide",
-                        "source": "vlm_page_titles",
-                        "confidence": confidence,
-                        "evidence_spans": [
-                            {
-                                "role": "page_title",
-                                "text": title,
-                                "confidence": confidence,
-                            }
-                        ],
-                    }
-                )
-        return evidence
 
     @staticmethod
     def _apply_balanced_quality_gate(
@@ -3133,6 +4800,11 @@ Return strict JSON only:
             "top_level_frozen": bool(analysis.get("top_level_frozen") or analysis.get("toc_frozen")),
             "allow_child_expansion": bool(analysis.get("allow_child_expansion", True)),
         }
+        state = dict(state)
+        route_decision = analysis.get("route_decision") or {}
+        if isinstance(route_decision, dict):
+            state.setdefault("selected_path", route_decision.get("selected_path") or route_decision.get("path"))
+        state.setdefault("toc_source", analysis.get("toc_source"))
         skeleton = analysis.get("toc_skeleton") or (state.get("skeleton") if isinstance(state, dict) else None)
         fixed_tree, gate = run_balanced_quality_gate(toc_tree, state, skeleton, page_count)
         updated = dict(completeness or {})
@@ -3144,59 +4816,621 @@ Return strict JSON only:
         return fixed_tree, updated
 
     @staticmethod
+    def _collect_toc_quality_failure_reasons(
+        *,
+        analysis: Dict[str, Any],
+        completeness: Dict[str, Any],
+        llm_quality_check: Optional[Dict[str, Any]],
+        quality_report: Optional[Dict[str, Any]] = None,
+    ) -> List[str]:
+        reasons: List[str] = []
+
+        mapping = analysis.get("toc_content_mapping") if isinstance(analysis, dict) else None
+        if isinstance(mapping, dict) and str(mapping.get("status") or "").lower() == "failed":
+            mapping_reasons = mapping.get("reasons") or []
+            if isinstance(mapping_reasons, list) and mapping_reasons:
+                reasons.extend(f"content_mapping:{reason}" for reason in mapping_reasons[:5])
+            else:
+                reasons.append("content_mapping:failed")
+
+        if isinstance(completeness, dict):
+            gate = completeness.get("balanced_quality_gate") or {}
+            if isinstance(gate, dict) and gate.get("needs_repair"):
+                gate_reasons = [
+                    str(reason).strip()
+                    for reason in (gate.get("hard_fail_reasons") or [])
+                    if str(reason).strip()
+                ]
+                if gate_reasons:
+                    reasons.extend(f"balanced_quality_gate:{reason}" for reason in gate_reasons[:5])
+                else:
+                    reasons.append("balanced_quality_gate:needs_repair")
+            elif completeness.get("needs_repair"):
+                reasons.append("completeness:needs_repair")
+
+        advisory_only = bool(analysis.get("llm_quality_advisory_only")) if isinstance(analysis, dict) else False
+        llm_failure_reason = PageIndexService._llm_quality_failure_reason(
+            llm_quality_check,
+            hard_fail_enabled=not advisory_only,
+        )
+        if llm_failure_reason and PageIndexService._llm_quality_failure_supported_by_facts(
+            llm_failure_reason,
+            completeness,
+        ):
+            reasons.append(llm_failure_reason)
+
+        if isinstance(quality_report, dict):
+            status = str(quality_report.get("status") or "")
+            if status.startswith("failed:"):
+                report_reasons = [
+                    str(reason).strip()
+                    for reason in (quality_report.get("hard_fail_reasons") or [])
+                    if str(reason).strip()
+                ]
+                if report_reasons:
+                    reasons.extend(f"quality_report:{reason}" for reason in report_reasons[:5])
+                else:
+                    reasons.append(f"quality_report:{status}")
+
+        return sorted(set(str(reason) for reason in reasons if reason))
+
+    @staticmethod
+    def _normalized_llm_quality_score(value: Any) -> Optional[float]:
+        if isinstance(value, bool):
+            return None
+        try:
+            score = float(value)
+        except (TypeError, ValueError):
+            return None
+        if score > 1.0:
+            score = score / 100.0
+        return max(0.0, min(1.0, score))
+
+    @staticmethod
+    def _llm_quality_failure_reason(
+        llm_quality_check: Optional[Dict[str, Any]],
+        *,
+        hard_fail_enabled: bool = True,
+    ) -> Optional[str]:
+        if not isinstance(llm_quality_check, dict):
+            return None
+        if not hard_fail_enabled:
+            return None
+        hard_reasons = [
+            str(reason).strip()
+            for reason in (llm_quality_check.get("hard_fail_reasons") or [])
+            if str(reason).strip()
+        ]
+        if hard_reasons:
+            return f"llm_quality_check:{hard_reasons[0]}"
+        return None
+
+    @staticmethod
+    def _llm_quality_failure_supported_by_facts(
+        reason: str,
+        completeness: Dict[str, Any],
+    ) -> bool:
+        """Keep LLM QC advisory when it contradicts deterministic gate facts."""
+        reason_text = str(reason or "")
+        if "unexpanded_long_leaf_after_expansion" not in reason_text:
+            return True
+        gate = completeness.get("balanced_quality_gate") if isinstance(completeness, dict) else None
+        if not isinstance(gate, dict):
+            return True
+        if not gate.get("child_expansion_expected"):
+            return False
+        return int(gate.get("unexpanded_long_leaf_hard_count") or 0) > 0
+
+    @staticmethod
+    def _should_retry_toc_with_balanced(result: Dict[str, Any], reasons: List[str]) -> bool:
+        if not reasons:
+            return False
+        route = result.get("route_decision") if isinstance(result, dict) else None
+        if not isinstance(route, dict):
+            return False
+        requested = str(route.get("requested_mode") or "")
+        initial = str(route.get("initial_execution_mode") or "")
+        final = str(route.get("final_execution_mode") or route.get("execution_mode") or "")
+        if requested not in {"smart", "fast"}:
+            return False
+        if initial != "fast" or final != "fast":
+            return False
+        return True
+
+    @staticmethod
+    def _should_retry_toc_attempt_with_balanced(
+        route_decision: Dict[str, Any],
+        *,
+        requested_mode: str,
+        initial_execution_mode: str,
+    ) -> bool:
+        if str(requested_mode or "") not in {"smart", "fast"}:
+            return False
+        if str(initial_execution_mode or "") != "fast":
+            return False
+        selected_path = str(
+            (route_decision or {}).get("selected_path")
+            or (route_decision or {}).get("path")
+            or ""
+        )
+        return selected_path == "embedded_toc"
+
+    @staticmethod
+    def _should_disable_code_toc_for_balanced_retry(
+        route_decision: Dict[str, Any],
+        *,
+        retry_reason: str,
+    ) -> bool:
+        """Disable embedded TOC only when that attempt itself produced no candidate."""
+        selected_path = str(
+            (route_decision or {}).get("selected_path")
+            or (route_decision or {}).get("path")
+            or ""
+        )
+        if selected_path != "embedded_toc":
+            return False
+        return str(retry_reason or "") == "no_candidate"
+
+    @staticmethod
+    def _unique_reason_list(values: List[Any]) -> List[str]:
+        seen: set[str] = set()
+        result: List[str] = []
+        for value in values or []:
+            reason = str(value or "").strip()
+            if not reason or reason in seen:
+                continue
+            seen.add(reason)
+            result.append(reason)
+        return result
+
+    @staticmethod
+    def _build_no_candidate_index_payload(
+        *,
+        file_name: str,
+        page_count: int,
+        analysis: Dict[str, Any],
+        route_decision: Dict[str, Any],
+        requested_mode: str,
+        execution_mode: str,
+        initial_execution_mode: str,
+        failure_reasons: List[Any],
+    ) -> Dict[str, Any]:
+        page_total = max(1, int(page_count or 0))
+        reasons = PageIndexService._unique_reason_list(failure_reasons) or ["no_toc_candidate"]
+        attempt_chain = list(
+            (analysis or {}).get("toc_attempt_chain")
+            or (route_decision or {}).get("attempt_chain")
+            or (route_decision or {}).get("attempts")
+            or []
+        )
+        route = {
+            **dict(route_decision or {}),
+            "requested_mode": requested_mode,
+            "execution_mode": execution_mode,
+            "initial_execution_mode": initial_execution_mode,
+            "final_execution_mode": execution_mode,
+            "attempt_chain": attempt_chain,
+            "status": "failed",
+            "failure_reasons": reasons,
+            "text_coverage": (analysis or {}).get("text_coverage"),
+            "is_image_only_pdf": bool((analysis or {}).get("is_image_only_pdf", False)),
+            "fallback_reason": (analysis or {}).get("code_toc_reject_reason"),
+            "fallback_from": (analysis or {}).get("quality_fallback_from"),
+            "code_toc_disabled": bool((analysis or {}).get("disable_code_toc_fast_path")),
+        }
+        diagnostics = PageIndexService._index_diagnostics_from_analysis(analysis or {})
+        diagnostics["toc_pipeline_failure"] = {
+            "status": "failed",
+            "reason": "no_toc_candidate",
+            "failure_reasons": reasons,
+        }
+        payload = {
+            "doc_name": file_name,
+            "doc_description": "",
+            "page_count": page_total,
+            "structure": [
+                {
+                    "title": "Document Content",
+                    "level": 1,
+                    "start_index": 1,
+                    "end_index": page_total,
+                    "physical_index": 1,
+                    "source": "no_toc_candidate_fallback",
+                }
+            ],
+            "route_decision": route,
+            "completeness": {
+                "status": "failed",
+                "needs_repair": True,
+                "coverage": 1.0,
+                "failure_reasons": reasons,
+            },
+            "diagnostics": diagnostics,
+            "quality_report": {
+                "status": "failed:toc_pipeline",
+                "hard_fail_reasons": ["no_toc_candidate"],
+                "failure_reasons": reasons,
+            },
+            "ocr_used": bool((analysis or {}).get("page_text_map_ocr_completed")),
+            "llm_quality_check": None,
+            "enrichment_status": "failed",
+        }
+        return payload
+
+    @staticmethod
+    def _mark_toc_quality_failure_payload(
+        payload: Dict[str, Any],
+        reasons: List[Any],
+    ) -> None:
+        unique_reasons = PageIndexService._unique_reason_list(reasons)
+        if not unique_reasons:
+            return
+        route = payload.setdefault("route_decision", {})
+        if isinstance(route, dict):
+            route["status"] = "failed"
+            route["quality_failure_reasons"] = unique_reasons
+        quality_report = payload.setdefault("quality_report", {})
+        if isinstance(quality_report, dict):
+            quality_report["status"] = "failed:toc_quality"
+            quality_report["hard_fail_reasons"] = unique_reasons
+        payload["enrichment_status"] = "failed"
+
+    @staticmethod
+    def _can_retain_best_candidate_after_retry_failure(
+        result: Dict[str, Any],
+        reasons: List[str],
+    ) -> bool:
+        """Return whether the current fast candidate is safer than a failed fallback.
+
+        This is deliberately narrow. It only protects a high-confidence embedded
+        code TOC from being lost when the only problem is that long leaves still
+        need later refinement. Mapping failures and collapsed structures must
+        continue to fail.
+        """
+        if not reasons or not isinstance(result, dict):
+            return False
+        route = result.get("route_decision")
+        if not isinstance(route, dict):
+            return False
+        selected_path = str(route.get("selected_path") or route.get("path") or "")
+        toc_source = str(route.get("toc_source") or "")
+        initial = str(route.get("initial_execution_mode") or "")
+        final = str(route.get("final_execution_mode") or route.get("execution_mode") or "")
+        if selected_path != "embedded_toc" or toc_source != "code_toc":
+            return False
+        if initial != "fast" or final != "fast":
+            return False
+
+        allowed_tokens = {
+            "unexpanded_long_leaf_after_expansion",
+            "visible_no_page_long_chapter_without_children",
+        }
+        disallowed_prefixes = (
+            "content_mapping:",
+            "balanced_quality_gate:invalid_page_range",
+            "balanced_quality_gate:page_out_of_range",
+            "quality_report:toc_content_mapping_failed",
+            "quality_report:invalid_page_range",
+            "quality_report:page_out_of_range",
+            "quality_report:toc_page_leakage",
+            "quality_report:collapsed_single_entry",
+        )
+        normalized = [str(reason).strip() for reason in reasons if str(reason).strip()]
+        if not normalized:
+            return False
+        if any(reason.startswith(disallowed_prefixes) for reason in normalized):
+            return False
+        return all(any(token in reason for token in allowed_tokens) for reason in normalized)
+
+    @staticmethod
+    def _retain_best_candidate_after_quality_retry_failure(
+        result: Dict[str, Any],
+        reasons: List[str],
+        *,
+        retry_error: Exception,
+    ) -> None:
+        """Annotate a retained fast candidate after a lower-quality fallback fails."""
+        if not isinstance(result, dict):
+            return
+        route = result.setdefault("route_decision", {})
+        if not isinstance(route, dict):
+            route = {}
+            result["route_decision"] = route
+        unique_reasons = sorted({str(reason).strip() for reason in reasons if str(reason).strip()})
+        original_attempt = {
+            "path": route.get("selected_path") or route.get("path"),
+            "source": route.get("toc_source"),
+            "execution_mode": route.get("execution_mode"),
+            "status": "retained_best_candidate",
+            "quality_failure_reasons": unique_reasons,
+        }
+        retry_attempt = {
+            "path": "balanced",
+            "source": "fallback_retry",
+            "execution_mode": "balanced",
+            "status": "failed",
+            "error_type": type(retry_error).__name__,
+            "error": str(retry_error),
+        }
+        attempt_chain = list(route.get("attempt_chain") or [])
+        attempt_chain.extend([original_attempt, retry_attempt])
+        route["attempt_chain"] = attempt_chain
+        route["best_candidate"] = {
+            "path": original_attempt["path"],
+            "source": original_attempt["source"],
+            "execution_mode": original_attempt["execution_mode"],
+            "retained_after_retry_failure": True,
+            "quality_failure_reasons": unique_reasons,
+        }
+        route["quality_fallback_policy"] = "retained_best_candidate"
+
+        diagnostics = result.setdefault("diagnostics", {})
+        if isinstance(diagnostics, dict):
+            diagnostics["toc_attempt_chain"] = attempt_chain
+
+        quality_report = result.setdefault("quality_report", {})
+        if isinstance(quality_report, dict):
+            existing = [
+                str(reason).strip()
+                for reason in (quality_report.get("hard_fail_reasons") or [])
+                if str(reason).strip()
+            ]
+            quality_report["status"] = "needs_review"
+            quality_report["hard_fail_reasons"] = []
+            quality_report["suppressed_hard_fail_reasons"] = unique_reasons
+            quality_report["retained_best_candidate"] = True
+            warnings = list(quality_report.get("warnings") or [])
+            warnings.append("retained best embedded TOC after balanced fallback failed")
+            if existing:
+                warnings.append("suppressed recoverable hard reasons: " + ", ".join(sorted(set(existing))))
+            quality_report["warnings"] = sorted(set(str(item) for item in warnings if str(item)))
+
+    @staticmethod
+    def _raise_for_toc_quality_failure(
+        *,
+        analysis: Dict[str, Any],
+        completeness: Dict[str, Any],
+        llm_quality_check: Optional[Dict[str, Any]],
+        quality_report: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        unique_reasons = PageIndexService._collect_toc_quality_failure_reasons(
+            analysis=analysis,
+            completeness=completeness,
+            llm_quality_check=llm_quality_check,
+            quality_report=quality_report,
+        )
+        if unique_reasons:
+            raise RuntimeError(
+                "TOC quality gate failed: " + ", ".join(unique_reasons)
+            )
+
+    @staticmethod
+    def _summarize_toc_candidates(
+        candidates: List[Dict[str, Any]],
+        judged: Optional[Dict[str, Any]],
+    ) -> List[Dict[str, Any]]:
+        judged = judged or {}
+        selected_source = str(judged.get("source") or "")
+        selected_score = judged.get("confidence")
+        rejected_by_id: Dict[str, Dict[str, Any]] = {}
+        rejected_by_source: Dict[str, Dict[str, Any]] = {}
+        for rejected in judged.get("rejected_candidates") or []:
+            if not isinstance(rejected, dict):
+                continue
+            candidate_id = str(rejected.get("candidate_id") or "")
+            source = str(rejected.get("source") or "")
+            if candidate_id:
+                rejected_by_id[candidate_id] = rejected
+            if source and source not in rejected_by_source:
+                rejected_by_source[source] = rejected
+
+        summary: List[Dict[str, Any]] = []
+        for candidate in candidates or []:
+            if not isinstance(candidate, dict):
+                continue
+            candidate_id = str(candidate.get("candidate_id") or "")
+            source = str(candidate.get("source") or "")
+            items = candidate.get("items") or []
+            item_count = len(items) if isinstance(items, list) else 0
+            rejected = rejected_by_id.get(candidate_id) or rejected_by_source.get(source)
+            if source and source == selected_source:
+                status = "selected"
+                score = selected_score
+                reasons = list(candidate.get("reasons") or [])
+            elif rejected:
+                status = "rejected"
+                score = rejected.get("score")
+                reasons = list(rejected.get("reasons") or [])
+            else:
+                status = "considered"
+                score = candidate.get("final_score", candidate.get("raw_confidence"))
+                reasons = list(candidate.get("reasons") or [])
+            try:
+                score_value = round(max(0.0, min(1.0, float(score))), 4)
+            except (TypeError, ValueError):
+                score_value = 0.0
+            summary.append(
+                {
+                    "candidate_id": candidate_id,
+                    "source": source,
+                    "item_count": item_count,
+                    "score": score_value,
+                    "status": status,
+                    "reasons": [str(reason) for reason in reasons[:5]],
+                }
+            )
+        return summary
+
+    @staticmethod
+    def _index_diagnostics_from_analysis(analysis: Dict[str, Any]) -> Dict[str, Any]:
+        diagnostics: Dict[str, Any] = {}
+        if not isinstance(analysis, dict):
+            return diagnostics
+
+        def keep_jsonish(value: Any) -> Any:
+            blocked_keys = {
+                "api_key",
+                "token",
+                "api_key_ciphertext",
+                "content",
+                "content_preview",
+                "content_head",
+                "prompt_text",
+                "markdown",
+                "markdown_preview",
+                "plain_text",
+                "raw",
+                "raw_preview",
+                "page_results",
+                "items",
+                "toc_items",
+                "structure",
+            }
+            if isinstance(value, dict):
+                return {
+                    str(key): keep_jsonish(item)
+                    for key, item in value.items()
+                    if str(key) not in blocked_keys
+                }
+            if isinstance(value, list):
+                return [keep_jsonish(item) for item in value]
+            if isinstance(value, (str, int, float, bool)) or value is None:
+                return value
+            return str(value)
+
+        for key in (
+            "page_text_map_diagnostics",
+            "ocr_route",
+            "ocr_calls",
+            "ocr_calls_summary",
+            "toc_page_detection",
+            "toc_judge",
+            "toc_content_mapping",
+            "toc_candidates_summary",
+            "balanced_quality_gate",
+            "llm_toc_page",
+        ):
+            value = analysis.get(key)
+            if value:
+                diagnostics[key] = keep_jsonish(value)
+        fallback_reason = analysis.get("fallback_reason") or analysis.get("code_toc_reject_reason")
+        if fallback_reason:
+            diagnostics["fallback_reason"] = keep_jsonish(fallback_reason)
+        return diagnostics
+
+    @staticmethod
     def _save_index_payload(doc_id: str, payload: Dict[str, Any]) -> Path:
         INDEXES_DIR.mkdir(parents=True, exist_ok=True)
         index_path = INDEXES_DIR / f"{doc_id}.json"
+        PageIndexService._attach_index_quality_report(payload)
         with open(index_path, "w", encoding="utf-8") as f:
             json.dump(payload, f, ensure_ascii=False, indent=2)
         return index_path
 
-    async def _generate_index_v2(
-        self, file_path: Path, doc_id: str, mode_override: Optional[str] = None
-    ) -> Dict[str, Any]:
-        """v3 閲嶆瀯鐗堬細pdf_analyzer 鈫?fast/balanced(text|visual) 鈫?post_processing 鈫?node_filler"""
-        from pageindex.pdf_analyzer import analyze_pdf_structure
-        from pageindex.fast_toc import try_fast_toc
-        from pageindex.balanced_toc import (
-            decide_balanced_path,
-            build_balanced_toc_visual,
-            build_balanced_toc_text,
-            _try_extract_text_heading_toc,
-            _vlm_detect_anchors,
+    @staticmethod
+    def _attach_index_quality_report(
+        payload: Dict[str, Any],
+        page_count: Optional[int] = None,
+        *,
+        force_pdf: bool = False,
+    ) -> None:
+        if not isinstance(payload, dict) or payload.get("quality_report") is not None:
+            return
+
+        doc_name = str(
+            payload.get("doc_name") or payload.get("document_name") or ""
+        ).lower()
+        is_pdf_payload = (
+            force_pdf
+            or str(payload.get("format") or "").lower() == "pdf"
+            or doc_name.endswith(".pdf")
         )
+        if not is_pdf_payload:
+            return
+
+        payload["quality_report"] = build_index_quality_report(
+            payload,
+            page_count=page_count or payload.get("page_count"),
+        )
+
+    @staticmethod
+    def _should_generate_node_summaries(opt: Any) -> bool:
+        return str(getattr(opt, "if_add_node_summary", "no") or "no").lower() == "yes"
+
+    @staticmethod
+    def _should_generate_doc_description(opt: Any) -> bool:
+        return str(getattr(opt, "if_add_doc_description", "yes") or "yes").lower() == "yes"
+
+    async def _generate_pdf_index(
+        self,
+        file_path: Path,
+        doc_id: str,
+        mode_override: Optional[str] = None,
+        *,
+        _quality_retry: bool = True,
+        _disable_code_toc: bool = False,
+        _fallback_from: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """Generate a PDF index through the layout-first TOC pipeline."""
+        from pageindex.pdf_analyzer import analyze_pdf_structure
         from pageindex.slide_outline_extractor import (
             is_slide_like_document,
         )
         from pageindex.agenda_outline_extractor import (
             is_agenda_outline_document,
         )
-        from pageindex.post_processing import post_process_toc
         from pageindex.node_filler import (
             fill_node_text,
-            ocr_image_pages,
             generate_summaries,
             generate_doc_description,
             write_node_ids,
         )
+        from pageindex.preprocess_page_text import (
+            PAGE_TEXT_OCR_PROMPT,
+            preprocess_page_text_map,
+        )
 
         model = getattr(self.opt, "model", "qwen3.6-flash")
         requested_mode = mode_override or "smart"
-
-        # 鍒涘缓 enhancement hooks锛堝湪 balanced 妯″紡涓嬩娇鐢級
-        from pageindex.enhancement_hooks import MultimodalEnhancementHooks
-        hooks = MultimodalEnhancementHooks(
-            enable_hooks=[]
-        )
-
-        # 鈹€鈹€鈹€ Phase 0: 鏂囨。棰勫垎鏋?鈹€鈹€鈹€
         self._log_index_stage(1, "analyze", "started")
-        print(f"[INDEX-V3] Phase 0: analyzing {file_path.name}")
+        print(f"[TOC-PIPELINE] stage=analyze action=start doc={file_path.name}")
         analysis = analyze_pdf_structure(str(file_path))
         analysis["document_path"] = str(file_path)
+        analysis["doc_id"] = doc_id
+        analysis["file_path"] = str(file_path)
+        if _disable_code_toc:
+            analysis["disable_code_toc_fast_path"] = True
+        if _fallback_from:
+            analysis["quality_fallback_from"] = dict(_fallback_from)
         page_count = analysis["page_count"]
-        page_list = list(analysis["page_list"])
         analysis["slide_outline_candidate"] = is_slide_like_document(analysis)
         analysis["agenda_outline_candidate"] = is_agenda_outline_document(analysis)
+        page_text_map = await preprocess_page_text_map(
+            file_path,
+            analysis,
+            ocr_pages_fn=lambda fp, pages, prompt, analysis: self._run_pdf_ocr_pages_by_images(
+                Path(fp),
+                list(pages),
+                analysis=analysis,
+                prompt=prompt,
+            ),
+            prompt=PAGE_TEXT_OCR_PROMPT,
+        )
+        page_list = page_text_map.to_page_list()
+        page_text_diagnostics = page_text_map.to_diagnostics()
+        print(
+            "[TOC-PIPELINE] stage=preprocess "
+            f"content_type={analysis.get('content_type')} "
+            f"pages={page_text_diagnostics.get('page_count')} "
+            f"ocr_pages={page_text_diagnostics.get('ocr_page_count')} "
+            f"sources={page_text_diagnostics.get('sources')}"
+        )
+        await self._resolve_pre_route_toc_page_signal(
+            analysis=analysis,
+            file_path=file_path,
+            page_count=page_count,
+            model=model,
+        )
         self._log_index_stage(
             1,
             "analyze",
@@ -3205,541 +5439,213 @@ Return strict JSON only:
             text_coverage=f"{analysis['text_coverage']:.0%}",
         )
         print(
-            "[INDEX-V3] Profile: "
+            "[TOC-PIPELINE] stage=analyze action=profile "
             f"layout_type={analysis.get('layout_type', 'unknown')}, "
             f"text_layer_quality={analysis.get('text_layer_quality', 'unknown')}, "
             f"structure_policy={analysis.get('structure_policy', 'unknown')}, "
             f"ocr_policy={analysis.get('ocr_policy', 'unknown')}, "
-            f"visual_dependency_score={analysis.get('visual_dependency_score', 0)}"
+            f"layout_dependency_score={analysis.get('layout_dependency_score', 0)}"
         )
 
-        # 璺敱鍐崇瓥
-        execution_mode = self._select_initial_execution_mode(requested_mode, analysis)
+        route_decision = self._build_state_machine_route_decision(requested_mode, analysis)
+        execution_mode = route_decision["execution_mode"]
         initial_execution_mode = execution_mode
 
-        balanced_path = None
-        if execution_mode == "balanced":
-            balanced_path = decide_balanced_path(analysis)
-            analysis["balanced_path"] = balanced_path
-
         print(
-            f"[INDEX-V3] Route: requested={requested_mode}, execution={execution_mode}, "
-            f"balanced_path={balanced_path}, code_toc={analysis['code_toc']['source']}, "
-            f"pages={page_count}, text_coverage={analysis['text_coverage']:.0%}"
+            f"[TOC-PIPELINE] stage=route requested={requested_mode} execution={execution_mode} "
+            f"content_type={route_decision.get('content_type')} "
+            f"selected_path={route_decision.get('selected_path')} "
+            f"code_toc={(analysis.get('code_toc') or {}).get('source')} "
+            f"pages={page_count} text_coverage={analysis['text_coverage']:.0%}"
         )
 
-        # 鈹€鈹€鈹€ Phase 0.5: 閿氱偣妫€娴嬶紙鎵€鏈?balanced 鏂囨。锛夆攢鈹€鈹€
-        # P2-fix: 鎵€鏈?balanced 鏂囨。閮藉厛璺戦敋鐐规娴嬶紝鑾峰彇 dividers 淇℃伅
-        anchors = None
-        ocr_text_map = None
-        dividers = []  # Initialize for all execution modes
         if execution_mode == "balanced":
-            self._log_index_stage(2, "anchors", "started")
-            print("[INDEX-V3] Phase 0.5: anchor detection for all balanced documents")
-            anchors = await _vlm_detect_anchors(str(file_path), model)
-            dividers = anchors.get("chapter_dividers", [])
+            if not self._has_completed_toc_page_detection(analysis):
+                await self._resolve_balanced_toc_pages(
+                    analysis=analysis,
+                    file_path=file_path,
+                    page_count=page_count,
+                    model=model,
+                )
+            route_decision = self._build_state_machine_route_decision(requested_mode, analysis)
+            execution_mode = route_decision["execution_mode"]
+
+        analysis["route_decision"] = dict(route_decision)
+
+        # P2-fix: 闂佸湱顣介崑鎾绘煛?balanced 闂佸搫鍊稿ú锕傚Υ閸岀偞鐒鹃柦妯侯槸鐢儵鎮归悜妯虹伌闁轰礁顑夐幃娆戞喆閸曞灚鈷曞┑鐐存綑缂佽鲸绻堥幊銏犵暋閺夎法鎮?dividers 婵烇絽娲犻崜婵囧?
+        anchors = {
+            "toc_pages": list(
+                analysis.get("toc_pages")
+                or (analysis.get("toc_page") or {}).get("pages")
+                or []
+            ),
+            "chapter_dividers": list(analysis.get("chapter_dividers") or []),
+        }
+        ocr_text_map = None
+        dividers = list(anchors.get("chapter_dividers") or [])
+        if execution_mode == "balanced":
+            self._log_index_stage(2, "layout_signals", "started")
+            print("[TOC-PIPELINE] stage=probe action=layout_signals source=deterministic")
             self._sync_toc_context(
                 analysis,
                 anchors.get("toc_pages", []),
-                confidence="anchor",
+                confidence="detected" if anchors.get("toc_pages") else "low",
             )
-            print(f"[INDEX-V3] Phase 0.5: detected {len(dividers)} dividers")
+            print(f"[TOC-PIPELINE] stage=probe action=layout_signals dividers={len(dividers)}")
             self._log_index_stage(
                 2,
-                "anchors",
+                "layout_signals",
                 "done",
                 toc_pages=anchors.get("toc_pages", []),
                 dividers=len(dividers),
             )
-            
-            # 鍥剧墖鍨嬫枃妗ｉ澶栧仛 OCR
-            if balanced_path == "visual" and (analysis.get("is_image_only_pdf") or analysis["text_coverage"] < 0.3):
-                print("[INDEX-V3] Phase 0.5: pre-TOC OCR for image-only PDF")
-                toc_pages = anchors.get("toc_pages", [])
-                if toc_pages:
-                    pages_to_ocr = sorted(
-                        set([p - 1 for p in toc_pages])
-                        | set(range(max(toc_pages), min(max(toc_pages) + 6, page_count)))
-                    )
-                    print(
-                        f"[INDEX-V3] Phase 0.5 structure_ocr: {len(pages_to_ocr)} pages "
-                        f"(toc_pages={toc_pages})"
-                    )
-                    analysis["structure_ocr_pages"] = pages_to_ocr
-                    ocr_text_map = await self._ocr_pages_for_toc_validation(
-                        file_path, pages_to_ocr
-                    )
-                    print(
-                        f"[INDEX-V3] Phase 0.5 structure_ocr done, "
-                        f"{len(ocr_text_map)} pages with text"
-                    )
 
-        # 鈹€鈹€鈹€ Phase 0.8: 鏂版灦鏋勬櫤鑳借矾鐢憋紙瀹為獙鎬э紝鍚戝悗鍏煎锛夆攢鈹€鈹€
-        # 濡傛灉鍚敤浜嗘柊鏋舵瀯锛屽皾璇曚娇鐢?-path璺敱
-        new_architecture_result = None
-        try:
-            from pageindex.router import decide_extraction_path, get_path_description
-            from pageindex.toc_page_extractor import extract_toc_from_analysis
-            from pageindex.hierarchical_extractor import extract_hierarchical_toc
-            from pageindex.batch_extractor import extract_batch_toc
-            from pageindex.fast_text_extractor import extract_fast_text_toc
-            from pageindex.visual_extractor import extract_visual_toc
-            from pageindex.quality_validator import validate_toc, repair_toc
+            # 闂佹悶鍎辨晶鑺ユ櫠閺嶎厼鍨傞悗锝団偓顔戒繆濡ゅ绉い銈呭€瑰鍕冀瑜岀划?OCR
+        # 婵犵鈧啿鈧綊鎮樻径鎰Е妞ゆ牗绮嶉弳蹇撁瑰鍐╊棡闁哄苯锕鎼佹嚋閻㈢鍋撻弫宥囦沪閻ｅ本顕涢柣鐘叉处濞叉垶绻涢崶顒佸仺?-path闁荤姳璀﹂崹鎶藉极?
+        print(
+            f"[TOC-ROUTE] selected_path={route_decision.get('selected_path')} "
+            f"attempts={','.join(item.get('path', '') for item in route_decision.get('attempts') or [])}"
+        )
 
-            route_decision = decide_extraction_path(analysis, requested_mode)
-            chosen_path = route_decision["path"]
-            print(f"[INDEX-V3-NEW] Smart router chose: {chosen_path} ({get_path_description(chosen_path)})")
-            print(f"[INDEX-V3-NEW] Reasons: {route_decision['reasons']}")
-
-            if not new_architecture_result and execution_mode == "balanced" and balanced_path == "text":
-                text_heading_result = _try_extract_text_heading_toc(analysis)
-                new_architecture_result = self._try_text_heading_shortcut(
-                    analysis,
-                    text_heading_result,
+        new_architecture_result = await self._run_toc_attempt_chain(
+            analysis=analysis,
+            route_decision=route_decision,
+            page_count=page_count,
+            model=model,
+            anchors=anchors,
+        )
+        if not new_architecture_result or not new_architecture_result.get("items"):
+            failure_reasons = []
+            if isinstance(new_architecture_result, dict):
+                failure_reasons = [
+                    str(reason)
+                    for reason in (new_architecture_result.get("failure_reasons") or [])
+                    if str(reason).strip()
+                ]
+            if self._should_retry_toc_attempt_with_balanced(
+                route_decision,
+                requested_mode=requested_mode,
+                initial_execution_mode=initial_execution_mode,
+            ):
+                print(
+                    "[TOC-PIPELINE] stage=route action=retry_balanced "
+                    f"reason={';'.join(failure_reasons) or 'fast_attempt_failed'}"
                 )
-                if new_architecture_result:
-                    print(
-                        f"[INDEX-V3-NEW] Using text heading shortcut: "
-                        f"{len(new_architecture_result['items'])} items"
-                    )
-
-            if not new_architecture_result and execution_mode == "balanced":
-                new_architecture_result = self._try_balanced_provider_shortcut(
-                    analysis,
-                    page_count,
+                return await self._generate_pdf_index(
+                    file_path,
+                    doc_id,
+                    "balanced",
+                    _quality_retry=False,
+                    _disable_code_toc=self._should_disable_code_toc_for_balanced_retry(
+                        route_decision,
+                        retry_reason="no_candidate",
+                    ),
+                    _fallback_from={
+                        "requested_mode": requested_mode,
+                        "execution_mode": execution_mode,
+                        "selected_path": route_decision.get("selected_path"),
+                        "reasons": failure_reasons or ["fast_attempt_failed"],
+                    },
                 )
-                if new_architecture_result:
-                    print(
-                        f"[INDEX-V3-NEW] Using balanced provider shortcut: "
-                        f"source={new_architecture_result['source']} "
-                        f"items={len(new_architecture_result['items'])} "
-                        f"mapping={new_architecture_result.get('mapping_strategy')}"
-                    )
-
-            if new_architecture_result:
-                pass
-            elif chosen_path == "toc_page":
-                new_architecture_result = extract_toc_from_analysis(analysis, doc_path=str(file_path))
-            elif chosen_path == "hierarchical":
-                new_architecture_result = await extract_hierarchical_toc(
-                    analysis.get("page_texts", []), model
-                )
-            elif chosen_path == "batch":
-                new_architecture_result = await extract_batch_toc(
-                    analysis.get("page_texts", []), model
-                )
-            elif chosen_path == "fast_text":
-                new_architecture_result = extract_fast_text_toc(
-                    analysis.get("page_texts", []), model
-                )
-            elif chosen_path == "visual":
-                # 瑙嗚璺緞浣跨敤鍘熸湁鐨?balanced_toc_visual
-                new_architecture_result = await extract_visual_toc(
-                    str(file_path), analysis, model,
-                    anchors=anchors,
-                    ocr_text_map=ocr_text_map,
-                )
-
-            # 璐ㄩ噺楠岃瘉
-            if new_architecture_result and new_architecture_result.get("items"):
-                if self._is_prevalidated_text_heading_result(new_architecture_result):
-                    print(self._prevalidated_skip_validation_message(new_architecture_result))
-                else:
-                    validation = validate_toc(
-                        new_architecture_result["items"],
-                        page_count,
-                        analysis.get("page_texts", []),
-                        source=new_architecture_result.get("source", "unknown"),
-                    )
-                    print(f"[INDEX-V3-NEW] Validation: score={validation['score']:.2f}, valid={validation['is_valid']}")
-
-                    if not validation["is_valid"]:
-                        # 灏濊瘯淇
-                        repaired = await repair_toc(
-                            new_architecture_result["items"],
-                            validation["issues"],
-                            analysis.get("page_texts", []),
-                            model,
-                        )
-                        new_architecture_result["items"] = repaired
-                        new_architecture_result["repaired"] = True
-
-                    if validation["score"] >= 0.7:
-                        print(f"[INDEX-V3-NEW] Using new architecture result (score={validation['score']:.2f})")
-                    else:
-                        print(f"[INDEX-V3-NEW] Score too low ({validation['score']:.2f}), falling back to legacy")
-                        new_architecture_result = None
-
-        except Exception as e:
-            print(f"[INDEX-V3-NEW] New architecture failed: {e}, falling back to legacy")
-            new_architecture_result = None
-
-        # 鈹€鈹€鈹€ Phase 1: TOC 鏋勫缓 鈹€鈹€鈹€
-        toc_items = None
-        toc_source = None
-
-        # 濡傛灉浣跨敤鏂版灦鏋勬垚鍔燂紝杞崲鏍煎紡骞惰烦杩囧悗缁?legacy 鎻愬彇
-        new_architecture_used = False
-        if new_architecture_result:
-            toc_items = new_architecture_result["items"]
-            toc_source = new_architecture_result.get("source", "new_architecture")
-            top_level_frozen = bool(
-                new_architecture_result.get(
-                    "top_level_frozen",
-                    new_architecture_result.get("mapped") or new_architecture_result.get("semi_frozen"),
-                )
+            result = self._build_no_candidate_index_payload(
+                file_name=file_path.name,
+                page_count=page_count,
+                analysis=analysis,
+                route_decision=route_decision,
+                requested_mode=requested_mode,
+                execution_mode=execution_mode,
+                initial_execution_mode=initial_execution_mode,
+                failure_reasons=failure_reasons or ["no_toc_candidate"],
             )
-            allow_child_expansion = bool(
-                new_architecture_result.get(
-                    "allow_child_expansion",
-                    new_architecture_result.get("semi_frozen", False),
-                )
+            fill_node_text(result["structure"], page_text_map)
+            write_node_ids(result["structure"])
+            model_routes = await self._model_route_metadata()
+            if model_routes:
+                result["model_routes"] = model_routes
+            index_path = self._save_index_payload(doc_id, result)
+            print(f"[TOC-PIPELINE] stage=save status=failed_index_saved index={index_path}")
+            return {"index_path": str(index_path), "structure": result}
+
+        toc_items = new_architecture_result["items"]
+        toc_source = (
+            new_architecture_result.get("provider_source")
+            or new_architecture_result.get("source")
+            or "toc_candidate"
+        )
+        analysis["toc_source"] = toc_source
+        analysis["toc_judge"] = {
+            "source": toc_source,
+            "candidate_source": new_architecture_result.get("source"),
+            "confidence": new_architecture_result.get("confidence"),
+            "evidence": new_architecture_result.get("evidence", {}),
+            "rejected_candidates": new_architecture_result.get("rejected_candidates", []),
+        }
+        route_decision["attempt_chain"] = list(new_architecture_result.get("attempt_chain") or [])
+        route_decision["toc_source"] = toc_source
+        analysis["route_decision"] = dict(route_decision)
+        top_level_frozen = bool(
+            new_architecture_result.get(
+                "top_level_frozen",
+                new_architecture_result.get("mapped")
+                or new_architecture_result.get("semi_frozen")
+                or toc_source in {"official_baseline", "text_heading", "slide_outline", "agenda_outline", "llm_toc_page"},
             )
-            analysis["top_level_frozen"] = top_level_frozen
-            analysis["allow_child_expansion"] = allow_child_expansion
-            if allow_child_expansion:
-                analysis["toc_frozen"] = False
-                analysis["toc_frozen_source"] = toc_source
-                analysis["toc_semi_frozen"] = True
-            elif top_level_frozen:
-                analysis["toc_frozen"] = True
-                analysis["toc_frozen_source"] = toc_source
-            new_architecture_used = True
-            stage_details = self._build_toc_extract_stage_details(
+        )
+        allow_child_expansion = bool(
+            new_architecture_result.get(
+                "allow_child_expansion",
+                new_architecture_result.get("semi_frozen", False),
+            )
+        )
+        analysis["top_level_frozen"] = top_level_frozen
+        analysis["allow_child_expansion"] = allow_child_expansion
+        if allow_child_expansion:
+            analysis["toc_frozen"] = False
+            analysis["toc_frozen_source"] = toc_source
+            analysis["toc_semi_frozen"] = True
+        elif top_level_frozen:
+            analysis["toc_frozen"] = True
+            analysis["toc_frozen_source"] = toc_source
+        stage_details = self._build_toc_extract_stage_details(
+            toc_items,
+            page_count=page_count,
+            frozen=analysis.get("toc_frozen", False),
+        )
+        self._log_index_stage(
+            3,
+            "toc_extract",
+            "done",
+            source=toc_source,
+            items=len(toc_items),
+            **stage_details,
+        )
+        print(
+            f"[TOC-ROUTE] decision=accept items={len(toc_items)} "
+            f"source={toc_source} path={new_architecture_result.get('selected_path')}"
+        )
+        self._enable_child_outline_expansion_for_shallow_toc(
+            analysis,
+            toc_items,
+            page_count=page_count,
+            toc_source=toc_source,
+        )
+
+        if any(isinstance(item.get("nodes"), list) and bool(item.get("nodes")) for item in toc_items):
+            print(f"[TOC-POST] action=assign_page_ranges prebuilt_tree=true roots={len(toc_items)}")
+            toc_tree, completeness = self._build_s5_toc_tree(
                 toc_items,
                 page_count=page_count,
-                frozen=analysis.get("toc_frozen", False),
+                analysis=analysis,
             )
-            self._log_index_stage(
-                3,
-                "toc_extract",
-                "done",
-                source=toc_source,
-                items=len(toc_items),
-                **stage_details,
-            )
-            print(f"[INDEX-V3-NEW] Converted {len(toc_items)} items to legacy format")
-
-        if execution_mode == "fast" and not new_architecture_used:
-            print("[INDEX-V3] Phase 1: trying fast TOC")
-            fast_result = await try_fast_toc(analysis, model)
-            if fast_result and not fast_result.get("quality_check_failed"):
-                toc_items = fast_result["toc_items"]
-                toc_source = fast_result["source"]
-            elif fast_result and fast_result.get("quality_check_failed"):
-                # P1-fix: Fast TOC quality check failed, but we have items - escalate to balanced
-                print("[INDEX-V3] Fast TOC quality check failed, escalating to balanced")
-                execution_mode = "balanced"
-                balanced_path = "visual"  # Force visual for better accuracy
-            elif requested_mode == "fast":
-                raise ValueError(
-                    "FAST_TOC_INCOMPLETE: code extraction + validation failed"
-                )
-            else:
-                print("[INDEX-V3] Fast failed, escalating to balanced")
-                execution_mode = "balanced"
-                balanced_path = decide_balanced_path(analysis)
-
-        skip_legacy_toc_detection = self._should_skip_legacy_toc_detection(
-            analysis,
-            new_architecture_result,
-        )
-        if execution_mode == "balanced" and not new_architecture_used and not skip_legacy_toc_detection:
-            # 鈹€鈹€鈹€ Step 1: 鏌ユ壘鐩綍椤?鈹€鈹€鈹€
-            from pageindex.toc_detector import find_toc_pages
-
-            anchor_toc_pages = list((anchors or {}).get("toc_pages") or analysis.get("toc_pages") or [])
-            if anchor_toc_pages:
-                toc_pages = anchor_toc_pages
-                print(f"[INDEX-V3] Phase 1: using anchor toc_pages={toc_pages}")
-            else:
-                print("[INDEX-V3] Phase 1: searching for toc pages")
-                toc_pages = await find_toc_pages(analysis, str(file_path), model)
-                self._sync_toc_context(analysis, toc_pages, confidence="detected")
-
-            visual_required = self._requires_visual_outline_provider(analysis)
-
-            if toc_pages:
-                print(f"[INDEX-V3] Found toc pages: {toc_pages}")
-                from pageindex.toc_page_extractor import extract_toc_from_pages
-                from pageindex.quality_validator import validate_toc
-                
-                toc_result = None
-                if visual_required:
-                    print(
-                        "[TOC-PAGE] Skip text/regex extraction: "
-                        f"structure_policy={analysis.get('structure_policy')}"
-                    )
-                else:
-                    toc_result = extract_toc_from_pages(
-                        doc_path=str(file_path),
-                        toc_page_indices=[p - 1 for p in toc_pages],
-                        doc_page_count=page_count,
-                        model=model,
-                        page_texts=analysis.get("page_texts", []),
-                    )
-                
-                if toc_result and toc_result.get("items"):
-                    # 璐ㄩ噺楠岃瘉
-                    validation = validate_toc(
-                        toc_result["items"],
-                        page_count,
-                        analysis.get("page_texts", []),
-                        source="toc_page",
-                    )
-                    
-                    if validation["score"] >= 0.7:
-                        print(f"[INDEX-V3] v4 extraction success (score={validation['score']:.2f})")
-                        toc_items = toc_result["items"]
-                        toc_source = "toc_page"
-                    else:
-                        print(f"[INDEX-V3] v4 quality low ({validation['score']:.2f}), falling back")
-                        toc_items = None
-                else:
-                    if visual_required:
-                        print("[TOC-PAGE] Text/regex extraction skipped; using balanced visual path")
-                    else:
-                        print("[INDEX-V3] v4 extraction failed, falling back")
-                    toc_items = None
-                
-                if toc_items is None:
-                    is_image_doc = self._is_effectively_image_doc(analysis)
-                    
-                    if visual_required:
-                        print("[INDEX-V3] Skip legacy TOC fallback: structure_policy=visual_required")
-                    elif is_image_doc:
-                        # 鍥剧墖鍨?鈫?VLM瑙嗚鎻愬彇
-                        print("[INDEX-V3] Fallback: VLM visual extraction for image doc")
-                        
-                        fallback_result = await self._extract_toc_visual(
-                            str(file_path), toc_pages, page_count, model
-                        )
-                        fallback_result = self._normalize_and_map_fallback_toc(
-                            fallback_result,
-                            page_count=page_count,
-                            toc_pages=toc_pages,
-                            ocr_text_map=ocr_text_map,
-                            dividers=dividers,
-                        )
-                        if fallback_result and fallback_result.get("toc_items"):
-                            checker = TocQualityChecker()
-                            toc_check = checker.check(fallback_result["toc_items"], toc_pages)
-                            if toc_check["is_valid"]:
-                                if toc_check["has_hierarchy"]:
-                                    # 鏈夊眰绾?鈫?鐩存帴浣跨敤
-                                    toc_items = fallback_result["toc_items"]
-                                    toc_source = "vlm_visual"
-                                    print(f"[INDEX-V3] VLM visual extraction success: {len(toc_items)} items with hierarchy")
-                                else:
-                                    # 鍙湁涓€绾?鈫?闇€瑕佸垎鏀疊鍒嗘鎻愬彇
-                                    print(f"[INDEX-V3] TOC has {toc_check['top_level_count']} top-level items only, need Branch B")
-                                    # 娓呯┖toc_items锛岃瀹冭繘鍏uild_balanced_toc_visual杩涜璺緞鍐崇瓥鍜屽垎鏀疊
-                                    toc_items = None
-                    else:
-                        # 鏂囨湰鍨?鈫?LLM鏂囨湰鎻愬彇
-                        print("[INDEX-V3] Fallback: LLM text extraction for text doc")
-                        fallback_result = await self._extract_toc_text(
-                            analysis, toc_pages, page_count, model
-                        )
-                        fallback_result = self._normalize_and_map_fallback_toc(
-                            fallback_result,
-                            page_count=page_count,
-                            toc_pages=toc_pages,
-                            ocr_text_map=ocr_text_map,
-                            dividers=dividers,
-                        )
-                        if fallback_result and fallback_result.get("toc_items"):
-                            checker = TocQualityChecker()
-                            toc_check = checker.check(fallback_result["toc_items"], toc_pages)
-                            if toc_check["is_valid"]:
-                                if toc_check["has_hierarchy"]:
-                                    toc_items = fallback_result["toc_items"]
-                                    toc_source = "llm_text"
-                                    print(f"[INDEX-V3] LLM text extraction success: {len(toc_items)} items with hierarchy")
-                                else:
-                                    print(f"[INDEX-V3] TOC has {toc_check['top_level_count']} top-level items only, need Branch B")
-                                    toc_items = None
-                
-                # 濡傛灉闄嶇骇涔熷け璐ユ垨鍙湁涓€绾ч渶瑕佸垎鏀疊锛岀户缁蛋鍘熸湁balanced閫昏緫
-                if toc_items is None:
-                    if visual_required:
-                        print("[INDEX-V3] Visual skeleton extraction delegated to balanced visual path")
-                    else:
-                        print("[INDEX-V3] Fallback incomplete, continuing with balanced path for sub-chapter extraction")
-            else:
-                print("[INDEX-V3] No toc pages found, continuing with traditional balanced path")
-                toc_items = None
-            
-            # 濡傛灉娌℃湁閫氳繃v4鑾峰彇鍒皌oc锛岃蛋鍘熸湁balanced璺緞
-            if toc_items is None:
-                if balanced_path == "text":
-                    print("[INDEX-V3] Phase 1: balanced TEXT (LLM)")
-                    # P2-fix: 浼犲叆 dividers 淇 Text 璺緞缁撴灉
-                    text_dividers = anchors.get("chapter_dividers", []) if anchors else []
-                    balanced_result = await build_balanced_toc_text(
-                        analysis, model, dividers=text_dividers, hooks=hooks
-                    )
-                    
-                    # P5-fix: Check text path quality, fallback to visual if poor
-                    toc_items = balanced_result["toc_items"]
-                    if (
-                        balanced_result.get("mapped")
-                        or balanced_result.get("semi_frozen")
-                        or balanced_result.get("source") == "text_heading"
-                    ):
-                        analysis["toc_frozen"] = True
-                        analysis["toc_frozen_source"] = balanced_result.get("source")
-                    self._apply_balanced_result_state(analysis, balanced_result)
-                    top_level = [it for it in toc_items if "." not in str(it.get("structure", ""))]
-                    has_large_nodes = any(
-                        (toc_items[i+1].get("physical_index", page_count+1) - it.get("physical_index", 0)) > 15
-                        for i, it in enumerate(toc_items[:-1])
-                    ) if len(toc_items) > 1 else False
-                    
-                    if (
-                        not analysis.get("toc_frozen")
-                        and len(top_level) < 3
-                        and len(toc_items) > 10
-                        and has_large_nodes
-                    ):
-                        print(f"[INDEX-V3] Text path quality poor: {len(top_level)} top-level, {len(toc_items)} items, large nodes detected")
-                        print("[INDEX-V3] Falling back to VISUAL path")
-                        balanced_path = "visual"
-                        balanced_result = await build_balanced_toc_visual(
-                            str(file_path), analysis, model,
-                            anchors=anchors,
-                            ocr_text_map=ocr_text_map,
-                            hooks=hooks,
-                        )
-                        toc_items = balanced_result["toc_items"]
-                        toc_source = balanced_result["source"]
-                        self._apply_balanced_result_state(analysis, balanced_result)
-                    else:
-                        toc_source = balanced_result["source"]
-                else:
-                    print("[INDEX-V3] Phase 1: balanced VISUAL (VLM)")
-                    balanced_result = await build_balanced_toc_visual(
-                        str(file_path), analysis, model,
-                        anchors=anchors,
-                        ocr_text_map=ocr_text_map,
-                        hooks=hooks,
-                    )
-                    toc_items = balanced_result["toc_items"]
-                    toc_source = balanced_result["source"]
-                    self._apply_balanced_result_state(analysis, balanced_result)
-
-        # 鈹€鈹€鈹€ Phase 1.5: OCR 鍥剧墖椤?鈹€鈹€鈹€
-        needs_ocr = (
-            len(analysis.get("image_only_pages", [])) > 0
-            or len(analysis.get("garbled_pages", [])) > 0
-        )
-        if needs_ocr:
-            analysis["ocr_role"] = "content_fill"
-            content_ocr_stage = self._content_ocr_stage_name()
-            self._log_index_stage(
-                4,
-                content_ocr_stage,
-                "started",
-                role="content_fill",
-                pages=len(analysis.get("image_only_pages", []))
-                + len(analysis.get("garbled_pages", [])),
-            )
-            print(
-                f"[INDEX-V3] Content OCR: {len(analysis.get('image_only_pages', []))} image "
-                f"+ {len(analysis.get('garbled_pages', []))} garbled pages"
-            )
-            if self._requires_visual_outline_provider(analysis):
-                print("[INDEX-V3] OCR role=content_fill; structure providers remain visual-only")
-            page_list = await ocr_image_pages(
-                analysis,
-                page_list,
-                ocr_service_fn=self._run_full_pdf_ocr_by_images,
-            )
-            analysis["page_list"] = page_list
-            self._log_index_stage(
-                4,
-                content_ocr_stage,
-                "done",
-                role="content_fill",
-                coverage=f"{len(page_list)}/{page_count}",
-            )
-
-        # 鈹€鈹€鈹€ Phase 2: 鍚庡鐞?(post_processing.py v3) 鈹€鈹€鈹€
-        # Check whether extraction already returned a nested tree.
-        has_prebuilt_tree = any(
-            isinstance(item.get("nodes"), list) and bool(item.get("nodes"))
-            for item in toc_items
-        )
-        
-        if has_prebuilt_tree:
-            print(f"[INDEX-V3] Phase 2: prebuilt tree detected, assigning page ranges to {len(toc_items)} roots")
-            toc_tree = []
-            for item in toc_items:
-                if "start_index" not in item:
-                    item["start_index"] = item.get("physical_index") or 1
-                if "end_index" not in item:
-                    item["end_index"] = page_count
-                
-                # 涓哄瓙鑺傜偣璁剧疆鑼冨洿
-                children = item.get("nodes", [])
-                for i, child in enumerate(children):
-                    if "start_index" not in child:
-                        child["start_index"] = child.get("physical_index") or 1
-                    if "end_index" not in child:
-                        # 涓嬩竴涓厔寮熻妭鐐圭殑椤电爜 - 1锛屾垨鏂囨。鏈熬
-                        if i < len(children) - 1:
-                            next_page = children[i + 1].get("physical_index")
-                            if next_page:
-                                child["end_index"] = max(next_page - 1, child["start_index"])
-                            else:
-                                child["end_index"] = page_count
-                        else:
-                            child["end_index"] = page_count
-                    
-                    grandchildren = child.get("nodes", [])
-                    for j, gc in enumerate(grandchildren):
-                        if "start_index" not in gc:
-                            gc["start_index"] = gc.get("physical_index") or 1
-                        if "end_index" not in gc:
-                            if j < len(grandchildren) - 1:
-                                next_page = grandchildren[j + 1].get("physical_index")
-                                if next_page:
-                                    gc["end_index"] = max(next_page - 1, gc["start_index"])
-                                else:
-                                    gc["end_index"] = page_count
-                            else:
-                                # 浣跨敤鐖惰妭鐐圭殑缁撴潫椤电爜
-                                gc["end_index"] = child.get("end_index", page_count)
-                
-                toc_tree.append(item)
-            
-            completeness = {
-                "quality": "good",
-                "coverage": 1.0,
-                "gaps": [],
-                "reaches_end": True,
-                "ok": True,
-                "needs_repair": False,
-            }
-            print(f"[INDEX-V3] Prebuilt tree preserved with {sum(len(item.get('nodes', [])) for item in toc_tree)} total entries")
+            print(f"[TOC-POST] action=preserve_prebuilt_tree entries={sum(len(item.get('nodes', [])) for item in toc_tree)}")
         else:
-            print(f"[INDEX-V3] Phase 2: post-processing {len(toc_items)} items")
+            print(f"[TOC-POST] action=s5_tree_build input_items={len(toc_items)}")
             self._log_index_stage(5, "post_process", "started", input_items=len(toc_items))
-            if execution_mode == "fast":
-                toc_tree, completeness = post_process_toc(
-                    toc_items,
-                    page_count,
-                    dividers=dividers,
-                )
-            else:
-                toc_tree, completeness = post_process_toc(
-                    toc_items,
-                    page_count,
-                    dividers=dividers,
-                    analysis=analysis,
-                    use_llm_grouping=True,
-                    model=model,
-                )
+            toc_tree, completeness = self._build_s5_toc_tree(
+                toc_items,
+                page_count=page_count,
+                analysis=analysis,
+            )
             self._log_index_stage(
                 5,
                 "post_process",
@@ -3749,12 +5655,11 @@ Return strict JSON only:
             )
 
         if completeness.get("needs_repair"):
-            print(f"[INDEX-V3] Coverage needs repair: {completeness}")
-            # TODO: gap 淇锛堝 gaps 鍖哄煙琛ュ厖鍒嗘瀽")
+            print(f"[TOC-QUALITY] action=coverage_repair_required details={completeness}")
+            # TODO: gap 婵烇絽娴傞崰鏍囬弻銉︽櫖闁割偅绻嶉崵?gaps 闂佸憡鐗曢幖顐︽偂濞嗘垶鍋橀柕澶堝劚鐢娀鏌涢幒鎴烆棡闁?)
 
-        # 鈹€鈹€鈹€ Phase 2.5: LLM 璐ㄩ噺妫€鏌?鈹€鈹€鈹€
-        # 鍒濆鍖?result 鐢ㄤ簬瀛樺偍璐ㄦ缁撴灉
-        await self._expand_visual_page_outline_with_vlm_fallback(
+        # 闂佸憡甯楃换鍌烇綖閹版澘绀?result 闂佽濡虹紒銊㈠亾濞戞顏堝磻瀹ュ洦瀚婚柕濠忓瘜濮婂墽绱撴担瑙勫鞍闁?
+        await self._expand_page_outline(
             toc_tree=toc_tree,
             analysis=analysis,
             page_count=page_count,
@@ -3770,7 +5675,7 @@ Return strict JSON only:
         )
         gate = completeness.get("balanced_quality_gate") or {}
         print(
-            f"[BALANCED-QC] top_level_frozen_check: "
+            f"[TOC-QUALITY] top_level_frozen_check: "
             f"ok={gate.get('top_level_exact_match')} "
             f"needs_repair={gate.get('needs_repair')}"
         )
@@ -3788,50 +5693,41 @@ Return strict JSON only:
                 model=model,
             )
             result["llm_quality_check"] = quality_result
-            
-            # 鏍规嵁璐ㄦ缁撴灉淇
+
+            # 闂佸搫绉风€规挷鑳堕幏褰掑Ω閿旂粯鈷曠紓鍌欑劍閹稿鎮樻径瀣攳妞ゆ梻鈷堝Σ?
             if quality_result.get("needs_repair"):
-                print("[INDEX-V3] LLM-QC advisory suggestions detected")
+                print("[TOC-QUALITY] provider=llm_qc action=advisory suggestions=true")
                 for suggestion in quality_result.get("suggestions", []):
-                    if any(token in suggestion for token in ("子章节", "拆分", "sub-chapter", "split")):
-                        print("[INDEX-V3] LLM-QC advisory: large-node detail can be improved")
-                        # 鏍囪闇€瑕佸瓙绔犺妭鎻愬彇
+                    if any(token in suggestion for token in ("sub-chapter", "split")):
+                        print("[TOC-QUALITY] provider=llm_qc action=advisory reason=large_node_detail")
+                        # 闂佸搫绉村ú鈺咁敊閸ヮ剚顥嗛柍褎鍟哄ù锝呮憸閹藉秶绱掗弮鍌毿┑鈥崇闁规壆鎮?
                         break
         except Exception as e:
-            print(f"[INDEX-V3] LLM quality check skipped: {e}")
-
-        if execution_mode == "balanced":
-            import asyncio as _aio
-            from pageindex.page_index import process_large_node_recursively, JsonLogger
-
-            logger = JsonLogger(str(file_path))
-            tasks = [
-                process_large_node_recursively(node, page_list, self.opt, logger=logger)
-                for node in toc_tree
-            ]
-            await _aio.gather(*tasks)
+            print(f"[TOC-QUALITY] provider=llm_qc action=skip error={e}")
 
         auxiliary_catalogs = self._build_auxiliary_catalog_nodes(analysis)
         if auxiliary_catalogs:
             toc_tree = self._merge_auxiliary_catalog_nodes(toc_tree, auxiliary_catalogs)
             print(
-                f"[INDEX-V3] Added auxiliary catalogs: "
+                f"[TOC-POST] action=add_auxiliary_catalogs titles="
                 f"{', '.join(node.get('title', '') for node in auxiliary_catalogs)}"
             )
 
-        # 鈹€鈹€鈹€ Phase 3: 鑺傜偣濉厖 + 鎽樿 鈹€鈹€鈹€
+        from pageindex.toc_mapping import derive_toc_ranges
+
+        toc_tree = derive_toc_ranges(toc_tree, page_count=page_count)
         toc_tree = self._normalize_auxiliary_catalog_nodes(toc_tree)
         toc_tree = self._normalize_final_tree_schema(
             toc_tree,
             doc_id=doc_id,
             page_count=page_count,
         )
-        print(f"[INDEX-V3] Phase 3: filling nodes + summaries (mode={execution_mode})")
+        print(f"[TOC-PIPELINE] stage=enrich action=fill_nodes_and_doc_summary mode={execution_mode}")
         self._log_index_stage(6, "enrich", "started", mode=execution_mode)
-        fill_node_text(toc_tree, page_list)
+        fill_node_text(toc_tree, page_text_map)
         write_node_ids(toc_tree)
-        # 鈹€鈹€鈹€ 鏋勫缓杈撳嚭 鈹€鈹€鈹€
-        # 淇濈暀涔嬪墠鐨勮川妫€缁撴灉
+        # 闂佸啿鍘滈崑鎾绘煃閸忓浜鹃梺鍐插帨閸?闂佸搫顑呯€氼剛绱撻幘瀛樼秶闁规儳鍟垮В?闂佸啿鍘滈崑鎾绘煃閸忓浜鹃梺鍐插帨閸?
+        # 婵烇絽娲︾换鍕汲閳ь剙鈽夐弬鎸庢櫠閻樼粯鍎嶉柛鏇犵崺濠碘€充壕缂傚倷鐒﹂幐濠氭倶?
         llm_quality_check_result = result.get("llm_quality_check")
         result = {
             "doc_name": file_path.name,
@@ -3839,36 +5735,106 @@ Return strict JSON only:
             "page_count": page_count,
             "structure": toc_tree,
             "route_decision": {
+                **route_decision,
                 "requested_mode": requested_mode,
                 "execution_mode": execution_mode,
                 "initial_execution_mode": initial_execution_mode,
                 "final_execution_mode": execution_mode,
-                "balanced_path": balanced_path,
                 "toc_source": toc_source,
                 "text_coverage": analysis["text_coverage"],
                 "is_image_only_pdf": analysis.get("is_image_only_pdf", False),
                 "fallback_reason": analysis.get("code_toc_reject_reason"),
+                "fallback_from": analysis.get("quality_fallback_from"),
+                "code_toc_disabled": bool(analysis.get("disable_code_toc_fast_path")),
             },
             "completeness": completeness,
-            "ocr_used": needs_ocr,
+            "ocr_used": bool(analysis.get("page_text_map_ocr_completed")),
             "llm_quality_check": llm_quality_check_result,
             "enrichment_status": "pending",
         }
+        diagnostics = self._index_diagnostics_from_analysis(analysis)
+        if diagnostics:
+            result["diagnostics"] = diagnostics
+
+        model_routes = await self._model_route_metadata()
+        if model_routes:
+            result["model_routes"] = model_routes
+
+        self._attach_index_quality_report(result, page_count=page_count, force_pdf=True)
+        quality_failure_reasons = self._collect_toc_quality_failure_reasons(
+            analysis=analysis,
+            completeness=completeness,
+            llm_quality_check=llm_quality_check_result,
+            quality_report=result.get("quality_report"),
+        )
+        if _quality_retry and self._should_retry_toc_with_balanced(result, quality_failure_reasons):
+            print(
+                "[TOC-PIPELINE] stage=quality action=retry_balanced "
+                f"reason={';'.join(quality_failure_reasons)}"
+            )
+            try:
+                return await self._generate_pdf_index(
+                    file_path,
+                    doc_id,
+                    "balanced",
+                    _quality_retry=False,
+                    _disable_code_toc=self._should_disable_code_toc_for_balanced_retry(
+                        route_decision,
+                        retry_reason="quality_failure",
+                    ),
+                    _fallback_from={
+                        "requested_mode": requested_mode,
+                        "execution_mode": execution_mode,
+                        "toc_source": toc_source,
+                        "reasons": quality_failure_reasons,
+                    },
+                )
+            except Exception as retry_error:
+                if self._can_retain_best_candidate_after_retry_failure(
+                    result,
+                    quality_failure_reasons,
+                ):
+                    print(
+                        "[TOC-PIPELINE] stage=quality action=retain_best_candidate "
+                        f"reason={';'.join(quality_failure_reasons)} "
+                        f"retry_error={type(retry_error).__name__}"
+                    )
+                    self._retain_best_candidate_after_quality_retry_failure(
+                        result,
+                        quality_failure_reasons,
+                        retry_error=retry_error,
+                    )
+                    quality_failure_reasons = []
+                else:
+                    raise
+        if quality_failure_reasons:
+            self._mark_toc_quality_failure_payload(result, quality_failure_reasons)
+            index_path = self._save_index_payload(doc_id, result)
+            print(
+                "[TOC-PIPELINE] stage=save status=failed_index_saved "
+                f"reason={';'.join(quality_failure_reasons)} index={index_path}"
+            )
+            return {"index_path": str(index_path), "structure": result}
 
         # Save a usable base index before slower enrichment calls.
         index_path = self._save_index_payload(doc_id, result)
-        print(f"[INDEX-V2] Saved base index before enrichment: {index_path}")
+        print(f"[TOC-PIPELINE] stage=save status=base_index_saved index={index_path}")
 
-        await generate_summaries(toc_tree, model=model, mode=execution_mode)
-        doc_description = await generate_doc_description(
-            toc_tree, model=model, file_name=file_path.name
-        )
+        if self._should_generate_node_summaries(self.opt):
+            await generate_summaries(toc_tree, model=model, mode=execution_mode)
+        doc_description = ""
+        if self._should_generate_doc_description(self.opt):
+            doc_description = await generate_doc_description(
+                toc_tree, model=model, file_name=file_path.name
+            )
         result["doc_description"] = doc_description
         result["enrichment_status"] = "done"
+        if model_routes:
+            result["model_routes"] = model_routes
         self._log_index_stage(6, "enrich", "done")
 
         index_path = self._save_index_payload(doc_id, result)
-        print(f"[INDEX-V2] Saved index: {index_path}")
+        print(f"[TOC-PIPELINE] stage=save status=final_index_saved index={index_path}")
         self._log_index_stage(7, "save", "done", index=index_path.name)
 
         return {"index_path": str(index_path), "structure": result}
@@ -3880,255 +5846,16 @@ Return strict JSON only:
         file_path = Path(file_path)
 
         if file_path.suffix.lower() == ".pdf":
-            return await self._generate_index_v2(file_path, doc_id, mode_override)
+            return await self._generate_pdf_index(file_path, doc_id, mode_override)
 
-        # 闈?PDF 鏂囦欢璧版棫娴佺▼
         self.opt = self._build_opt(mode_override=mode_override)
 
-        visual_coverage = None
-        if file_path.suffix.lower() == ".pdf":
-            pre_analysis = self._pre_analyze_pdf(file_path)
-            route = self._decide_pdf_route(
-                getattr(self.opt, "index_mode", "balanced"),
-                pre_analysis,
-            )
-
-            page_count = int(pre_analysis.get("page_count") or 0)
-            has_images = int(pre_analysis.get("image_pages") or 0) > 0
-            ocr_used = False
-            ocr_pages: List[Dict[str, Any]] = []
-            ocr_coverage = 0.0
-            ocr_missing_pages: List[int] = []
-            ocr_page_list: Optional[List[Any]] = None
-
-            if has_images and page_count > 0:
-                print(f"[OCR] start image-block OCR doc={doc_id} pages={page_count}")
-                ocr_result = await self._run_full_pdf_ocr_by_images(
-                    file_path, page_count
-                )
-                ocr_pages = list(ocr_result.get("ocr_pages") or [])
-                ocr_coverage = float(ocr_result.get("ocr_coverage") or 0.0)
-                ocr_missing_pages = [
-                    int(p) for p in (ocr_result.get("ocr_missing_pages") or [])
-                ]
-                ocr_used = True
-                base_page_list = get_page_tokens(
-                    str(file_path),
-                    model=getattr(self.opt, "model", None),
-                    pdf_parser=pre_analysis.get("preferred_parser", "PyPDF2"),
-                )
-                ocr_page_list = self._build_page_list_with_ocr_overlay(
-                    base_page_list=base_page_list,
-                    ocr_pages=ocr_pages,
-                    model=getattr(self.opt, "model", "qwen3.6-flash"),
-                )
-                print(
-                    f"[OCR] done doc={doc_id} coverage={round(ocr_coverage, 4)} missing={len(ocr_missing_pages)}"
-                )
-
-            execution_mode = route["execution_mode"]
-            self.opt = self._build_opt(mode_override=execution_mode)
-            setattr(
-                self.opt,
-                "pdf_parser",
-                pre_analysis.get("preferred_parser", "PyPDF2"),
-            )
-            setattr(self.opt, "file_path", str(file_path))
-
-            # 鈹€鈹€鈹€ 涓よ疆 Fast TOC 鎻愬彇锛圤CR 鍓?+ OCR 鍚庯級鈹€鈹€鈹€
-            fast_toc_result = None
-            if execution_mode in ("fast", "smart"):
-                import pageindex.page_index as _pi_mod
-
-                extract_toc_code_only = _pi_mod.extract_toc_code_only
-                validate_and_finalize_toc = _pi_mod.validate_and_finalize_toc
-                _extract_toc_by_regex = _pi_mod._extract_toc_by_regex
-
-                raw_page_list = None
-                try:
-                    raw_page_list = get_page_tokens(
-                        str(file_path),
-                        model=getattr(self.opt, "model", None),
-                        pdf_parser=pre_analysis.get("preferred_parser", "PyPDF2"),
-                    )
-                    toc_items, source = extract_toc_code_only(
-                        str(file_path), raw_page_list
-                    )
-                except Exception as e:
-                    print(f"[FAST-TOC] Round 1 error: {e}")
-                    toc_items, source = None, None
-
-                # 绗簩杞細濡傛灉绗竴杞病鎴愬姛涓旀湁 OCR 鏂囨湰锛岀敤 OCR 鏂囨湰鍐嶈窇 Level 3
-                if not toc_items and ocr_page_list:
-                    try:
-                        toc_items = _extract_toc_by_regex(ocr_page_list)
-                        if toc_items:
-                            source = "regex_ocr"
-                            print(
-                                f"[FAST-TOC] Level 3 OCR round: {len(toc_items)} items"
-                            )
-                    except Exception as e:
-                        print(f"[FAST-TOC] Round 2 error: {e}")
-
-                # 鏍￠獙
-                if toc_items:
-                    try:
-                        # 浣跨敤 OCR page_list锛堝鏋滄湁锛夋垨鍘熷 page_list 杩涜 offset 鏍℃
-                        correction_page_list = ocr_page_list or raw_page_list
-                        fast_toc_result = await validate_and_finalize_toc(
-                            toc_items,
-                            source,
-                            page_count,
-                            model=getattr(self.opt, "model", None),
-                            page_list=correction_page_list,
-                        )
-                    except Exception as e:
-                        print(f"[FAST-TOC] Validation error: {e}")
-
-                if not fast_toc_result:
-                    requested = route.get("requested_mode", execution_mode)
-                    if requested == "fast":
-                        raise ValueError(
-                            "FAST_TOC_INCOMPLETE: code extraction + validation failed"
-                        )
-                    # smart 妯″紡锛氬崌绾у埌 balanced
-                    print(
-                        "[FAST-TOC] Smart mode: fast extraction failed, escalating to balanced"
-                    )
-                    execution_mode = "balanced"
-                    route["execution_mode"] = "balanced"
-                    route["escalated_from_fast_quality"] = True
-                    self.opt = self._build_opt(mode_override="balanced")
-                    setattr(
-                        self.opt,
-                        "pdf_parser",
-                        pre_analysis.get("preferred_parser", "PyPDF2"),
-                    )
-                    setattr(self.opt, "file_path", str(file_path))
-                    fast_toc_result = None  # balanced 涓嶇敤 fast result
-
-            def run_pageindex(opt_obj):
-                # 浣跨敤澶栧眰宸插垱寤虹殑 hooks
-                if ocr_page_list is None:
-                    return page_index_main(
-                        str(file_path), opt_obj, fast_toc_result=fast_toc_result, hooks=hooks
-                    )
-                return page_index_main_with_page_list(
-                    doc_name=file_path.name,
-                    page_list=ocr_page_list,
-                    opt=opt_obj,
-                    fast_toc_result=fast_toc_result,
-                    hooks=hooks,
-                )
-
-            def run_balanced_once(reason: str) -> Dict[str, Any]:
-                nonlocal execution_mode
-                balanced_opt = self._build_opt(mode_override="balanced")
-                setattr(
-                    balanced_opt,
-                    "pdf_parser",
-                    pre_analysis.get("preferred_parser", "PyPDF2"),
-                )
-                execution_mode = "balanced"
-                route["execution_mode"] = "balanced"
-                route["escalated_from_fast_quality"] = True
-                route["reasons"].append(reason)
-                self.opt = balanced_opt
-                return run_pageindex(balanced_opt)
-
-            try:
-                result = run_pageindex(self.opt)
-            except ValueError as e:
-                msg = str(e)
-                if (
-                    execution_mode == "fast"
-                    and route.get("requested_mode") == "smart"
-                    and msg.startswith("FAST_TOC_INCOMPLETE")
-                ):
-                    result = run_balanced_once(f"smart_fast_unavailable:{msg}")
-                else:
-                    raise
-
-            if execution_mode == "fast":
-                fast_gate = self._evaluate_fast_toc_readiness(result)
-                route["fast_gate"] = fast_gate
-                if not fast_gate.get("ok", False):
-                    reason = str(fast_gate.get("reason") or "unknown")
-                    if route.get("requested_mode") == "fast":
-                        raise ValueError(f"FAST_TOC_INCOMPLETE: {reason}")
-                    result = run_balanced_once(f"smart_fast_unavailable:{reason}")
-            result["pre_analysis"] = pre_analysis
-            result["route_decision"] = route
-            result["ocr_used"] = ocr_used
-            result["ocr_coverage"] = ocr_coverage
-            result["ocr_missing_pages"] = ocr_missing_pages
-
-            # 涓绘祦绋嬭川閲忛棬鎺э細浠?balanced 妯″紡鎵ц
-            if execution_mode == "fast":
-                structure_data = result.get("structure", result)
-                # Fast mode skips LLM-based node summaries, fill from title/text
-                self._ensure_structure_node_summaries(structure_data)
-                quality = self._compute_structure_quality(structure_data)
-                result["toc_quality"] = {
-                    "before": quality,
-                    "after": quality,
-                    "text_health": self._compute_pdf_text_health(
-                        file_path, pre_analysis
-                    ),
-                    "repaired": False,
-                }
-            else:
-                structure_data = result.get("structure", result)
-                quality_before = self._compute_structure_quality(structure_data)
-                text_health = self._compute_pdf_text_health(file_path, pre_analysis)
-                result["toc_quality"] = {
-                    "before": quality_before,
-                    "after": quality_before,
-                    "text_health": text_health,
-                    "repaired": False,
-                }
-
-            if execution_mode == "fast":
-                # Fast mode: no visual processing, skip expensive computation
-                result["visual_coverage"] = {
-                    "visual_required_pages": 0,
-                    "visual_success_pages": 0,
-                    "visual_coverage": 1.0,
-                    "downgraded": False,
-                    "downgraded_pages": 0,
-                    "daily_downgrade_rate": 0.0,
-                    "downgrade_reasons": [],
-                }
-            else:
-                page_results = result.get("visual_page_results", [])
-                if not isinstance(page_results, list):
-                    page_results = []
-                visual_coverage = self.calculate_visual_coverage(page_results)
-                if visual_coverage.get("visual_required_pages", 0) == 0:
-                    visual_summaries = result.get("visual_page_summaries")
-                    if isinstance(visual_summaries, list) and visual_summaries:
-                        required = len(pre_analysis.get("vlm_needed_pages") or [])
-                        success = len(visual_summaries)
-                        visual_coverage = {
-                            "visual_required_pages": required,
-                            "visual_success_pages": success,
-                            "visual_coverage": (success / required)
-                            if required
-                            else 1.0,
-                            "downgraded": success < required,
-                            "downgraded_pages": max(0, required - success),
-                            "daily_downgrade_rate": ((required - success) / required)
-                            if required
-                            else 0.0,
-                            "downgrade_reasons": [],
-                        }
-                result["visual_coverage"] = visual_coverage
-        elif file_path.suffix.lower() in [".md", ".markdown"]:
+        if file_path.suffix.lower() in [".md", ".markdown"]:
             adapted = generate_multi_format_index(file_path)
             if adapted is not None:
                 result = adapted
             else:
-                # 鍏滃簳鍏煎锛氫繚鐣欏師鏈?md_to_tree 璺緞
+                # 闂佺绻戠划宀€鑺遍幎钘夌闁绘挸瀵掗崯鍥煥濞戞瑧鐓紒缁樺哺閹儳鈻庤箛鎾存灳闂?md_to_tree 闁荤姳璀﹂崹鎵?
                 result = await md_to_tree(
                     md_path=str(file_path),
                     if_thinning=False,
@@ -4154,16 +5881,6 @@ Return strict JSON only:
             doc_description = result.get("doc_description", "") or ""
             if "page_count" in result:
                 page_count = result.get("page_count")
-            elif file_path.suffix.lower() == ".pdf":
-                # 浠?PDF 鏂囦欢鑾峰彇瀹為檯椤垫暟
-                try:
-                    with open(file_path, "rb") as f:
-                        pdf_reader = PyPDF2.PdfReader(f)
-                        page_count = len(pdf_reader.pages)
-                except Exception as e:
-                    print(f"[WARN] Failed to get PDF page count from {file_path}: {e}")
-                    page_count = None
-
             # Fast mode generates a lightweight document summary in-flow.
             if (
                 not doc_description
@@ -4177,8 +5894,17 @@ Return strict JSON only:
                     result["doc_description"] = doc_description
                 else:
                     print(
-                        f"[FAST_SUMMARY] final=empty doc={file_path.name} doc_id={doc_id}"
+                        f"[TOC-SUMMARY] final=empty doc={file_path.name} doc_id={doc_id}"
                     )
+
+        self._attach_index_quality_report(
+            result,
+            page_count=page_count,
+            force_pdf=file_path.suffix.lower() == ".pdf",
+        )
+        model_routes = await self._model_route_metadata()
+        if model_routes:
+            result["model_routes"] = model_routes
 
         with open(index_path, "w", encoding="utf-8") as f:
             json.dump(result, f, indent=2, ensure_ascii=False)
@@ -4188,7 +5914,6 @@ Return strict JSON only:
             "structure": result,
             "doc_description": doc_description,
             "page_count": page_count,
-            "visual_coverage": visual_coverage,
             "index_mode": getattr(self.opt, "index_mode", "balanced"),
         }
 
@@ -4234,94 +5959,56 @@ Return strict JSON only:
         return summary_rows
 
     @staticmethod
-    def _visual_summary_keyword_search(
-        query: str,
-        visual_summaries: List[Dict[str, Any]],
-        nodes: List[Dict[str, Any]],
-        doc_id: str,
+    def _page_source_anchor(
+        doc_name: str, start_index: Any, end_index: Any
+    ) -> Optional[Dict[str, Any]]:
+        if start_index is None:
+            return None
+        suffix = Path(doc_name).suffix.lstrip(".").lower() or "pdf"
+        return {
+            "format": suffix,
+            "unit_type": "page",
+            "start_page": start_index,
+            "end_page": end_index if end_index is not None else start_index,
+        }
+
+    @classmethod
+    def _retrieval_trace_fields(
+        cls,
         doc_name: str,
-    ) -> List[Dict[str, Any]]:
-        import re as _re
-
-        q = (query or "").lower().replace(" ", "")
-        if not q or not visual_summaries:
-            return []
-
-        raw_tokens = _re.findall(r"[a-zA-Z0-9]+|[\u4e00-\u9fff]", q)
-        stopwords = set("搜索一下帮找一下请什么是的有吗呢了啊关于介绍下帮我")
-        kws = [t for t in raw_tokens if len(t) > 1 or t not in stopwords]
-        if not kws:
-            kws = [q]
-
-        node_ranges: List[Dict[str, Any]] = []
-        for n in nodes:
-            try:
-                s = int(n.get("start_index") or 0)
-                e = int(n.get("end_index") or 0)
-            except Exception:
-                continue
-            if s > 0 and e >= s:
-                node_ranges.append(n)
-
-        candidates: List[Dict[str, Any]] = []
-        for item in visual_summaries:
-            page = int(item.get("page_num") or 0)
-            summary = re.sub(r"\s+", " ", str(item.get("summary") or "")).strip()
-            if page <= 0 or not summary:
-                continue
-            hay = summary.lower().replace(" ", "")
-            hit_count = sum(1 for kw in kws if kw and kw in hay)
-            if q in hay:
-                hit_count += 2
-            if hit_count <= 0:
-                continue
-
-            target = None
-            for n in node_ranges:
-                s = int(n.get("start_index") or 0)
-                e = int(n.get("end_index") or 0)
-                if s <= page <= e:
-                    target = n
-                    break
-            if target is None:
-                continue
-
-            score = min(0.92, 0.45 + 0.08 * hit_count)
-            candidates.append(
-                {
-                    "document_id": doc_id,
-                    "document_name": doc_name,
-                    "node_id": target.get("node_id"),
-                    "node_title": target.get("title"),
-                    "start_index": target.get("start_index"),
-                    "end_index": target.get("end_index"),
-                    "summary": summary[:300],
-                    "full_text": summary,
-                    "reasoning": f"visual_summary_hit:p.{page}",
-                    "relevance": round(score, 3),
-                    "source": "visual_summary",
-                }
-            )
-
-        dedup: Dict[str, Dict[str, Any]] = {}
-        for item in sorted(
-            candidates, key=lambda x: x.get("relevance", 0), reverse=True
-        ):
-            nid = str(item.get("node_id") or "")
-            if not nid:
-                continue
-            if nid not in dedup:
-                dedup[nid] = item
-        return list(dedup.values())[:3]
+        start_index: Any,
+        end_index: Any,
+        relevance: float,
+        retrieval_source: str,
+        why_selected: str,
+    ) -> Dict[str, Any]:
+        anchor = cls._page_source_anchor(doc_name, start_index, end_index)
+        return {
+            "retrieval_source": retrieval_source,
+            "confidence": relevance,
+            "why_selected": why_selected,
+            "source_anchor": anchor,
+            "display_label": (
+                build_source_display_label(doc_name, anchor) if anchor else None
+            ),
+        }
 
     async def search_in_structure_async(
-        self, structure: Dict[str, Any], query: str, doc_id: str, doc_name: str
+        self,
+        structure: Dict[str, Any],
+        query: str,
+        doc_id: str,
+        doc_name: str,
+        user_id: str = "default",
     ) -> List[Dict[str, Any]]:
         """Use LLM reasoning to search the tree structure."""
-        from app.core.llm import async_chat_completion
         from app.services.cache_service import cache_service
 
-        cached_result = cache_service.get_search_result(query, [doc_id])
+        route = await self._resolve_model_route("indexing")
+        route_version = route.get("route_version") if route else None
+        cached_result = cache_service.get_search_result(
+            user_id, query, [doc_id], route_version=route_version
+        )
         if cached_result is not None:
             print(f"[CACHE] Search cache hit for query: {query[:30]}...")
             return cached_result
@@ -4330,12 +6017,6 @@ Return strict JSON only:
             structure_data = structure["structure"]
         else:
             structure_data = structure
-        visual_summaries = (
-            structure.get("visual_page_summaries", [])
-            if isinstance(structure, dict)
-            else []
-        )
-
         nodes = structure_to_list(structure_data)
         structure_summary = self._build_search_structure_summary(nodes)
 
@@ -4352,14 +6033,14 @@ Return the most relevant 2-3 chapters as JSON:
 Return JSON only."""
 
         try:
-            response = await async_chat_completion(
+            response = await self._indexing_completion(
                 messages=[{"role": "user", "content": prompt}],
                 temperature=0,
                 model="qwen3.6-flash",
             )
             content = response.choices[0].message.content
 
-            # 瑙ｆ瀽 JSON
+            # 闁荤喐鐟辩徊楣冩倵?JSON
             json_match = re.search(r"\[.*\]", content, re.DOTALL)
             if json_match:
                 llm_results = json.loads(json_match.group())
@@ -4373,8 +6054,10 @@ Return JSON only."""
                 node_id = item.get("node_id")
                 if node_id in node_dict:
                     node = node_dict[node_id]
-                    # 鑾峰彇鏂囨湰鍐呭
+                    # 闂佸吋鍎抽崲鑼躲亹閸ヮ剙妫橀柛銉ｅ妽閹烽亶鏌涢幇顒佸櫣妞?
                     text = node.get("text", "")
+                    relevance = item.get("relevance_score", 0.5)
+                    reasoning = item.get("reasoning", "")
 
                     results.append(
                         {
@@ -4384,10 +6067,18 @@ Return JSON only."""
                             "node_title": node.get("title"),
                             "start_index": node.get("start_index"),
                             "end_index": node.get("end_index"),
-                            "summary": text[:300] if text else "",  # 鎽樿鐢ㄤ簬灞曠ず
-                            "full_text": text,  # 瀹屾暣鍘熸枃鐢ㄤ簬鎺ㄧ悊
-                            "reasoning": item.get("reasoning", ""),
-                            "relevance": item.get("relevance_score", 0.5),
+                            "summary": text[:300] if text else "",
+                            "full_text": text,
+                            "reasoning": reasoning,
+                            "relevance": relevance,
+                            **self._retrieval_trace_fields(
+                                doc_name,
+                                node.get("start_index"),
+                                node.get("end_index"),
+                                relevance,
+                                "tree_reasoning",
+                                reasoning or "Selected by tree reasoning.",
+                            ),
                         }
                     )
 
@@ -4397,6 +6088,7 @@ Return JSON only."""
                     query=query,
                     nodes=nodes,
                     model="qwen3.6-flash",
+                    provider_config=route,
                 )
                 results = verified_results
 
@@ -4414,24 +6106,7 @@ Return JSON only."""
 
                 results = filtered_results
 
-            visual_candidates = self._visual_summary_keyword_search(
-                query=query,
-                visual_summaries=(
-                    visual_summaries if isinstance(visual_summaries, list) else []
-                ),
-                nodes=nodes,
-                doc_id=doc_id,
-                doc_name=doc_name,
-            )
-            if visual_candidates:
-                existing_ids = {str(x.get("node_id") or "") for x in results}
-                for vc in visual_candidates:
-                    nid = str(vc.get("node_id") or "")
-                    if nid and nid not in existing_ids:
-                        results.append(vc)
-                        existing_ids.add(nid)
-
-            # 鎸夌浉鍏冲害鍜岄獙璇佺疆淇″害缁煎悎鎺掑簭
+            # 闂佸湱顭堟繛鏉戭樀瀹曟宕橀幓鎺楁煕濠婂啰鐒搁柣娑欑懅閹风姵鎷呴搹瑙勭€繛锝呮礌閳ь剙鍟跨紓鍌欒兌閸樠囧箖鎼淬劌绠抽柟鐑樺灩绾?
             results.sort(
                 key=lambda x: (
                     x.get("relevance", 0)
@@ -4442,8 +6117,10 @@ Return JSON only."""
 
             final_results = results[:3]
 
-            # 缂撳瓨缁撴灉
-            cache_service.set_search_result(query, [doc_id], final_results)
+            # 缂傚倸鍊归幐鎼佹偤閵娧呯＜闁规儳顕禍?
+            cache_service.set_search_result(
+                user_id, query, [doc_id], final_results, route_version=route_version
+            )
 
             return final_results
 
@@ -4462,15 +6139,15 @@ Return JSON only."""
         nodes = structure_to_list(structure_data)
         results = []
 
-        # 娓呯悊鏌ヨ
+        # 濠电偞鎸搁幊鎰板箖婵犲洤钃熼柕澶婃畱
         query_clean = query.lower().replace(" ", "")
 
-        # 鎻愬彇鍏抽敭璇嶏細鑻辨枃璇?+ 涓枃2瀛楄瘝 + 涓枃鍗曞瓧
-        stopwords = set("搜索一下帮找一下请什么是的有吗呢了啊关于介绍下帮我")
+        # 闂佸湱绮崝鏇°亹閸ヮ剙绀傞柟鎯板Г閺嗘盯鎮归崶褏鈻岀紒鍙樺嵆閹崇喐娼忛妸锔锯偓顕€鎮?+ 婵炴垶鎼╅崢浠嬪几?闁诲孩绋掗柣?+ 婵炴垶鎼╅崢浠嬪几閸愵喖纭€闁哄洨鍋熼幗?
+        stopwords = set("theaantoofinfor")
         raw_tokens = _re.findall(r"[a-zA-Z0-9]+|[\u4e00-\u9fff]", query_clean)
-        # 淇濈暀鑻辨枃璇嶅拰涓嶅湪鍋滅敤璇嶈〃涓殑涓枃瀛楃
+        # 婵烇絽娲︾换鍕汲閳ь剟鏌ら弰蹇涘摵闁哄鍟伴幏鐘差吋閸涱喖顏繛鎴炴尭缁夋潙锕㈠畷鎴濐煥閸涱喗娈㈤柣鐘叉搐缁夌兘濡撮崘鈺冣枖妞ゆ挾濮甸悾鍗炩槈閹垮啫骞楅柡瀣暟閳ь剚绋掓い?
         keywords = [t for t in raw_tokens if len(t) > 1 or t not in stopwords]
-        # 鍚屾椂鐢熸垚鐩搁偦涓ゅ瓧缁勫悎锛堟ā鎷熶腑鏂囧垎璇嶏級
+        # 闂佸憡鑹鹃張顒€顪冮崒鐐村仺闁绘梻顭堥悘鍥煟閳哄倹鍊愰柛瀣堕檮缁嬪濡堕崨顖涙喕缂傚倷绀佺€氼剟骞冩惔銊︽櫖闁割偆鍞芥笟鈧獮蹇涙偄閹澘骞€闂佸搫鍊稿ú銈夊垂鎼达絾瀚氱€广儱绻掔粈?
         bigrams = []
         cn_chars = [t for t in raw_tokens if len(t) == 1 and t not in stopwords]
         for i in range(len(cn_chars) - 1):
@@ -4485,8 +6162,9 @@ Return JSON only."""
             text_lower = text.lower().replace(" ", "")
             search_content = f"{title} {text} {summary}".lower().replace(" ", "")
 
-            # 绗竴绾э細鍏ㄤ覆鍖归厤
+            # 缂備焦顨忛崗娑氱博鐎靛摜妫憸婵堟娴兼潙绀傞柕濞垮€涢梺鍛婄墪缂嶅﹪宕?
             if query_clean in search_content:
+                relevance = 0.9
                 results.append(
                     {
                         "document_id": doc_id,
@@ -4496,12 +6174,20 @@ Return JSON only."""
                         "start_index": node.get("start_index"),
                         "end_index": node.get("end_index"),
                         "summary": text[:200] if text else "",
-                        "relevance": 0.9,
+                        "relevance": relevance,
+                        **self._retrieval_trace_fields(
+                            doc_name,
+                            node.get("start_index"),
+                            node.get("end_index"),
+                            relevance,
+                            "keyword_fallback",
+                            "Matched fallback keyword search.",
+                        ),
                     }
                 )
                 continue
 
-            # 绗簩绾э細鍏抽敭璇?鎷嗗瓧鍖归厤
+            # 缂備焦顨忛崗娑氳姳閳哄啰妫憸婵堟娴兼潙绀傞柟鎯板Г閺嗘盯鎮?闂佺懓鍢插Λ妤呮偤瑜斿畷鐘恒亹閹烘垵璧?
             if all_keywords:
                 hit_count = sum(1 for kw in all_keywords if kw in search_content)
                 title_hits = sum(1 for kw in all_keywords if kw in title_lower)
@@ -4511,6 +6197,9 @@ Return JSON only."""
                     base = 0.3 + hit_count * 0.05
                     title_bonus = title_hits * 0.15
                     text_density = min(text_hits * 0.02, 0.2)
+                    relevance = round(
+                        min(base + title_bonus + text_density, 0.89), 2
+                    )
                     results.append(
                         {
                             "document_id": doc_id,
@@ -4520,13 +6209,19 @@ Return JSON only."""
                             "start_index": node.get("start_index"),
                             "end_index": node.get("end_index"),
                             "summary": text[:200] if text else "",
-                            "relevance": round(
-                                min(base + title_bonus + text_density, 0.89), 2
+                            "relevance": relevance,
+                            **self._retrieval_trace_fields(
+                                doc_name,
+                                node.get("start_index"),
+                                node.get("end_index"),
+                                relevance,
+                                "keyword_fallback",
+                                "Matched fallback keyword search.",
                             ),
                         }
                     )
 
-        # 鎸夌浉鍏冲害鎺掑簭
+        # 闂佸湱顭堟繛鏉戭樀瀹曟宕橀幓鎺楁煙閻戞ê绗掔紒?
         results.sort(key=lambda x: x.get("relevance", 0), reverse=True)
         return results[:3]
 
@@ -4552,8 +6247,6 @@ Return JSON only."""
         pdf_text: str = None,
     ) -> List[Dict[str, Any]]:
         """Use LLM reasoning to search the document tree."""
-        from app.core.llm import async_chat_completion
-
         nodes = structure_to_list(structure)
         structure_summary = self._build_search_structure_summary(nodes)
 
@@ -4575,7 +6268,7 @@ Return JSON only:
 ]"""
 
         try:
-            response = await async_chat_completion(
+            response = await self._indexing_completion(
                 messages=[
                     {
                         "role": "system",
@@ -4587,7 +6280,7 @@ Return JSON only:
             )
             content = response.choices[0].message.content
 
-            # 瑙ｆ瀽 JSON
+            # 闁荤喐鐟辩徊楣冩倵?JSON
             json_match = re.search(r"\[.*\]", content, re.DOTALL)
             if json_match:
                 llm_results = json.loads(json_match.group())
@@ -4615,7 +6308,7 @@ Return JSON only:
                         }
                     )
 
-            # 鎸夌浉鍏冲害鎺掑簭
+            # 闂佸湱顭堟繛鏉戭樀瀹曟宕橀幓鎺楁煙閻戞ê绗掔紒?
             results.sort(key=lambda x: x["relevance"], reverse=True)
             return results[:5]
 

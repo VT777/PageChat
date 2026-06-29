@@ -1,13 +1,16 @@
 <script setup lang="ts">
-import { ref, computed, watch, nextTick } from 'vue'
+import { computed, nextTick, ref, watch } from 'vue'
 import { marked } from 'marked'
 import type { DocumentContent, SourceAnchor, TocItem } from '@/types/preview'
 
-const props = defineProps<{
+const props = withDefaults(defineProps<{
   content: DocumentContent
   toc?: TocItem[]
   initialAnchor?: SourceAnchor | null
-}>()
+  showToc?: boolean
+}>(), {
+  showToc: true,
+})
 
 const emit = defineEmits<{
   anchorClick: [anchor: SourceAnchor]
@@ -16,13 +19,12 @@ const emit = defineEmits<{
 const containerRef = ref<HTMLDivElement>()
 const activeSection = ref<string | null>(null)
 
-// Markdown 内容
 const markdownHtml = computed(() => {
   return props.content.blocks
     .map((block) => {
       const raw = String(block.content || '')
       const html = marked.parse(raw, { breaks: true, gfm: true }) as string
-      const lineNumber = Number(block.metadata?.line_number || 0)
+      const lineNumber = Number(block.metadata?.line_number || block.source_anchor?.start_line || 0)
       return `<div id="md-block-${block.id}" data-line="${lineNumber}" class="md-block">${html}</div>`
     })
     .join('')
@@ -31,52 +33,47 @@ const markdownHtml = computed(() => {
 function flattenToc(items: TocItem[] = []): TocItem[] {
   const result: TocItem[] = []
   const walk = (nodes: TocItem[]) => {
-    for (const n of nodes) {
-      result.push(n)
-      if (n.children && n.children.length > 0) walk(n.children)
+    for (const node of nodes) {
+      result.push(node)
+      if (node.children?.length) walk(node.children)
     }
   }
   walk(items)
   return result
 }
 
-// 标题列表（用于目录）
 const headings = computed(() => {
   if (props.toc && props.toc.length > 0) {
-    return flattenToc(props.toc).map(item => {
-      const a = item.source_anchor || {}
+    return flattenToc(props.toc).map((item) => {
+      const anchor = item.source_anchor || {}
       return {
         id: item.node_id,
         level: Math.max(1, (item.level || 0) + 1),
         text: item.title,
-        lineNumber: Number(a.start_line || item.start_page || 1),
+        lineNumber: Number(anchor.start_line || item.start_page || 1),
         blockId: undefined as string | undefined,
       }
     })
   }
 
   return props.content.blocks
-    .filter(block => block.type === 'heading')
-    .map(block => ({
+    .filter((block) => block.type === 'heading')
+    .map((block) => ({
       id: block.id,
-      level: block.metadata.level as number,
-      text: block.content as string,
-      lineNumber: block.metadata.line_number as number,
+      level: Number(block.metadata?.level || 1),
+      text: String(block.content || '').replace(/^#{1,6}\s+/, ''),
+      lineNumber: Number(block.metadata?.line_number || block.source_anchor?.start_line || 1),
       blockId: block.id,
     }))
 })
 
-// 总字符数
-const charCount = computed(() => props.content.metadata.char_count || 0)
+const charCount = computed(() => props.content.metadata.char_count || props.content.blocks.reduce((sum, block) => sum + String(block.content || '').length, 0))
+const sectionCount = computed(() => props.content.metadata.section_count || headings.value.length)
 
-// 章节数
-const sectionCount = computed(() => props.content.metadata.section_count || 0)
-
-// 跳转到指定章节
 async function scrollToSection(sectionId: string) {
   activeSection.value = sectionId
   await nextTick()
-  
+
   const element = document.getElementById(`md-block-${sectionId}`)
   if (element && containerRef.value) {
     element.scrollIntoView({ behavior: 'smooth', block: 'start' })
@@ -88,24 +85,21 @@ async function scrollToSection(sectionId: string) {
 }
 
 function scrollToLine(lineNumber: number) {
-  const targetLine = lineNumber
-  const exact = props.content.blocks.find(
-    b => Number(b.metadata?.line_number || 0) === targetLine
-  )
+  const exact = props.content.blocks.find((block) => Number(block.metadata?.line_number || 0) === lineNumber)
   const section = exact || [...props.content.blocks]
     .reverse()
-    .find((b) => Number(b.metadata?.line_number || 0) <= targetLine)
+    .find((block) => Number(block.metadata?.line_number || 0) <= lineNumber)
   if (section) {
     scrollToSection(section.id)
   }
 }
 
-// 处理标题点击
 function handleHeadingClick(heading: { id: string; lineNumber: number; blockId?: string }) {
   const anchor: SourceAnchor = {
     format: 'markdown',
+    unit_type: 'line',
     start_line: heading.lineNumber,
-    end_line: heading.lineNumber
+    end_line: heading.lineNumber,
   }
   emit('anchorClick', anchor)
   activeSection.value = heading.id
@@ -116,7 +110,6 @@ function handleHeadingClick(heading: { id: string; lineNumber: number; blockId?:
   scrollToLine(heading.lineNumber)
 }
 
-// 监听初始锚点
 watch(() => props.initialAnchor, (anchor) => {
   if (anchor?.start_line) {
     scrollToLine(anchor.start_line)
@@ -124,38 +117,35 @@ watch(() => props.initialAnchor, (anchor) => {
 }, { immediate: true })
 
 defineExpose({
-  scrollToSection
+  scrollToSection,
 })
 </script>
 
 <template>
   <div class="markdown-viewer" ref="containerRef">
-    <!-- 工具栏 -->
     <div class="toolbar">
       <div class="stats">
-        <span>{{ sectionCount }} 章节</span>
-        <span class="separator">·</span>
-        <span>{{ charCount.toLocaleString() }} 字符</span>
+        <span>{{ sectionCount }} sections</span>
+        <span class="separator">/</span>
+        <span>{{ charCount.toLocaleString() }} chars</span>
       </div>
     </div>
 
     <div class="main-content">
-      <!-- 目录 -->
-      <aside v-if="headings.length > 0" class="toc-sidebar">
-        <div class="toc-title">目录</div>
+      <aside v-if="showToc && headings.length > 0" class="toc-sidebar">
+        <div class="toc-title">Contents</div>
         <nav class="toc-nav">
-          <div
+          <button
             v-for="heading in headings"
             :key="heading.id"
             :class="['toc-item', `level-${heading.level}`, { active: activeSection === heading.id }]"
             @click="handleHeadingClick(heading)"
           >
             {{ heading.text }}
-          </div>
+          </button>
         </nav>
       </aside>
 
-      <!-- 内容 -->
       <article class="markdown-body" v-html="markdownHtml"></article>
     </div>
   </div>
@@ -220,6 +210,9 @@ defineExpose({
 }
 
 .toc-item {
+  border: none;
+  background: transparent;
+  text-align: left;
   padding: 6px 8px;
   font-size: 13px;
   color: #4b5563;

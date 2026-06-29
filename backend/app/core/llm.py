@@ -1,6 +1,8 @@
 import os
 import base64
 import io
+import inspect
+import logging
 from openai import OpenAI, AsyncOpenAI
 from app.core.config import (
     LLM_API_KEY,
@@ -11,9 +13,47 @@ from app.core.config import (
     MODEL_PLUS_TIMEOUT_SECONDS,
 )
 from app.core.logging_config import silence_noisy_http_loggers
+from app.services.litellm_adapter import LiteLLMAdapter
+from app.agent.provider_adapter import ProviderCapabilityError, apply_provider_protocol
+from app.services.responses_adapter import response_provider_capabilities
+from app.services.model_settings_service import (
+    ModelProviderInvalidError,
+    ModelRouteNotConfiguredError,
+)
 
 
 silence_noisy_http_loggers()
+
+
+llm_logger = logging.getLogger("llm.route")
+
+
+def _log_llm_route_call(
+    *,
+    user_id: str | None,
+    scenario: str,
+    route_slot: str | None,
+    route: dict | None,
+    stream: bool,
+    tools: list | None,
+) -> None:
+    provider_config = route.get("provider_config") if isinstance(route, dict) else None
+    if not isinstance(provider_config, dict):
+        provider_config = route if isinstance(route, dict) else {}
+    llm_logger.info(
+        "llm_call user_id=%s scenario=%s route_slot=%s provider_id=%s "
+        "provider=%s model=%s source=%s route_version=%s stream=%s tools=%s",
+        user_id or "",
+        scenario,
+        route_slot or "",
+        provider_config.get("provider_id") or "",
+        provider_config.get("provider") or "",
+        provider_config.get("model") or route.get("model") if isinstance(route, dict) else "",
+        provider_config.get("source") or "",
+        provider_config.get("route_version") or "",
+        bool(stream),
+        len(tools or []),
+    )
 
 
 def _should_disable_thinking(model_name: str) -> bool:
@@ -26,6 +66,90 @@ def _default_timeout_for_model(model_name: str) -> float:
         if "flash" in (model_name or "").lower()
         else float(MODEL_PLUS_TIMEOUT_SECONDS)
     )
+
+
+def _apply_thinking_control(
+    params: dict,
+    model_name: str | None,
+    *,
+    disable_thinking: bool = False,
+) -> None:
+    if not disable_thinking and not _should_disable_thinking(model_name or ""):
+        return
+    extra_body = params.get("extra_body")
+    if isinstance(extra_body, dict):
+        merged_extra_body = dict(extra_body)
+    else:
+        merged_extra_body = {}
+    merged_extra_body["enable_thinking"] = False
+    params["extra_body"] = merged_extra_body
+
+
+SCENARIO_ROUTE_SLOTS = {
+    "chat": "general_chat",
+    "qa": "document_qa",
+    "query_expansion": "query_expansion",
+    "index": "indexing",
+    "node_summary": "indexing",
+    "relevance": "document_qa",
+}
+
+
+async def _resolve_user_route(user_id: str, route_slot: str) -> dict | None:
+    if not user_id:
+        return None
+
+    try:
+        import aiosqlite
+
+        from app.models.database import DB_PATH
+        from app.services.model_settings_service import ModelSettingsService
+
+        async with aiosqlite.connect(str(DB_PATH)) as db:
+            db.row_factory = aiosqlite.Row
+            resolved = await ModelSettingsService(db).resolve_route(user_id, route_slot)
+            if resolved.get("source") != "user":
+                return None
+            return {
+                "route_version": resolved["route_version"],
+                "provider_config": resolved,
+                "model": resolved["model"],
+            }
+    except (ModelProviderInvalidError, ModelRouteNotConfiguredError):
+        raise
+    except Exception:
+        return None
+
+
+async def resolve_scenario_route(
+    scenario: str,
+    user_id: str | None = None,
+) -> dict:
+    config = MODEL_CONFIG.get(scenario, MODEL_CONFIG["qa"])
+    route_slot = SCENARIO_ROUTE_SLOTS.get(scenario)
+    if user_id and route_slot:
+        route = await _resolve_user_route(user_id, route_slot)
+        if route:
+            return {
+                "model": route["model"],
+                "temperature": config.get("temperature", 0),
+                "max_tokens": config.get("max_tokens"),
+                "provider_config": route["provider_config"],
+            }
+
+    model = config["model"]
+    return {
+        "model": model,
+        "temperature": config.get("temperature", 0),
+        "max_tokens": config.get("max_tokens"),
+        "provider_config": {
+            "provider": "environment",
+            "base_url": LLM_BASE_URL,
+            "api_key": LLM_API_KEY,
+            "model": model,
+            **response_provider_capabilities("environment", LLM_BASE_URL),
+        },
+    }
 
 
 def get_llm_client() -> OpenAI:
@@ -42,6 +166,15 @@ def get_async_llm_client() -> AsyncOpenAI:
         api_key=LLM_API_KEY,
         base_url=LLM_BASE_URL,
     )
+
+
+async def _close_async_client(client) -> None:
+    close = getattr(client, "aclose", None) or getattr(client, "close", None)
+    if close is None:
+        return
+    result = close()
+    if inspect.isawaitable(result):
+        await result
 
 
 def pdf_page_to_base64(pdf_path: str, page_num: int) -> str | None:
@@ -88,15 +221,64 @@ def build_vision_message(text: str, images_base64: list[str] = None) -> list:
     return [{"role": "user", "content": content}]
 
 
+def _messages_need_vision(messages: list) -> bool:
+    for message in messages or []:
+        content = message.get("content") if isinstance(message, dict) else None
+        if not isinstance(content, list):
+            continue
+        for item in content:
+            if isinstance(item, dict) and item.get("type") == "image_url":
+                return True
+    return False
+
+
 def chat_completion(
     messages: list,
     model: str = None,
     temperature: float = 0,
     stream: bool = False,
     timeout: float | None = None,
+    provider_config: dict | None = None,
+    disable_thinking: bool = False,
     **kwargs,
 ):
     """同步调用 LLM"""
+    if provider_config:
+        resolved_config = dict(provider_config)
+        if model:
+            resolved_config["model"] = model
+        extra = dict(kwargs)
+        allow_deterministic_tools = bool(extra.pop("allow_deterministic_tools", False))
+        resolved_config = apply_provider_protocol(
+            resolved_config,
+            requires_streaming=stream,
+            requires_tool_calling=bool(extra.get("tools")),
+            requires_vision=_messages_need_vision(messages),
+            requires_structured_output=bool(extra.get("response_format")),
+        )
+        if resolved_config.get("tool_strategy") == "pagechat_deterministic_tools":
+            if extra.get("tools") and not allow_deterministic_tools:
+                raise ProviderCapabilityError(
+                    "Model "
+                    f"'{resolved_config.get('model') or model or LLM_MODEL}' requires "
+                    "PageChat deterministic tool execution before LLM generation; "
+                    "provider tool calling is disabled."
+                )
+            extra.pop("tools", None)
+            extra.pop("tool_choice", None)
+        _apply_thinking_control(
+            extra,
+            resolved_config.get("model") or model or LLM_MODEL,
+            disable_thinking=disable_thinking,
+        )
+        return LiteLLMAdapter().completion(
+            provider_config=resolved_config,
+            messages=messages,
+            temperature=temperature,
+            stream=stream,
+            timeout=timeout,
+            **extra,
+        )
     client = get_llm_client()
     resolved_model = model or LLM_MODEL
     params = {
@@ -105,8 +287,7 @@ def chat_completion(
         "temperature": temperature,
         "stream": stream,
     }
-    if _should_disable_thinking(resolved_model):
-        params["extra_body"] = {"enable_thinking": False}
+    _apply_thinking_control(params, resolved_model, disable_thinking=disable_thinking)
     params["timeout"] = timeout if timeout is not None else _default_timeout_for_model(resolved_model)
     params.update(kwargs)
     return client.chat.completions.create(**params)
@@ -118,9 +299,47 @@ async def async_chat_completion(
     temperature: float = 0,
     stream: bool = False,
     timeout: float | None = None,
+    provider_config: dict | None = None,
+    disable_thinking: bool = False,
     **kwargs,
 ):
     """异步调用 LLM"""
+    if provider_config:
+        resolved_config = dict(provider_config)
+        if model:
+            resolved_config["model"] = model
+        extra = dict(kwargs)
+        allow_deterministic_tools = bool(extra.pop("allow_deterministic_tools", False))
+        resolved_config = apply_provider_protocol(
+            resolved_config,
+            requires_streaming=stream,
+            requires_tool_calling=bool(extra.get("tools")),
+            requires_vision=_messages_need_vision(messages),
+            requires_structured_output=bool(extra.get("response_format")),
+        )
+        if resolved_config.get("tool_strategy") == "pagechat_deterministic_tools":
+            if extra.get("tools") and not allow_deterministic_tools:
+                raise ProviderCapabilityError(
+                    "Model "
+                    f"'{resolved_config.get('model') or model or LLM_MODEL}' requires "
+                    "PageChat deterministic tool execution before LLM generation; "
+                    "provider tool calling is disabled."
+                )
+            extra.pop("tools", None)
+            extra.pop("tool_choice", None)
+        _apply_thinking_control(
+            extra,
+            resolved_config.get("model") or model or LLM_MODEL,
+            disable_thinking=disable_thinking,
+        )
+        return await LiteLLMAdapter().acompletion(
+            provider_config=resolved_config,
+            messages=messages,
+            temperature=temperature,
+            stream=stream,
+            timeout=timeout,
+            **extra,
+        )
     client = get_async_llm_client()
     resolved_model = model or LLM_MODEL
     params = {
@@ -129,11 +348,17 @@ async def async_chat_completion(
         "temperature": temperature,
         "stream": stream,
     }
-    if _should_disable_thinking(resolved_model):
-        params["extra_body"] = {"enable_thinking": False}
+    _apply_thinking_control(params, resolved_model, disable_thinking=disable_thinking)
     params["timeout"] = timeout if timeout is not None else _default_timeout_for_model(resolved_model)
     params.update(kwargs)
-    return await client.chat.completions.create(**params)
+    try:
+        response = await client.chat.completions.create(**params)
+    except Exception:
+        await _close_async_client(client)
+        raise
+    if not stream:
+        await _close_async_client(client)
+    return response
 
 
 async def chat_by_scenario(
@@ -142,6 +367,9 @@ async def chat_by_scenario(
     stream: bool = False,
     tools: list = None,
     timeout: float | None = None,
+    user_id: str | None = None,
+    allow_deterministic_tools: bool = False,
+    disable_thinking: bool = False,
     **kwargs,
 ):
     """
@@ -154,17 +382,60 @@ async def chat_by_scenario(
         tools: 工具定义 (Function Calling)
     """
     config = MODEL_CONFIG.get(scenario, MODEL_CONFIG["qa"])
+    route_slot = SCENARIO_ROUTE_SLOTS.get(scenario)
+    if user_id and route_slot:
+        route = await _resolve_user_route(user_id, route_slot)
+        if route:
+            _log_llm_route_call(
+                user_id=user_id,
+                scenario=scenario,
+                route_slot=route_slot,
+                route=route,
+                stream=stream,
+                tools=tools,
+            )
+            extra = dict(kwargs)
+            if tools:
+                extra["tools"] = tools
+                extra["tool_choice"] = "auto"
+            if config.get("max_tokens"):
+                extra["max_tokens"] = config["max_tokens"]
+            return await async_chat_completion(
+                messages=messages,
+                model=route["model"],
+                temperature=config.get("temperature", 0),
+                stream=stream,
+                timeout=timeout,
+                provider_config=route["provider_config"],
+                allow_deterministic_tools=allow_deterministic_tools,
+                disable_thinking=disable_thinking,
+                **extra,
+            )
     client = get_async_llm_client()
 
     resolved_model = config["model"]
+    _log_llm_route_call(
+        user_id=user_id,
+        scenario=scenario,
+        route_slot=route_slot,
+        route={
+            "model": resolved_model,
+            "provider_config": {
+                "provider": "environment",
+                "model": resolved_model,
+                "source": "environment",
+            },
+        },
+        stream=stream,
+        tools=tools,
+    )
     params = {
         "model": resolved_model,
         "messages": messages,
         "temperature": config.get("temperature", 0),
         "stream": stream,
     }
-    if _should_disable_thinking(resolved_model):
-        params["extra_body"] = {"enable_thinking": False}
+    _apply_thinking_control(params, resolved_model, disable_thinking=disable_thinking)
 
     params["timeout"] = timeout if timeout is not None else _default_timeout_for_model(resolved_model)
 
@@ -180,4 +451,11 @@ async def chat_by_scenario(
     # 合并其他参数
     params.update(kwargs)
 
-    return await client.chat.completions.create(**params)
+    try:
+        response = await client.chat.completions.create(**params)
+    except Exception:
+        await _close_async_client(client)
+        raise
+    if not stream:
+        await _close_async_client(client)
+    return response

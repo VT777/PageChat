@@ -72,7 +72,7 @@ def test_apply_balanced_quality_gate_updates_completeness_for_long_flat_chapter(
             "title": "Chapter 2",
             "level": 1,
             "start_index": 11,
-            "end_index": 24,
+            "end_index": 27,
             "nodes": [],
         }
     ]
@@ -90,334 +90,598 @@ def test_apply_balanced_quality_gate_updates_completeness_for_long_flat_chapter(
     assert updated["balanced_quality_gate"]["long_chapter_completeness"] is False
 
 
-def test_expand_visual_page_outline_prefers_page_evidence_over_flat_text():
-    tree = [
+def test_index_diagnostics_preserves_balanced_quality_gate_facts():
+    diagnostics = PageIndexService._index_diagnostics_from_analysis(
         {
-            "title": "Chapter 2 Applications",
-            "structure": "2",
-            "start_index": 11,
-            "end_index": 23,
-            "nodes": [],
-        }
-    ]
-    analysis = {
-        "toc_semi_frozen": True,
-        "page_evidence": [
-            {
-                "page": 12,
-                "primary_role": "content_slide",
-                "evidence_spans": [
-                    {
-                        "role": "page_title",
-                        "text": "Industry AI adoption",
-                        "confidence": 0.9,
-                    }
+            "balanced_quality_gate": {
+                "child_expansion_attempted": True,
+                "child_expansion_required_count": 1,
+                "unexpanded_long_leaf_hard_count": 1,
+                "unexpanded_long_leaf_sample": [
+                    {"title": "Chapter 2", "start": 11, "end": 27, "span": 17}
                 ],
             }
-        ],
-    }
-
-    added = PageIndexService._expand_visual_page_outline_if_needed(
-        toc_tree=tree,
-        analysis=analysis,
-        page_count=43,
-        toc_source="vlm_toc_skeleton",
-        page_list=[["noise"]] * 43,
+        }
     )
 
-    assert added == 1
-    assert tree[0]["nodes"][0]["title"] == "Industry AI adoption"
-    assert tree[0]["nodes"][0]["source"] == "structured_evidence"
+    gate = diagnostics["balanced_quality_gate"]
+    assert gate["child_expansion_attempted"] is True
+    assert gate["unexpanded_long_leaf_hard_count"] == 1
+    assert gate["unexpanded_long_leaf_sample"][0]["title"] == "Chapter 2"
 
 
-def test_expand_visual_page_outline_uses_canonical_freeze_state():
+def test_expand_page_outline_uses_llm_snippets_for_catalog_children(monkeypatch):
     tree = [
         {
-            "title": "Chapter 2 Applications",
-            "structure": "2",
-            "start_index": 11,
-            "end_index": 23,
-            "nodes": [],
+            "title": "Contents",
+            "structure": "main",
+            "toc_section_kind": "main_toc",
+            "catalog_type": "main",
+            "start_index": 3,
+            "end_index": 20,
+            "nodes": [
+                {
+                    "title": "Part 1 Market analysis",
+                    "structure": "1",
+                    "start_index": 3,
+                    "end_index": 10,
+                    "nodes": [],
+                },
+                {
+                    "title": "Part 2 Execution playbook",
+                    "structure": "2",
+                    "start_index": 11,
+                    "end_index": 20,
+                    "nodes": [],
+                },
+            ],
         }
     ]
-    analysis = {
-        "top_level_frozen": True,
-        "allow_child_expansion": True,
-        "page_evidence": [
-            {
-                "page": 12,
-                "primary_role": "content_slide",
-                "evidence_spans": [
-                    {
-                        "role": "page_title",
-                        "text": "Industry AI adoption",
-                        "confidence": 0.9,
-                    }
-                ],
-            }
-        ],
-    }
+    long_page = "A" * 260 + "\nThis tail must not be sent to the LLM snippet expander"
+    page_list = [[f"Page {page} {long_page}"] for page in range(1, 21)]
+    page_list[3][0] = "Consumer pressure\n" + page_list[3][0]
+    page_list[5][0] = "Channel response\n" + page_list[5][0]
+    page_list[11][0] = "Operating model\n" + page_list[11][0]
+    calls = []
 
-    added = PageIndexService._expand_visual_page_outline_if_needed(
-        toc_tree=tree,
-        analysis=analysis,
-        page_count=43,
-        toc_source="vlm_toc_skeleton",
-        page_list=[["noise"]] * 43,
-    )
+    async def fake_expand_chapter(chapter_title, start_page, end_page, page_texts, model=None):
+        calls.append((chapter_title, start_page, end_page, page_texts, model))
+        assert all(len(text) <= 200 for text in page_texts)
+        if chapter_title.startswith("Part 1"):
+            return [
+                {"title": "Consumer pressure", "level": 2, "page": 4},
+                {"title": "Channel response", "level": 2, "page": 6},
+            ]
+        return [{"title": "Operating model", "level": 2, "page": 12}]
 
-    assert added == 1
-    assert tree[0]["nodes"][0]["title"] == "Industry AI adoption"
-
-
-def test_child_expansion_is_not_tied_to_vlm_toc_source():
-    tree = [
-        {
-            "title": "Chapter 2 Applications",
-            "structure": "2",
-            "start_index": 11,
-            "end_index": 23,
-            "nodes": [],
-        }
-    ]
-    analysis = {
-        "top_level_frozen": True,
-        "allow_child_expansion": True,
-        "page_evidence": [
-            {
-                "page": 12,
-                "primary_role": "content_slide",
-                "evidence_spans": [
-                    {
-                        "role": "page_title",
-                        "text": "Industry AI adoption",
-                        "confidence": 0.9,
-                    }
-                ],
-            }
-        ],
-    }
-
-    added = PageIndexService._expand_visual_page_outline_if_needed(
-        toc_tree=tree,
-        analysis=analysis,
-        page_count=43,
-        toc_source="toc_page",
-        page_list=[["noise"]] * 43,
-    )
-
-    assert added == 1
-    assert analysis["outline_expansion"]["source"] == "page_evidence"
-    assert tree[0]["nodes"][0]["title"] == "Industry AI adoption"
-
-
-def test_visual_vlm_child_expansion_runs_when_text_expansion_bad(monkeypatch):
-    tree = [
-        {
-            "title": "Chapter 2 Applications",
-            "structure": "2",
-            "start_index": 11,
-            "end_index": 23,
-            "nodes": [],
-        }
-    ]
-    analysis = {
-        "top_level_frozen": True,
-        "allow_child_expansion": True,
-        "document_path": "demo.pdf",
-    }
-
-    async def fake_extract_visual_child_titles(*, file_path, tree, page_count, model=None):
-        assert file_path == "demo.pdf"
-        return {
-            "added_children": 2,
-            "quality": "good",
-            "expected_children": 3,
-            "actual_children": 2,
-            "needs_repair": False,
-        }
-
-    monkeypatch.setattr(
-        PageIndexService,
-        "_extract_visual_child_titles_for_flat_skeleton",
-        fake_extract_visual_child_titles,
-    )
-
+    monkeypatch.setattr("pageindex.hierarchical_extractor.expand_chapter", fake_expand_chapter)
     added = asyncio.run(
-        PageIndexService._expand_visual_page_outline_with_vlm_fallback(
+        PageIndexService._expand_page_outline(
             toc_tree=tree,
-            analysis=analysis,
-            page_count=43,
-            toc_source="vlm_toc_skeleton",
-            page_list=[["noise"]] * 43,
-        )
-    )
-
-    assert added == 2
-    assert analysis["outline_expansion"]["source"] == "vlm_page_titles"
-
-
-def test_low_quality_text_skips_flat_fallback_and_uses_vlm(monkeypatch):
-    tree = [
-        {
-            "title": "Chapter 2 Applications",
-            "structure": "2",
-            "start_index": 11,
-            "end_index": 23,
-            "nodes": [],
-        }
-    ]
-    analysis = {
-        "top_level_frozen": True,
-        "allow_child_expansion": True,
-        "document_path": "demo.pdf",
-        "text_quality": {"is_low_quality": True},
-    }
-
-    def fail_flat_fallback(*args, **kwargs):
-        raise AssertionError("flat fallback should be skipped for low-quality text")
-
-    async def fake_extract_visual_child_titles(*, file_path, tree, page_count, model=None):
-        return {
-            "added_children": 3,
-            "quality": "good",
-            "expected_children": 3,
-            "actual_children": 3,
-            "needs_repair": False,
-        }
-
-    monkeypatch.setattr(
-        "pageindex.visual_page_outline_extractor.expand_flat_toc_with_page_titles",
-        fail_flat_fallback,
-    )
-    monkeypatch.setattr(
-        PageIndexService,
-        "_extract_visual_child_titles_for_flat_skeleton",
-        fake_extract_visual_child_titles,
-    )
-
-    added = asyncio.run(
-        PageIndexService._expand_visual_page_outline_with_vlm_fallback(
-            toc_tree=tree,
-            analysis=analysis,
-            page_count=43,
-            toc_source="vlm_toc_skeleton",
-            page_list=[["garbled"]] * 43,
+            analysis={
+                "top_level_frozen": True,
+                "allow_child_expansion": True,
+                "route_decision": {"selected_path": "visible_toc_no_pages"},
+            },
+            page_count=20,
+            toc_source="toc_page_text_rule",
+            page_list=page_list,
+            model="qwen3.6-flash",
         )
     )
 
     assert added == 3
-    assert analysis["outline_expansion"]["source"] == "vlm_page_titles"
-    assert analysis["outline_expansion"]["reason"] == "low_quality_text"
+    assert len(calls) == 2
+    assert tree[0]["nodes"][0]["nodes"][0]["title"] == "Consumer pressure"
+    assert tree[0]["nodes"][0]["nodes"][1]["start_index"] == 6
+    assert tree[0]["nodes"][0]["nodes"][0]["end_index"] == 5
+    assert tree[0]["nodes"][0]["nodes"][1]["end_index"] == 10
+    assert tree[0]["nodes"][1]["nodes"][0]["title"] == "Operating model"
+    assert tree[0]["nodes"][1]["nodes"][0]["end_index"] == 20
 
 
-def test_vlm_child_expansion_respects_generic_expansion_policy(monkeypatch):
-    tree = [
-        {
-            "title": "Chapter 2 Applications",
-            "structure": "2",
-            "start_index": 11,
-            "end_index": 23,
-            "nodes": [],
-        }
-    ]
-    analysis = {
-        "top_level_frozen": False,
-        "allow_child_expansion": False,
-        "document_path": "demo.pdf",
-        "text_quality": {"is_low_quality": True},
+def test_llm_outline_child_tree_filters_body_text_leakage():
+    parent = {
+        "title": "Part02：AI心智占位：预测式社交生态实战指南",
+        "structure": "2",
     }
-
-    async def fail_visual_expansion(*args, **kwargs):
-        raise AssertionError("VLM child expansion should require the generic expansion policy")
-
-    monkeypatch.setattr(
-        PageIndexService,
-        "_extract_visual_child_titles_for_flat_skeleton",
-        fail_visual_expansion,
+    leaked_body = (
+        "营销打法革新：从“流量式”进化为“耦合式”体验价值关系耦合全域旅程"
+        "耦合内容标签耦合内容是“商品-用户”的交互界面构建可交互、可个性化组装的内容模块"
     )
 
-    added = asyncio.run(
-        PageIndexService._expand_visual_page_outline_with_vlm_fallback(
-            toc_tree=tree,
-            analysis=analysis,
-            page_count=43,
-            toc_source="toc_page",
-            page_list=[["garbled"]] * 43,
-        )
+    children = PageIndexService._build_llm_outline_child_tree(
+        parent,
+        [
+            {"title": "商业逻辑变革：从响应式到预测式营销", "level": 2, "page": 15},
+            {"title": leaked_body, "level": 2, "page": 17},
+            {
+                "title": "/新品前置种草前置种草 2个月把握测试黄金期 •AI拆解高互动笔记→抽取信任公式→规模化生产万级素材",
+                "level": 2,
+                "page": 18,
+            },
+        ],
+        parent_start=13,
+        parent_end=24,
+        page_texts=[""] * 14 + ["商业逻辑变革：从响应式到预测式营销\n正文"] + [""] * 9,
+        page_count=24,
     )
 
-    assert added == 0
-    assert "outline_expansion" not in analysis
-
-
-def test_visual_path_bad_flat_expansion_triggers_vlm_child_fallback(monkeypatch):
-    tree = [
-        {
-            "title": "Part02：增长引擎一：AI心智占位",
-            "structure": "2",
-            "start_index": 13,
-            "end_index": 24,
-            "nodes": [],
-        }
+    assert [child["title"] for child in children] == [
+        "商业逻辑变革：从响应式到预测式营销"
     ]
-    analysis = {
-        "top_level_frozen": True,
-        "allow_child_expansion": True,
-        "balanced_path": "visual",
-        "document_path": "demo.pdf",
-        "text_coverage": 0.71,
+
+
+def test_llm_outline_child_tree_keeps_long_structured_step_heading():
+    parent = {
+        "title": "Part03: Content operations",
+        "structure": "3",
     }
 
-    async def fake_extract_visual_child_titles(*, file_path, tree, page_count, model=None):
+    children = PageIndexService._build_llm_outline_child_tree(
+        parent,
+        [
+            {
+                "title": "Step1——小额测试，找出“商品标签X用户标签”的有效组合爆款是结果，资产是能力；冷启动期严禁考核ROI，只看标签有效性",
+                "level": 3,
+                "page": 30,
+            },
+            {"title": "Step2——规模放量", "level": 3, "page": 31},
+        ],
+        parent_start=25,
+        parent_end=34,
+        page_texts=[""] * 29
+        + [
+            "Step1——小额测试，找出“商品标签X用户标签”的有效组合爆款是结果，资产是能力；冷启动期严禁考核ROI，只看标签有效性",
+            "Step2——规模放量",
+        ]
+        + [""] * 3,
+        page_count=34,
+    )
+
+    assert [child["title"] for child in children] == [
+        "Step1——小额测试，找出“商品标签X用户标签”的有效组合爆款是结果，资产是能力；冷启动期严禁考核ROI，只看标签有效性",
+        "Step2——规模放量",
+    ]
+
+
+def test_llm_outline_child_tree_maps_child_pages_with_s5_title_evidence():
+    parent = {
+        "title": "Part03: Content operations",
+        "structure": "3",
+    }
+    page_texts = [
+        "Front matter mentions Step1",
+        "Contents",
+        "Part03: Content operations",
+        "intro before steps",
+        "Step1 - Small test\nbody",
+        "Step2 - Scale rollout\nbody",
+        "tail",
+    ]
+
+    children = PageIndexService._build_llm_outline_child_tree(
+        parent,
+        [
+            {"title": "Step1 - Small test", "level": 2, "page": 4},
+            {"title": "Step2 - Scale rollout", "level": 2, "page": 4},
+        ],
+        parent_start=3,
+        parent_end=7,
+        page_texts=page_texts,
+        page_count=len(page_texts),
+    )
+
+    assert [(child["title"], child["start_index"], child["mapping_source"]) for child in children] == [
+        ("Step1 - Small test", 5, "title_search"),
+        ("Step2 - Scale rollout", 6, "title_search"),
+    ]
+
+
+def test_llm_outline_child_tree_ignores_parent_overview_page_as_child_start():
+    parent = {
+        "title": "Chapter 3: Talent development",
+        "structure": "3",
+    }
+    page_texts = [
+        "Cover",
+        "Contents",
+        "Chapter 3: Talent development",
+        "3.1 Talent model\n3.2 Teaching model\n3.3 International teaching",
+        "Opening discussion before child sections",
+        "3.1 Talent model\nActual section body",
+        "3.2 Teaching model\nActual section body",
+        "3.3 International teaching\nActual section body",
+        "Tail",
+    ]
+
+    children = PageIndexService._build_llm_outline_child_tree(
+        parent,
+        [
+            {"title": "3.1 Talent model", "level": 2, "page": 4},
+            {"title": "3.2 Teaching model", "level": 2, "page": 4},
+            {"title": "3.3 International teaching", "level": 2, "page": 4},
+        ],
+        parent_start=4,
+        parent_end=9,
+        page_texts=page_texts,
+        page_count=len(page_texts),
+    )
+
+    assert [(child["title"], child["start_index"], child["mapping_source"]) for child in children] == [
+        ("3.1 Talent model", 6, "title_search"),
+        ("3.2 Teaching model", 7, "title_search"),
+        ("3.3 International teaching", 8, "title_search"),
+    ]
+
+
+def test_llm_outline_child_tree_keeps_mapped_subset_when_one_child_is_unverified():
+    parent = {
+        "title": "Chapter 3: Talent development",
+        "structure": "3",
+    }
+    page_texts = [
+        "Cover",
+        "Contents",
+        "Chapter 3: Talent development",
+        "3.1 Talent model\n3.2 Teaching model\n3.3 International teaching",
+        "Opening discussion before child sections",
+        "3.1 Talent model\nActual section body",
+        "3.2 Teaching model\nActual section body",
+        "Different heading text\nActual section body",
+        "Tail",
+    ]
+
+    children = PageIndexService._build_llm_outline_child_tree(
+        parent,
+        [
+            {"title": "3.1 Talent model", "level": 2, "page": 4},
+            {"title": "3.2 Teaching model", "level": 2, "page": 4},
+            {"title": "3.3 International teaching", "level": 2, "page": 4},
+        ],
+        parent_start=4,
+        parent_end=9,
+        page_texts=page_texts,
+        page_count=len(page_texts),
+    )
+
+    assert [(child["title"], child["start_index"], child["mapping_source"]) for child in children] == [
+        ("3.1 Talent model", 6, "title_search"),
+        ("3.2 Teaching model", 7, "title_search"),
+    ]
+
+
+def test_content_outline_child_fallback_maps_pages_with_s5_title_evidence(monkeypatch):
+    parent = {
+        "title": "Part03: Content operations",
+        "structure": "3",
+    }
+    page_texts = [
+        "Front matter mentions Step1",
+        "Contents",
+        "Part03: Content operations",
+        "intro before steps",
+        "Step1 - Small test\nbody",
+        "Step2 - Scale rollout\nbody",
+        "tail",
+    ]
+
+    async def fake_content_outline(_page_texts, _model=None, physical_start_page=1):
         return {
-            "added_children": 4,
-            "quality": "good",
-            "expected_children": 4,
-            "actual_children": 4,
-            "needs_repair": False,
+            "toc_items": [
+                {
+                    "title": "Part03: Content operations",
+                    "level": 1,
+                    "physical_index": physical_start_page,
+                    "nodes": [
+                        {"title": "Step1 - Small test", "level": 2, "physical_index": 4},
+                        {"title": "Step2 - Scale rollout", "level": 2, "physical_index": 4},
+                    ],
+                }
+            ]
         }
 
     monkeypatch.setattr(
-        PageIndexService,
-        "_extract_visual_child_titles_for_flat_skeleton",
-        fake_extract_visual_child_titles,
+        "pageindex.hierarchical_extractor.extract_page_labeled_content_outline",
+        fake_content_outline,
     )
 
-    added = asyncio.run(
-        PageIndexService._expand_visual_page_outline_with_vlm_fallback(
-            toc_tree=tree,
-            analysis=analysis,
-            page_count=62,
-            toc_source="vlm_toc_skeleton",
-            page_list=[[""]] * 62,
+    children = asyncio.run(
+        PageIndexService._build_content_outline_child_tree_for_parent(
+            parent,
+            page_texts,
+            parent_start=3,
+            parent_end=7,
+            model="qwen3.6-flash",
         )
     )
 
-    assert added == 4
-    assert analysis["outline_expansion"]["source"] == "vlm_page_titles"
+    assert [(child["title"], child["start_index"], child["mapping_source"]) for child in children] == [
+        ("Step1 - Small test", 5, "title_search"),
+        ("Step2 - Scale rollout", 6, "title_search"),
+    ]
+
+
+def test_content_outline_child_fallback_prefers_body_pages_over_parent_overview(monkeypatch):
+    parent = {
+        "title": "Chapter 1",
+        "structure": "1",
+    }
+    page_texts = [
+        "Cover",
+        "Contents",
+        "Chapter 1",
+        "1.1 Alpha\n1.2 Beta\n1.3 Gamma",
+        "1.1 Alpha\nActual alpha body",
+        "1.2 Beta\nActual beta body",
+        "Tail",
+    ]
+
+    async def fake_content_outline(_page_texts, _model=None, physical_start_page=1):
+        return {
+            "toc_items": [
+                {
+                    "title": "Chapter 1",
+                    "level": 1,
+                    "physical_index": physical_start_page,
+                    "nodes": [
+                        {"title": "1.1 Alpha", "level": 2, "physical_index": 4},
+                        {"title": "1.2 Beta", "level": 2, "physical_index": 4},
+                        {"title": "1.3 Gamma", "level": 2, "physical_index": 4},
+                    ],
+                }
+            ]
+        }
+
+    monkeypatch.setattr(
+        "pageindex.hierarchical_extractor.extract_page_labeled_content_outline",
+        fake_content_outline,
+    )
+
+    children = asyncio.run(
+        PageIndexService._build_content_outline_child_tree_for_parent(
+            parent,
+            page_texts,
+            parent_start=4,
+            parent_end=7,
+            model="qwen3.6-flash",
+        )
+    )
+
+    assert [(child["title"], child["start_index"], child["mapping_source"]) for child in children] == [
+        ("1.1 Alpha", 5, "title_search"),
+        ("1.2 Beta", 6, "title_search"),
+    ]
+
+
+def test_content_outline_child_fallback_does_not_retry_section_divider_parent_start(monkeypatch):
+    parent = {
+        "title": "国内大厂AI应用落地",
+        "structure": "2",
+        "mapping_source": "section_divider_sequence",
+    }
+    page_texts = [
+        "Cover",
+        "Contents",
+        "国外大厂AI应用落地",
+        "OpenAI body",
+        "Anthropic body",
+        "Amazon body",
+        "Google body",
+        "Nvidia body",
+        "国外大厂AI应用落地\n国内大厂AI应用落地\n产业链梳理\n风险提示",
+        "阿里巴巴 AQ健康品牌升级为蚂蚁阿福",
+        "阿里巴巴 千问APP公测上线",
+        "字节 官宣成为央视春晚独家AI伙伴",
+        "DeepSeek 预计发布V4旗舰模型",
+        "腾讯 AI应用小程序成长计划",
+        "MiniMax 智谱上市",
+    ]
+
+    async def fake_content_outline(_page_texts, _model=None, physical_start_page=1):
+        return {
+            "toc_items": [
+                {
+                    "title": "国内大厂AI应用落地",
+                    "level": 1,
+                    "physical_index": physical_start_page,
+                    "nodes": [
+                        {"title": "国外大厂AI应用落地", "level": 2, "physical_index": physical_start_page},
+                        {"title": "产业链梳理", "level": 2, "physical_index": physical_start_page},
+                        {"title": "风险提示", "level": 2, "physical_index": physical_start_page},
+                    ],
+                }
+            ]
+        }
+
+    monkeypatch.setattr(
+        "pageindex.hierarchical_extractor.extract_page_labeled_content_outline",
+        fake_content_outline,
+    )
+
+    children = asyncio.run(
+        PageIndexService._build_content_outline_child_tree_for_parent(
+            parent,
+            page_texts,
+            parent_start=9,
+            parent_end=15,
+            model="qwen3.6-flash",
+        )
+    )
+
+    assert children == []
+
+
+def test_llm_outline_child_tree_keeps_multiple_clean_children_on_same_page():
+    parent = {
+        "title": "二 百花齐放的大模型时代",
+        "structure": "2",
+    }
+
+    children = PageIndexService._build_llm_outline_child_tree(
+        parent,
+        [
+            {"title": "2.1 大模型发展历程", "level": 2, "page": 15},
+            {"title": "2.1 DeepSeek系列大模型", "level": 2, "page": 15},
+            {"title": "2.2 智能体", "level": 2, "page": 22},
+            {"title": "2.2 多智能体协作", "level": 2, "page": 22},
+            {"title": "2.3 智能体实例", "level": 2, "page": 27},
+        ],
+        parent_start=13,
+        parent_end=34,
+        page_texts=[""] * 14
+        + [
+            "2.1 大模型发展历程\n2.1 DeepSeek系列大模型",
+        ]
+        + [""] * 6
+        + [
+            "2.2 智能体\n2.2 多智能体协作",
+        ]
+        + [""] * 4
+        + [
+            "2.3 智能体实例",
+        ]
+        + [""] * 7,
+        page_count=34,
+    )
+
+    assert [(child["title"], child["start_index"]) for child in children] == [
+        ("2.1 大模型发展历程", 15),
+        ("2.1 DeepSeek系列大模型", 15),
+        ("2.2 智能体", 22),
+        ("2.2 多智能体协作", 22),
+        ("2.3 智能体实例", 27),
+    ]
+
+
+def test_llm_outline_expandable_parents_require_fact_based_minimum_span():
+    parents = PageIndexService._llm_outline_expandable_parents(
+        [
+            {"title": "Two-page category", "start_index": 10, "end_index": 11, "nodes": []},
+            {"title": "Eight-page category", "start_index": 12, "end_index": 19, "nodes": []},
+        ],
+        page_count=20,
+    )
+
+    assert [parent["title"] for parent in parents] == ["Eight-page category"]
+
+
+def test_shallow_toc_expansion_ignores_noisy_levels_without_children():
+    analysis = {}
+    toc_items = [
+        {"title": "One AI research paradigm", "level": 2, "physical_index": 4},
+        {"title": "Two model landscape", "level": 4, "physical_index": 17},
+        {"title": "Three hypothesis generation", "level": 4, "physical_index": 30},
+        {"title": "Four papers and projects", "level": 4, "physical_index": 43},
+        {"title": "Five outlook", "level": 4, "physical_index": 56},
+    ]
+
+    enabled = PageIndexService._enable_child_outline_expansion_for_shallow_toc(
+        analysis,
+        toc_items,
+        page_count=68,
+        toc_source="llm_toc_page",
+    )
+
+    assert enabled is True
+    assert analysis["top_level_frozen"] is True
+    assert analysis["allow_child_expansion"] is True
+    assert analysis["toc_semi_frozen"] is True
+
+
+def test_shallow_unpaged_rule_toc_enables_child_expansion():
+    analysis = {
+        "route_decision": {"selected_path": "visible_toc_no_pages"},
+    }
+    toc_items = [
+        {"title": "国外大厂AI应用落地", "level": 1, "physical_index": 3, "nodes": []},
+        {"title": "国内大厂AI应用落地", "level": 1, "physical_index": 9, "nodes": []},
+        {"title": "产业链梳理", "level": 1, "physical_index": 16, "nodes": []},
+        {"title": "风险提示", "level": 1, "physical_index": 18, "nodes": []},
+    ]
+
+    enabled = PageIndexService._enable_child_outline_expansion_for_shallow_toc(
+        analysis,
+        toc_items,
+        page_count=21,
+        toc_source="toc_page_text_rule",
+    )
+
+    assert enabled is True
+    assert PageIndexService._llm_outline_expansion_min_span(analysis) == 6
+    assert analysis["top_level_frozen"] is True
+    assert analysis["allow_child_expansion"] is True
+    assert analysis["toc_semi_frozen"] is True
+
+
+def test_shallow_unpaged_rule_toc_enables_child_expansion_inside_catalog_root():
+    analysis = {
+        "route_decision": {"selected_path": "visible_toc_no_pages"},
+    }
+    toc_items = [
+        {
+            "title": "目录",
+            "level": 1,
+            "physical_index": 5,
+            "start_index": 5,
+            "end_index": 62,
+            "nodes": [
+                {
+                    "title": "Part01: Market analysis",
+                    "level": 1,
+                    "physical_index": 5,
+                    "start_index": 5,
+                    "end_index": 12,
+                    "nodes": [],
+                },
+                {
+                    "title": "Part02: AI playbook",
+                    "level": 1,
+                    "physical_index": 13,
+                    "start_index": 13,
+                    "end_index": 24,
+                    "nodes": [],
+                },
+                {
+                    "title": "Part03: Content operations",
+                    "level": 1,
+                    "physical_index": 25,
+                    "start_index": 25,
+                    "end_index": 34,
+                    "nodes": [],
+                },
+                {
+                    "title": "Part04: Data foundation",
+                    "level": 1,
+                    "physical_index": 35,
+                    "start_index": 35,
+                    "end_index": 40,
+                    "nodes": [],
+                },
+                {
+                    "title": "Part05: Case studies",
+                    "level": 1,
+                    "physical_index": 41,
+                    "start_index": 41,
+                    "end_index": 62,
+                    "nodes": [],
+                },
+            ],
+        }
+    ]
+
+    enabled = PageIndexService._enable_child_outline_expansion_for_shallow_toc(
+        analysis,
+        toc_items,
+        page_count=62,
+        toc_source="toc_page_text_rule",
+    )
+
+    assert enabled is True
+    assert analysis["top_level_frozen"] is True
+    assert analysis["allow_child_expansion"] is True
+    assert analysis["toc_semi_frozen"] is True
 
 
 def test_content_ocr_stage_name_distinguishes_content_fill_from_structure_ocr():
     assert PageIndexService._content_ocr_stage_name() == "content_ocr"
-
-
-def test_legacy_visual_balanced_result_sets_semi_frozen_build_state():
-    analysis = {}
-    balanced_result = {
-        "source": "vlm_toc_skeleton",
-        "toc_items": [{"title": "Part01", "level": 1, "physical_index": 5}],
-        "mapped": True,
-        "semi_frozen": True,
-        "prevalidated": True,
-    }
-
-    PageIndexService._apply_balanced_result_state(analysis, balanced_result)
-
-    assert analysis["top_level_frozen"] is True
-    assert analysis["allow_child_expansion"] is True
-    assert analysis["toc_frozen"] is False
-    assert analysis["toc_semi_frozen"] is True
-    assert analysis["toc_frozen_source"] == "vlm_toc_skeleton"
-    assert analysis["build_state"]["top_level_frozen"] is True
-    assert analysis["build_state"]["allow_child_expansion"] is True

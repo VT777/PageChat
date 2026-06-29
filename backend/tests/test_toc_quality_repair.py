@@ -22,13 +22,6 @@ def test_repair_structure_titles_replaces_generic_chapter() -> None:
     assert "AI发展总览" in repaired[0]["title"]
 
 
-def test_build_segment_fallback_toc_for_large_doc() -> None:
-    nodes = PageIndexService._build_segment_fallback_toc(20)
-    assert len(nodes) >= 3
-    assert nodes[0]["start_index"] == 1
-    assert nodes[-1]["end_index"] == 20
-
-
 def test_structure_quality_penalizes_single_bad_title() -> None:
     q = PageIndexService._compute_structure_quality(
         [{"node_id": "0001", "title": "2026.1", "nodes": []}]

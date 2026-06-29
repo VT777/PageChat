@@ -8,8 +8,8 @@ Rules:
 1) Use fuzzy matching for spacing and punctuation.
 2) Ignore image markdown like ![](...), decorative separators, and empty lines.
 3) Return "yes" if the section title is clearly present on this page.
-4) IMPORTANT: If the exact title doesn't appear, but a numbered subsection that belongs to this chapter appears (e.g., title is "Chapter 3" and page has "3.1 xxx" or "3.2 xxx"), also return "yes" — the section's content begins here.
-5) For summary/outline pages (e.g., pages starting with "汇报提纲"), be strict and return "no" unless the actual content of the section is present.
+4) IMPORTANT: If the exact title does not appear, but a numbered subsection that belongs to this chapter appears (e.g. title is "Chapter 3" and page has "3.1 xxx" or "3.2 xxx"), also return "yes" because the section content begins here.
+5) For summary or outline pages, be strict and return "no" unless the actual content of the section is present.
 
 Section title: {title}
 Page text: {page_text}
@@ -41,36 +41,51 @@ Reply JSON only:
 }}
 """
 
-TOC_DETECTOR_SINGLE_PROMPT = """
-Your task is to detect whether the given page is a table-of-contents page.
+TOC_DETECTOR_SINGLE_PROMPT = """Classify whether this page is a table-of-contents/catalog page.
 
-Given text:
+A TOC/catalog page lists document navigation entries. Figure lists and table lists are catalog pages.
+Do not extract catalog items.
+
+Page text:
 {content}
 
 Reply JSON only:
 {{
-  "thinking": "brief reason",
-  "toc_detected": "yes|no"
+  "is_toc": true,
+  "primary_kind": "main_toc|figure_toc|table_toc|mixed_toc|other_toc|none",
+  "sections": [
+    {{"kind": "main_toc|figure_toc|table_toc|other_toc", "confidence": 0.0}}
+  ],
+  "confidence": 0.0,
+  "has_page_numbers": false
 }}
 """
 
 TOC_DETECTOR_BATCH_PROMPT = """Analyze the following pages and determine which ones are table-of-contents (TOC) pages.
 
 A TOC page typically contains:
-- A list of chapter/section titles with corresponding page numbers
-- Structured listing of document contents
-- Navigation structure of the document
+- A list of chapter or section titles with corresponding page numbers.
+- Structured listing of document contents.
+- Navigation structure for the document.
+
+Rules:
+1. Follow the page order exactly as given.
+2. Return only page numbers that are clearly TOC pages.
+3. If a page is uncertain, prefer no over yes.
+4. If TOC continues across later pages, include every TOC page in the run.
+5. Do not reorder or merge pages.
 
 Pages content:
 {pages_content}
 
-Reply in JSON format only (no markdown code fences):
+Reply JSON only, no markdown fences:
 {{
-  "reasoning": "Brief explanation of which pages look like TOC",
-  "toc_pages": [list of page indices that are TOC pages],
-  "pages_with_toc": [same list, alternative key]
+  "reasoning": "brief explanation of which pages look like TOC pages",
+  "toc_pages": [1],
+  "pages_with_toc": [1]
 }}
 """
+
 
 TOC_EXTRACTION_COMPLETENESS_PROMPT = """You are given a page of text and the extracted TOC content.
 Determine if the TOC extraction is complete.
@@ -126,9 +141,9 @@ DETECT_PAGE_INDEX_PROMPT = """Analyze whether the given table of contents contai
 Strict criteria for "yes":
 1) Page numbers must be actual document page numbers (like "1", "15", "42")
 2) Numbers must appear as navigation references (e.g., "Chapter 1 ... 15" or "Section 2.1  page 42")
-3) Reject chapter/section numbering used as labels (e.g., "落地01", "Part 2", "Chapter 3") — these are NOT page numbers
+3) Reject chapter or section numbering used as labels (e.g. "Case 01", "Part 2", "Chapter 3"); these are NOT page numbers.
 4) Reject if numbers only appear as part of section titles, not as page references
-5) For Chinese documents: "01", "02" after section titles (like "国外大厂AI应用落地01") are typically section labels, NOT page numbers
+5) In documents with numbered case labels, values such as "01" or "02" after section titles are usually labels, NOT page numbers.
 
 TOC content:
 {toc_content}
@@ -210,7 +225,7 @@ The provided text contains tags like <physical_index_X> and </physical_index_X> 
 
 IMPORTANT: If a page lists multiple section titles (like a table of contents page), that is NOT where each section starts. Look for where the actual content of each section begins.
 
-CRITICAL: Some documents have "summary/outline" pages (e.g., pages starting with "汇报提纲" / "Contents" / "目录" / "Outline") that list all chapter titles in brief form. These are NAVIGATION pages, NOT content pages. Do NOT use these pages as chapter start pages. Instead, identify true chapter starts by looking for content pages with section numbers like "1.1", "2.1", "3.1", etc., or pages that contain substantial discussion of the topic.
+CRITICAL: Some documents have summary or outline pages (for example, Contents or Outline pages) that list chapter titles briefly. These are NAVIGATION pages, NOT content pages. Do NOT use these pages as chapter start pages. Instead, identify true chapter starts by looking for content pages with section numbers like "1.1", "2.1", "3.1", etc., or pages that contain substantial discussion of the topic.
 
 SPECIAL CASE: If a document starts directly with subsections (e.g., "1.1 xxx" without a "1. xxx" parent section), the parent chapter title may only appear on navigation/outline pages. In this case:
 1. Use the navigation page's chapter list to determine the main chapter titles and their order
@@ -245,7 +260,7 @@ The structure variable is the numeric system (e.g. "1", "1.1", "2.3") representi
 
 The provided text contains tags like <physical_index_X> and </physical_index_X> to indicate the start and end of page X. For physical_index, identify where each section's content FIRST appears.
 
-CRITICAL: Do NOT use "summary/outline" pages (e.g., "汇报提纲" / "目录" / "Contents" pages that list chapter titles) as section start pages. Only use actual content pages.
+CRITICAL: Do NOT use summary, outline, or contents pages that merely list chapter titles as section start pages. Only use actual content pages.
 
 Hard constraints:
 1) Only append new items; do not rewrite/remove previous items.
@@ -266,55 +281,55 @@ Hard output constraints:
 4) If no new items, return [].
 """
 
-NODE_SUMMARY_PROMPT = """生成章节摘要（50-100字）。
+NODE_SUMMARY_PROMPT = """Generate a concise section summary (50-100 words).
 
-章节标题: {node_title}
-章节内容: {node_text}
+Section title: {node_title}
+Section text: {node_text}
 
-要求：
-1. 列出该章节涉及的所有关键主题和子话题，不要只提第一个
-2. 包含关键实体（公司名、产品名、人名、数字等）
-3. 禁止编造内容中没有的信息
-4. 如果章节涵盖多个公司/产品，必须全部提及
+Requirements:
+1. Cover all important topics and subtopics in the section, not only the first one.
+2. Include key entities such as companies, products, people, and numeric facts when present.
+3. Do not invent facts that are not in the section text.
+4. If the section covers multiple companies or products, mention all important ones.
 
-返回："摘要文本"""
+Return summary text only."""
 
-DOC_DESCRIPTION_PROMPT = """生成文档的一句话描述。
+DOC_DESCRIPTION_PROMPT = """Generate a one-sentence document description.
 
-文档结构: {structure_summary}
+Document structure: {structure_summary}
 
-要求：
-1. 一句话概括整个文档的主题和范围
-2. 包含关键实体
-3. 不超过50字
+Requirements:
+1. Summarize the document topic and scope in one sentence.
+2. Include key entities when present.
+3. Keep it under 80 Chinese characters if responding in Chinese, otherwise keep it concise.
 
-返回："一句话描述"""
+Return one sentence only."""
 
-FAST_DOC_LIGHT_SUMMARY_PROMPT = """你是文档摘要助手。请仅根据目录结构生成文档概述。
+FAST_DOC_LIGHT_SUMMARY_PROMPT = """You are a document summary assistant. Generate a document description using only the TOC structure.
 
-文档名: {doc_name}
-文件类型: {file_type}
-目录结构:
+Document name: {doc_name}
+File type: {file_type}
+TOC structure:
 {toc_outline}
 
-要求：
-1) 只能依据目录标题概述，不得补充目录中没有的事实。
-2) 输出 1-2 句话，总长度 40-90 字。
-3) 语气客观中性，使用中文。
-4) 若目录信息不足以概述，返回空字符串。
+Requirements:
+1. Use only information visible in the TOC titles. Do not add facts that are not present.
+2. Output 1-2 sentences, about 40-90 Chinese characters when Chinese is appropriate.
+3. Use the document's dominant language when obvious; otherwise use concise English.
+4. If the TOC is insufficient for a meaningful description, return an empty string.
 
-直接输出摘要文本，不要输出 JSON，不要解释。"""
+Return summary text only. Do not output JSON or explanations."""
 
-QUERY_VERIFICATION_PROMPT = """验证查询是否在内容中有答案。
+QUERY_VERIFICATION_PROMPT = """Verify whether the query can be answered from the provided content fragment.
 
-查询: {query}
-内容片段: {content}
+Query: {query}
+Content fragment: {content}
 
-返回JSON：
+Return JSON only:
 {{
   "query_appears": "yes|partial|no",
-  "confidence": 0.0-1.0,
-  "reasoning": "简要理由"
+  "confidence": 0.0,
+  "reasoning": "brief reason"
 }}"""
 
 # Batch verification prompts for performance optimization
@@ -349,231 +364,196 @@ Hard output constraints:
 - Each element must have "id" (integer) and "start_begin" ("yes" or "no").
 - Example: [{{"id": 0, "start_begin": "yes"}}, {{"id": 1, "start_begin": "no"}}]"""
 
-TOC_LIGHT_VALIDATION_PROMPT = """你是文档结构审查专家。以下是从 PDF 中自动提取的目录结构。
-这是用户打开文件后首先看到的内容，必须能完整概述整份文档。
+TOC_LIGHT_VALIDATION_PROMPT = """You are auditing an automatically extracted PDF table of contents.
+The TOC should help a user navigate the document and should faithfully represent the document's visible structure.
 
-文档总页数: {page_count}
-提取的目录（共 {toc_count} 个条目）:
+Document page count: {page_count}
+Extracted TOC ({toc_count} items):
 {toc_outline}
 
-内容匹配检查结果:
-- 抽样验证匹配率: {match_rate:.0%}
-- 偏移量中位数: {offset_median:+d} 页
-- 不匹配条目: {mismatch_details}
+Deterministic content-match checks:
+- Sample title match rate: {match_rate:.0%}
+- Median page offset: {offset_median:+d} pages
+- Mismatched sample items: {mismatch_details}
 
-判断标准：
-1) 覆盖度：目录的页码范围是否覆盖了文档大部分页面？最后一个条目的页码应接近总页数。
-   如果最后一个条目的页码远小于总页数（如85页文档目录只到49页），说明目录不完整。
-2) 内容匹配：目录条目标题是否出现在对应页面上？匹配率应 >= 60%。
-   如果匹配率很低，说明提取的页码与实际内容严重不符。
-3) 偏移一致性：如果存在偏移，偏移量应一致（所有条目偏移相近），说明是系统性偏移。
-4) 结构性：是否有清晰的章节层级（至少 2 个以上的一级标题）？
-5) 合理性：标题是否像真实的文档章节（而非页眉页脚、图片说明等噪音）？
-   如果大量条目是"图片目录"、"图表汇总"、文档标题本身等，说明提取质量差。
-6) 条目数量：目录条目数量是否合理？一般文档的目录条目在 5-80 个之间。
-   如果条目数远超 80 个（如 100+），说明提取了大量非目录内容。
-7) 噪音检测：是否存在大量以下类型的噪音条目？
-   - 纯数字（如 "1", "2", "3"）—— 可能是表格序号
-   - 日期（如 "2025.9", "2021.11"）—— 可能是表格中的日期
-   - 机构名重复多次（如同一机构名出现 5 次以上）—— 可能是表格列
-   - 表头文字（如 "序号", "标准名称", "归口部门"）—— 不是目录条目
-   如果存在以上噪音，说明提取质量差，应判定为无效。
+Judgment criteria:
+1. Coverage: the TOC page range should cover most of the document; the last item should reach near the final pages when appropriate.
+2. Content match: TOC titles should appear on or near their mapped pages. Match rate should normally be at least 60%.
+3. Offset consistency: if there is a page offset, it should be consistent across sampled items.
+4. Structure: the TOC should contain real document sections or catalog entries. A flat TOC is acceptable when the source document is flat.
+5. Reasonableness: titles should not be headers, footers, image captions, random metadata, or page decorations.
+6. Item count: a typical TOC usually has 5-80 items. Far more items may indicate table-cell or OCR-noise leakage.
+7. Noise: reject obvious noise such as pure numbers, date-like table cells, repeated organization names, or table header fields.
 
-重要：只要满足以下任一条件，就判定为无效（valid=no）：
-- 条目数量超过 80 个且存在明显噪音（纯数字、日期、重复机构名等）
-- 大量条目不是真实的章节标题
+Hard invalid cases:
+- More than 80 items with obvious noise such as pure numbers, dates, or repeated table cells.
+- Many items are not real section/catalog titles.
+- Content matching is very low and the offset is not consistent.
 
-回答 JSON（不要 markdown code fence）:
-{{"valid": "yes|no", "reason": "简要说明"}}"""
+Return JSON only, no markdown fences:
+{{"valid": "yes|no", "reason": "brief reason"}}"""
 
-# ---------------------------------------------------------------------------
-# VLM 提示词 v3（balanced 视觉模式用）
-# ---------------------------------------------------------------------------
+VLM_ANCHOR_DETECTION_PROMPT = """You are a document analysis expert. The images show thumbnail pages from one PDF document. Each thumbnail has a visible page label such as p.1 or p.2.
 
-VLM_ANCHOR_DETECTION_PROMPT = """你是文档分析专家。这些是一份 PDF 文档所有页面的缩略图网格。
-每个缩略图左上角标注了页码（如 p.1, p.2...）。
+Identify these page types:
+1. Table-of-contents pages: pages with a structured list of chapters or sections, usually labeled Contents or Table of Contents.
+2. Chapter divider pages: pages dominated by a large section title, often with little body text.
 
-请识别以下两类特殊页面：
+Also determine the first physical page where real chapter content begins, excluding cover, TOC, preface, and pure divider pages.
 
-1. 目录页（Table of Contents）：页面上有结构化的章节标题列表，通常有"目录"或"CONTENTS"字样
-2. 章节分隔页（Chapter Divider）：整页是一个大标题，通常有色块背景，正文文字很少
-
-另外，请判断第一个章节内容（非封面、非目录、非前言）实际从哪一页开始。
-
-回答 JSON（不要 markdown code fence）:
+Return JSON only, no markdown fences:
 {{
   "toc_pages": [4],
-  "chapter_dividers": [5, 13, 25, 35, 41],
+  "chapter_dividers": [5, 13, 25],
   "first_content_page": 5
 }}
 
-如果没有找到目录页或分隔页，对应数组返回空 []。"""
+If no TOC page or divider page is found, return an empty array for that field."""
 
-VLM_TOC_EXTRACT_PROMPT = """你是文档转录助手。这些是 PDF 的目录页图片。
+VLM_TOC_EXTRACT_PROMPT = """You are a document transcription assistant. The images are TOC pages from a PDF.
 
 {page_annotations}
 
-注意：目录可能跨多页。请从所有标注为"目录页"的图片中，按从上到下的顺序，转录**每一条**目录。
+The TOC may span multiple pages. Extract every visible TOC entry from all pages, preserving the natural reading sequence.
 
-对每条目录输出：
-- number: 该条目在目录上印的编号原样（如 "1", "1.1", "一", "（一）"）。完全没有编号则为空字符串 ""
-- title: 条目标题原文（去掉末尾页码和点线）
-- page: 目录上标注的页码数字（整数）。没有标注页码则为 null
+For each entry return:
+- number: the printed entry number exactly as shown, such as "1", "1.1", "A", or "(a)". Use an empty string if no number is visible.
+- title: the original title text, without trailing page numbers or leader dots.
+- page: the printed catalog page number as an integer. Use null if no page number is visible.
 
-重要：
-- 请转录**所有条目**，包括缩进/字号较小的子条目，不要跳过任何一行
-- 不需要判断层级——你只负责转录
-- 不需要计算页码偏移
+Important rules:
+- Extract all entries, including indented or smaller child entries.
+- Do not infer hierarchy if it is not visible.
+- Do not compute page offsets.
 
-回答 JSON 数组（不要 markdown code fence）:
+Return JSON only, no markdown fences:
 {{
   "toc_items": [
-    {{"number": "1", "title": "市场概述", "page": 6}},
-    {{"number": "1.1", "title": "消费趋势", "page": 7}},
-    {{"number": "", "title": "结语", "page": 59}}
+    {{"number": "1", "title": "Market overview", "page": 6}},
+    {{"number": "1.1", "title": "Consumer trends", "page": 7}},
+    {{"number": "", "title": "Conclusion", "page": 59}}
   ],
   "is_toc_complete": "yes|no"
 }}
 """
 
-VLM_TOC_EXTRACT_WITH_OFFSET_PROMPT = """你是文档分析专家。这些是 PDF 文档的连续页面高清图。
+VLM_TOC_EXTRACT_WITH_OFFSET_PROMPT = """You are a document analysis expert. The images are consecutive high-resolution PDF pages.
 
 {page_annotations}
 
-注意：目录页可能跨多页（例如左页和右页各有一部分目录）。请从所有标注为"目录页"的图片中提取条目，不要遗漏任何一页上的目录内容。
+The TOC may span multiple pages. Extract entries from every page that is labeled or visually identifiable as a TOC page.
 
-任务 1：提取目录页上的所有章节条目
-- structure: 层级编号（"1", "1.1", "1.2", "2"...）。如果目录本身没有层级编号，请按顺序分配 "1", "2", "3"...
-- title: 章节标题（原文，去掉页码和点线）
-- page: 目录上标注的页码数字（整数）。如果没有标注页码，设为 null
+Task 1: Extract all TOC entries.
+- structure: visible hierarchy number such as "1", "1.1", "2". If no hierarchy number is visible, assign sequential values "1", "2", "3".
+- title: original title text, without trailing page numbers or leader dots.
+- page: printed catalog page number as an integer, or null if not visible.
 
-任务 2：确定页码偏移（offset）
-观察目录后面的正文页，找到第一个章节内容实际开始的物理页码。
-offset = 该物理页码 - 目录中第一个条目的 page 值
+Task 2: Determine the page offset.
+Look at the content pages after the TOC and find the physical page where the first catalog entry actually starts.
+offset = physical start page - printed page value of the first catalog entry.
 
-任务 3：判断目录是否在最后一页还有延续
-如果最后一页底部的内容看起来没有结束（还有更多章节），返回 is_toc_complete: "no"
+Task 3: Determine whether the TOC continues beyond the last provided page.
+Return is_toc_complete as "no" if the final TOC page appears cut off or continuing.
 
-回答 JSON（不要 markdown code fence）:
+Return JSON only, no markdown fences:
 {{
   "toc_items": [
-    {{"structure": "1", "title": "第一章 概述", "page": 1}},
-    {{"structure": "1.1", "title": "背景", "page": 3}}
+    {{"structure": "1", "title": "Chapter 1 Overview", "page": 1}},
+    {{"structure": "1.1", "title": "Background", "page": 3}}
   ],
   "offset": 5,
   "is_toc_complete": "yes|no"
 }}
 
-如果目录上没有页码数字（page 全为 null），offset 设为 0。"""
+If no printed catalog page numbers are visible, set offset to 0."""
 
-VLM_TOC_CONTINUE_PROMPT = """你是文档分析专家。这些是目录的后续页面。
+VLM_TOC_CONTINUE_PROMPT = """You are a document analysis expert. The images are later pages that may continue a TOC.
 
-之前已经提取的目录条目（最后几个）：
+Previously extracted TOC entries, last few items:
 {previous_items}
 
-请继续提取这些页面中的目录条目。如果这些页面不再是目录页，返回空列表。
-保持 structure 编号的连续性。
+Continue extracting TOC entries from these pages. If these pages are no longer TOC pages, return an empty list. Keep structure numbering continuous when visible.
 
-回答 JSON（不要 markdown code fence）:
+Return JSON only, no markdown fences:
 {{
   "toc_items": [
-    {{"structure": "3.1", "title": "...", "page": 25}}
+    {{"structure": "3.1", "title": "Additional section", "page": 25}}
   ],
   "is_toc_complete": "yes|no"
-}}"""
+}}
+"""
 
-VLM_FULLTEXT_SECTION_PROMPT = """你是文档结构分析专家。请分析第 {start_page} 页到第 {end_page} 页的PDF页面图片，提取其中的章节标题。
+VLM_FULLTEXT_SECTION_PROMPT = """You are a document structure analyst. Analyze the PDF page images from physical page {start_page} to physical page {end_page}, and extract visible section headings.
 
-## 什么是章节标题？
+A section heading is a short text that marks document structure. It usually has one or more of these signals:
+- Larger font than body text.
+- Bold, highlighted, colored, centered, or isolated layout.
+- Extra spacing above or below.
+- Located at the beginning of a new topic.
+- Short phrase that summarizes the following content.
 
-章节标题是**标记文档结构层次**的短文本，通常具有以下一个或多个特征：
+Do not extract:
+- Complete body sentences.
+- Figure or table captions.
+- Headers, footers, watermarks, page numbers, or decorative text.
+- The first sentence of a paragraph when it is not visually a heading.
 
-### 视觉特征（判断依据）
-1. **字号明显大于正文**（通常大2-4号）
-2. **加粗、高亮、或特殊颜色**
-3. **居中、左对齐或独占一行**
-4. **上下有额外留白**
-
-### 结构特征（判断依据）
-1. **位于新主题/新内容的开始处**
-2. **长度较短**（通常是短语，不是完整句子）
-3. **概括下方内容的主题**
-4. **可能是该页第一个有意义的文本**
-
-### 常见格式（仅供参考，不限于这些）
-- 带编号："1. 引言"、"1.1 方法"、"第一章"、"Part 1"
-- 无编号："市场分析"、"结论与展望"
-- 中文编号："一、概述"、"（一）背景"
-- 英文编号："Chapter 1"、"Section 2.1"
-
-## 什么不是章节标题？
-
-以下内容是**正文**，不要提取：
-1. **完整句子**（有主谓宾，超过20字）
-2. **图表说明**（"图1-1..."、"Table 1..."）
-3. **页眉页脚文字**
-4. **段落首句**
-5. **广告/水印文字**
-
-## 分隔页处理策略
-
-**关键规则**：
-1. 如果第一张图片**几乎没有文字**（空白、装饰线、色块），这是**分隔页**，不是标题
-2. **必须检查第二张图片**（分隔页之后的页面通常有章节标题）
-3. 如果第二张也没有，检查第三张
-4. **每个分段必须至少有一个章节标题**（不要返回空数组）
+Divider-page policy:
+1. If the first image is mostly blank or decorative, treat it as a divider page, not a heading by itself.
+2. Check the next page for the real section heading.
+3. If needed, also check the third page.
+4. Each page range should return at least one heading when a visible heading exists.
 
 {previous_context}
-## 输出格式
 
-返回 JSON 数组（不要 markdown code fence）:
+Return JSON array only, no markdown fences:
 [
-  {{"structure": "1", "title": "提取的标题", "physical_index": 实际页码}}
+  {{"structure": "1", "title": "Extracted heading", "physical_index": {start_page}}}
 ]
 
-**字段说明**：
-- `structure`: 层级编号。顶层用"1"、"2"、"3"...，子层用"1.1"、"1.2"...
-- `title`: 标题原文，不要修改
-- `physical_index`: 实际页码（第一张图片是第 {start_page} 页）
+Fields:
+- structure: hierarchy number. Use "1", "2", "3" for top-level headings and "1.1", "1.2" for children.
+- title: original heading text.
+- physical_index: the 1-based physical PDF page number.
 
-## 质量自检（完成后检查）
+Quality checks:
+- Did you check pages after decorative divider pages?
+- Did you avoid full body sentences?
+- Are all physical_index values within {start_page}-{end_page}?"""
 
-- [ ] 是否提取了分隔页之后的第一个标题？
-- [ ] 是否有完整句子被误提取为标题？
-- [ ] 是否所有页码都在 {start_page}-{end_page} 范围内？
-- [ ] 如果没有找到任何标题，请再检查第二页、第三页"""
+VLM_TOPIC_BOUNDARY_PROMPT = """You are a document analysis expert. The images show thumbnail pages from one PDF document. The document has no obvious TOC page or chapter divider pages.
 
-VLM_TOPIC_BOUNDARY_PROMPT = """你是文档分析专家。这些是一份 PDF 文档的缩略图网格。
-这份文档没有明显的目录页或章节分隔页。
+Identify approximate pages where the main topic changes. For example, if early pages discuss market analysis and a later page starts discussing technical solutions, that later page is a topic boundary.
 
-请观察页面内容的变化，识别文档中主题切换的大致位置。
-例如：前面几页在讲市场分析，某一页突然开始讲技术方案，那就是一个切换点。
+You do not need exact chapter titles. Find pages where the content clearly changes.
 
-不需要精确的章节标题，只需找到"内容发生明显变化"的页码。
-
-回答 JSON（不要 markdown code fence）:
+Return JSON only, no markdown fences:
 {{
   "topic_boundaries": [1, 11, 25, 40],
   "estimated_sections": 4,
-  "reasoning": "简要说明为什么在这些位置切换"
-}}"""
+  "reasoning": "brief explanation for these boundaries"
+}}
+"""
 
-VLM_FIX_ITEM_PROMPT = """你是文档分析专家。我需要你确认一个章节标题在文档中的准确位置。
+VLM_FIX_ITEM_PROMPT = """You are a document analysis expert. Confirm the correct physical page where a section title begins.
 
-章节标题: "{title}"
+Section title: "{title}"
 
-这些图片是该标题可能出现的页面范围（第 {start_page} 页到第 {end_page} 页）。
-请找到这个标题的实际内容开始的页码。
+The images show candidate pages from physical page {start_page} to physical page {end_page}. Find the page where the actual section content starts.
 
-注意：
-- 目录页上列出的标题不算，要找实际内容开始的位置
-- 返回的是图片对应的实际页码
+Rules:
+- A title listed on a TOC page does not count.
+- Prefer the first page where the title appears as a real heading or where the section content clearly starts.
+- If the title is not visible, return null.
 
-回答 JSON（不要 markdown code fence）:
-{{"physical_index": N, "confidence": "high|medium|low"}}
+Return JSON only, no markdown fences:
+{{
+  "physical_index": 12,
+  "confidence": 0.0,
+  "reasoning": "brief reason"
+}}
+"""
 
-如果在这些页面中找不到该标题的内容：
-{{"physical_index": null, "confidence": "low"}}"""
 
 __all__ = [
     "CHECK_TITLE_APPEARANCE_PROMPT",
@@ -606,48 +586,62 @@ __all__ = [
     "TOC_QUALITY_CHECK_PROMPT",
 ]
 
-TOC_QUALITY_CHECK_PROMPT = """你是文档结构分析专家。请评估以下文档目录（TOC）的质量。
 
-文档信息：
-- 总页数: {page_count}
-- 目录来源: {source}
-- 是否有章节分隔页: {has_dividers}
-- 章节分隔页数量: {divider_count}
+TOC_QUALITY_CHECK_PROMPT = """You are auditing an automatically extracted PDF table of contents (TOC).
 
-目录结构（按层级）：
+This is a fidelity audit, not a hierarchy preference check.
+The TOC is good when it faithfully reflects the source document and provides useful navigation.
+A flat TOC is acceptable when the original document/catalog is flat or case-list-like.
+Do not mark a TOC as failed only because long nodes have no children.
+Repeated numbering under different parent chapters is acceptable when titles differ; do not fail or request repair solely for repeated numbering labels.
+
+Do not ask the model to verify whether each page number is true. Page-number truth is handled by deterministic physical page mapping before this prompt.
+Ignore internal fields such as logical_page, mapping_pending, offsets, source_page, synthetic roots, and bias/offset helper items unless they leak into user-visible titles.
+When discussing pages, refer only to the deterministic physical page evidence below; do not invent per-item page corrections.
+
+Document facts:
+- page_count: {page_count}
+- source: {source}
+- has_dividers: {has_dividers}
+- divider_count: {divider_count}
+
+Deterministic fidelity digest:
+{fidelity_digest_json}
+
+TOC tree preview:
 {toc_tree_formatted}
 
-请从以下维度评估并返回 JSON：
+Raw TOC item preview:
+{toc_items_formatted}
 
-1. 结构合理性 (structure_score: 0-100)
-   - 章节数量是否和文档长度匹配（通常每 5-15 页一个章节）
-   - 是否存在过于扁平的结构（如 43 页文档有 9 个顶级节点）
-   - 层级是否清晰（是否有过多的同级节点）
+Audit dimensions:
+1. Fidelity: Do visible titles look like real document/catalog entries, not OCR noise, metadata, summaries, table headers, or page decorations?
+2. Completeness: Does the TOC cover the document's main visible structure without obvious front/middle/back loss?
+3. Order and navigation: Are entries in plausible document order according to deterministic mapping summary?
+4. Style fit: Is the detected style (flat, hierarchical, mixed, collapsed) suitable for this document shape? Flat is acceptable when faithful.
+5. Noise leakage: Did synthetic roots, offset helpers, logical_page values, mapping_pending markers, or diagnostics leak into user-visible titles?
 
-2. 大节点检测 (large_nodes: list)
-   - 检查是否有 span > 8 页的节点但没有子节点
-   - 如果有，标记为 "missing_children"
+Hard fail only when at least one is true:
+- deterministic digest hard_fail_reasons is non-empty;
+- the TOC is collapsed into one generic full-document node;
+- many visible entries are OCR noise or non-title text;
+- substantial sections are missing from front/middle/back;
+- duplicate/tail-collapse/noise makes navigation unreliable.
 
-3. 遗漏检测 (missing_chapters: list)
-   - 检查页码是否连续（不应该有大段空白）
-   - 检查是否有明显的章节遗漏
-
-4. 整体评分 (overall_score: 0-100)
-   - 综合以上维度
-
-5. 修复建议 (suggestions: list)
-   - 如果发现问题，给出具体建议
-
-返回格式（严格 JSON，不要 markdown）：
+Return JSON only, no markdown fences:
 {{
-  "structure_score": 85,
-  "large_nodes": [
-    {{"title": "章节标题", "span": 12, "issue": "missing_children"}}
-  ],
-  "missing_chapters": [],
-  "overall_score": 75,
-  "suggestions": [
-    "建议对 span > 8 页的章节进行子章节提取"
-  ],
-  "needs_repair": true
-}}"""
+  "verdict": "pass|warn|fail",
+  "detected_style": "flat|hierarchical|mixed|collapsed|unknown",
+  "fidelity_score": 0,
+  "navigation_score": 0,
+  "style_fit_score": 0,
+  "overall_score": 0,
+  "hard_fail_reasons": [],
+  "warnings": [],
+  "suggestions": [],
+  "needs_repair": false
+}}
+"""
+
+
+
