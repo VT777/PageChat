@@ -303,7 +303,7 @@ const themeOptions = [
               <div class="avatar">P</div>
               <div>
                 <h3>admin</h3>
-                <p>admin@pagechat.local</p>
+                <p>demo@pagechat.local</p>
               </div>
               <span class="status-note success">
                 <CheckCircle2 class="h-4 w-4" />

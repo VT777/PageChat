@@ -71,7 +71,7 @@ describe('user auth store', () => {
     const store = useUserStore()
 
     await expect(
-      store.register('debug_user', 'debug@outlook.com', 'password123'),
+      store.register('debug_user', 'debug@example.test', 'password123'),
     ).rejects.toThrow('密码必须包含大写字母')
   })
 
