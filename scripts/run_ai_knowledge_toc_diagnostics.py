@@ -1358,7 +1358,7 @@ async def run_build_diagnostics(
 
 def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     fixture = _load_fixture()
-    default_input = fixture.get("input_dir") or r"D:\chrome_download\rag-skill-main\rag-skill-main\knowledge\AI Knowledge"
+    default_input = fixture.get("input_dir") or "examples/ai-knowledge"
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--input", default=default_input, help="Directory containing AI Knowledge PDFs")
     parser.add_argument("--file", help="Run diagnostics for one PDF file name")

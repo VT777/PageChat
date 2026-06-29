@@ -26,9 +26,9 @@ def test_e2e_script_parses_single_file_and_stop_on_fail() -> None:
     args = module._parse_args(
         [
             "--fixture",
-            r"D:\fixtures\official.json",
+            "fixtures/official.json",
             "--input",
-            r"D:\docs",
+            "fixtures/docs",
             "--file",
             "sample.pdf",
             "--output",
@@ -37,8 +37,8 @@ def test_e2e_script_parses_single_file_and_stop_on_fail() -> None:
         ]
     )
 
-    assert args.fixture == r"D:\fixtures\official.json"
-    assert args.input == r"D:\docs"
+    assert args.fixture == "fixtures/official.json"
+    assert args.input == "fixtures/docs"
     assert args.file == "sample.pdf"
     assert args.output == "artifacts/toc_e2e"
     assert args.stop_on_fail is True
@@ -53,7 +53,7 @@ def test_iter_expected_docs_can_use_official_fixture() -> None:
         ]
     }
 
-    docs = module._iter_expected_docs(Path(r"D:\docs"), None, fixture=fixture)
+    docs = module._iter_expected_docs(Path("fixtures/docs"), None, fixture=fixture)
 
     assert [doc["id"] for doc in docs] == ["P01", "P02"]
 

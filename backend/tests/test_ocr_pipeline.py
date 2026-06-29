@@ -1,4 +1,4 @@
-import asyncio
+﻿import asyncio
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -300,7 +300,7 @@ def test_page_text_ocr_writes_per_page_diagnostics(monkeypatch, tmp_path) -> Non
 
 def test_ocr_diagnostics_doc_id_preserves_unicode_file_stem() -> None:
     doc_id = PageIndexService._ocr_diagnostics_doc_id(
-        {"file_path": r"D:\docs\2025年度重庆市人工智能应用场景典型案例集（压缩版）.pdf"}
+        {"file_path": "fixtures/docs/2025年度重庆市人工智能应用场景典型案例集（压缩版）.pdf"}
     )
 
     assert doc_id == "2025年度重庆市人工智能应用场景典型案例集_压缩版"
