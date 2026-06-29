@@ -804,6 +804,42 @@ class ChatService:
                         ):
                             tool_delta_payload.pop(metadata_key, None)
                         yield await emit("tool_call_delta", tool_delta_payload)
+                    elif event_type == "answer_candidate_delta":
+                        candidate_payload = dict(data)
+                        for metadata_key in (
+                            "run_id",
+                            "conversation_id",
+                            "message_id",
+                            "seq",
+                            "ts",
+                        ):
+                            candidate_payload.pop(metadata_key, None)
+                        yield await emit("answer_candidate_delta", candidate_payload)
+                    elif event_type == "answer_candidate_retract":
+                        candidate_payload = dict(data)
+                        for metadata_key in (
+                            "run_id",
+                            "conversation_id",
+                            "message_id",
+                            "seq",
+                            "ts",
+                        ):
+                            candidate_payload.pop(metadata_key, None)
+                        yield await emit("answer_candidate_retract", candidate_payload)
+                    elif event_type == "answer_candidate_commit":
+                        candidate_payload = dict(data)
+                        for metadata_key in (
+                            "run_id",
+                            "conversation_id",
+                            "message_id",
+                            "seq",
+                            "ts",
+                        ):
+                            candidate_payload.pop(metadata_key, None)
+                        content_delta = str(candidate_payload.get("content") or "")
+                        if content_delta:
+                            full_content += content_delta
+                        yield await emit("answer_candidate_commit", candidate_payload)
                     elif event_type == "progress":
                         progress_payload = dict(data)
                         for metadata_key in (

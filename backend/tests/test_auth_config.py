@@ -41,3 +41,17 @@ def test_production_mode_with_jwt_secret_passes_validation() -> None:
     )
 
     assert secret == "prod-secret-with-at-least-thirty-two-chars"
+
+
+def test_missing_llm_api_key_is_allowed_in_development(monkeypatch) -> None:
+    monkeypatch.delenv("LLM_API_KEY", raising=False)
+    monkeypatch.setenv("APP_ENV", "development")
+
+    assert config.validate_required_settings() is None
+
+
+def test_missing_llm_api_key_is_allowed_in_production(monkeypatch) -> None:
+    monkeypatch.delenv("LLM_API_KEY", raising=False)
+    monkeypatch.setenv("APP_ENV", "production")
+
+    assert config.validate_required_settings() is None

@@ -47,6 +47,9 @@ class ModelToolLoopRuntime:
         for _step in range(1, self.max_steps + 1):
             turn: ModelTurn | None = None
             streamed_content = ""
+            candidate_text = ""
+            buffered_text_deltas: list[str] = []
+            tool_call_stream_started = False
             async for model_event in self.model.stream_turn(
                 messages=messages,
                 tools=self.tools,
@@ -60,10 +63,29 @@ class ModelToolLoopRuntime:
                     continue
                 if isinstance(model_event, ModelTextDelta):
                     streamed_content += model_event.delta
-                    state.answer += model_event.delta
-                    yield RuntimeStreamEvent("answer_delta", {"content": model_event.delta})
+                    if tool_call_stream_started:
+                        yield RuntimeStreamEvent(
+                            "processing_delta",
+                            {"content": model_event.delta, "status": "streaming"},
+                        )
+                    else:
+                        candidate_text += model_event.delta
+                        yield RuntimeStreamEvent(
+                            "answer_candidate_delta",
+                            {"content": model_event.delta},
+                        )
+                        buffered_text_deltas.append(model_event.delta)
                     continue
                 if isinstance(model_event, ModelToolCallDelta):
+                    if not tool_call_stream_started:
+                        tool_call_stream_started = True
+                        if candidate_text:
+                            yield RuntimeStreamEvent(
+                                "answer_candidate_retract",
+                                {"content": candidate_text},
+                            )
+                            candidate_text = ""
+                        buffered_text_deltas = []
                     yield RuntimeStreamEvent(
                         "tool_call_delta",
                         {
@@ -83,21 +105,36 @@ class ModelToolLoopRuntime:
                 turn = ModelTurn(content=streamed_content)
 
             if turn.has_tool_calls:
+                if candidate_text:
+                    yield RuntimeStreamEvent(
+                        "answer_candidate_retract",
+                        {"content": candidate_text},
+                    )
+                    candidate_text = ""
+                    buffered_text_deltas = []
                 messages.append(self._assistant_tool_call_message(turn))
                 for call in turn.tool_calls:
                     async for event in self._execute_tool_call(call, state, messages):
                         yield event
                 continue
             if turn.content.strip():
-                if streamed_content:
-                    remainder = (
-                        turn.content[len(streamed_content):]
-                        if turn.content.startswith(streamed_content)
-                        else ""
+                if candidate_text:
+                    state.answer += candidate_text
+                    yield RuntimeStreamEvent(
+                        "answer_candidate_commit",
+                        {"content": candidate_text},
                     )
+                    remainder = ""
+                    if turn.content.startswith(streamed_content):
+                        remainder = turn.content[len(streamed_content):]
+                    elif not turn.content.startswith(candidate_text):
+                        remainder = turn.content
                     if remainder:
                         state.answer += remainder
                         yield RuntimeStreamEvent("answer_delta", {"content": remainder})
+                elif streamed_content:
+                    state.answer += turn.content
+                    yield RuntimeStreamEvent("answer_delta", {"content": turn.content})
                 else:
                     state.answer += turn.content
                     yield RuntimeStreamEvent("answer_delta", {"content": turn.content})

@@ -8,6 +8,9 @@ export type StreamEventName =
   | 'progress'
   | 'tool_started'
   | 'tool_completed'
+  | 'answer_candidate_delta'
+  | 'answer_candidate_commit'
+  | 'answer_candidate_retract'
   | 'answer_delta'
   | 'citation_added'
   | 'run_completed'
@@ -79,6 +82,18 @@ export interface AnswerDelta extends PageChatEventMeta {
   content: string
 }
 
+export interface AnswerCandidateDelta extends PageChatEventMeta {
+  content: string
+}
+
+export interface AnswerCandidateCommit extends PageChatEventMeta {
+  content: string
+}
+
+export interface AnswerCandidateRetract extends PageChatEventMeta {
+  content: string
+}
+
 export interface Citation {
   citation_key: string
   document_id?: string
@@ -116,6 +131,9 @@ export type PageChatStreamData =
   | ProgressEvent
   | ToolStarted
   | ToolCompleted
+  | AnswerCandidateDelta
+  | AnswerCandidateCommit
+  | AnswerCandidateRetract
   | AnswerDelta
   | CitationAdded
   | RunCompleted

@@ -993,6 +993,169 @@ describe('chat rollback', () => {
     ])
   })
 
+  it('starts a new processing timeline entry after an intervening tool event', () => {
+    const store = useChatStore()
+    store.addAssistantMessage()
+
+    store.handleEnvelope({
+      event: 'run_started',
+      data: {
+        run_id: 'run-a',
+        conversation_id: 'conv-a',
+        message_id: 'assistant-a',
+        seq: 1,
+        ts: '2026-06-26T10:00:00Z',
+        status: 'running',
+      },
+    } as any)
+    store.handleEnvelope({
+      event: 'processing_delta',
+      data: {
+        run_id: 'run-a',
+        conversation_id: 'conv-a',
+        message_id: 'assistant-a',
+        seq: 2,
+        ts: '2026-06-26T10:00:01Z',
+        content: 'I will check the library.',
+      },
+    } as any)
+    store.handleEnvelope({
+      event: 'tool_started',
+      data: {
+        run_id: 'run-a',
+        conversation_id: 'conv-a',
+        message_id: 'assistant-a',
+        seq: 3,
+        ts: '2026-06-26T10:00:02Z',
+        tool_call_id: 'call-1',
+        tool_name: 'browse_documents',
+        arguments: { folder_id: 'root' },
+      },
+    } as any)
+    store.handleEnvelope({
+      event: 'tool_completed',
+      data: {
+        run_id: 'run-a',
+        conversation_id: 'conv-a',
+        message_id: 'assistant-a',
+        seq: 4,
+        ts: '2026-06-26T10:00:03Z',
+        tool_call_id: 'call-1',
+        tool_name: 'browse_documents',
+        arguments: { folder_id: 'root' },
+        result: { result_label: '3 documents' },
+      },
+    } as any)
+    store.handleEnvelope({
+      event: 'processing_delta',
+      data: {
+        run_id: 'run-a',
+        conversation_id: 'conv-a',
+        message_id: 'assistant-a',
+        seq: 5,
+        ts: '2026-06-26T10:00:04Z',
+        content: 'I found the candidate document.',
+      },
+    } as any)
+
+    expect(store.messages[0].progressSteps).toEqual([
+      expect.objectContaining({
+        kind: 'processing',
+        message: 'I will check the library.',
+        seq: 2,
+      }),
+      expect.objectContaining({
+        kind: 'processing',
+        message: 'I found the candidate document.',
+        seq: 5,
+      }),
+    ])
+  })
+
+  it('retracts answer candidates into processing details when a tool call follows', () => {
+    const store = useChatStore()
+    store.addAssistantMessage()
+
+    store.handleEnvelope({
+      event: 'answer_candidate_delta',
+      data: {
+        run_id: 'run-a',
+        conversation_id: 'conv-a',
+        message_id: 'assistant-a',
+        seq: 2,
+        ts: '2026-06-26T10:00:01Z',
+        content: 'I need to inspect the folder structure.',
+      },
+    } as any)
+
+    expect(store.messages[0].content).toBe('')
+    expect(store.messages[0].displayContent).toContain('I need to inspect')
+
+    store.handleEnvelope({
+      event: 'answer_candidate_retract',
+      data: {
+        run_id: 'run-a',
+        conversation_id: 'conv-a',
+        message_id: 'assistant-a',
+        seq: 3,
+        ts: '2026-06-26T10:00:02Z',
+        content: 'I need to inspect the folder structure.',
+      },
+    } as any)
+
+    expect(store.messages[0].content).toBe('')
+    expect(store.messages[0].displayContent).toBe('')
+    expect(store.messages[0].progressSteps).toEqual([
+      expect.objectContaining({
+        kind: 'processing',
+        message: 'I need to inspect the folder structure.',
+      }),
+    ])
+  })
+
+  it('commits answer candidates into final assistant content', () => {
+    const store = useChatStore()
+    store.addAssistantMessage()
+
+    store.handleEnvelope({
+      event: 'answer_candidate_delta',
+      data: {
+        run_id: 'run-a',
+        conversation_id: 'conv-a',
+        message_id: 'assistant-a',
+        seq: 2,
+        ts: '2026-06-26T10:00:01Z',
+        content: 'The folder contains ',
+      },
+    } as any)
+    store.handleEnvelope({
+      event: 'answer_candidate_delta',
+      data: {
+        run_id: 'run-a',
+        conversation_id: 'conv-a',
+        message_id: 'assistant-a',
+        seq: 3,
+        ts: '2026-06-26T10:00:02Z',
+        content: 'three documents.',
+      },
+    } as any)
+    store.handleEnvelope({
+      event: 'answer_candidate_commit',
+      data: {
+        run_id: 'run-a',
+        conversation_id: 'conv-a',
+        message_id: 'assistant-a',
+        seq: 4,
+        ts: '2026-06-26T10:00:03Z',
+        content: 'The folder contains three documents.',
+      },
+    } as any)
+
+    expect(store.messages[0].content).toBe('The folder contains three documents.')
+    expect(store.messages[0].displayContent).toBe('The folder contains three documents.')
+    expect(store.messages[0].progressSteps || []).toEqual([])
+  })
+
   it('streams native reasoning deltas into assistant thinking only', () => {
     const store = useChatStore()
     store.addAssistantMessage()

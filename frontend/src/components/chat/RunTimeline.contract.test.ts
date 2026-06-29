@@ -58,4 +58,14 @@ describe('RunTimeline contract', () => {
     expect(source).toContain('reasoning-block')
     expect(source).toContain('props.reasoningContent')
   })
+
+  it('trims display-only progress text so trailing model newlines do not create large gaps', () => {
+    const source = readFileSync(
+      new URL('./RunTimeline.vue', import.meta.url),
+      'utf8',
+    )
+
+    expect(source).toContain('displayMessage')
+    expect(source).toContain('trim()')
+  })
 })

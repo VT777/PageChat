@@ -13,6 +13,7 @@ import {
 } from 'lucide-vue-next'
 import { formatFileSize, formatDate } from '@/lib/utils'
 import { currentPdfRenderDimensions } from '@/utils/pdfRenderScale'
+import { fetchPdfBlobUrl } from '@/utils/pdfFetch'
 import TocTree from './TocTree.vue'
 
 // 设置 PDF.js worker
@@ -67,6 +68,7 @@ const emit = defineEmits<Emits>()
 
 // PDF 文档
 let pdfDocument: pdfjsLib.PDFDocumentProxy | null = null
+let pdfObjectUrl: string | null = null
 const totalPages = ref(0)
 const isLoading = ref(true)
 const error = ref<string | null>(null)
@@ -103,13 +105,14 @@ const loadPdf = async () => {
   try {
     isLoading.value = true
     error.value = null
+    totalPages.value = 0
+    pages.value = []
     renderedCanvases.clear()
+    releasePdfResources()
     
-    const token = localStorage.getItem('token')
+    pdfObjectUrl = await fetchPdfBlobUrl(props.fileUrl)
     const loadingTask = pdfjsLib.getDocument({
-      url: props.fileUrl,
-      httpHeaders: token ? { Authorization: `Bearer ${token}` } : undefined,
-      withCredentials: false,
+      url: pdfObjectUrl,
     })
     pdfDocument = await loadingTask.promise
     totalPages.value = pdfDocument.numPages
@@ -146,8 +149,20 @@ const loadPdf = async () => {
     
   } catch (err: any) {
     console.error('[PDF] Load failed:', err)
-    error.value = '加载失败，请刷新重试'
+    releasePdfResources()
+    error.value = err?.message ? `加载失败：${err.message}` : '加载失败，请刷新重试'
     isLoading.value = false
+  }
+}
+
+function releasePdfResources() {
+  if (pdfDocument) {
+    pdfDocument.destroy()
+    pdfDocument = null
+  }
+  if (pdfObjectUrl) {
+    URL.revokeObjectURL(pdfObjectUrl)
+    pdfObjectUrl = null
   }
 }
 
@@ -392,10 +407,7 @@ onMounted(() => {
 onUnmounted(() => {
   window.removeEventListener('keydown', handleKeyDown)
   renderedCanvases.clear()
-  if (pdfDocument) {
-    pdfDocument.destroy()
-    pdfDocument = null
-  }
+  releasePdfResources()
 })
 </script>
 

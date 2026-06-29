@@ -98,6 +98,14 @@ def test_save_and_read_provider_config_masks_api_key() -> None:
     asyncio.run(run())
 
 
+def test_requirements_include_model_key_encryption_dependency() -> None:
+    requirements = (Path(__file__).resolve().parents[1] / "requirements.txt").read_text(
+        encoding="utf-8"
+    )
+
+    assert "cryptography" in requirements
+
+
 def test_normalize_provider_models_adds_capabilities() -> None:
     models = _normalize_provider_models(
         {

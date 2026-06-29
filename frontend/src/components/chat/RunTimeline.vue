@@ -18,6 +18,7 @@ interface TimelineEntry {
   seq: number
   order: number
   message?: string
+  displayMessage?: string
   tool?: ToolStep
 }
 
@@ -27,6 +28,7 @@ const expandedThought = ref(false)
 const visibleProgressSteps = computed(() =>
   (props.progressSteps || []).filter((step) => (
     step.kind !== 'guardrail' && step.kind !== 'observation'
+    && Boolean(step.message?.trim())
   )),
 )
 
@@ -37,6 +39,7 @@ const progressEntries = computed<TimelineEntry[]>(() =>
     seq: step.seq ?? UNSEQUENCED_BASE + index,
     order: index,
     message: step.message,
+    displayMessage: (step.message || '').trim(),
   })),
 )
 
@@ -91,8 +94,8 @@ const showThoughtDetails = computed(() => (
         class="timeline-row"
         :data-kind="entry.kind"
       >
-        <div v-if="entry.kind === 'progress'" class="progress-row">
-          <p>{{ entry.message }}</p>
+        <div v-if="entry.kind === 'progress' && entry.displayMessage" class="progress-row">
+          <p>{{ entry.displayMessage }}</p>
         </div>
         <ToolTimelineItem v-else-if="entry.tool" :tool="entry.tool" />
       </div>
@@ -109,6 +112,15 @@ const showThoughtDetails = computed(() => (
 
 .timeline-row {
   display: block;
+}
+
+.timeline-row + .timeline-row {
+  margin-top: 4px;
+}
+
+.timeline-row[data-kind="progress"] + .timeline-row[data-kind="tool"],
+.timeline-row[data-kind="tool"] + .timeline-row[data-kind="progress"] {
+  margin-top: 6px;
 }
 
 .thought-row {
@@ -144,11 +156,11 @@ const showThoughtDetails = computed(() => (
 .progress-row {
   color: var(--kc-text);
   font-size: 14px;
-  line-height: 1.65;
+  line-height: 1.5;
 }
 
 .progress-row p {
-  margin: 5px 0 8px;
+  margin: 0;
   white-space: pre-wrap;
 }
 
@@ -160,8 +172,7 @@ const showThoughtDetails = computed(() => (
 }
 
 .thought-details {
-  display: grid;
-  gap: 4px;
+  display: block;
   padding: 2px 0 0;
 }
 </style>
