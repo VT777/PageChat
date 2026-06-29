@@ -1228,8 +1228,8 @@ describe('chat rollback', () => {
         citation: {
           citation_key: 'c1',
           document_id: 'doc-cq',
-          document_name: '閲嶅簡缁熻骞撮壌.pdf',
-          display_label: '閲嶅簡缁熻骞撮壌.pdf p.12',
+          document_name: 'chongqing_stats_yearbook.pdf',
+          display_label: 'chongqing_stats_yearbook.pdf p.12',
           source_anchor: {
             format: 'pdf',
             unit_type: 'page',
@@ -1244,8 +1244,8 @@ describe('chat rollback', () => {
     expect(store.messages[0].evidenceItems).toEqual([
       expect.objectContaining({
         docId: 'doc-cq',
-        documentName: '閲嶅簡缁熻骞撮壌.pdf',
-        displayLabel: '閲嶅簡缁熻骞撮壌.pdf p.12',
+        documentName: 'chongqing_stats_yearbook.pdf',
+        displayLabel: 'chongqing_stats_yearbook.pdf p.12',
         sourceAnchor: expect.objectContaining({ start_page: 12 }),
       }),
     ])
@@ -1280,8 +1280,8 @@ describe('chat rollback', () => {
           citations: [
             {
               document_id: 'doc-cq',
-              document_name: '閲嶅簡缁熻骞撮壌.pdf',
-              display_label: '閲嶅簡缁熻骞撮壌.pdf p.12',
+              document_name: 'chongqing_stats_yearbook.pdf',
+              display_label: 'chongqing_stats_yearbook.pdf p.12',
               source_anchor: {
                 format: 'pdf',
                 unit_type: 'page',
@@ -1291,8 +1291,8 @@ describe('chat rollback', () => {
             },
             {
               document_id: 'doc-cq',
-              document_name: '閲嶅簡缁熻骞撮壌',
-              display_label: '閲嶅簡缁熻骞撮壌 page 12',
+              document_name: 'chongqing_stats_yearbook',
+              display_label: 'chongqing_stats_yearbook page 12',
               source_anchor: {
                 format: 'pdf',
                 unit_type: 'page',
@@ -1308,8 +1308,8 @@ describe('chat rollback', () => {
     expect(store.messages[0].evidenceItems).toEqual([
       expect.objectContaining({
         docId: 'doc-cq',
-        documentName: '閲嶅簡缁熻骞撮壌.pdf',
-        displayLabel: '閲嶅簡缁熻骞撮壌.pdf p.12',
+        documentName: 'chongqing_stats_yearbook.pdf',
+        displayLabel: 'chongqing_stats_yearbook.pdf p.12',
         sourceAnchor: expect.objectContaining({ start_page: 12 }),
       }),
     ])

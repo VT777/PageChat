@@ -1,4 +1,4 @@
-﻿import os
+import os
 from pathlib import Path
 from dotenv import load_dotenv
 
@@ -44,7 +44,6 @@ BASE_DIR = Path(__file__).parent.parent.parent
 # 浼樺厛鍔犺浇 backend/.env锛屽苟瑕嗙洊杩涚▼涓仐鐣欑殑鍚屽悕鍙橀噺
 load_dotenv(dotenv_path=BASE_DIR / ".env", override=True)
 
-# 鏁版嵁鐩綍
 DATA_DIR = BASE_DIR / "data"
 DOCUMENTS_DIR = DATA_DIR / "documents"
 INDEXES_DIR = DATA_DIR / "indexes"
@@ -56,14 +55,12 @@ CHAT_ATTACHMENT_MAX_BYTES = int(
 CHAT_ATTACHMENT_MAX_PER_MESSAGE = int(os.getenv("CHAT_ATTACHMENT_MAX_PER_MESSAGE", "6"))
 CHAT_ATTACHMENT_ALLOWED_MIME_TYPES = {"image/png", "image/jpeg", "image/webp"}
 
-# 鏁版嵁搴?DATABASE_URL = f"sqlite+aiosqlite:///{DATA_DIR}/knowclaw.db"
 
 # JWT signing configuration. Keep local/test fallback stable across restarts.
 APP_ENV = app_env()
 IS_PRODUCTION = is_production()
 JWT_SECRET = resolve_jwt_secret()
 
-# LLM 鍩虹閰嶇疆
 LLM_API_KEY = os.getenv("LLM_API_KEY")
 LLM_BASE_URL = os.getenv(
     "LLM_BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1"
@@ -88,7 +85,6 @@ CITATION_MIN_CONFIDENCE = 0.65
 MULTITURN_MAX_USER_ROUNDS = 6
 AGENT_RUNTIME_MODE = os.getenv("AGENT_RUNTIME_MODE", "flat_tool_loop").strip().lower()
 
-# OCR 閰嶇疆锛堜娇鐢?DashScope qwen3.5-ocr锛?
 OCR_API_KEY = os.getenv("OCR_API_KEY", os.getenv("LLM_API_KEY"))  # 浼樺厛鐙珛閰嶇疆锛屽惁鍒欏鐢?LLM Key
 OCR_BASE_URL = os.getenv("OCR_BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1")
 OCR_MODEL = os.getenv("OCR_MODEL", "qwen3.5-ocr")
@@ -112,51 +108,41 @@ OCR_TIMEOUT_SECONDS = int(os.getenv("OCR_TIMEOUT_SECONDS", "60"))
 OCR_MIN_IMAGE_SIDE_PX = int(os.getenv("OCR_MIN_IMAGE_SIDE_PX", "30"))
 OCR_MIN_IMAGE_AREA_RATIO = float(os.getenv("OCR_MIN_IMAGE_AREA_RATIO", "0.005"))
 
-# 淇濈暀鏃ч厤缃悕鍏煎鎬э紙閬垮厤鍏朵粬浠ｇ爜寮曠敤鎶ラ敊锛?
 BIGMODEL_API_KEY = OCR_API_KEY
 BIGMODEL_BASE_URL = OCR_BASE_URL
 BIGMODEL_OCR_MODEL = OCR_MODEL
 
-# 澶氭ā鍨嬮厤缃?- 鍒嗗眰璋冪敤锛堜紭鍖栫増锛?
-# 娉細qwen3.6-plus 鍘熺敓鏀寔瑙嗚鐞嗚В锛坕mage_url锛夛紝鏃犻渶鍗曠嫭鐨勮瑙夋ā鍨?
 MODEL_CONFIG = {
-    # 鎰忓浘鍒嗙被锛歠lash 妯″瀷锛岃拷姹傞€熷害锛坱oken 浼樺寲鍚庡噺灏?46%锛?
     "intent": {
         "model": LLM_FLASH_MODEL,
         "temperature": 0,
         "max_tokens": 80,  # 鍑忓皯 20%锛屼紭鍖栧悗鐨?JSON 鏇寸簿绠€
     },
-    # 闂茶亰锛歠lash 妯″瀷锛岃拷姹傞€熷害
     "chat": {
         "model": LLM_FLASH_MODEL,
         "temperature": 0.7,
         "max_tokens": 500,  # 娣诲姞闄愬埗闃叉杩囬暱
     },
-    # 鏂囨。闂瓟锛歱lus 妯″瀷锛岃拷姹傝川閲忥紙娓╁害闄嶄綆浠ユ彁楂樹竴鑷存€э級
     "qa": {
         "model": LLM_PLUS_MODEL,
         "temperature": 0.3,  # 浠?0.7 闄嶄綆浠ユ彁楂樹竴鑷存€?
         "max_tokens": 1000,  # 娣诲姞闄愬埗
     },
-    # PageIndex 绱㈠紩鐢熸垚锛歠lash 妯″瀷锛堜紭鍖栨彁绀鸿瘝鍚庤川閲忚冻澶燂級
     "index": {
         "model": LLM_FLASH_MODEL,  # 浠?plus 鏀逛负 flash锛屾彁绀鸿瘝浼樺寲鍚庤川閲忚冻澶?
         "temperature": 0,
         "max_tokens": 200,  # 鐩綍/鎽樿绫讳换鍔＄畝鐭?
     },
-    # 鏂板锛氭煡璇㈡墿灞曪紝鐢ㄤ簬妫€绱紭鍖?
     "query_expansion": {
         "model": LLM_FLASH_MODEL,
         "temperature": 0,
         "max_tokens": 150,
     },
-    # 鏂板锛氳妭鐐规憳瑕佺敓鎴?
     "node_summary": {
         "model": LLM_FLASH_MODEL,  # 浣跨敤 flash 鍗冲彲
         "temperature": 0,
         "max_tokens": 80,
     },
-    # 鏂板锛氭悳绱㈢浉鍏虫€ц瘎鍒?
     "relevance": {
         "model": LLM_FLASH_MODEL,
         "temperature": 0,
@@ -164,7 +150,6 @@ MODEL_CONFIG = {
     },
 }
 
-# PageIndex 閰嶇疆锛堜紭鍖栫増锛?
 PAGEINDEX_CONFIG = {
     "model": "qwen3.6-flash",  # 淇濇寔 flash 妯″瀷锛屾彁绀鸿瘝浼樺寲鍚庤川閲忚冻澶?
     "toc_check_page_num": 15,  # 澧炲姞鍒?5椤碉紝骞宠　鍑嗙‘鐜囧拰閫熷害
@@ -174,12 +159,10 @@ PAGEINDEX_CONFIG = {
     "if_add_node_summary": "no",
     "if_add_doc_description": "yes",
     "if_add_node_text": "yes",
-    # 鏂板锛氬惎鐢ㄥ苟琛屽鐞嗘彁绀鸿瘝锛堟€ц兘浼樺寲锛?
     "use_optimized_prompts": True,
     "prompt_batch_size": 5,  # 姣忔壒骞惰澶勭悊鐨勬彁绀鸿瘝鏁伴噺
 }
 
-# 绱㈠紩妯″紡锛歴mart(鏅鸿兘璺敱) / balanced(骞宠　妯″紡) / fast(绮剧畝妯″紡)
 PAGEINDEX_MODE = os.getenv("PAGEINDEX_MODE", "balanced").strip().lower()
 if PAGEINDEX_MODE not in {"smart", "balanced", "fast"}:
     PAGEINDEX_MODE = "balanced"
@@ -190,7 +173,6 @@ PAGEINDEX_FAST_ENABLED = PAGEINDEX_MODE in {"fast", "smart"} or _env_bool(
 
 # 鍗曟枃妗ｇ储寮曞叏灞€瓒呮椂锛堢锛?
 # 浠?800绉掓敼涓?00绉掞細鏀硅繘鍚庣殑Branch B澧炲姞浜哣LM璋冪敤娆℃暟锛?0娆¤皟鐢?60绉?600绉?
-# 濡傛灉瓒呰繃10鍒嗛挓浠嶆湭瀹屾垚锛岃鏄庡鐞嗗崱浣忥紝搴旀爣璁颁负澶辫触
 PAGEINDEX_MAX_INDEX_SECONDS = int(os.getenv("PAGEINDEX_MAX_INDEX_SECONDS", "600"))
 
 # Batch indexing controls. Upload bursts enqueue jobs and let a small worker pool
@@ -224,7 +206,6 @@ PAGEINDEX_TOC_LLM_TIMEOUT_SECONDS = float(
 PAGEINDEX_TOC_LLM_MAX_TOKENS = int(
     os.getenv("PAGEINDEX_TOC_LLM_MAX_TOKENS", "4096")
 )
-# 鍚姩鏃跺洖鏀堕暱鏃堕棿澶勪簬 processing 鐨勪换鍔★紙鍒嗛挓锛?
 INDEXING_STUCK_THRESHOLD_MINUTES = int(
     os.getenv("INDEXING_STUCK_THRESHOLD_MINUTES", "30")
 )
@@ -301,7 +282,6 @@ def build_effective_pageindex_config(mode: str | None = None) -> dict:
     )
     return cfg
 
-# 鏂囦欢涓婁紶闄愬埗
 MAX_FILE_SIZE = 50 * 1024 * 1024  # 50MB
 ALLOWED_EXTENSIONS = {
     ".pdf",

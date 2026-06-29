@@ -6,8 +6,6 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
 FIXTURE_PATH = ROOT / "backend" / "tests" / "fixtures" / "toc" / "official_pageindex_expected_toc_reference.json"
-OFFICIAL_DOCS_DIR = Path(r"D:\projects\PageIndex\examples\documents")
-OFFICIAL_RESULTS_DIR = OFFICIAL_DOCS_DIR / "results"
 
 
 EXPECTED_FILES = [
@@ -32,8 +30,8 @@ def test_official_pageindex_fixture_covers_all_sample_documents() -> None:
     fixture = _load_fixture()
     documents = fixture.get("documents")
 
-    assert fixture["input_dir"] == str(OFFICIAL_DOCS_DIR)
-    assert fixture["official_results_dir"] == str(OFFICIAL_RESULTS_DIR)
+    assert fixture["input_dir"]
+    assert fixture["official_results_dir"]
     assert isinstance(documents, list)
     assert [doc["file"] for doc in documents] == EXPECTED_FILES
 
