@@ -10,6 +10,16 @@ PageChat is an AI document workspace for complex document understanding, structu
 
 PageChat is not just “upload a document and retrieve chunks.” It first builds a document structure, then lets the Agent progressively read evidence from folders, TOCs, pages, images, tables, and web sources. The reasoning process is visible, and citations are placed close to the conclusions so users can return to the original source.
 
+## Screenshots
+
+![Visual TOC and PDF preview](./docs/assets/screenshot-toc-preview.png)
+
+PageChat builds a navigable TOC before answering, so users can inspect document structure and jump back to the original page-level evidence.
+
+![Chat workspace with selected document context](./docs/assets/screenshot-chat-workspace.png)
+
+The chat workspace can bind a conversation to selected documents, folders, screenshots, or web context while keeping tool use and source-grounded answers visible.
+
 ## Core Features
 
 - **One-command deployment**: Docker Compose, frontend/backend image builds, and an Nginx entrypoint are included. Start the app first, then configure model providers in the UI.
