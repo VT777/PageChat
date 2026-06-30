@@ -5,6 +5,7 @@ import type { FolderTreeItem } from '@/api/folders'
 import FolderContextMenu from './FolderContextMenu.vue'
 import { useDocumentStore } from '@/stores/document'
 import { useFolderStore } from '@/stores/folder'
+import { useI18n } from '@/i18n/messages'
 
 const props = defineProps<{
   folder: FolderTreeItem
@@ -26,6 +27,7 @@ const emit = defineEmits<{
 
 const documentStore = useDocumentStore()
 const folderStore = useFolderStore()
+const { localizeText: lt } = useI18n()
 const isDragOver = ref(false)
 
 const contextMenuRef = ref<InstanceType<typeof FolderContextMenu> | null>(null)
@@ -168,7 +170,7 @@ async function onDrop(e: DragEvent) {
       <button
         @click="onCreate"
         class="opacity-0 group-hover:opacity-100 p-1 rounded hover:bg-muted-foreground/20"
-        title="新建子文件夹"
+        :title="lt('新建子文件夹')"
       >
         <Plus class="w-3 h-3" />
       </button>

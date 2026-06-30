@@ -1,0 +1,58 @@
+name: pagechat
+
+services:
+  pagechat-backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    image: pagechat-backend:local
+    container_name: pagechat-backend
+    environment:
+      APP_ENV: ${APP_ENV:-development}
+      JWT_SECRET: ${JWT_SECRET:-pagechat-local-dev-secret-change-me}
+      MODEL_SETTINGS_SECRET: ${MODEL_SETTINGS_SECRET:-pagechat-local-model-secret-change-me}
+      LLM_API_KEY: ${LLM_API_KEY:-}
+      LLM_BASE_URL: ${LLM_BASE_URL:-https://dashscope.aliyuncs.com/compatible-mode/v1}
+      LLM_MODEL: ${LLM_MODEL:-qwen3.6-plus}
+      ALLOW_ENV_MODEL_FALLBACK: ${ALLOW_ENV_MODEL_FALLBACK:-false}
+      AGENT_RUNTIME_MODE: ${AGENT_RUNTIME_MODE:-flat_tool_loop}
+      OCR_API_KEY: ${OCR_API_KEY:-}
+      OCR_BASE_URL: ${OCR_BASE_URL:-https://dashscope.aliyuncs.com/compatible-mode/v1}
+      OCR_MODEL: ${OCR_MODEL:-}
+      OCR_OPENAI_API_KEY: ${OCR_OPENAI_API_KEY:-}
+      OCR_PADDLEOCR_API_KEY: ${OCR_PADDLEOCR_API_KEY:-}
+      OCR_MAX_CONCURRENCY: ${OCR_MAX_CONCURRENCY:-4}
+      ANYSEARCH_API_KEY: ${ANYSEARCH_API_KEY:-}
+      PAGEINDEX_MODE: ${PAGEINDEX_MODE:-balanced}
+      PAGEINDEX_MAX_CONCURRENT_JOBS: ${PAGEINDEX_MAX_CONCURRENT_JOBS:-1}
+    volumes:
+      - pagechat-data:/app/data
+      - pagechat-logs:/app/logs
+    expose:
+      - "8000"
+    ports:
+      - "8000:8000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=5).read()"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 30s
+    restart: unless-stopped
+
+  pagechat-frontend:
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile
+    image: pagechat-frontend:local
+    container_name: pagechat-frontend
+    depends_on:
+      pagechat-backend:
+        condition: service_healthy
+    ports:
+      - "${PAGECHAT_HTTP_PORT:-8080}:80"
+    restart: unless-stopped
+
+volumes:
+  pagechat-data:
+  pagechat-logs:

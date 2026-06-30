@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ChevronRight, Home } from 'lucide-vue-next'
 import type { Folder } from '@/api/folders'
+import { useI18n } from '@/i18n/messages'
 
 const props = defineProps<{
   path: Folder[]
@@ -9,6 +10,8 @@ const props = defineProps<{
 const emit = defineEmits<{
   navigate: [folderId: string | null]
 }>()
+
+const { localizeText: lt } = useI18n()
 
 function navigateTo(index: number) {
   if (index === -1) {
@@ -30,7 +33,7 @@ function navigateTo(index: number) {
       ]"
     >
       <Home class="w-4 h-4" />
-      <span>根目录</span>
+      <span>{{ lt('根目录') }}</span>
     </button>
 
     <!-- Path Items -->

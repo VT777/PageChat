@@ -3,6 +3,8 @@ import { ref, onMounted, onUnmounted, nextTick, watch } from 'vue'
 import * as pdfjsLib from 'pdfjs-dist/legacy/build/pdf.mjs'
 import { X, ZoomIn, ZoomOut } from 'lucide-vue-next'
 import { currentPdfRenderDimensions } from '@/utils/pdfRenderScale'
+import { fetchPdfBlobUrl } from '@/utils/pdfFetch'
+import { useI18n } from '@/i18n/messages'
 
 // 设置 PDF.js worker
 import pdfWorker from 'pdfjs-dist/legacy/build/pdf.worker.min.mjs?url'
@@ -23,9 +25,11 @@ interface Emits {
 
 const props = defineProps<Props>()
 const emit = defineEmits<Emits>()
+const { localizeText: lt, localizeError } = useI18n()
 
 // PDF 文档
 let pdfDocument: pdfjsLib.PDFDocumentProxy | null = null
+let pdfObjectUrl: string | null = null
 const totalPages = ref(0)
 const isLoading = ref(true)
 const error = ref<string | null>(null)
@@ -55,13 +59,14 @@ const loadPdf = async () => {
   try {
     isLoading.value = true
     error.value = null
+    totalPages.value = 0
+    pages.value = []
     renderedCanvases.clear()
+    releasePdfResources()
     
-    const token = localStorage.getItem('token')
+    pdfObjectUrl = await fetchPdfBlobUrl(props.fileUrl)
     const loadingTask = pdfjsLib.getDocument({
-      url: props.fileUrl,
-      httpHeaders: token ? { Authorization: `Bearer ${token}` } : undefined,
-      withCredentials: false,
+      url: pdfObjectUrl,
     })
     pdfDocument = await loadingTask.promise
     totalPages.value = pdfDocument.numPages
@@ -96,8 +101,20 @@ const loadPdf = async () => {
     
   } catch (err: any) {
     console.error('[PDF Ref] Load failed:', err)
-    error.value = '加载失败'
+    releasePdfResources()
+    error.value = err?.message ? `${lt('加载失败')}：${localizeError(err.message)}` : lt('加载失败')
     isLoading.value = false
+  }
+}
+
+function releasePdfResources() {
+  if (pdfDocument) {
+    pdfDocument.destroy()
+    pdfDocument = null
+  }
+  if (pdfObjectUrl) {
+    URL.revokeObjectURL(pdfObjectUrl)
+    pdfObjectUrl = null
   }
 }
 
@@ -271,10 +288,7 @@ onMounted(() => {
 
 onUnmounted(() => {
   renderedCanvases.clear()
-  if (pdfDocument) {
-    pdfDocument.destroy()
-    pdfDocument = null
-  }
+  releasePdfResources()
 })
 
 // 暴露方法给父组件
@@ -320,7 +334,7 @@ defineExpose({
         >
           <div v-if="isLoading" class="state-message">
             <div class="loading-spinner"></div>
-            <span>正在加载PDF...</span>
+            <span>{{ lt('正在加载PDF...') }}</span>
           </div>
           
           <div v-else-if="error" class="state-message error">
@@ -379,7 +393,7 @@ defineExpose({
     >
       <div v-if="isLoading" class="state-message">
         <div class="loading-spinner"></div>
-        <span>正在加载PDF...</span>
+        <span>{{ lt('正在加载PDF...') }}</span>
       </div>
       
       <div v-else-if="error" class="state-message error">

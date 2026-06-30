@@ -1,6 +1,7 @@
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
 import { useChatStore } from './chat'
+import { localizeError } from '@/i18n/messages'
 
 interface User {
   id: string
@@ -96,7 +97,7 @@ export const useUserStore = defineStore('user', () => {
       
       // Handle wrapped response format
       if (!response.ok || !data.success) {
-        throw new Error(extractAuthError(data, '登录失败'))
+        throw new Error(localizeError(extractAuthError(data, '登录失败')))
       }
 
       setToken(data.token)
@@ -127,7 +128,7 @@ export const useUserStore = defineStore('user', () => {
       
       // Handle wrapped response format
       if (!response.ok || !data.success) {
-        throw new Error(extractAuthError(data, '注册失败'))
+        throw new Error(localizeError(extractAuthError(data, '注册失败')))
       }
 
       setToken(data.token)

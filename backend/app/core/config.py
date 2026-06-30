@@ -297,8 +297,5 @@ ALLOWED_EXTENSIONS = {
 
 
 def validate_required_settings() -> None:
-    if not os.getenv("LLM_API_KEY"):
-        raise RuntimeError(
-            "LLM_API_KEY is required. Set it in environment or backend/.env"
-        )
+    return None
 

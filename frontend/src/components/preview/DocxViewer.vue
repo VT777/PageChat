@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, watch, nextTick } from 'vue'
 import type { DocumentContent, SourceAnchor, TocItem } from '@/types/preview'
+import { useI18n } from '@/i18n/messages'
 import { normalizePreviewBlocks } from '@/utils/documentWorkbench'
 
 type DocumentBlock = {
@@ -29,6 +30,7 @@ const emit = defineEmits<{
 const containerRef = ref<HTMLDivElement>()
 const activeParagraph = ref<number | null>(null)
 const activeTocParagraph = ref<number | null>(null)
+const { localizeText: lt } = useI18n()
 
 // 段落列表
 const documentBlocks = computed<DocumentBlock[]>(() => {
@@ -107,7 +109,7 @@ const tocItems = computed(() => {
     fallback.push({
       id: `chunk_${Math.floor(i / 20) + 1}`,
       paraNumber: para.paraNumber,
-      title: `段落组 ${Math.floor(i / 20) + 1}`,
+      title: `${lt('段落组')} ${Math.floor(i / 20) + 1}`,
       level: 1,
     })
   }
@@ -185,15 +187,15 @@ defineExpose({
     <!-- 工具栏 -->
     <div class="toolbar">
       <div class="stats">
-        <span>{{ stats.paragraphs }} 段落</span>
+        <span>{{ stats.paragraphs }} {{ lt('段落') }}</span>
         <span class="separator">·</span>
-        <span>{{ stats.images }} 图片</span>
+        <span>{{ stats.images }} {{ lt('图片') }}</span>
       </div>
     </div>
 
     <div class="main-content">
       <aside v-if="showToc" class="toc-sidebar">
-        <div class="toc-title">目录</div>
+        <div class="toc-title">{{ lt('目录') }}</div>
         <div class="toc-nav">
           <button
             v-for="item in tocItems"
@@ -235,13 +237,13 @@ defineExpose({
         
         <!-- 无内容提示 -->
         <div v-if="documentBlocks.length === 0" class="empty-state">
-          <p>文档无文本内容</p>
+          <p>{{ lt('文档无文本内容') }}</p>
         </div>
       </div>
 
       <!-- 图片列表（侧边栏） -->
       <aside v-if="images.length > 0" class="images-sidebar">
-        <div class="images-title">文档图片 ({{ images.length }})</div>
+        <div class="images-title">{{ lt('文档图片') }} ({{ images.length }})</div>
         
         <div class="images-list">
           <div
@@ -256,7 +258,7 @@ defineExpose({
               class="image-thumb"
               loading="lazy"
             />
-            <div class="image-name">图片 {{ index + 1 }}</div>
+            <div class="image-name">{{ lt('图片') }} {{ index + 1 }}</div>
           </div>
         </div>
       </aside>

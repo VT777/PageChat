@@ -2,6 +2,7 @@
 import { ref, onMounted, onUnmounted } from 'vue'
 import { Pencil, Trash2, FolderInput, Plus } from 'lucide-vue-next'
 import type { Folder } from '@/api/folders'
+import { useI18n } from '@/i18n/messages'
 
 const props = defineProps<{
   folder: Folder
@@ -16,6 +17,7 @@ const emit = defineEmits<{
 
 const isOpen = ref(false)
 const position = ref({ x: 0, y: 0 })
+const { localizeText: lt } = useI18n()
 
 function open(event: MouseEvent) {
   event.preventDefault()
@@ -64,7 +66,7 @@ defineExpose({ open })
         class="w-full px-3 py-2 text-left flex items-center gap-2 hover:bg-muted text-sm"
       >
         <Plus class="w-4 h-4" />
-        新建子文件夹
+        {{ lt('新建子文件夹') }}
       </button>
       
       <button
@@ -72,7 +74,7 @@ defineExpose({ open })
         class="w-full px-3 py-2 text-left flex items-center gap-2 hover:bg-muted text-sm"
       >
         <Pencil class="w-4 h-4" />
-        重命名
+        {{ lt('重命名') }}
       </button>
       
       <button
@@ -80,7 +82,7 @@ defineExpose({ open })
         class="w-full px-3 py-2 text-left flex items-center gap-2 hover:bg-muted text-sm"
       >
         <FolderInput class="w-4 h-4" />
-        移动到
+        {{ lt('移动到') }}
       </button>
       
       <div class="h-px bg-border my-1" />
@@ -90,7 +92,7 @@ defineExpose({ open })
         class="w-full px-3 py-2 text-left flex items-center gap-2 hover:bg-muted text-sm text-destructive"
       >
         <Trash2 class="w-4 h-4" />
-        删除
+        {{ lt('删除') }}
       </button>
     </div>
   </Teleport>

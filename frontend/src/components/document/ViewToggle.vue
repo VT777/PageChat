@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { LayoutGrid, List } from 'lucide-vue-next'
+import { useI18n } from '@/i18n/messages'
 
 type ViewMode = 'grid' | 'list'
 
@@ -10,6 +11,7 @@ defineProps<{
 const emit = defineEmits<{
   'update:modelValue': [mode: ViewMode]
 }>()
+const { localizeText: lt } = useI18n()
 
 function setMode(mode: ViewMode) {
   emit('update:modelValue', mode)
@@ -26,10 +28,10 @@ function setMode(mode: ViewMode) {
           ? 'bg-primary text-primary-foreground shadow-sm'
           : 'text-muted-foreground hover:text-foreground hover:bg-muted'
       ]"
-      title="网格视图"
+      :title="lt('网格视图')"
     >
       <LayoutGrid class="w-4 h-4" />
-      <span class="hidden sm:inline">网格</span>
+      <span class="hidden sm:inline">{{ lt('网格') }}</span>
     </button>
     <button
       @click="setMode('list')"
@@ -39,10 +41,10 @@ function setMode(mode: ViewMode) {
           ? 'bg-primary text-primary-foreground shadow-sm'
           : 'text-muted-foreground hover:text-foreground hover:bg-muted'
       ]"
-      title="列表视图"
+      :title="lt('列表视图')"
     >
       <List class="w-4 h-4" />
-      <span class="hidden sm:inline">列表</span>
+      <span class="hidden sm:inline">{{ lt('列表') }}</span>
     </button>
   </div>
 </template>

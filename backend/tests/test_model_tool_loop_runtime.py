@@ -1,4 +1,5 @@
 import asyncio
+import contextlib
 import sys
 from pathlib import Path
 
@@ -80,6 +81,91 @@ class StreamingToolCallThenAnswerModel:
             )
         else:
             yield ModelTurn(content="There are three documents.")
+
+
+class StreamingToolThenGatedStreamingAnswerModel:
+    def __init__(self):
+        self.calls = 0
+        self.final_turn_gate = asyncio.Event()
+
+    async def stream_turn(self, *, messages, tools, user_id=None):
+        self.calls += 1
+        if self.calls == 1:
+            yield ModelTurn(
+                tool_calls=[
+                    ModelToolCall(
+                        id="call_1",
+                        name="browse_documents",
+                        arguments={"folder_id": "root"},
+                    )
+                ]
+            )
+        else:
+            yield ModelTextDelta("There are ")
+            yield ModelTextDelta("three documents.")
+            await self.final_turn_gate.wait()
+            yield ModelTurn(content="There are three documents.")
+
+
+class ToolThenNarratedToolThenAnswerModel:
+    def __init__(self):
+        self.calls = 0
+
+    async def stream_turn(self, *, messages, tools, user_id=None):
+        self.calls += 1
+        if self.calls == 1:
+            yield ModelTurn(
+                tool_calls=[
+                    ModelToolCall(
+                        id="call_1",
+                        name="browse_documents",
+                        arguments={"folder_id": "root"},
+                    )
+                ]
+            )
+        elif self.calls == 2:
+            yield ModelTextDelta("I need to inspect the folder structure.")
+            yield ModelToolCallDelta(index=0, id="call_2", name="view_folder_structure")
+            yield ModelToolCallDelta(index=0, arguments_delta='{"folder_id":"root"}')
+            yield ModelTurn(
+                content="I need to inspect the folder structure.",
+                tool_calls=[
+                    ModelToolCall(
+                        id="call_2",
+                        name="view_folder_structure",
+                        arguments={"folder_id": "root"},
+                    )
+                ],
+            )
+        else:
+            yield ModelTextDelta("The folder contains ")
+            yield ModelTextDelta("three documents.")
+            yield ModelTurn(content="The folder contains three documents.")
+
+
+class StreamingNarratedToolCallThenAnswerModel:
+    def __init__(self):
+        self.calls = 0
+
+    async def stream_turn(self, *, messages, tools, user_id=None):
+        self.calls += 1
+        if self.calls == 1:
+            yield ModelTextDelta("我先查一下相关文档。")
+            yield ModelTextDelta("找到了候选文件，继续读取。")
+            yield ModelToolCallDelta(index=0, id="call_1", name="browse_documents")
+            yield ModelToolCallDelta(index=0, arguments_delta='{"folder_id":"root"}')
+            yield ModelTurn(
+                content="我先查一下相关文档。找到了候选文件，继续读取。",
+                tool_calls=[
+                    ModelToolCall(
+                        id="call_1",
+                        name="browse_documents",
+                        arguments={"folder_id": "root"},
+                    )
+                ],
+            )
+        else:
+            yield ModelTurn(content="找到 3 个文档。")
 
 
 class ReasoningThenToolCallModel:
@@ -274,10 +360,87 @@ def test_flat_loop_streams_final_answer_text_deltas():
 
         events = [event async for event in runtime.stream(_state("Hello"))]
 
-        assert [event.payload["content"] for event in events if event.type == "answer_delta"] == [
+        assert [event.payload["content"] for event in events if event.type == "answer_candidate_delta"] == [
             "Hello, ",
             "how can I help?",
         ]
+        assert [event.payload["content"] for event in events if event.type == "answer_candidate_commit"] == [
+            "Hello, how can I help?"
+        ]
+
+    asyncio.run(run())
+
+
+def test_flat_loop_streams_answer_deltas_after_tool_before_final_turn_finishes():
+    async def run() -> None:
+        model = StreamingToolThenGatedStreamingAnswerModel()
+        runtime = ModelToolLoopRuntime(
+            model=model,
+            tool_runner=RecordingToolRunner(),
+            tools=[{"function": {"name": "browse_documents"}}],
+        )
+
+        stream = runtime.stream(_state())
+        try:
+            while True:
+                event = await asyncio.wait_for(stream.__anext__(), timeout=1)
+                if event.type == "tool_completed":
+                    break
+
+            first_answer = await asyncio.wait_for(stream.__anext__(), timeout=0.1)
+            second_answer = await asyncio.wait_for(stream.__anext__(), timeout=0.1)
+            assert first_answer.type == "answer_candidate_delta"
+            assert first_answer.payload["content"] == "There are "
+            assert second_answer.type == "answer_candidate_delta"
+            assert second_answer.payload["content"] == "three documents."
+        finally:
+            model.final_turn_gate.set()
+            with contextlib.suppress(StopAsyncIteration):
+                while True:
+                    await asyncio.wait_for(stream.__anext__(), timeout=1)
+
+    asyncio.run(run())
+
+
+def test_flat_loop_retracts_candidate_text_when_same_turn_calls_another_tool():
+    async def run() -> None:
+        runtime = ModelToolLoopRuntime(
+            model=ToolThenNarratedToolThenAnswerModel(),
+            tool_runner=RecordingToolRunner(),
+            tools=[
+                {"function": {"name": "browse_documents"}},
+                {"function": {"name": "view_folder_structure"}},
+            ],
+        )
+
+        events = [event async for event in runtime.stream(_state("What is in the selected folder?"))]
+
+        candidate_text = "".join(
+            event.payload.get("content", "")
+            for event in events
+            if event.type == "answer_candidate_delta"
+        )
+        retracted_text = "".join(
+            event.payload.get("content", "")
+            for event in events
+            if event.type == "answer_candidate_retract"
+        )
+        processing_text = "".join(
+            event.payload.get("content", "")
+            for event in events
+            if event.type == "processing_delta"
+        )
+        committed_text = "".join(
+            event.payload.get("content", "")
+            for event in events
+            if event.type in {"answer_candidate_commit", "answer_delta"}
+        )
+
+        assert "I need to inspect the folder structure." in candidate_text
+        assert "I need to inspect the folder structure." in retracted_text
+        assert "I need to inspect the folder structure." not in processing_text
+        assert "I need to inspect the folder structure." not in committed_text
+        assert committed_text == "The folder contains three documents."
 
     asyncio.run(run())
 
@@ -303,6 +466,36 @@ def test_flat_loop_forwards_native_tool_call_deltas_before_tool_start():
         }
         assert deltas[1].payload["arguments_delta"] == '{"folder_id":"root"'
         assert deltas[2].payload["arguments_delta"] == ',"recursive":true}'
+
+    asyncio.run(run())
+
+
+def test_flat_loop_moves_narration_before_tool_calls_to_processing_details():
+    async def run() -> None:
+        runtime = ModelToolLoopRuntime(
+            model=StreamingNarratedToolCallThenAnswerModel(),
+            tool_runner=RecordingToolRunner(),
+            tools=[{"function": {"name": "browse_documents"}}],
+        )
+
+        events = [event async for event in runtime.stream(_state("三一重工的母公司资产负债表"))]
+
+        processing_text = "".join(
+            event.payload.get("content", "")
+            for event in events
+            if event.type in {"answer_candidate_retract", "processing_delta"}
+        )
+        answer_text = "".join(
+            event.payload.get("content", "")
+            for event in events
+            if event.type == "answer_delta"
+        )
+
+        assert "我先查一下相关文档。" in processing_text
+        assert "找到了候选文件，继续读取。" in processing_text
+        assert "我先查一下相关文档。" not in answer_text
+        assert "找到了候选文件，继续读取。" not in answer_text
+        assert answer_text == "找到 3 个文档。"
 
     asyncio.run(run())
 

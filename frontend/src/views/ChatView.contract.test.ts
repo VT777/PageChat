@@ -15,4 +15,12 @@ describe('ChatView citation rendering contract', () => {
     expect(source).toContain('window.open(source.url')
     expect(source).not.toContain('activeCitation.value = webPreviewFromSource(source)')
   })
+
+  it('keeps the citation preview beside the chat workspace at full height', () => {
+    const source = readFileSync(new URL('./ChatView.vue', import.meta.url), 'utf8')
+
+    expect(source).toContain('grid-template-columns: minmax(0, 1fr) clamp(390px, 36vw, 620px);')
+    expect(source).toContain('grid-column: 2;')
+    expect(source).toContain('grid-row: 1 / 3;')
+  })
 })

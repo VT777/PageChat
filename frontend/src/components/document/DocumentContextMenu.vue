@@ -2,6 +2,7 @@
 import { ref, onMounted, onUnmounted } from 'vue'
 import { Eye, RefreshCw, Trash2, FolderInput, Pencil } from 'lucide-vue-next'
 import type { Document } from '@/stores/document'
+import { useI18n } from '@/i18n/messages'
 
 const props = defineProps<{
   document: Document
@@ -17,6 +18,7 @@ const emit = defineEmits<{
 
 const isOpen = ref(false)
 const position = ref({ x: 0, y: 0 })
+const { localizeText: lt } = useI18n()
 
 function open(event: MouseEvent) {
   event.preventDefault()
@@ -68,7 +70,7 @@ defineExpose({ open })
         class="w-full px-3 py-2 text-left flex items-center gap-2 hover:bg-muted text-sm"
       >
         <Eye class="w-4 h-4" />
-        打开/预览
+        {{ lt('打开/预览') }}
       </button>
       
       <button
@@ -77,7 +79,7 @@ defineExpose({ open })
         class="w-full px-3 py-2 text-left flex items-center gap-2 hover:bg-muted text-sm"
       >
         <RefreshCw class="w-4 h-4" />
-        重新解析
+        {{ lt('重新解析') }}
       </button>
       
       <button
@@ -85,7 +87,7 @@ defineExpose({ open })
         class="w-full px-3 py-2 text-left flex items-center gap-2 hover:bg-muted text-sm"
       >
         <Pencil class="w-4 h-4" />
-        重命名
+        {{ lt('重命名') }}
       </button>
 
       <button
@@ -93,7 +95,7 @@ defineExpose({ open })
         class="w-full px-3 py-2 text-left flex items-center gap-2 hover:bg-muted text-sm"
       >
         <FolderInput class="w-4 h-4" />
-        移动到
+        {{ lt('移动到') }}
       </button>
 
       <div class="h-px bg-border my-1" />
@@ -103,7 +105,7 @@ defineExpose({ open })
         class="w-full px-3 py-2 text-left flex items-center gap-2 hover:bg-muted text-sm text-destructive"
       >
         <Trash2 class="w-4 h-4" />
-        删除
+        {{ lt('删除') }}
       </button>
     </div>
   </Teleport>

@@ -1,4 +1,5 @@
-import { describe, expect, it } from 'vitest'
+import { beforeEach, describe, expect, it } from 'vitest'
+import { setLanguage } from '@/i18n/messages'
 import {
   DOCUMENT_WORKBENCH_PAGE_SIZE,
   buildDocumentListParams,
@@ -22,6 +23,10 @@ import {
 } from './documentWorkbench'
 
 describe('document workbench helpers', () => {
+  beforeEach(() => {
+    setLanguage('zh-CN')
+  })
+
   it('uses the Phase 8 dense-list page size', () => {
     expect(DOCUMENT_WORKBENCH_PAGE_SIZE).toBe(6)
   })

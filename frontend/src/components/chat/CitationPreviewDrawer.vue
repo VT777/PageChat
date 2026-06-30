@@ -3,6 +3,7 @@ import { computed } from 'vue'
 import { ExternalLink, FileText, Globe, X } from 'lucide-vue-next'
 import PdfReferenceViewer from '@/components/PdfReferenceViewer.vue'
 import UniversalPreview from '@/components/preview/UniversalPreview.vue'
+import { useI18n } from '@/i18n/messages'
 import type { SourceAnchor } from '@/types/preview'
 
 const props = defineProps<{
@@ -32,6 +33,7 @@ const isPdf = computed(() => normalizedFileType.value === '.pdf')
 const initialPage = computed(() => props.sourceAnchor?.start_page || 1)
 const canPreview = computed(() => Boolean(props.docId))
 const isWeb = computed(() => props.sourceType === 'web')
+const { localizeText: lt } = useI18n()
 </script>
 
 <template>
@@ -46,7 +48,7 @@ const isWeb = computed(() => props.sourceType === 'web')
             <span>{{ isWeb ? (domain || url) : documentName }}</span>
           </div>
         </div>
-        <button type="button" aria-label="关闭预览" @click="emit('close')">
+        <button type="button" :aria-label="lt('关闭预览')" @click="emit('close')">
           <X />
         </button>
       </header>
@@ -68,7 +70,7 @@ const isWeb = computed(() => props.sourceType === 'web')
           </div>
         </section>
         <div v-else-if="!canPreview" class="drawer-state">
-          未找到对应文档，无法打开来源预览。
+          {{ lt('未找到对应文档，无法打开来源预览。') }}
         </div>
         <PdfReferenceViewer
           v-else-if="isPdf && docId"

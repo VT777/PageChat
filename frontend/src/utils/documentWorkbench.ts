@@ -1,3 +1,5 @@
+import { currentLanguage, localizeError, localizeText } from '@/i18n/messages'
+
 export const DOCUMENT_WORKBENCH_PAGE_SIZE = 6
 
 export type PreviewKind = 'text' | 'markdown' | 'table' | 'docx' | 'pptx' | 'unknown'
@@ -84,8 +86,9 @@ function compactFailureText(message?: string | null): string {
     .map((line) => line.trim())
     .find(Boolean)
 
-  if (!firstLine) return '解析失败，请重新解析。'
-  return firstLine.length > 160 ? `${firstLine.slice(0, 157)}...` : firstLine
+  if (!firstLine) return localizeError('解析失败，请重新解析。')
+  const compact = firstLine.length > 160 ? `${firstLine.slice(0, 157)}...` : firstLine
+  return localizeError(compact)
 }
 
 export function documentFailureMessage(document?: DocumentFailureLike | null): string {
@@ -101,7 +104,7 @@ export function documentFailureMessage(document?: DocumentFailureLike | null): s
     code === 'ocr_not_configured' ||
     failureText.includes('OCR_ROUTE_NOT_CONFIGURED')
   ) {
-    return OCR_NOT_CONFIGURED_GUIDANCE
+    return localizeError(OCR_NOT_CONFIGURED_GUIDANCE)
   }
 
   return compactFailureText(document.error_message)
@@ -117,11 +120,11 @@ export function statusLabel(status?: string): string {
 }
 
 export function localizedStatusLabel(status?: string): string {
-  if (!status) return '未知'
-  if (status === 'completed') return '已完成'
-  if (status === 'needs_review') return '需复核'
-  if (status.startsWith('processing') || status === 'pending') return '索引中'
-  if (status.startsWith('failed')) return '失败'
+  if (!status) return localizeText('未知')
+  if (status === 'completed') return localizeText('已完成')
+  if (status === 'needs_review') return localizeText('需复核')
+  if (status.startsWith('processing') || status === 'pending') return localizeText('索引中')
+  if (status.startsWith('failed')) return localizeText('失败')
   return status
 }
 
@@ -142,7 +145,7 @@ export function formatDocumentDate(dateStr?: string): string {
   if (!dateStr) return 'Not available'
   const date = new Date(dateStr)
   if (Number.isNaN(date.getTime())) return 'Not available'
-  return date.toLocaleString('zh-CN', {
+  return date.toLocaleString(currentLanguage.value === 'zh-CN' ? 'zh-CN' : 'en-US', {
     month: 'short',
     day: 'numeric',
     hour: '2-digit',
@@ -392,32 +395,34 @@ export function qualityDisplay(report?: QualityReportLike): QualityDisplay {
   const status = stringValue(report?.status)
   if (status === 'completed') {
     return {
-      label: '已通过',
+      label: localizeText('已通过'),
       tone: 'ok',
-      message: '索引已完成，可用于问答和引用定位',
+      message: localizeText('索引已完成，可用于问答和引用定位'),
     }
   }
   if (status === 'needs_review') {
     const warnings = numberValue(report?.warning_count)
     return {
-      label: '需复核',
+      label: localizeText('需复核'),
       tone: 'warning',
       message: warnings > 0
-        ? `索引完成，但质量检查提示 ${warnings} 项需要复核`
-        : '索引完成，但质量检查提示需要复核',
+        ? (currentLanguage.value === 'zh-CN'
+          ? `索引完成，但质量检查提示 ${warnings} 项需要复核`
+          : `Indexing is complete, but ${warnings} quality check items require review.`)
+        : localizeText('索引完成，但质量检查提示需要复核'),
     }
   }
   if (status.startsWith('failed')) {
     return {
-      label: '失败',
+      label: localizeText('失败'),
       tone: 'error',
-      message: stringValue(report?.error_message, '索引失败，请重新解析'),
+      message: localizeError(stringValue(report?.error_message, '索引失败，请重新解析')),
     }
   }
   return {
-    label: '未生成',
+    label: localizeText('未生成'),
     tone: 'muted',
-    message: '暂无质量报告',
+    message: localizeText('暂无质量报告'),
   }
 }
 
@@ -428,7 +433,7 @@ export function documentDetailMetrics(input: {
 }): DetailMetric[] {
   const previewStats = input.previewStats || {}
   const report = input.qualityReport || {}
-  const pending = '打开预览后统计'
+  const pending = localizeText('打开预览后统计')
   const pageCount = numberValue(input.doc.page_count || input.doc.pages)
   const textChars = numberValue(previewStats.textChars)
   const tocNodes = numberValue(previewStats.tocNodes, numberValue(report.node_count))
@@ -441,28 +446,28 @@ export function documentDetailMetrics(input: {
 
   return [
     {
-      label: '页数 / 字数',
-      value: `${pageCount > 0 ? `${pageCount} 页` : pending} / ${textChars > 0 ? textChars.toLocaleString() : pending}`,
+      label: localizeText('页数 / 字数'),
+      value: `${pageCount > 0 ? `${pageCount} ${localizeText('页')}` : pending} / ${textChars > 0 ? textChars.toLocaleString() : pending}`,
       state: textChars > 0 ? 'ready' : 'pending',
     },
     {
-      label: 'TOC 节点',
+      label: localizeText('TOC 节点'),
       value: tocNodes > 0 ? String(tocNodes) : pending,
       state: tocNodes > 0 ? 'ready' : 'pending',
     },
     {
-      label: '摘要覆盖',
+      label: localizeText('摘要覆盖'),
       value: summaryCoverage,
       state: summaryCoverage === pending ? 'pending' : 'ready',
     },
     {
-      label: '文本字符',
+      label: localizeText('文本字符'),
       value: textChars > 0 ? textChars.toLocaleString() : pending,
       state: textChars > 0 ? 'ready' : 'pending',
     },
     {
-      label: 'OCR 页',
-      value: ocrPages !== undefined && ocrPages !== null ? String(ocrPages) : '未接入',
+      label: localizeText('OCR 页'),
+      value: ocrPages !== undefined && ocrPages !== null ? String(ocrPages) : localizeText('未接入'),
       state: ocrPages !== undefined && ocrPages !== null ? 'ready' : 'missing',
     },
   ]

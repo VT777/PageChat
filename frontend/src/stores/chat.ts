@@ -3,8 +3,12 @@ import { ref } from 'vue'
 import { chatApi } from '@/api'
 import { buildConversationExportMarkdown } from '@/ui/pagechatContracts'
 import { createBufferedStreamText, type BufferedStreamText } from '@/composables/useBufferedStreamText'
+import { localizeError } from '@/i18n/messages'
 import type {
   AnswerDelta,
+  AnswerCandidateCommit,
+  AnswerCandidateDelta,
+  AnswerCandidateRetract,
   Citation,
   CitationAdded,
   ProcessingDelta,
@@ -77,6 +81,7 @@ export interface Message {
   role: 'user' | 'assistant'
   content: string
   displayContent?: string
+  answerCandidate?: string
   thinking: string
   toolSteps: ToolStep[]
   isLoading: boolean
@@ -810,6 +815,61 @@ export const useChatStore = defineStore('chat', () => {
     displayBuffers.set(newMessageId, entry)
   }
 
+  function appendProcessingStep(
+    base: Message,
+    data: {
+      content: string
+      step?: number
+      status?: string
+      seq?: number
+      ts?: string
+    },
+  ): Message {
+    const nextProgressSteps = [...(base.progressSteps || [])]
+    const explicitStep = typeof data.step === 'number'
+    const step = explicitStep ? data.step : undefined
+    const latestToolSeq = Math.max(
+      -1,
+      ...base.toolSteps.map((tool) => Number(tool.seq ?? -1)),
+    )
+    let existingProgressIndex = -1
+    if (explicitStep) {
+      existingProgressIndex = nextProgressSteps.findIndex((item) => (
+        item.kind === 'processing' && item.step === step
+      ))
+    } else {
+      for (let i = nextProgressSteps.length - 1; i >= 0; i--) {
+        const item = nextProgressSteps[i]
+        if (
+          item.kind === 'processing' &&
+          item.step === undefined &&
+          Number(item.seq ?? -1) >= latestToolSeq
+        ) {
+          existingProgressIndex = i
+          break
+        }
+      }
+    }
+    const previous = existingProgressIndex >= 0 ? nextProgressSteps[existingProgressIndex] : null
+    const progressStep: ProgressStep = {
+      message: `${previous?.message || ''}${data.content}`,
+      kind: 'processing',
+      step,
+      status: data.status || 'streaming',
+      seq: previous?.seq ?? data.seq,
+      ts: data.ts,
+    }
+    if (existingProgressIndex >= 0) {
+      nextProgressSteps[existingProgressIndex] = progressStep
+    } else {
+      nextProgressSteps.push(progressStep)
+    }
+    return {
+      ...base,
+      progressSteps: nextProgressSteps,
+    }
+  }
+
   function updateLastMessage(updates: Partial<Message>) {
     const last = messages.value[messages.value.length - 1]
     if (last && last.role === 'assistant') {
@@ -1115,29 +1175,13 @@ export const useChatStore = defineStore('chat', () => {
         if (!content) break
         flushDisplayBuffer(last.id)
         const base = messages.value[lastIndex] || last
-        const nextProgressSteps = [...(base.progressSteps || [])]
-        const step = data.step ?? 0
-        const existingProgressIndex = nextProgressSteps.findIndex((item) => (
-          item.kind === 'processing' && (item.step ?? 0) === step
-        ))
-        const previous = existingProgressIndex >= 0 ? nextProgressSteps[existingProgressIndex] : null
-        const progressStep: ProgressStep = {
-          message: `${previous?.message || ''}${content}`,
-          kind: 'processing',
-          step,
-          status: data.status || 'streaming',
+        messages.value[lastIndex] = appendProcessingStep(base, {
+          content,
+          step: data.step,
+          status: data.status,
           seq: data.seq,
           ts: data.ts,
-        }
-        if (existingProgressIndex >= 0) {
-          nextProgressSteps[existingProgressIndex] = progressStep
-        } else {
-          nextProgressSteps.push(progressStep)
-        }
-        messages.value[lastIndex] = {
-          ...base,
-          progressSteps: nextProgressSteps,
-        }
+        })
         break
       }
       case 'reasoning_delta': {
@@ -1290,6 +1334,53 @@ export const useChatStore = defineStore('chat', () => {
         }
         break
       }
+      case 'answer_candidate_delta': {
+        const data = envelope.data as unknown as AnswerCandidateDelta
+        const content = data.content || ''
+        if (!content) break
+        const base = messages.value[lastIndex] || last
+        const buffer = getDisplayBuffer(base)
+        buffer.push(content)
+        messages.value[lastIndex] = {
+          ...base,
+          answerCandidate: `${base.answerCandidate || ''}${content}`,
+          displayContent: buffer.current(),
+        }
+        break
+      }
+      case 'answer_candidate_retract': {
+        const data = envelope.data as unknown as AnswerCandidateRetract
+        const base = messages.value[lastIndex] || last
+        const content = data.content || base.answerCandidate || ''
+        flushDisplayBuffer(base.id, true)
+        const resetBase = {
+          ...base,
+          answerCandidate: '',
+          displayContent: base.content,
+        }
+        messages.value[lastIndex] = content
+          ? appendProcessingStep(resetBase, {
+              content,
+              status: 'streaming',
+              seq: data.seq,
+              ts: data.ts,
+            })
+          : resetBase
+        break
+      }
+      case 'answer_candidate_commit': {
+        const data = envelope.data as unknown as AnswerCandidateCommit
+        const base = messages.value[lastIndex] || last
+        const content = data.content || base.answerCandidate || ''
+        flushDisplayBuffer(base.id, true)
+        messages.value[lastIndex] = {
+          ...base,
+          content: base.content + content,
+          answerCandidate: '',
+          displayContent: base.content + content,
+        }
+        break
+      }
       case 'answer_delta': {
         const data = envelope.data as unknown as AnswerDelta
         const base = messages.value[lastIndex] || last
@@ -1364,9 +1455,9 @@ export const useChatStore = defineStore('chat', () => {
 
   function runFailedDisplayMessage(data: RunFailed): string {
     if (data.error_code === 'MODEL_ROUTE_NOT_CONFIGURED') {
-      return data.message || modelRouteMissingMessage(data.route_slot)
+      return localizeError(data.message || modelRouteMissingMessage(data.route_slot))
     }
-    return data.error || data.message || '抱歉，处理请求时发生错误。'
+    return localizeError(data.error || data.message || '抱歉，处理请求时发生错误。')
   }
 
   function modelRouteMissingMessage(routeSlot?: string): string {
@@ -1803,7 +1894,7 @@ export const useChatStore = defineStore('chat', () => {
       } else {
         console.error('Chat error:', error)
         updateLastMessage({
-          content: '抱歉，发生了错误。请稍后重试。',
+          content: localizeError('抱歉，发生了错误。请稍后重试。'),
           isLoading: false,
         })
       }

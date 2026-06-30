@@ -1,215 +1,263 @@
 # PageChat
 
-PageChat 是一个面向复杂文档理解、结构化索引和知识问答的 AI 工作台。它基于 PageIndex 的文档结构化能力，结合 OCR/VLM 解析、模型供应商自定义、网络搜索、可视化文档管理、树状 TOC、引用预览和 Agent 工具调用流程，让用户能够围绕 PDF、扫描件、表格、演示文稿、Word 文档等资料进行可信问答。
+<!-- README-I18N:START -->
 
-PageChat 不是简单的“上传文档后切块检索”。它更关注长文档、视觉型文档和多文件夹知识库场景：先理解文档结构，再按目录、页面、图片、表格和来源锚点组织证据，最后让模型基于可验证材料回答。
+**English** | [简体中文](./README.zh-CN.md)
 
-> [!NOTE]
-> PageChat 仍处于快速开发阶段。当前版本适合本地评估、产品预览和二次开发，还不是面向生产环境的完整部署包。
+<!-- README-I18N:END -->
 
-## 核心能力
+PageChat is an AI document workspace for complex document understanding, structured indexing, and source-grounded question answering. Built on top of PageIndex, it extends document format support and adds document library management, visual TOC, OCR/VLM, model provider configuration, web search, citation preview, and an LLM-driven Agent tool loop for verifiable QA over PDFs, scanned files, spreadsheets, slide decks, Word documents, and other knowledge assets.
 
-- **PageIndex 文档理解**：构建树状目录、页码锚点、节点摘要和来源元数据，支持按文档结构定位证据。
-- **OCR / VLM 解析**：支持扫描件、图片型 PDF、图表页等视觉内容，可在设置中配置 OCR/VLM 模型和并发参数。
-- **模型供应商自定义**：支持 OpenAI-compatible、DashScope-compatible 等模型供应商，并可为问答、解析、OCR 等任务分别指定模型。
-- **多格式适配**：支持 PDF、Markdown、TXT、CSV、TSV、XLSX、DOCX、PPTX 等文件格式。
-- **Agent 文档问答**：模型可以通过工具浏览文件夹、读取文档结构、获取页面内容、查看图片证据、文档内搜索、聚合表格和调用网络搜索。
-- **可信引用**：回答中的引用可绑定到具体文档、页码、工作表、行范围、幻灯片、段落或网页来源。
-- **可视化界面**：包含 Chat、文档管理、文件夹导航、树状 TOC、PDF 预览、来源预览抽屉和设置页。
-- **会话持久化**：保存聊天历史、运行事件、选中文档、引用和上下文状态，页面切换后仍能恢复。
+PageChat is not just “upload a document and retrieve chunks.” It first builds a document structure, then lets the Agent progressively read evidence from folders, TOCs, pages, images, tables, and web sources. The reasoning process is visible, and citations are placed close to the conclusions so users can return to the original source.
 
-## 相比 PageIndex 官方能力的增强
+## Core Features
 
-PageIndex 提供了长文档结构化索引的基础能力。PageChat 在此基础上补齐了一个完整产品所需的应用层：
+- **One-command deployment**: Docker Compose, frontend/backend image builds, and an Nginx entrypoint are included. Start the app first, then configure model providers in the UI.
+- **Visual TOC**: Builds tree TOCs, page anchors, node summaries, and source metadata, then renders the structure visually in the frontend.
+- **OCR / VLM parsing**: Supports scanned documents, image-only PDFs, and visual chart pages. OCR models are configured by the user.
+- **Multi-format support**: Supports PDF, Markdown, TXT, CSV, TSV, XLSX, DOCX, PPTX, and other common formats.
+- **Custom models**: Supports one-click multi-provider setup and OpenAI-compatible adapters. QA, parsing, OCR/VLM, and other tasks can use different models.
+- **Web search**: Integrates AnySearch to add external web evidence when the user enables it.
+- **Trustworthy citations and previews**: Answers can cite documents, pages, table rows, slides, paragraphs, images, or web sources.
+- **Visual workspace**: Provides Chat, document management, folder navigation, preview, model settings, and related workspace UI.
 
-- 多用户文档库：支持文件夹、上传、重新解析、批量操作、下载和预览。
-- 产品化 TOC 体验：将 PageIndex 结构转化为前端可交互的树状目录和来源锚点。
-- 多模型配置：支持模型供应商、API Key、可用模型、模型能力标签和任务路由设置。
-- Agent 工具契约：让模型先浏览文件夹和文档结构，再按需读取证据，避免一次性把整个文档库塞进提示词。
-- 引用和预览联动：回答中的证据可以跳转到对应来源，方便用户核查。
-- 多格式文档索引：让非 PDF 文件也能进入统一的结构化问答流程。
-- 可选网络搜索：在用户开启并需要外部信息时，Agent 可以调用搜索能力并产生网页来源。
+## Design Philosophy
 
-## 项目结构
+Many document QA systems first ask an LLM to rewrite materials into a wiki, summary, or knowledge-base article, and then answer questions from that second-hand generated content. This is convenient, but it can also freeze the model’s omissions, over-compression, and misreadings into a new source of truth. Later answers become hard to audit: did the answer come from the original document, or from an unreliable rewrite?
+
+PageChat treats reliable TOC and source anchors as the first layer of infrastructure. It understands document structure first, preserves pages, sections, tables, images, and OCR sources, and then lets the Agent return to original evidence for each question. OCR is mainly used for indexing, locating, and fallback for non-vision models. If the QA model supports vision, image-based content should be answered from page images or original images, not OCR text alone. The model can summarize and reason, but key claims should map back to specific pages, paragraphs, table ranges, images, or web sources. The goal is not to turn documents into a plausible LLM wiki; it is to keep every answer traceable and source-checkable.
+
+## TOC Construction And Layered Strategy
+
+One important part of PageChat is splitting PDF TOC construction into independent layers: document-shape detection, page-text preprocessing, TOC candidate generation, page mapping, quality gates, and progressive enrichment. Different PDFs do not have to run through the same heavy model chain. Instead, PageChat routes by content shape:
+
+- **Well-structured text PDFs**: Use the PDF text layer, heading rules, embedded TOC, or visible TOC directly. These documents usually need only one low-cost QC/summary LLM call, can skip OCR entirely, and can finish TOC construction in seconds.
+- **Image-only or scanned PDFs**: Route to `ocr`, run OCR/VLM on full pages, build page-level text, and then detect TOC pages, extract TOC entries, and map pages.
+- **Hybrid PDFs**: Keep the reliable text layer and run OCR only on image pages, garbled pages, or empty-text pages, avoiding full-document OCR cost.
+- **Unstable structures**: Try fast/smart paths first. If TOC candidates, page mapping, or quality gates fail, automatically escalate to the balanced path instead of returning a broken tree.
+
+The result is simple PDFs stay fast, visual PDFs remain parseable, hybrid PDFs stay cost-controlled, and complex PDFs get quality fallback. The frontend always sees a unified tree TOC, while the backend can choose different processing routes.
+
+```mermaid
+flowchart TD
+    A["Upload PDF"] --> B["PDF structure analysis\ntext coverage, image pages, garbled pages, layout signals"]
+    B --> C{"Content shape detection"}
+
+    C -->|text\nreliable text layer| D["Text-layer path\nuse PDF text directly"]
+    C -->|ocr\nimage-only / scanned| E["Full-page OCR/VLM\ngenerate PageTextMap"]
+    C -->|hybrid\ntext + images| F["Selective OCR\nimage, garbled, or empty-text pages only"]
+
+    D --> G{"TOC source decision"}
+    E --> G
+    F --> G
+
+    G -->|embedded_toc| H["Embedded TOC fast path\nlow-cost, quick return"]
+    G -->|visible_toc_with_pages| I["Visible TOC extraction\ndirect page mapping"]
+    G -->|visible_toc_no_pages| J["Visible TOC extraction\ncontent-based page mapping"]
+    G -->|content_outline| K["Content outline\nheading / section candidates"]
+
+    H --> L["Generate TOC draft"]
+    I --> L
+    J --> L
+    K --> L
+    L --> M["Page mapping and tree building"]
+    M --> N["Quality gate\ncoverage, page ranges, hierarchy consistency"]
+    N -->|pass| O["Light enrichment\nnode text, document summary, source anchors"]
+    N -->|fail| P["Escalate to balanced path\nrerun detection, extraction, and mapping"]
+    P --> L
+    O --> Q["Save PDF TOC, pages, images, and source anchors"]
+    Q --> R["Frontend tree TOC / PDF preview"]
+    Q --> S["Agent tools read evidence on demand"]
+```
+
+## Agent Architecture
+
+PageChat uses `flat_tool_loop` by default. It is not a fixed stage machine, nor a backend-hardcoded workflow of “plan, retrieve, answer.” It is closer to a Claude Code / Codex-style flat LLM-driven tool loop: the model sees the system prompt, user question, selected document scope, available tools, and previous observations, then decides whether to call a tool or produce an answer. This also leaves room for future extension.
+
+```mermaid
+flowchart LR
+    U["User question + selected files/folders + conversation context"] --> R["Agent Runtime"]
+    R --> M["Model emits assistant/tool_call stream"]
+    M -->|plain text| S["Stream to Chat / Processing"]
+    M -->|tool_call| T["Tool Runner"]
+    T --> P["Boundary validation and argument repair"]
+    P --> X["Execute tool"]
+    X --> O["Observation + compact evidence + citations"]
+    O --> R
+    M -->|final answer| A["Answer + inline citations"]
+```
+
+Key Agent design choices:
+
+- **Model-controlled next step**: The backend does not predefine a retrieval stage. The model iterates from observations.
+- **Runtime-enforced boundaries**: The runtime handles user isolation, document scope, tool argument repair, web-search permissions, and citation binding.
+- **Compact reusable evidence**: Tool results are cached as reusable evidence to reduce repeated reads in the same conversation.
+- **Visible process**: Tool calls, processing text, citations, and final answer tokens stream to the frontend over SSE.
+
+## Agent Tool Design
+
+PageChat does not send the whole document library into the model context. It exposes a compact set of bounded tools. Tool results return the information the model needs: summaries, hit locations, citation anchors, and next-step hints rather than large unrelated text dumps.
+
+| Tool | Main purpose | Typical return |
+| --- | --- | --- |
+| `view_folder_structure` | View the current user's folder tree | Folder hierarchy, file counts, browsable locations |
+| `browse_documents` | Browse or search documents in the current scope | Document/folder list, status, summary, candidate `doc_id` |
+| `get_document_structure` | Read the full deep TOC and document organization | Section tree, page ranges, node summaries, structured anchors |
+| `search_within_document` | Keyword location inside one document | Hit pages, snippets, match reason, suggested pages to read |
+| `get_page_content` | Read page text or structured content | Page text, OCR snippets, table/paragraph citations |
+| `get_page_image` | Fetch full-page visual evidence | Page image reference, page number, evidence for vision models |
+| `get_document_image` | Fetch indexed charts or embedded images | Image reference, source page, description, citation anchor |
+| `aggregate_tables` | Run lightweight aggregation over table documents | Sheet, columns, statistics, row-range citations |
+| `web_search` | Use AnySearch for external information | Web title, snippet, URL, web citation source |
+
+Tool usage follows several principles:
+
+- **Structure before detail**: Overview questions should read TOC first; specific factual questions should then read pages, images, or tables.
+- **Citations bind to sources**: Citations should point to documents, pages, images, table ranges, or web URLs rather than arbitrary chunk numbers.
+- **Image evidence first**: If the QA model supports vision, image pages, charts, and scanned pages should use page images or original images directly. OCR text is mainly for indexing and fallback for non-vision models.
+- **User scope first**: When the user selects files or folders, the Agent should stay within that scope and not read other users' or unrelated content.
+- **Explicit web search**: `web_search` is exposed only when the user enables it or the question clearly requires external real-time information.
+
+## Project Structure
 
 ```text
 PageChat
-+-- backend/                 FastAPI 后端服务
-|   +-- app/api/             Auth、Chat、Documents、Folders、Tools、Settings API
-|   +-- app/agent/           Agent runtime、事件协议、引用绑定、模型协议适配
-|   +-- app/models/          SQLite 表结构、迁移和 Pydantic Schema
-|   +-- app/prompts/         Agent 和 PageIndex 提示词
-|   +-- app/services/        文档、索引、OCR、模型、搜索、预览等业务服务
-+-- frontend/                Vue 3 + TypeScript 前端
-|   +-- src/components/      Chat、文档、文件夹、预览、设置等组件
-|   +-- src/stores/          Chat、Document、Folder、User 等 Pinia 状态
-|   +-- src/views/           聊天、文档管理、登录、设置等页面
-|   +-- src/utils/           引用、范围、导出、预览等工具函数
-+-- scripts/                 本地开发和验证脚本
++-- backend/                 FastAPI backend service
+|   +-- app/api/             Auth, Chat, Documents, Folders, Settings API
+|   +-- app/agent/           Agent runtime, tool loop, event protocol, boundary policy
+|   +-- app/models/          SQLite table definitions, migrations, Pydantic schemas
+|   +-- app/prompts/         Agent and PageIndex prompts
+|   +-- app/services/        Document, index, OCR, model, search, preview services
++-- frontend/                Vue 3 + TypeScript frontend
+|   +-- src/components/      Chat, document, folder, preview, settings components
+|   +-- src/stores/          Chat, Document, Folder, User Pinia stores
+|   +-- src/views/           Chat, document management, login, settings views
+|   +-- src/utils/           Citation, range, export, PDF preview utilities
++-- deploy/nginx/            Docker frontend entrypoint config
++-- scripts/                 Local development and deployment verification scripts
++-- docker-compose.yml       One-command frontend/backend startup with persistent volumes
 ```
 
-后端默认使用 SQLite 保存用户、文档元数据、会话历史、运行事件和引用信息。上传文件、索引结果、预览文件和缓存数据位于 `backend/data/`。
+The backend uses SQLite by default to store users, document metadata, conversation history, run events, evidence, and citation records. In Docker deployments, runtime data is stored in the `pagechat-data` and `pagechat-logs` volumes.
 
-## 工作流
+## One-Command Deployment
 
-1. 用户上传文档到文档库，也可以放入不同文件夹。
-2. PageChat 根据文件类型执行解析，构建 PageIndex 风格的结构化索引。
-3. 前端展示解析状态、处理步骤、文档预览和树状 TOC。
-4. 用户在 Chat 中选择文件或文件夹作为当前问答范围。
-5. Agent 根据问题自主调用工具：浏览文件夹、读取文档结构、获取页面或图片证据、搜索文档或聚合表格。
-6. 模型基于证据生成回答，并在关键结论后附上引用。
-7. 用户点击引用后，可以在右侧预览对应文档、页面或来源。
-
-## 支持的文件格式
-
-| 格式 | 扩展名 | 说明 |
-| --- | --- | --- |
-| PDF | `.pdf` | 支持页码锚点、PDF 预览、页面图片和视觉内容处理 |
-| Markdown | `.md`, `.markdown` | 基于标题结构和行号锚点建立目录 |
-| 文本 | `.txt` | 基于行范围构建轻量结构 |
-| 表格 | `.csv`, `.tsv`, `.xlsx` | 支持工作表、行范围锚点和表格聚合 |
-| Word | `.docx` | 支持标题、段落和目录结构抽取 |
-| PowerPoint | `.pptx` | 支持幻灯片级别锚点 |
-
-## Agent 工具链
-
-PageChat 不会把完整文档库一次性发给模型，而是提供一组紧凑工具，让模型按需读取证据：
-
-| 工具 | 作用 |
-| --- | --- |
-| `view_folder_structure` | 查看当前用户的文件夹树。 |
-| `browse_documents` | 在指定文件夹或选中范围内浏览、搜索文档。 |
-| `get_document_structure` | 读取文档目录、章节、页码范围和摘要。 |
-| `get_page_content` | 读取指定页面或结构化内容单元。 |
-| `get_page_image` | 在需要视觉证据时渲染完整 PDF 页面图片。 |
-| `get_document_image` | 获取索引中记录的图片、图表或嵌入图像。 |
-| `search_within_document` | 在指定文档内进行关键词定位。 |
-| `aggregate_tables` | 对 CSV、TSV、XLSX 等表格文档执行简单聚合。 |
-| `web_search` | 在已配置并开启时进行网络搜索。 |
-
-## 技术栈
-
-**后端**
-
-- Python 3.11+
-- FastAPI + Uvicorn
-- SQLite + aiosqlite
-- LiteLLM / OpenAI-compatible 模型调用
-- PyMuPDF PDF 处理
-- OCR 服务和多格式解析服务
-
-**前端**
-
-- Vue 3 + TypeScript
-- Vite
-- Pinia
-- Tailwind CSS
-- PDF.js
-- Vitest + Playwright
-
-## 环境要求
-
-- Python 3.11 或更高版本
-- Node.js 18 或更高版本
-- 至少一个可用的大模型供应商 API Key
-- 如果需要解析扫描件或图片型文档，需要配置 OCR/VLM 模型
-
-## 快速开始
-
-### 1. 克隆项目
+### 1. Clone the project
 
 ```bash
 git clone https://github.com/VT777/PageChat.git
 cd PageChat
 ```
 
-### 2. 配置后端
+### 2. Copy configuration
+
+```bash
+cp .env.example .env
+```
+
+> [!TIP]
+> PageChat does not require `LLM_API_KEY` before startup. You can start the service first, then add model providers, API keys, QA models, and OCR/VLM models in the settings UI.
+
+For production or public deployments, set at least:
+
+```env
+APP_ENV=production
+JWT_SECRET=replace-with-a-long-random-secret
+MODEL_SETTINGS_SECRET=replace-with-another-long-random-secret
+PAGECHAT_HTTP_PORT=8080
+```
+
+### 3. Start
+
+```bash
+docker compose up -d --build
+```
+
+Windows users can also run:
+
+```bat
+start-pagechat-docker.bat
+```
+
+URLs:
+
+- Frontend: <http://localhost:8080>
+- Backend health check: <http://localhost:8000/health>
+- API docs: <http://localhost:8000/docs>
+
+### 4. Logs and shutdown
+
+```bash
+docker compose logs -f
+docker compose down
+```
+
+Windows helper scripts:
+
+```bat
+logs-pagechat-docker.bat
+stop-pagechat-docker.bat
+```
+
+## Local Development
+
+Backend:
 
 ```bash
 cd backend
 python -m venv venv
-```
-
-激活虚拟环境：
-
-```bash
-# Windows
 venv\Scripts\activate
-
-# macOS/Linux
-source venv/bin/activate
-```
-
-安装依赖：
-
-```bash
 pip install -r requirements.txt
-```
-
-创建 `backend/.env`：
-
-```env
-APP_ENV=development
-JWT_SECRET=replace-with-a-local-secret
-
-# 默认模型路由。也可以进入系统后在设置界面配置供应商。
-LLM_API_KEY=your-model-api-key
-LLM_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
-LLM_MODEL=qwen3.6-plus
-
-# 可选：用于扫描件或图片型文档的 OCR/VLM 路由。
-OCR_API_KEY=your-ocr-api-key
-OCR_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
-OCR_MODEL=qwen3.5-ocr
-
-# 可选：网络搜索供应商。
-ANYSEARCH_API_KEY=your-anysearch-key
-```
-
-启动后端：
-
-```bash
 python -m uvicorn app.main:app --host 127.0.0.1 --port 8000 --reload
 ```
 
-### 3. 启动前端
+Frontend:
 
 ```bash
-cd ../frontend
+cd frontend
 npm install
 npm run dev
 ```
 
-访问地址：
+Local development URLs:
 
-- 前端：<http://localhost:5173>
-- 后端健康检查：<http://localhost:8000/health>
-- API 文档：<http://localhost:8000/docs>
+- Frontend: <http://localhost:5173>
+- Backend: <http://localhost:8000>
 
-## 配置说明
+## Configuration
 
-登录后，大部分产品配置都可以在设置界面完成：
+After login, most product settings can be configured in the UI:
 
-- 模型供应商和 API Key
-- 可用模型列表和模型能力
-- 问答模型
-- 解析模型
-- OCR/VLM 模型
-- 网络搜索行为
-- 界面语言
+- Model providers and API keys
+- Available models, capabilities, and disabled status
+- QA model, parsing model, OCR/VLM model
+- OCR concurrency and parsing settings
+- AnySearch web search
+- Interface language
 
-环境变量仍用于本地启动、密钥、默认模型路由和服务级配置。生产环境必须设置可靠的 `JWT_SECRET` 或 `SECRET_KEY`，后端不会在生产模式下使用开发默认密钥。
+Environment variables are mainly used for service startup, secrets, ports, and optional fallback. The default product flow is: start the service first, then configure models in the UI.
 
-## 测试
+## Supported File Formats
 
-后端测试：
+| Format | Extensions | Notes |
+| --- | --- | --- |
+| PDF | `.pdf` | Page anchors, PDF preview, page images, OCR/VLM |
+| Markdown | `.md`, `.markdown` | Heading structure, line anchors |
+| Text | `.txt` | Line ranges and lightweight outline |
+| Tables | `.csv`, `.tsv`, `.xlsx` | Sheets, columns, row ranges, table aggregation |
+| Word | `.docx` | Headings, paragraphs, document structure |
+| PowerPoint | `.pptx` | Slide-level anchors |
+
+## Testing
+
+Backend tests:
 
 ```bash
 cd backend
 python -m pytest
 ```
 
-前端测试：
+Frontend tests and build:
 
 ```bash
 cd frontend
@@ -217,27 +265,18 @@ npm test
 npm run build
 ```
 
-端到端测试：
+Docker deployment verification:
 
 ```bash
-cd frontend
-npm run test:e2e
+python scripts/verify_docker_deploy.py
 ```
 
-## 开发说明
+## Roadmap
 
-- 后端运行数据会写入 `backend/data/`，不要提交该目录。
-- 前端开发服务器默认请求 `http://localhost:8000`。
-- 代码中仍可能存在少量历史内部名称或旧注释，产品对外统一命名为 PageChat。
-- OCR 是扫描件和图片型文档解析的必要配置；如果未配置 OCR/VLM，相关文档应提示用户配置，而不是静默使用开发默认值。
-- 网络搜索是可选能力，只应在已配置且用户允许的情况下参与回答。
+- Stabilize parsing quality for Word, PowerPoint, Excel, Markdown, plain text, scanned documents, and other common formats.
+- Support custom Skills so the Agent can perform TOC parsing and structured understanding for more file types.
+- Continue improving model-provider capability detection, OCR/VLM routing, and citation experience.
 
-## 后续方向
+## Acknowledgements
 
-- 完善不同模型供应商的能力识别。
-- 稳定常见不同格式的解析质量，包括 PDF、Word、PowerPoint、Excel、Markdown、纯文本和扫描件。
-- 支持自定义 Skill，让 Agent 能针对更多文件类型执行 TOC 解析和结构化理解。
-- 改进 OCR/VLM 模型选择和解析失败提示。
-- 扩展网络搜索路由和网页引用体验。
-- 补充 Docker、CI 和生产部署示例。
-- 持续清理历史内部名称和旧编码注释。
+Thanks to [VectifyAI/PageIndex](https://github.com/VectifyAI/PageIndex) for providing the algorithmic foundation for long-document understanding and TOC construction. PageChat's document-structuring capability benefits from this work.

@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref } from 'vue'
 import { Pencil, Trash2, FolderInput, Eye, FolderOpen } from 'lucide-vue-next'
+import { useI18n } from '@/i18n/messages'
 
 defineProps<{
   type: 'folder' | 'document'
@@ -15,6 +16,7 @@ const emit = defineEmits<{
 
 const isOpen = ref(false)
 const position = ref({ x: 0, y: 0 })
+const { localizeText: lt } = useI18n()
 
 function open(event: MouseEvent) {
   event.preventDefault()
@@ -53,7 +55,7 @@ defineExpose({ open, close })
       >
         <Eye v-if="type === 'document'" class="w-4 h-4" />
         <FolderOpen v-else class="w-4 h-4" />
-        <span>{{ type === 'document' ? '打开/预览' : '打开' }}</span>
+        <span>{{ type === 'document' ? lt('打开/预览') : lt('打开') }}</span>
       </button>
 
       <!-- Rename -->
@@ -62,7 +64,7 @@ defineExpose({ open, close })
         class="w-full px-3 py-2 text-left flex items-center gap-2 text-sm hover:bg-accent transition-colors"
       >
         <Pencil class="w-4 h-4" />
-        <span>重命名</span>
+        <span>{{ lt('重命名') }}</span>
       </button>
 
       <!-- Move -->
@@ -71,7 +73,7 @@ defineExpose({ open, close })
         class="w-full px-3 py-2 text-left flex items-center gap-2 text-sm hover:bg-accent transition-colors"
       >
         <FolderInput class="w-4 h-4" />
-        <span>移动到</span>
+        <span>{{ lt('移动到') }}</span>
       </button>
 
       <!-- Divider -->
@@ -83,7 +85,7 @@ defineExpose({ open, close })
         class="w-full px-3 py-2 text-left flex items-center gap-2 text-sm text-destructive hover:bg-destructive/10 transition-colors"
       >
         <Trash2 class="w-4 h-4" />
-        <span>删除</span>
+        <span>{{ lt('删除') }}</span>
       </button>
 
       <!-- Click outside to close -->
