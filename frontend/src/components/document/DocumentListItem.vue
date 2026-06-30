@@ -3,6 +3,7 @@ import { computed } from 'vue'
 import { Eye, Trash2, RefreshCw, FolderInput, CheckCircle2, AlertCircle, Loader2 } from 'lucide-vue-next'
 import FileTypeIcon from './FileTypeIcon.vue'
 import type { Document } from '@/stores/document'
+import { useI18n } from '@/i18n/messages'
 
 interface Props {
   document: Document
@@ -27,6 +28,7 @@ const emit = defineEmits<{
 const isProcessing = computed(() => props.document.status.startsWith('processing'))
 const isCompleted = computed(() => props.document.status === 'completed')
 const isFailed = computed(() => props.document.status.startsWith('failed'))
+const { language, localizeText: lt, localizeError } = useI18n()
 
 // 阶段式进度条：根据后端 status 映射进度
 const progress = computed(() => {
@@ -48,7 +50,7 @@ function formatSize(bytes: number): string {
 
 function formatDate(dateStr: string): string {
   const date = new Date(dateStr)
-  return date.toLocaleDateString('zh-CN', {
+  return date.toLocaleDateString(language.value, {
     month: 'short',
     day: 'numeric',
     hour: '2-digit',
@@ -85,7 +87,7 @@ function formatDate(dateStr: string): string {
       <div class="flex items-center gap-3 text-xs text-muted-foreground mt-0.5">
         <span>{{ formatSize(document.file_size) }}</span>
         <span>{{ formatDate(document.created_at) }}</span>
-        <span v-if="document.page_count">{{ document.page_count }} 页</span>
+        <span v-if="document.page_count">{{ document.page_count }} {{ lt('页') }}</span>
       </div>
     </div>
 
@@ -95,7 +97,7 @@ function formatDate(dateStr: string): string {
         <div class="flex justify-between text-xs text-muted-foreground mb-1">
           <span class="flex items-center gap-1 text-amber-500">
             <Loader2 class="w-3 h-3 animate-spin" />
-            处理中
+            {{ lt('处理中') }}
           </span>
           <span>{{ progress }}%</span>
         </div>
@@ -110,15 +112,15 @@ function formatDate(dateStr: string): string {
       <div
         v-else-if="isFailed"
         class="flex items-center gap-1 text-xs text-red-500"
-        :title="document.error_message || ''"
+        :title="localizeError(document.error_message || '')"
       >
         <AlertCircle class="w-3.5 h-3.5" />
-        <span>失败</span>
+        <span>{{ lt('失败') }}</span>
       </div>
 
       <div v-else class="flex items-center gap-1 text-xs text-emerald-500">
         <CheckCircle2 class="w-3.5 h-3.5" />
-        <span>已完成</span>
+        <span>{{ lt('已完成') }}</span>
       </div>
 
       <button
@@ -126,7 +128,7 @@ function formatDate(dateStr: string): string {
         @click="emit('showSteps', document.id)"
         class="text-xs text-primary hover:underline whitespace-nowrap"
       >
-        查看详情
+        {{ lt('查看详情') }}
       </button>
     </div>
 
@@ -136,7 +138,7 @@ function formatDate(dateStr: string): string {
         v-if="isCompleted"
         @click="emit('preview', document.id)"
         class="p-1.5 rounded-md hover:bg-muted text-muted-foreground hover:text-foreground"
-        title="预览"
+        :title="lt('预览')"
       >
         <Eye class="w-4 h-4" />
       </button>
@@ -144,21 +146,21 @@ function formatDate(dateStr: string): string {
         v-if="!isProcessing"
         @click="emit('reindex', document.id)"
         class="p-1.5 rounded-md hover:bg-muted text-muted-foreground hover:text-foreground"
-        title="重新解析"
+        :title="lt('重新解析')"
       >
         <RefreshCw class="w-4 h-4" />
       </button>
       <button
         @click="emit('move', document)"
         class="p-1.5 rounded-md hover:bg-muted text-muted-foreground hover:text-foreground"
-        title="移动到"
+        :title="lt('移动到')"
       >
         <FolderInput class="w-4 h-4" />
       </button>
       <button
         @click="emit('delete', document.id)"
         class="p-1.5 rounded-md hover:bg-muted text-destructive hover:text-destructive"
-        title="删除"
+        :title="lt('删除')"
       >
         <Trash2 class="w-4 h-4" />
       </button>

@@ -5,6 +5,7 @@ import { folderApi, type FolderTreeItem as FolderTreeItemType } from '@/api/fold
 import { Folder, Plus } from 'lucide-vue-next'
 import FolderTreeItem from './FolderTreeItem.vue'
 import CreateFolderDialog from './CreateFolderDialog.vue'
+import { useI18n } from '@/i18n/messages'
 
 const folderStore = useFolderStore()
 const emit = defineEmits<{
@@ -18,6 +19,7 @@ const emit = defineEmits<{
 const expandedFolders = ref<Set<string>>(new Set())
 const showCreateDialog = ref(false)
 const createFolderParentId = ref<string | null>(null)
+const { localizeText: lt } = useI18n()
 
 onMounted(() => {
   folderStore.fetchFolderTree()
@@ -50,7 +52,7 @@ async function handleFolderCreated() {
 }
 
 async function handleRename(folder: FolderTreeItemType) {
-  const newName = prompt('请输入新文件夹名称:', folder.name)
+  const newName = prompt(lt('请输入新文件夹名称:'), folder.name)
   if (newName && newName !== folder.name) {
     await folderApi.rename(folder.id, newName)
     await folderStore.fetchFolderTree()
@@ -59,7 +61,7 @@ async function handleRename(folder: FolderTreeItemType) {
 }
 
 async function handleDelete(id: string) {
-  if (confirm('确定要删除这个文件夹吗？\n\n⚠️ 警告：文件夹内的所有子文件夹和文档将被一并删除！')) {
+  if (confirm(lt('确定要删除这个文件夹吗？\n\n⚠️ 警告：文件夹内的所有子文件夹和文档将被一并删除！'))) {
     await folderApi.delete(id)
     await folderStore.fetchFolderTree()
     if (folderStore.currentFolderId === id) {
@@ -82,11 +84,11 @@ function handleFolderMoved() {
   <div class="w-64 h-full border-r bg-muted/30 flex flex-col">
     <!-- Header -->
     <div class="p-3 border-b flex items-center justify-between">
-      <span class="font-medium text-sm">文件夹</span>
+      <span class="font-medium text-sm">{{ lt('文件夹') }}</span>
       <button 
         @click="handleCreateClick(null)"
         class="p-1.5 rounded hover:bg-muted transition-colors"
-        title="新建文件夹"
+        :title="lt('新建文件夹')"
       >
         <Plus class="w-4 h-4" />
       </button>
@@ -103,7 +105,7 @@ function handleFolderMoved() {
         ]"
       >
         <Folder class="w-4 h-4" />
-        <span class="flex-1 truncate">根目录</span>
+        <span class="flex-1 truncate">{{ lt('根目录') }}</span>
       </div>
 
       <!-- Folder Tree Items -->

@@ -62,7 +62,7 @@ const emit = defineEmits<{
 
 const router = useRouter()
 const userStore = useUserStore()
-const { t, settingsNavLabel, language, languageOptions, setLanguage } = useI18n()
+const { t, settingsNavLabel, language, languageOptions, setLanguage, localizeText: lt, localizeError } = useI18n()
 const isChinese = computed(() => language.value === 'zh-CN')
 const activeSection = ref<SectionId>('providers')
 const providers = ref<ModelProviderConfig[]>([])
@@ -110,7 +110,9 @@ const compatibleModelForm = ref({
 const ocrSettings = ref({
   model: '',
   concurrency: 3,
-  vlmPrompt: '请只根据页面图像识别版面结构、表格和图片语义，不要编造不可见内容。',
+  vlmPrompt: isChinese.value
+    ? '请只根据页面图像识别版面结构、表格和图片语义，不要编造不可见内容。'
+    : 'Identify layout structure, tables, and image semantics from the page image only. Do not invent invisible content.',
 })
 
 const parsingSettings = ref({
@@ -372,7 +374,7 @@ function isOpenAICompatibleProvider(provider: string): boolean {
 }
 
 function providerCredentialTitle(provider: ModelProviderRow): string {
-  return provider.configured ? provider.keyMask || 'API KEY 1' : '未配置'
+  return provider.configured ? provider.keyMask || 'API KEY 1' : lt('未配置')
 }
 
 function providerCredentialList(provider: ModelProviderRow | null): ModelProviderRow['credentials'] {
@@ -500,13 +502,13 @@ async function deleteProviderCredential(credential: ModelProviderRow['credential
   providerMessage.value = ''
   try {
     await settingsApi.deleteModelProvider(credential.providerId)
-    providerMessage.value = 'API Key 已删除。'
+    providerMessage.value = lt('API Key 已删除。')
     if (providerForm.value.providerId === credential.providerId) startAddingProviderCredential()
     await loadProviders()
     refreshSelectedProviderRow(credential.provider)
     await fetchAllConfiguredProviderModels()
   } catch (error: any) {
-    providerError.value = error?.response?.data?.detail || '删除 API Key 失败。'
+    providerError.value = localizeError(error?.response?.data?.detail || '删除 API Key 失败。')
   }
 }
 
@@ -553,7 +555,7 @@ async function saveProviderAndClose() {
       })
       await fetchProviderModels(savedProviderId, { silent: true })
     } catch (error: any) {
-      providerError.value = error?.response?.data?.detail || '保存自定义模型失败。'
+      providerError.value = localizeError(error?.response?.data?.detail || '保存自定义模型失败。')
       return
     }
   }
@@ -573,7 +575,7 @@ async function loadProviders() {
     collapseAllProviderModels()
   } catch (error: any) {
     presets.value = defaultProviders()
-    providerError.value = error?.response?.data?.detail || '模型供应商配置暂时无法加载，已显示默认供应商。'
+    providerError.value = localizeError(error?.response?.data?.detail || '模型供应商配置暂时无法加载，已显示默认供应商。')
   } finally {
     loadingProviders.value = false
   }
@@ -607,7 +609,7 @@ async function loadWebSearchSettings() {
     webSearchSettings.value = normalizeWebSearchSettings(response.data)
   } catch (error: any) {
     webSearchSettings.value = defaultWebSearchSettings()
-    webSearchError.value = error?.response?.data?.detail || 'Web Search 配置暂时无法加载，已显示默认设置。'
+    webSearchError.value = localizeError(error?.response?.data?.detail || 'Web Search 配置暂时无法加载，已显示默认设置。')
   } finally {
     loadingWebSearchSettings.value = false
   }
@@ -639,9 +641,9 @@ async function saveWebSearchSettings() {
     })
     webSearchSettings.value = normalizeWebSearchSettings(response.data)
     webSearchApiKey.value = ''
-    webSearchMessage.value = 'Web Search 设置已保存。'
+    webSearchMessage.value = lt('Web Search 设置已保存。')
   } catch (error: any) {
-    webSearchError.value = error?.response?.data?.detail || '保存 Web Search 设置失败。'
+    webSearchError.value = localizeError(error?.response?.data?.detail || '保存 Web Search 设置失败。')
   } finally {
     savingWebSearchSettings.value = false
   }
@@ -731,7 +733,7 @@ async function saveProvider(): Promise<string | null> {
     }
     return savedProviderId
   } catch (error: any) {
-    providerError.value = error?.response?.data?.detail || '保存模型供应商失败。'
+    providerError.value = localizeError(error?.response?.data?.detail || '保存模型供应商失败。')
     return null
   } finally {
     savingProvider.value = false
@@ -878,7 +880,7 @@ onMounted(async () => {
         <header class="settings-dialog-header">
           <div>
             <h2>{{ t('settings.title') }}</h2>
-            <p>配置 PageChat 的模型、OCR、解析和问答行为</p>
+            <p>{{ lt('配置 PageChat 的模型、OCR、解析和问答行为') }}</p>
           </div>
           <button type="button" @click="close" :aria-label="t('settings.close')">
             <X />
@@ -917,8 +919,8 @@ onMounted(async () => {
         <section v-if="activeSection === 'providers'" class="settings-section">
           <div class="section-header">
             <div>
-              <h2>模型供应商</h2>
-              <p>统一管理供应商、凭据、OpenAI-compatible endpoint 和可用模型能力。</p>
+              <h2>{{ lt('模型供应商') }}</h2>
+              <p>{{ lt('统一管理供应商、凭据、OpenAI-compatible endpoint 和可用模型能力。') }}</p>
             </div>
             <div class="provider-search">
               <Search />
@@ -956,7 +958,7 @@ onMounted(async () => {
                   </div>
                   <button class="provider-config-button" type="button" @click="openProviderCredentialDialog(provider)">
                     <SlidersHorizontal />
-                    配置
+                    {{ lt('配置') }}
                   </button>
                 </div>
               </div>
@@ -966,13 +968,13 @@ onMounted(async () => {
               </div>
 
               <div v-if="!provider.configured" class="provider-card-notice">
-                <span>请配置 API 密钥，添加模型。</span>
+                <span>{{ lt('请配置 API 密钥，添加模型。') }}</span>
                 <button
                   type="button"
                   @click="isOpenAICompatibleProvider(provider.provider) ? openCompatibleModelDialog(provider) : openProviderCredentialDialog(provider)"
                 >
                   <KeyRound />
-                  {{ isOpenAICompatibleProvider(provider.provider) ? '添加模型' : '添加 API 密钥' }}
+                  {{ isOpenAICompatibleProvider(provider.provider) ? lt('添加模型') : lt('添加 API 密钥') }}
                 </button>
               </div>
 
@@ -980,7 +982,7 @@ onMounted(async () => {
                 <div class="model-list">
                   <div class="model-list-header">
                     <button class="model-count-line" type="button" @click="toggleProviderModels(provider)">
-                      {{ modelsForProviderRow(provider).length }} 个模型
+                      {{ modelsForProviderRow(provider).length }} {{ isChinese ? '个模型' : 'models' }}
                       <ChevronDown />
                     </button>
                     <div class="model-list-actions">
@@ -989,7 +991,7 @@ onMounted(async () => {
                         type="button"
                         @click="openCompatibleModelDialog(provider)"
                       >
-                        添加模型
+                        {{ lt('添加模型') }}
                       </button>
                       <button
                         type="button"
@@ -998,19 +1000,19 @@ onMounted(async () => {
                       >
                         <Loader2 v-if="providerRowLoading(provider)" class="spin" />
                         <RefreshCw v-else />
-                        刷新
+                        {{ lt('刷新') }}
                       </button>
                     </div>
                   </div>
                   <div v-if="!isProviderModelsCollapsed(provider)" class="model-list-body">
                     <div v-if="providerRowLoading(provider)" class="model-empty">
-                      正在获取可用模型...
+                      {{ lt('正在获取可用模型...') }}
                     </div>
                     <div v-else-if="providerRowError(provider)" class="model-empty error">
                       {{ providerRowError(provider) }}
                     </div>
                     <div v-else-if="modelsForProviderRow(provider).length === 0" class="model-empty">
-                      暂未返回模型。请检查 API Key 或 endpoint 后刷新。
+                      {{ lt('暂未返回模型。请检查 API Key 或 endpoint 后刷新。') }}
                     </div>
                     <div
                       v-for="entry in modelRowsForProviderRow(provider)"
@@ -1064,16 +1066,16 @@ onMounted(async () => {
         <section v-else-if="activeSection === 'ocr'" class="settings-section narrow">
           <div class="section-header">
             <div>
-              <h2>OCR 设置</h2>
-              <p>选择 OCR/VLM 模型、并发和视觉提示词。</p>
+              <h2>{{ lt('OCR 设置') }}</h2>
+              <p>{{ lt('选择 OCR/VLM 模型、并发和视觉提示词。') }}</p>
             </div>
           </div>
           <div class="form-grid">
             <label>
-              OCR 模型
+              {{ lt('OCR 模型') }}
               <select v-model="ocrSettings.model">
                 <option v-if="ocrModelOptions.length === 0" value="" disabled>
-                  请先配置支持 OCR/VLM 的模型
+                  {{ lt('请先配置支持 OCR/VLM 的模型') }}
                 </option>
                 <option v-for="model in ocrModelOptions" :key="model.value" :value="model.value">
                   {{ model.label }}
@@ -1081,11 +1083,11 @@ onMounted(async () => {
               </select>
             </label>
             <label>
-              并发
+              {{ lt('并发') }}
               <input v-model.number="ocrSettings.concurrency" type="number" min="1" max="12" />
             </label>
             <label class="wide">
-              VLM 提示词
+              {{ lt('VLM 提示词') }}
               <textarea v-model="ocrSettings.vlmPrompt" rows="6" />
             </label>
             <div class="wide settings-actions">
@@ -1105,16 +1107,16 @@ onMounted(async () => {
         <section v-else-if="activeSection === 'parsing'" class="settings-section narrow">
           <div class="section-header">
             <div>
-              <h2>解析设置</h2>
-              <p>配置 TOC 和结构解析使用的模型与默认解析模式。</p>
+              <h2>{{ lt('解析设置') }}</h2>
+              <p>{{ lt('配置 TOC 和结构解析使用的模型与默认解析模式。') }}</p>
             </div>
           </div>
           <div class="form-grid">
             <label class="wide">
-              解析模型
+              {{ lt('解析模型') }}
               <select v-model="parsingSettings.model">
                 <option v-if="parsingModelOptions.length === 0" value="" disabled>
-                  请先配置模型供应商
+                  {{ lt('请先配置模型供应商') }}
                 </option>
                 <option v-for="model in parsingModelOptions" :key="model.value" :value="model.value">
                   {{ model.label }}
@@ -1122,17 +1124,17 @@ onMounted(async () => {
               </select>
             </label>
             <label class="wide">
-              {{ PARSING_BATCH_CONCURRENCY_SETTING.label }}
+              {{ lt(PARSING_BATCH_CONCURRENCY_SETTING.label) }}
               <input
                 v-model.number="parsingSettings.batchParseConcurrency"
                 type="number"
                 :min="PARSING_BATCH_CONCURRENCY_SETTING.min"
                 :max="PARSING_BATCH_CONCURRENCY_SETTING.max"
               />
-              <small class="field-hint">{{ PARSING_BATCH_CONCURRENCY_SETTING.description }}</small>
+              <small class="field-hint">{{ lt(PARSING_BATCH_CONCURRENCY_SETTING.description) }}</small>
             </label>
             <div class="wide">
-              <div class="field-label">解析模式</div>
+              <div class="field-label">{{ lt('解析模式') }}</div>
               <div class="mode-options">
                 <button
                   v-for="mode in PARSE_MODE_OPTIONS"
@@ -1141,8 +1143,8 @@ onMounted(async () => {
                   type="button"
                   @click="parsingSettings.mode = mode.id"
                 >
-                  <strong>{{ mode.label }} <span v-if="mode.badge">{{ mode.badge }}</span></strong>
-                  <small>{{ mode.description }}</small>
+                  <strong>{{ lt(mode.label) }} <span v-if="mode.badge">{{ lt(mode.badge) }}</span></strong>
+                  <small>{{ lt(mode.description) }}</small>
                 </button>
               </div>
             </div>
@@ -1160,15 +1162,15 @@ onMounted(async () => {
         <section v-else-if="activeSection === 'qa'" class="settings-section narrow">
           <div class="section-header">
             <div>
-              <h2>问答设置</h2>
-              <p>选择问答模型，并设置 Web Search 参与回答的方式。</p>
+              <h2>{{ lt('问答设置') }}</h2>
+              <p>{{ lt('选择问答模型，并设置 Web Search 参与回答的方式。') }}</p>
             </div>
           </div>
           <div class="form-grid">
             <div class="wide">
-              <div class="field-label">问答模型</div>
+              <div class="field-label">{{ lt('问答模型') }}</div>
               <div v-if="qaModelGroups.length === 0" class="model-empty">
-                请先配置模型供应商，并刷新可用模型。
+                {{ lt('请先配置模型供应商，并刷新可用模型。') }}
               </div>
               <div v-else class="qa-model-groups">
                 <section v-for="group in qaModelGroups" :key="group.providerId" class="qa-model-group">
@@ -1203,7 +1205,7 @@ onMounted(async () => {
                       </span>
                     </span>
                     <small v-if="!model.capabilities.includes('vision')" class="qa-model-note">
-                      图片页将使用 OCR 文本证据
+                      {{ lt('图片页将使用 OCR 文本证据') }}
                     </small>
                   </button>
                 </section>
@@ -1227,14 +1229,14 @@ onMounted(async () => {
                   type="button"
                   @click="webSearchSettings.mode = mode.id"
                 >
-                  <strong>{{ mode.label }}</strong>
-                  <small>{{ mode.description }}</small>
+                  <strong>{{ lt(mode.label) }}</strong>
+                  <small>{{ lt(mode.description) }}</small>
                 </button>
               </div>
             </div>
 
             <label>
-              搜索供应商
+              {{ lt('搜索供应商') }}
               <select v-model="webSearchSettings.provider">
                 <option
                   v-for="provider in WEB_SEARCH_PROVIDER_OPTIONS"
@@ -1251,31 +1253,31 @@ onMounted(async () => {
                 v-model="webSearchApiKey"
                 type="password"
                 autocomplete="new-password"
-                :placeholder="webSearchSettings.api_key_mask || '留空则使用匿名额度'"
+                :placeholder="webSearchSettings.api_key_mask || lt('留空则使用匿名额度')"
               />
             </label>
             <label>
-              搜索区域
+              {{ lt('搜索区域') }}
               <select v-model="webSearchSettings.zone">
                 <option v-for="zone in WEB_SEARCH_ZONE_OPTIONS" :key="zone.id" :value="zone.id">
-                  {{ zone.label }}
+                  {{ lt(zone.label) }}
                 </option>
               </select>
             </label>
             <label>
-              语言
+              {{ lt('语言') }}
               <select v-model="webSearchSettings.language">
                 <option v-for="language in WEB_SEARCH_LANGUAGE_OPTIONS" :key="language.id" :value="language.id">
-                  {{ language.label }}
+                  {{ lt(language.label) }}
                 </option>
               </select>
             </label>
             <label>
-              最大结果数
+              {{ lt('最大结果数') }}
               <input v-model.number="webSearchSettings.max_results" type="number" min="1" max="10" />
             </label>
             <div>
-              <div class="field-label">内容类型</div>
+              <div class="field-label">{{ lt('内容类型') }}</div>
               <div class="checkbox-row">
                 <button
                   v-for="contentType in WEB_SEARCH_CONTENT_TYPE_OPTIONS"
@@ -1293,9 +1295,9 @@ onMounted(async () => {
 
             <div class="wide settings-actions">
               <span>
-                <template v-if="loadingWebSearchSettings">正在加载 Web Search 设置...</template>
-                <template v-else-if="webSearchSettings.api_key_mask">已保存密钥：{{ webSearchSettings.api_key_mask }}</template>
-                <template v-else>API Key 可选；留空时使用 AnySearch 匿名额度。</template>
+                <template v-if="loadingWebSearchSettings">{{ lt('正在加载 Web Search 设置...') }}</template>
+                <template v-else-if="webSearchSettings.api_key_mask">{{ isChinese ? `已保存密钥：${webSearchSettings.api_key_mask}` : `Saved key: ${webSearchSettings.api_key_mask}` }}</template>
+                <template v-else>{{ lt('API Key 可选；留空时使用 AnySearch 匿名额度。') }}</template>
               </span>
               <button
                 type="button"
@@ -1304,7 +1306,7 @@ onMounted(async () => {
               >
                 <Loader2 v-if="savingWebSearchSettings" class="spin" />
                 <CheckCircle2 v-else />
-                保存 Web Search
+                {{ lt('保存 Web Search') }}
               </button>
             </div>
           </div>
@@ -1338,16 +1340,16 @@ onMounted(async () => {
           <div class="section-header">
             <div>
               <h2>Account</h2>
-              <p>当前登录状态和账号操作。</p>
+              <p>{{ lt('当前登录状态和账号操作。') }}</p>
             </div>
           </div>
           <div class="account-card">
             <div class="account-avatar">{{ (userStore.username || 'P').slice(0, 1).toUpperCase() }}</div>
             <div>
-              <strong>{{ userStore.username || '未登录' }}</strong>
-              <span>{{ userStore.isLoggedIn ? '已登录' : '访客模式' }}</span>
+              <strong>{{ userStore.username || lt('未登录') }}</strong>
+              <span>{{ userStore.isLoggedIn ? lt('已登录') : lt('访客模式') }}</span>
             </div>
-            <button type="button" @click="logout">退出登录</button>
+            <button type="button" @click="logout">{{ lt('退出登录') }}</button>
           </div>
         </section>
       </main>
@@ -1359,7 +1361,7 @@ onMounted(async () => {
             <section class="provider-config-dialog" @click.stop>
               <header class="provider-config-header">
                 <div>
-                  <h3>{{ compatibleModelDialogOpen ? '添加模型' : 'API 密钥授权配置' }}</h3>
+                  <h3>{{ compatibleModelDialogOpen ? lt('添加模型') : lt('API 密钥授权配置') }}</h3>
                   <p>{{ selectedProviderRow?.label }}</p>
                 </div>
                 <button type="button" aria-label="Close provider dialog" @click="closeProviderConfigDialogs">
@@ -1370,15 +1372,15 @@ onMounted(async () => {
               <div class="provider-config-body">
                 <template v-if="compatibleModelDialogOpen">
                   <label>
-                    供应商名称
+                    {{ lt('供应商名称') }}
                     <input :value="selectedProviderRow?.label || providerLabel(providerForm.provider)" disabled />
                   </label>
                   <label>
-                    模型名称
-                    <input v-model="compatibleModelForm.modelName" placeholder="例如 gpt-4o 或 qwen-vl-max" />
+                    {{ lt('模型名称') }}
+                    <input v-model="compatibleModelForm.modelName" :placeholder="isChinese ? '例如 gpt-4o 或 qwen-vl-max' : 'e.g. gpt-4o or qwen-vl-max'" />
                   </label>
                   <label>
-                    模型类型
+                    {{ lt('模型类型') }}
                     <select v-model="compatibleModelForm.modelType">
                       <option>LLM</option>
                       <option>Vision</option>
@@ -1387,12 +1389,12 @@ onMounted(async () => {
                     </select>
                   </label>
                   <label>
-                    凭据名称
+                    {{ lt('凭据名称') }}
                     <input v-model="providerForm.credentialName" />
                   </label>
                   <label>
-                    显示名称
-                    <input v-model="compatibleModelForm.displayName" placeholder="可选，用于设置页展示" />
+                    {{ lt('显示名称') }}
+                    <input v-model="compatibleModelForm.displayName" :placeholder="lt('可选，用于设置页展示')" />
                   </label>
                   <label>
                     API Key
@@ -1409,13 +1411,13 @@ onMounted(async () => {
                   </label>
                   <label class="wide">
                     Endpoint model name
-                    <input v-model="compatibleModelForm.endpointModelName" placeholder="留空时使用模型名称" />
+                    <input v-model="compatibleModelForm.endpointModelName" :placeholder="lt('留空时使用模型名称')" />
                   </label>
                 </template>
 
                 <template v-else>
                   <div class="wide provider-credential-list">
-                    <div class="field-label">API 密钥</div>
+                    <div class="field-label">{{ lt('API 密钥') }}</div>
                     <div
                       v-for="credential in providerCredentialList(selectedProviderRow)"
                       :key="credential.providerId"
@@ -1427,15 +1429,15 @@ onMounted(async () => {
                       <strong>{{ credential.keyMask }}</strong>
                       <small>{{ credentialStatusLabel(credential.validation) }}</small>
                       <button class="provider-credential-delete" type="button" @click.stop="deleteProviderCredential(credential)">
-                        删除
+                        {{ lt('删除') }}
                       </button>
                     </div>
                     <button class="provider-add-credential-button" type="button" @click="startAddingProviderCredential">
-                      添加 API 密钥
+                      {{ lt('添加 API 密钥') }}
                     </button>
                   </div>
                   <label class="wide">
-                    凭据名称
+                    {{ lt('凭据名称') }}
                     <input v-model="providerForm.credentialName" />
                   </label>
                   <label class="wide">
@@ -1460,11 +1462,11 @@ onMounted(async () => {
 
               <footer class="provider-dialog-footer">
                 <span>{{ providerForm.providerId ? providerKeyHint(providerForm.providerId) : newProviderKeyHint }}</span>
-                <button type="button" @click="closeProviderConfigDialogs">取消</button>
+                <button type="button" @click="closeProviderConfigDialogs">{{ lt('取消') }}</button>
                 <button type="button" :disabled="providerSaveDisabled()" @click="saveProviderAndClose">
                   <Loader2 v-if="savingProvider" class="spin" />
                   <CheckCircle2 v-else />
-                  保存
+                  {{ lt('保存') }}
                 </button>
               </footer>
             </section>

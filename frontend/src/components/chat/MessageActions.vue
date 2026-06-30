@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref } from 'vue'
 import { Copy, RefreshCw, RotateCcw, Check } from 'lucide-vue-next'
+import { useI18n } from '@/i18n/messages'
 
 interface Props {
   messageId: string
@@ -17,6 +18,7 @@ const emit = defineEmits<{
 }>()
 
 const showCopied = ref(false)
+const { localizeText: lt } = useI18n()
 
 async function copyContent() {
   try {
@@ -35,7 +37,7 @@ function handleRetry() {
 }
 
 function handleRollback() {
-  if (confirm('确定要回滚到这条消息吗？这将删除之后的所有消息。')) {
+  if (confirm(lt('确定要回滚到这条消息吗？这将删除之后的所有消息。'))) {
     emit('rollback', props.messageId)
   }
 }
@@ -47,7 +49,7 @@ function handleRollback() {
     <transition name="fade">
       <div v-if="showCopied" class="copied-tooltip">
         <Check class="w-3 h-3" />
-        <span>已复制</span>
+        <span>{{ lt('已复制') }}</span>
       </div>
     </transition>
     
@@ -57,7 +59,7 @@ function handleRollback() {
       <button 
         @click="copyContent" 
         class="action-btn"
-        title="复制内容"
+        :title="lt('复制内容')"
       >
         <Copy class="w-4 h-4" />
       </button>
@@ -67,7 +69,7 @@ function handleRollback() {
         v-if="role === 'assistant'"
         @click="handleRetry" 
         class="action-btn action-btn-retry"
-        title="重新生成"
+        :title="lt('重新生成')"
       >
         <RefreshCw class="w-4 h-4" />
       </button>
@@ -77,7 +79,7 @@ function handleRollback() {
         v-if="role === 'user'"
         @click="handleRollback" 
         class="action-btn action-btn-rollback"
-        title="回滚到此处"
+        :title="lt('回滚到此处')"
       >
         <RotateCcw class="w-4 h-4" />
       </button>

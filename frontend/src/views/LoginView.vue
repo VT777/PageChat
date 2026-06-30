@@ -12,9 +12,11 @@ import {
 } from 'lucide-vue-next'
 import { useUserStore } from '@/stores/user'
 import { PRODUCT_NAME } from '@/ui/pagechatContracts'
+import { useI18n } from '@/i18n/messages'
 
 const router = useRouter()
 const userStore = useUserStore()
+const { localizeText: lt, localizeError } = useI18n()
 const isLogin = ref(true)
 const error = ref('')
 
@@ -41,13 +43,13 @@ async function handleLogin() {
     await userStore.login(loginForm.value.email, loginForm.value.password)
     router.push('/')
   } catch (err: any) {
-    error.value = err.message || '登录失败'
+    error.value = localizeError(err.message || '登录失败')
   }
 }
 
 async function handleRegister() {
   if (registerForm.value.password !== registerForm.value.confirmPassword) {
-    error.value = '两次输入的密码不一致'
+    error.value = lt('两次输入的密码不一致')
     return
   }
 
@@ -61,7 +63,7 @@ async function handleRegister() {
     isLogin.value = true
     loginForm.value.email = registerForm.value.email
   } catch (err: any) {
-    error.value = err.message || '注册失败'
+    error.value = localizeError(err.message || '注册失败')
   }
 }
 </script>
@@ -96,7 +98,7 @@ async function handleRegister() {
               <span>Browsed documents · 3 documents</span>
             </div>
             <div class="preview-answer">
-              <p>根据目录结构，核心风险集中在现金流、续约条款和附件证明三处。</p>
+              <p>{{ lt('根据目录结构，核心风险集中在现金流、续约条款和附件证明三处。') }}</p>
               <div>
                 <span>Q2 Report p.12</span>
                 <span>Contract p.4</span>
@@ -121,20 +123,20 @@ async function handleRegister() {
         </div>
 
         <div class="auth-heading">
-          <h1>{{ isLogin ? '欢迎回来' : '创建账号' }}</h1>
-          <p>{{ isLogin ? '登录后继续管理文档和对话。' : '创建 PageChat 账号，开始构建可追溯的文档问答工作区。' }}</p>
+          <h1>{{ isLogin ? lt('欢迎回来') : lt('创建账号') }}</h1>
+          <p>{{ isLogin ? lt('登录后继续管理文档和对话。') : lt('创建 PageChat 账号，开始构建可追溯的文档问答工作区。') }}</p>
         </div>
 
         <div class="auth-tabs">
-          <button :class="{ active: isLogin }" type="button" @click="isLogin = true">登录</button>
-          <button :class="{ active: !isLogin }" type="button" @click="isLogin = false">注册</button>
+          <button :class="{ active: isLogin }" type="button" @click="isLogin = true">{{ lt('登录') }}</button>
+          <button :class="{ active: !isLogin }" type="button" @click="isLogin = false">{{ lt('注册') }}</button>
         </div>
 
         <p v-if="error" class="auth-error">{{ error }}</p>
 
         <form v-if="isLogin" class="auth-form" @submit.prevent="handleLogin">
           <label>
-            电子邮箱
+            {{ lt('电子邮箱') }}
             <span>
               <Mail />
               <input v-model="loginForm.email" type="email" autocomplete="email" placeholder="you@example.com" />
@@ -142,7 +144,7 @@ async function handleRegister() {
           </label>
 
           <label>
-            密码
+            {{ lt('密码') }}
             <span>
               <Lock />
               <input v-model="loginForm.password" type="password" autocomplete="current-password" placeholder="••••••••" />
@@ -152,15 +154,15 @@ async function handleRegister() {
           <div class="form-row">
             <label class="remember">
               <input v-model="loginForm.remember" type="checkbox" />
-              记住我
+              {{ lt('记住我') }}
             </label>
-            <button class="link-button" type="button">忘记密码？</button>
+            <button class="link-button" type="button">{{ lt('忘记密码？') }}</button>
           </div>
 
           <button class="submit-button" type="submit" :disabled="userStore.isLoading">
             <span v-if="userStore.isLoading" class="spinner" />
             <template v-else>
-              登录
+              {{ lt('登录') }}
               <ArrowRight />
             </template>
           </button>
@@ -169,7 +171,7 @@ async function handleRegister() {
 
         <form v-else class="auth-form" @submit.prevent="handleRegister">
           <label>
-            用户名
+            {{ lt('用户名') }}
             <span>
               <User />
               <input v-model="registerForm.username" type="text" autocomplete="username" placeholder="TT" />
@@ -177,7 +179,7 @@ async function handleRegister() {
           </label>
 
           <label>
-            电子邮箱
+            {{ lt('电子邮箱') }}
             <span>
               <Mail />
               <input v-model="registerForm.email" type="email" autocomplete="email" placeholder="you@example.com" />
@@ -185,25 +187,25 @@ async function handleRegister() {
           </label>
 
           <label>
-            密码
+            {{ lt('密码') }}
             <span>
               <Lock />
-              <input v-model="registerForm.password" type="password" autocomplete="new-password" placeholder="至少 8 位，含大小写、数字和符号" />
+              <input v-model="registerForm.password" type="password" autocomplete="new-password" :placeholder="lt('至少 8 位，含大小写、数字和符号')" />
             </span>
           </label>
 
           <label>
-            确认密码
+            {{ lt('确认密码') }}
             <span>
               <Lock />
-              <input v-model="registerForm.confirmPassword" type="password" autocomplete="new-password" placeholder="再次输入密码" />
+              <input v-model="registerForm.confirmPassword" type="password" autocomplete="new-password" :placeholder="lt('再次输入密码')" />
             </span>
           </label>
 
           <button class="submit-button" type="submit" :disabled="userStore.isLoading">
             <span v-if="userStore.isLoading" class="spinner" />
             <template v-else>
-              创建账号
+              {{ lt('创建账号') }}
               <ArrowRight />
             </template>
           </button>

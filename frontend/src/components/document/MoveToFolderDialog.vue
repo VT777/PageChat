@@ -4,6 +4,7 @@ import { useFolderStore } from '@/stores/folder'
 import { useDocumentStore } from '@/stores/document'
 import { X, Folder, FolderOpen, ChevronRight } from 'lucide-vue-next'
 import type { Document } from '@/stores/document'
+import { useI18n } from '@/i18n/messages'
 
 const props = defineProps<{
   open: boolean
@@ -19,6 +20,7 @@ const folderStore = useFolderStore()
 const documentStore = useDocumentStore()
 const selectedFolderId = ref<string | null>(null)
 const loading = ref(false)
+const { localizeText: lt } = useI18n()
 
 onMounted(() => {
   folderStore.fetchFolderTree()
@@ -42,7 +44,7 @@ async function handleMove() {
     selectedFolderId.value = null
   } catch (error) {
     console.error('Failed to move document:', error)
-    alert('移动失败，请重试')
+    alert(lt('移动失败，请重试'))
   } finally {
     loading.value = false
   }
@@ -72,7 +74,7 @@ function isSelected(id: string | null) {
         <div class="flex items-center justify-between p-4 border-b">
           <h3 class="font-semibold flex items-center gap-2">
             <FolderOpen class="w-5 h-5" />
-            移动到文件夹
+            {{ lt('移动到文件夹') }}
           </h3>
           <button
             @click="handleClose"
@@ -86,7 +88,7 @@ function isSelected(id: string | null) {
         <!-- Folder List -->
         <div class="flex-1 overflow-y-auto p-4">
           <p class="text-sm text-muted-foreground mb-3">
-            选择目标文件夹：
+            {{ lt('选择目标文件夹：') }}
           </p>
           
           <!-- Root -->
@@ -98,7 +100,7 @@ function isSelected(id: string | null) {
             ]"
           >
             <Folder class="w-4 h-4" :class="isSelected(null) ? 'text-primary' : 'text-muted-foreground'" />
-            <span class="flex-1">根目录</span>
+            <span class="flex-1">{{ lt('根目录') }}</span>
             <ChevronRight v-if="isSelected(null)" class="w-4 h-4 text-primary" />
           </div>
 
@@ -120,7 +122,7 @@ function isSelected(id: string | null) {
           </div>
 
           <p v-if="folderStore.folderTree.length === 0" class="text-sm text-muted-foreground text-center py-4">
-            暂无文件夹
+            {{ lt('暂无文件夹') }}
           </p>
         </div>
 
@@ -131,15 +133,15 @@ function isSelected(id: string | null) {
             class="px-4 py-2 rounded-lg border hover:bg-muted"
             :disabled="loading"
           >
-            取消
+            {{ lt('取消') }}
           </button>
           <button
             @click="handleMove"
             class="px-4 py-2 rounded-lg bg-primary text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
             :disabled="loading || selectedFolderId === undefined"
           >
-            <span v-if="loading">移动中...</span>
-            <span v-else>移动</span>
+            <span v-if="loading">{{ lt('移动中...') }}</span>
+            <span v-else>{{ lt('移动') }}</span>
           </button>
         </div>
       </div>

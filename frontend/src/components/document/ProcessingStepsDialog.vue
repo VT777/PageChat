@@ -2,6 +2,7 @@
 import { ref, watch } from 'vue'
 import { X, CheckCircle2, AlertCircle, Loader2, Clock } from 'lucide-vue-next'
 import type { ProcessingStep } from '@/api'
+import { useI18n } from '@/i18n/messages'
 
 interface Props {
   visible: boolean
@@ -16,6 +17,7 @@ const emit = defineEmits<{
 }>()
 
 const dialogRef = ref<HTMLDialogElement | null>(null)
+const { localizeText: lt, localizeDuration } = useI18n()
 
 watch(() => props.visible, (val) => {
   if (val) {
@@ -51,13 +53,7 @@ function getStepBg(step: ProcessingStep) {
 }
 
 function formatDuration(seconds: number): string {
-  if (seconds < 60) return `${Math.round(seconds)}秒`
-  const mins = Math.floor(seconds / 60)
-  const secs = Math.round(seconds % 60)
-  if (mins < 60) return `${mins}分${secs}秒`
-  const hours = Math.floor(mins / 60)
-  const remainingMins = mins % 60
-  return `${hours}小时${remainingMins}分`
+  return localizeDuration(seconds)
 }
 </script>
 
@@ -68,7 +64,7 @@ function formatDuration(seconds: number): string {
     @close="handleClose"
   >
     <div class="flex items-center justify-between p-4 border-b">
-      <h2 class="text-lg font-semibold">处理详情</h2>
+      <h2 class="text-lg font-semibold">{{ lt('处理详情') }}</h2>
       <button
         @click="handleClose"
         class="p-1 rounded-md hover:bg-muted text-muted-foreground hover:text-foreground"
@@ -79,16 +75,16 @@ function formatDuration(seconds: number): string {
 
     <div class="p-4">
       <p class="text-sm text-muted-foreground mb-4">
-        文档：{{ documentName }}
+        {{ lt('文档：') }} {{ documentName }}
       </p>
 
       <div v-if="isLoading" class="flex items-center justify-center py-8">
         <Loader2 class="w-6 h-6 animate-spin text-primary" />
-        <span class="ml-2 text-sm text-muted-foreground">加载中...</span>
+        <span class="ml-2 text-sm text-muted-foreground">{{ lt('加载中...') }}</span>
       </div>
 
       <div v-else-if="steps.length === 0" class="text-center py-8 text-muted-foreground">
-        暂无处理步骤信息
+        {{ lt('暂无处理步骤信息') }}
       </div>
 
       <div v-else class="space-y-3">
@@ -117,12 +113,12 @@ function formatDuration(seconds: number): string {
             />
             <div class="flex-1 min-w-0">
               <div class="flex items-center justify-between">
-                <h3 class="text-sm font-medium">{{ step.title }}</h3>
+                <h3 class="text-sm font-medium">{{ lt(step.title) }}</h3>
                 <span v-if="step.duration" class="text-xs text-muted-foreground">
                   {{ formatDuration(step.duration) }}
                 </span>
               </div>
-              <p class="text-xs text-muted-foreground mt-1">{{ step.description }}</p>
+              <p class="text-xs text-muted-foreground mt-1">{{ lt(step.description) }}</p>
               <div
                 v-if="step.details && Object.keys(step.details).length > 0"
                 class="mt-2 p-2 rounded bg-background/50 text-xs font-mono text-muted-foreground overflow-x-auto"
@@ -140,7 +136,7 @@ function formatDuration(seconds: number): string {
         @click="handleClose"
         class="px-4 py-2 rounded-lg bg-primary text-primary-foreground text-sm font-medium hover:bg-primary/90 transition-colors"
       >
-        关闭
+        {{ lt('关闭') }}
       </button>
     </div>
   </dialog>

@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { FolderIcon, Trash2, RefreshCw, CheckSquare, Square } from 'lucide-vue-next'
+import { useI18n } from '@/i18n/messages'
 
 interface Props {
   selectedCount: number
@@ -18,6 +19,7 @@ const emit = defineEmits<{
 }>()
 
 const isAllSelected = computed(() => props.selectedCount === props.totalCount && props.totalCount > 0)
+const { localizeText: lt } = useI18n()
 
 function toggleSelectAll() {
   if (isAllSelected.value) {
@@ -34,29 +36,29 @@ function toggleSelectAll() {
       <button @click="toggleSelectAll" class="select-all-btn">
         <CheckSquare v-if="isAllSelected" class="w-4 h-4" />
         <Square v-else class="w-4 h-4" />
-        <span v-if="selectedCount > 0">已选择 {{ selectedCount }} 项</span>
-        <span v-else>全选</span>
+        <span v-if="selectedCount > 0">{{ lt('已选择') }} {{ selectedCount }} {{ lt('项') }}</span>
+        <span v-else>{{ lt('全选') }}</span>
       </button>
     </div>
     
     <div v-if="selectedCount > 0" class="batch-buttons">
-      <button @click="$emit('move')" class="batch-btn" title="移动到文件夹">
+      <button @click="$emit('move')" class="batch-btn" :title="lt('移动到文件夹')">
         <FolderIcon class="w-4 h-4" />
-        <span>移动</span>
+        <span>{{ lt('移动') }}</span>
       </button>
       
-      <button @click="$emit('reindex')" class="batch-btn" title="重新索引">
+      <button @click="$emit('reindex')" class="batch-btn" :title="lt('重新索引')">
         <RefreshCw class="w-4 h-4" />
-        <span>重新索引</span>
+        <span>{{ lt('重新索引') }}</span>
       </button>
       
-      <button @click="$emit('delete')" class="batch-btn batch-btn-danger" title="删除">
+      <button @click="$emit('delete')" class="batch-btn batch-btn-danger" :title="lt('删除')">
         <Trash2 class="w-4 h-4" />
-        <span>删除</span>
+        <span>{{ lt('删除') }}</span>
       </button>
     </div>
     <div v-else class="batch-hint">
-      请选择要操作的文档
+      {{ lt('请选择要操作的文档') }}
     </div>
   </div>
 </template>

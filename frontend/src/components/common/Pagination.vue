@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ChevronLeft, ChevronRight } from 'lucide-vue-next'
 import { computed } from 'vue'
+import { useI18n } from '@/i18n/messages'
 
 const props = defineProps<{
   currentPage: number
@@ -12,6 +13,7 @@ const emit = defineEmits<{
   change: [page: number]
 }>()
 
+const { localizeText: lt } = useI18n()
 const totalPages = computed(() => Math.ceil(props.total / props.pageSize))
 
 const pages = computed(() => {
@@ -51,7 +53,7 @@ function jumpToPage(input: string) {
   <div class="flex items-center justify-between gap-4 py-4">
     <!-- Info -->
     <span class="text-sm text-muted-foreground">
-      共 {{ total }} 项，{{ totalPages }} 页
+      {{ lt('共') }} {{ total }} {{ lt('项') }}，{{ totalPages }} {{ lt('页') }}
     </span>
 
     <!-- Pagination Controls -->
@@ -95,7 +97,7 @@ function jumpToPage(input: string) {
 
       <!-- Jump To -->
       <div class="flex items-center gap-2 ml-4 text-sm">
-        <span class="text-muted-foreground">跳至</span>
+        <span class="text-muted-foreground">{{ lt('跳至') }}</span>
         <input
           type="number"
           min="1"
@@ -103,7 +105,7 @@ function jumpToPage(input: string) {
           class="w-16 px-2 py-1.5 rounded-lg border text-center"
           @keyup.enter="jumpToPage(($event.target as HTMLInputElement).value)"
         />
-        <span class="text-muted-foreground">页</span>
+        <span class="text-muted-foreground">{{ lt('页') }}</span>
       </div>
     </div>
   </div>

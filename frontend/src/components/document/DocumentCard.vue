@@ -3,6 +3,7 @@ import { computed } from 'vue'
 import { Eye, Trash2, RefreshCw, FolderInput, CheckCircle2, AlertCircle, Loader2 } from 'lucide-vue-next'
 import FileTypeIcon from './FileTypeIcon.vue'
 import type { Document } from '@/stores/document'
+import { useI18n } from '@/i18n/messages'
 
 interface Props {
   document: Document
@@ -27,11 +28,12 @@ const emit = defineEmits<{
 const isProcessing = computed(() => props.document.status.startsWith('processing'))
 const isCompleted = computed(() => props.document.status === 'completed')
 const isFailed = computed(() => props.document.status.startsWith('failed'))
+const { language, localizeText: lt, localizeError } = useI18n()
 
 const statusConfig = computed(() => {
   if (isProcessing.value) {
     return {
-      label: '处理中',
+      label: lt('处理中'),
       icon: Loader2,
       color: 'text-amber-500',
       bg: 'bg-amber-50 dark:bg-amber-950/30',
@@ -40,7 +42,7 @@ const statusConfig = computed(() => {
   }
   if (isFailed.value) {
     return {
-      label: '失败',
+      label: lt('失败'),
       icon: AlertCircle,
       color: 'text-red-500',
       bg: 'bg-red-50 dark:bg-red-950/30',
@@ -48,7 +50,7 @@ const statusConfig = computed(() => {
     }
   }
   return {
-    label: '已完成',
+    label: lt('已完成'),
     icon: CheckCircle2,
     color: 'text-emerald-500',
     bg: 'bg-emerald-50 dark:bg-emerald-950/30',
@@ -76,7 +78,7 @@ function formatSize(bytes: number): string {
 
 function formatDate(dateStr: string): string {
   const date = new Date(dateStr)
-  return date.toLocaleDateString('zh-CN', {
+  return date.toLocaleDateString(language.value, {
     month: 'short',
     day: 'numeric',
     hour: '2-digit',
@@ -142,7 +144,7 @@ function formatDate(dateStr: string): string {
     <!-- Progress Bar (processing) -->
     <div v-if="isProcessing" class="mb-3">
       <div class="flex justify-between text-xs text-muted-foreground mb-1">
-        <span>处理进度</span>
+        <span>{{ lt('处理进度') }}</span>
         <span>{{ progress }}%</span>
       </div>
       <div class="h-1.5 bg-muted rounded-full overflow-hidden">
@@ -156,13 +158,13 @@ function formatDate(dateStr: string): string {
         @click="emit('showSteps', document.id)"
         class="mt-1.5 text-xs text-primary hover:underline w-full text-center"
       >
-        查看详情
+        {{ lt('查看详情') }}
       </button>
     </div>
 
     <!-- Error Message -->
     <div v-if="isFailed && document.error_message" class="mb-3">
-      <p class="text-xs text-red-500 text-center line-clamp-2">{{ document.error_message }}</p>
+      <p class="text-xs text-red-500 text-center line-clamp-2">{{ localizeError(document.error_message) }}</p>
     </div>
 
     <!-- Quick Actions -->
@@ -171,7 +173,7 @@ function formatDate(dateStr: string): string {
         v-if="isCompleted"
         @click="emit('preview', document.id)"
         class="p-1.5 rounded-md hover:bg-muted text-muted-foreground hover:text-foreground"
-        title="预览"
+        :title="lt('预览')"
       >
         <Eye class="w-4 h-4" />
       </button>
@@ -179,21 +181,21 @@ function formatDate(dateStr: string): string {
         v-if="!isProcessing"
         @click="emit('reindex', document.id)"
         class="p-1.5 rounded-md hover:bg-muted text-muted-foreground hover:text-foreground"
-        title="重新解析"
+        :title="lt('重新解析')"
       >
         <RefreshCw class="w-4 h-4" />
       </button>
       <button
         @click="emit('move', document)"
         class="p-1.5 rounded-md hover:bg-muted text-muted-foreground hover:text-foreground"
-        title="移动到"
+        :title="lt('移动到')"
       >
         <FolderInput class="w-4 h-4" />
       </button>
       <button
         @click="emit('delete', document.id)"
         class="p-1.5 rounded-md hover:bg-muted text-destructive hover:text-destructive"
-        title="删除"
+        :title="lt('删除')"
       >
         <Trash2 class="w-4 h-4" />
       </button>

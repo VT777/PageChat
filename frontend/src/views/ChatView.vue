@@ -19,6 +19,7 @@ import { describeScopeTrace } from '@/utils/retrievalScope'
 import { answerStartScrollTop, isNearBottom } from '@/utils/chatScroll'
 import { bindInlineCitations, type BoundInlineCitation } from '@/utils/citations'
 import { parseDocumentChatRouteQuery, parseFolderChatRouteContexts } from '@/ui/pagechatContracts'
+import { useI18n } from '@/i18n/messages'
 
 interface ComposerPayload {
   text: string
@@ -46,6 +47,7 @@ const chatStore = useChatStore()
 const documentStore = useDocumentStore()
 const folderStore = useFolderStore()
 const route = useRoute()
+const { localizeText: lt } = useI18n()
 const scrollRef = ref<HTMLDivElement | null>(null)
 const composerRef = ref<InstanceType<typeof ChatComposer> | null>(null)
 const shouldFollowStream = ref(true)
@@ -61,12 +63,12 @@ const pendingRollback = ref<{
 const attachmentPreviews = ref<Record<string, ChatAttachmentPreview>>({})
 const previewObjectUrls = new Map<string, string>()
 
-const prompts = [
-  '总结当前文件夹里的关键结论',
-  '找出这份报告里和收入增长相关的证据',
-  '对比两个版本的合同条款差异',
-  '根据目录结构帮我定位风险章节',
-]
+const prompts = computed(() => [
+  lt('总结当前文件夹里的关键结论'),
+  lt('找出这份报告里和收入增长相关的证据'),
+  lt('对比两个版本的合同条款差异'),
+  lt('根据目录结构帮我定位风险章节'),
+])
 
 const routeDocumentContext = computed(() => {
   const contexts = parseDocumentChatRouteQuery(route.query as Record<string, unknown>)
@@ -483,14 +485,14 @@ onBeforeUnmount(() => {
                     {{ message.content }}
                   </div>
                   <div class="bubble-actions" aria-label="Message actions">
-                    <button type="button" title="复制" aria-label="复制" @click="copyMessage(message)">
+                    <button type="button" :title="lt('复制')" :aria-label="lt('复制')" @click="copyMessage(message)">
                       <Check v-if="copiedMessageId === message.id" />
                       <Copy v-else />
                     </button>
-                    <button type="button" title="撤回" aria-label="撤回" @click="rollbackMessage(message)">
+                    <button type="button" :title="lt('撤回')" :aria-label="lt('撤回')" @click="rollbackMessage(message)">
                       <Undo2 />
                     </button>
-                    <button type="button" title="重新生成" aria-label="重新生成" @click="regenerateUserMessage(message)">
+                    <button type="button" :title="lt('重新生成')" :aria-label="lt('重新生成')" @click="regenerateUserMessage(message)">
                       <RotateCcw />
                     </button>
                   </div>
@@ -508,7 +510,7 @@ onBeforeUnmount(() => {
                       :alt="attachment.original_name"
                     />
                     <span v-else class="sent-attachment-placeholder">
-                      {{ attachmentPreviewFor(attachment).preview_status === 'loading' ? '加载中' : '图片' }}
+                      {{ attachmentPreviewFor(attachment).preview_status === 'loading' ? lt('加载中') : lt('图片') }}
                     </span>
                     <span class="sent-attachment-name">{{ attachment.original_name }}</span>
                   </div>
@@ -539,11 +541,11 @@ onBeforeUnmount(() => {
                 </div>
 
                 <div v-if="message.content && !message.isLoading" class="assistant-actions">
-                  <button type="button" title="复制" aria-label="复制" @click="copyMessage(message)">
+                  <button type="button" :title="lt('复制')" :aria-label="lt('复制')" @click="copyMessage(message)">
                     <Check v-if="copiedMessageId === message.id" />
                     <Copy v-else />
                   </button>
-                  <button type="button" title="重新生成" aria-label="重新生成" @click="regenerateAssistantMessage(message)">
+                  <button type="button" :title="lt('重新生成')" :aria-label="lt('重新生成')" @click="regenerateAssistantMessage(message)">
                     <RefreshCw />
                   </button>
                 </div>
@@ -562,11 +564,11 @@ onBeforeUnmount(() => {
           <div v-if="pendingRollback" class="rollback-toast">
             <Undo2 />
             <span>
-              已撤回 {{ pendingRollback.deletedCount }} 条消息，原提示词已放入输入框
+              {{ lt('已撤回') }} {{ pendingRollback.deletedCount }} {{ lt('条消息，原提示词已放入输入框') }}
             </span>
             <button type="button" @click="restoreRollback">
               <RotateCcw />
-              还原
+              {{ lt('还原') }}
             </button>
           </div>
           <ChatComposer

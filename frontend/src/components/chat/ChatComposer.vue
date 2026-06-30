@@ -54,7 +54,7 @@ const emit = defineEmits<{
 }>()
 
 const chatStore = useChatStore()
-const { t, composerActionLabel } = useI18n()
+const { t, composerActionLabel, localizeText: lt } = useI18n()
 
 const text = ref('')
 const showMenu = ref(false)
@@ -238,7 +238,7 @@ async function uploadImagesForSubmit(): Promise<ChatAttachmentMetadata[]> {
       uploaded.push(metadata)
     } catch (error) {
       image.status = 'failed'
-      image.error = '上传失败'
+      image.error = lt('上传失败')
       throw error
     }
   }
@@ -372,8 +372,8 @@ onBeforeUnmount(() => {
           :title="image.error || image.name"
         >
           <img :src="image.previewUrl" :alt="image.name" />
-          <span v-if="image.status === 'uploading'" class="image-status">上传中</span>
-          <span v-else-if="image.status === 'failed'" class="image-status error">失败</span>
+          <span v-if="image.status === 'uploading'" class="image-status">{{ t('composer.uploading') }}</span>
+          <span v-else-if="image.status === 'failed'" class="image-status error">{{ t('composer.failed') }}</span>
           <button type="button" @click="removeImage(image.localId)">
             <X />
           </button>
@@ -417,7 +417,7 @@ onBeforeUnmount(() => {
 
           <button v-if="webSearch" class="context-chip active" type="button" @click="webSearch = false">
             <span class="chip-icon"><Globe /></span>
-            <span>搜索</span>
+            <span>{{ t('composer.search') }}</span>
           </button>
           <button
             :class="['thinking-toggle', { active: thinkingEnabled }]"

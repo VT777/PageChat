@@ -3,6 +3,7 @@ import { ref } from 'vue'
 import { chatApi } from '@/api'
 import { buildConversationExportMarkdown } from '@/ui/pagechatContracts'
 import { createBufferedStreamText, type BufferedStreamText } from '@/composables/useBufferedStreamText'
+import { localizeError } from '@/i18n/messages'
 import type {
   AnswerDelta,
   AnswerCandidateCommit,
@@ -1454,9 +1455,9 @@ export const useChatStore = defineStore('chat', () => {
 
   function runFailedDisplayMessage(data: RunFailed): string {
     if (data.error_code === 'MODEL_ROUTE_NOT_CONFIGURED') {
-      return data.message || modelRouteMissingMessage(data.route_slot)
+      return localizeError(data.message || modelRouteMissingMessage(data.route_slot))
     }
-    return data.error || data.message || '抱歉，处理请求时发生错误。'
+    return localizeError(data.error || data.message || '抱歉，处理请求时发生错误。')
   }
 
   function modelRouteMissingMessage(routeSlot?: string): string {
@@ -1893,7 +1894,7 @@ export const useChatStore = defineStore('chat', () => {
       } else {
         console.error('Chat error:', error)
         updateLastMessage({
-          content: '抱歉，发生了错误。请稍后重试。',
+          content: localizeError('抱歉，发生了错误。请稍后重试。'),
           isLoading: false,
         })
       }

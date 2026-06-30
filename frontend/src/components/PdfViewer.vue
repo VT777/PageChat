@@ -14,6 +14,7 @@ import {
 import { formatFileSize, formatDate } from '@/lib/utils'
 import { currentPdfRenderDimensions } from '@/utils/pdfRenderScale'
 import { fetchPdfBlobUrl } from '@/utils/pdfFetch'
+import { useI18n } from '@/i18n/messages'
 import TocTree from './TocTree.vue'
 
 // 设置 PDF.js worker
@@ -65,6 +66,7 @@ const props = withDefaults(defineProps<Props>(), {
 })
 
 const emit = defineEmits<Emits>()
+const { localizeText: lt, localizeError } = useI18n()
 
 // PDF 文档
 let pdfDocument: pdfjsLib.PDFDocumentProxy | null = null
@@ -150,7 +152,9 @@ const loadPdf = async () => {
   } catch (err: any) {
     console.error('[PDF] Load failed:', err)
     releasePdfResources()
-    error.value = err?.message ? `加载失败：${err.message}` : '加载失败，请刷新重试'
+    error.value = err?.message
+      ? `${lt('加载失败')}：${localizeError(err.message)}`
+      : lt('加载失败，请刷新重试')
     isLoading.value = false
   }
 }
@@ -459,12 +463,12 @@ onUnmounted(() => {
         >
           <div v-if="isLoading" class="state-message">
             <div class="loading-spinner"></div>
-            <span>正在加载PDF...</span>
+            <span>{{ lt('正在加载PDF...') }}</span>
           </div>
           
           <div v-else-if="error" class="state-message error">
             <span>{{ error }}</span>
-            <button class="retry-btn" @click="loadPdf">重试</button>
+            <button class="retry-btn" @click="loadPdf">{{ lt('重试') }}</button>
           </div>
           
           <div v-else class="pages-wrapper">
@@ -499,18 +503,18 @@ onUnmounted(() => {
           <div class="panel-tabs">
             <button class="tab-btn" :class="{ active: activeTab === 'toc' }" @click="activeTab = 'toc'">
               <BookOpen class="w-4 h-4" />
-              <span>目录</span>
+              <span>{{ lt('目录') }}</span>
             </button>
             <button class="tab-btn" :class="{ active: activeTab === 'info' }" @click="activeTab = 'info'">
               <FileText class="w-4 h-4" />
-              <span>信息</span>
+              <span>{{ lt('信息') }}</span>
             </button>
           </div>
           
           <!-- 目录 -->
           <div v-if="activeTab === 'toc'" class="panel-content">
             <div v-if="previewData.toc.length === 0" class="empty-state">
-              暂无目录信息
+              {{ lt('暂无目录信息') }}
             </div>
             <div v-else class="toc-tree-container">
               <TocTree 
@@ -524,46 +528,46 @@ onUnmounted(() => {
           <!-- 信息 -->
           <div v-else class="panel-content">
             <div class="info-section">
-              <h4 class="section-title">基本信息</h4>
+              <h4 class="section-title">{{ lt('基本信息') }}</h4>
               <div class="info-list">
                 <div class="info-row">
-                  <span class="info-label">文件名</span>
+                  <span class="info-label">{{ lt('文件名') }}</span>
                   <span class="info-value">{{ previewData.name }}</span>
                 </div>
                 <div class="info-row">
-                  <span class="info-label">文件类型</span>
+                  <span class="info-label">{{ lt('文件类型') }}</span>
                   <span class="info-value">{{ previewData.file_type.toUpperCase() }}</span>
                 </div>
                 <div class="info-row">
-                  <span class="info-label">文件大小</span>
+                  <span class="info-label">{{ lt('文件大小') }}</span>
                   <span class="info-value">{{ formatFileSize(previewData.file_size) }}</span>
                 </div>
                 <div class="info-row">
-                  <span class="info-label">页数</span>
-                  <span class="info-value">{{ previewData.page_count || '-' }} 页</span>
+                  <span class="info-label">{{ lt('页数') }}</span>
+                  <span class="info-value">{{ previewData.page_count || '-' }} {{ lt('页') }}</span>
                 </div>
                 <div class="info-row">
-                  <span class="info-label">创建时间</span>
+                  <span class="info-label">{{ lt('创建时间') }}</span>
                   <span class="info-value">{{ formatDate(previewData.created_at) }}</span>
                 </div>
               </div>
             </div>
             
             <div v-if="previewData.description" class="info-section">
-              <h4 class="section-title">文档摘要</h4>
+              <h4 class="section-title">{{ lt('文档摘要') }}</h4>
               <p class="description-text">{{ previewData.description }}</p>
             </div>
             
             <div class="info-section">
-              <h4 class="section-title">索引统计</h4>
+              <h4 class="section-title">{{ lt('索引统计') }}</h4>
               <div class="stats-grid">
                 <div class="stat-item">
                   <span class="stat-num">{{ previewData.stats.node_count }}</span>
-                  <span class="stat-label">章节数</span>
+                  <span class="stat-label">{{ lt('章节数') }}</span>
                 </div>
                 <div class="stat-item">
                   <span class="stat-num">{{ previewData.stats.summary_coverage }}</span>
-                  <span class="stat-label">摘要覆盖率</span>
+                  <span class="stat-label">{{ lt('摘要覆盖率') }}</span>
                 </div>
               </div>
             </div>

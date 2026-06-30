@@ -2,6 +2,7 @@
 import { computed } from 'vue'
 import { X, FileText } from 'lucide-vue-next'
 import type { SourceAnchor } from '@/types/preview'
+import { useI18n } from '@/i18n/messages'
 import { formatEvidenceLabel } from '@/utils/evidence'
 
 const props = defineProps<{
@@ -18,6 +19,7 @@ const emit = defineEmits<{
   close: []
 }>()
 
+const { localizeText: lt } = useI18n()
 const anchorLabel = computed(() => {
   return formatEvidenceLabel({
     documentName: props.documentName,
@@ -29,7 +31,7 @@ const anchorLabel = computed(() => {
 
 const anchorLocator = computed(() => props.anchorLocator || '')
 
-const highlightText = computed(() => props.highlightedSnippet || '暂无可预览片段')
+const highlightText = computed(() => props.highlightedSnippet || lt('暂无可预览片段'))
 </script>
 
 <template>
@@ -49,7 +51,7 @@ const highlightText = computed(() => props.highlightedSnippet || '暂无可预�
       <header class="flex items-center justify-between px-4 py-3 border-b">
         <div class="flex items-center gap-2 text-sm font-medium">
           <FileText class="w-4 h-4 text-muted-foreground" />
-          来源预览
+          {{ lt('来源预览') }}
         </div>
         <button
           class="p-1.5 rounded-md hover:bg-accent"

@@ -61,6 +61,7 @@ import {
 import type { DocumentSelectionActionId } from '@/ui/pagechatContracts'
 import { calculatePopoverPosition, type PopoverSize } from '@/ui/popoverPosition'
 import type { Folder as FolderModel, FolderTreeItem } from '@/api/folders'
+import { useI18n } from '@/i18n/messages'
 
 interface TocItem {
   node_id: string
@@ -109,6 +110,7 @@ interface PreviewTocNode {
 const documentStore = useDocumentStore()
 const folderStore = useFolderStore()
 const router = useRouter()
+const { localizeText: lt, localizeError, isChinese } = useI18n()
 
 const searchInput = ref('')
 const uploading = ref(false)
@@ -187,7 +189,7 @@ const selectedItemLabel = computed(() =>
   selectedDocuments.value[0]?.original_name ||
   selectedDocuments.value[0]?.name ||
   selectedFolders.value[0]?.name ||
-  '所选项目'
+  lt('所选项目')
 )
 const previewQuality = computed(() => qualityDisplay(previewData.value?.quality_report))
 const previewToc = computed(() => normalizeToc(previewData.value?.toc || []))
@@ -241,6 +243,12 @@ function flattenFolderTree(nodes: FolderTreeItem[], depth = 0): FolderPickerOpti
 }
 
 function buildSelectionSummary(input: { documentCount: number; folderCount: number }): string {
+  if (!isChinese.value) {
+    const parts: string[] = []
+    if (input.documentCount > 0) parts.push(`${input.documentCount} ${input.documentCount === 1 ? 'file' : 'files'}`)
+    if (input.folderCount > 0) parts.push(`${input.folderCount} ${input.folderCount === 1 ? 'folder' : 'folders'}`)
+    return `Selected ${parts.join(' and ') || '0 items'}`
+  }
   const parts: string[] = []
   if (input.documentCount > 0) parts.push(`${input.documentCount} 个文件`)
   if (input.folderCount > 0) parts.push(`${input.folderCount} 个文件夹`)
@@ -445,7 +453,7 @@ async function uploadFiles(event: Event) {
     await documentStore.uploadDocuments(files, folderStore.currentFolderId, 'smart')
     refreshDocuments()
   } catch (error: any) {
-    uploadError.value = error?.response?.data?.detail || 'Upload failed'
+    uploadError.value = localizeError(error?.response?.data?.detail || 'Upload failed')
   } finally {
     uploading.value = false
     input.value = ''
@@ -466,7 +474,7 @@ async function openPreview(document: Document) {
     const { data } = await documentApi.preview(document.id)
     previewData.value = data
   } catch (error: any) {
-    uploadError.value = error?.response?.data?.detail || 'Preview failed'
+    uploadError.value = localizeError(error?.response?.data?.detail || 'Preview failed')
   } finally {
     previewLoading.value = false
   }
@@ -484,7 +492,7 @@ function jumpToPage(pageNum: number) {
 
 function showFolderBackendNotice(action: string) {
   uploadError.value = ''
-  operationNotice.value = `文件夹${action}需要后端接口支持，当前先保留入口和选择状态。`
+  operationNotice.value = lt(`文件夹${action}需要后端接口支持，当前先保留入口和选择状态。`)
 }
 
 async function deleteSelected() {
@@ -507,7 +515,7 @@ async function deleteSelected() {
     selectedFolderIds.value.clear()
     refreshDocuments()
   } catch (error: any) {
-    uploadError.value = error?.response?.data?.detail || 'Delete failed'
+    uploadError.value = localizeError(error?.response?.data?.detail || 'Delete failed')
   } finally {
     selectionActionBusy.value = null
   }
@@ -576,7 +584,7 @@ async function reindexSelected() {
     await documentStore.batchReindex(ids)
     documentStore.deselectAll()
   } catch (error: any) {
-    uploadError.value = error?.response?.data?.detail || 'Reprocess failed'
+    uploadError.value = localizeError(error?.response?.data?.detail || 'Reprocess failed')
   } finally {
     selectionActionBusy.value = null
   }
@@ -595,7 +603,7 @@ async function downloadSelected() {
     await documentStore.batchDownload(ids)
     if (selectedFolderIdList.value.length > 0) showFolderBackendNotice('下载')
   } catch (error: any) {
-    uploadError.value = error?.response?.data?.detail || 'Download failed'
+    uploadError.value = localizeError(error?.response?.data?.detail || 'Download failed')
   } finally {
     selectionActionBusy.value = null
   }
@@ -638,7 +646,7 @@ async function moveSelected() {
     await folderStore.fetchFolders(folderStore.currentFolderId)
     refreshDocuments()
   } catch (error: any) {
-    uploadError.value = error?.response?.data?.detail || 'Move failed'
+    uploadError.value = localizeError(error?.response?.data?.detail || 'Move failed')
   } finally {
     selectionActionBusy.value = null
   }
@@ -761,7 +769,7 @@ onBeforeUnmount(() => {
       <div v-if="selectedCount > 0" class="selection-bar">
         <div class="selection-summary">
           <strong>{{ selectionSummary }}</strong>
-          <button type="button" @click="clearSelectedDocuments">取消选择</button>
+          <button type="button" @click="clearSelectedDocuments">{{ lt('取消选择') }}</button>
         </div>
         <div class="selection-actions">
           <button
@@ -774,7 +782,7 @@ onBeforeUnmount(() => {
           >
             <Loader2 v-if="selectionActionBusy === action.id" class="spin" />
             <component v-else :is="selectionActionIconFor(action.icon)" />
-            {{ action.label }}
+            {{ lt(action.label) }}
           </button>
         </div>
       </div>
@@ -897,8 +905,8 @@ onBeforeUnmount(() => {
           <section class="move-modal" @click.stop>
             <header class="move-header">
               <div>
-                <h2>移动项目</h2>
-                <p>{{ selectionSummary }} · 目标位置 {{ moveTargetLabel }}</p>
+                <h2>{{ lt('移动项目') }}</h2>
+                <p>{{ selectionSummary }} · {{ lt('目标位置') }} {{ moveTargetLabel }}</p>
               </div>
               <button type="button" :disabled="selectionActionBusy === 'move'" @click="closeMoveDialog">
                 <X />
@@ -907,12 +915,12 @@ onBeforeUnmount(() => {
 
             <div class="move-body">
               <div class="move-selected">
-                <span>将移动</span>
+                <span>{{ lt('将移动') }}</span>
                 <strong>{{ selectedItemLabel }}</strong>
-                <small v-if="selectedCount > 1">另有 {{ selectedCount - 1 }} 个项目</small>
+                <small v-if="selectedCount > 1">{{ lt('另有') }} {{ selectedCount - 1 }} {{ lt('个项目') }}</small>
               </div>
 
-              <div class="folder-picker" role="listbox" aria-label="选择目标文件夹">
+              <div class="folder-picker" role="listbox" :aria-label="lt('选择目标文件夹')">
                 <button
                   v-for="folder in moveFolderOptions"
                   :key="folder.id || 'root'"
@@ -934,12 +942,12 @@ onBeforeUnmount(() => {
 
             <footer class="move-footer">
               <button type="button" :disabled="selectionActionBusy === 'move'" @click="closeMoveDialog">
-                取消
+                {{ lt('取消') }}
               </button>
               <button class="primary" type="button" :disabled="selectionActionBusy === 'move'" @click="moveSelected">
                 <Loader2 v-if="selectionActionBusy === 'move'" class="spin" />
                 <Move v-else />
-                移动到这里
+                {{ lt('移动到这里') }}
               </button>
             </footer>
           </section>
@@ -960,27 +968,27 @@ onBeforeUnmount(() => {
         >
           <button type="button" @click="chatWithDocument(rowMenuDocument)">
             <MessageSquare />
-            <span>在聊天中使用</span>
+            <span>{{ lt('在聊天中使用') }}</span>
           </button>
           <button type="button" @click="openPreview(rowMenuDocument)">
             <FileText />
-            <span>打开预览</span>
+            <span>{{ lt('打开预览') }}</span>
           </button>
           <button type="button" @click="copyDocumentName(rowMenuDocument)">
             <File />
-            <span>复制文件名</span>
+            <span>{{ lt('复制文件名') }}</span>
           </button>
           <button type="button" @click="downloadOne(rowMenuDocument)">
             <Download />
-            <span>下载</span>
+            <span>{{ lt('下载') }}</span>
           </button>
           <button type="button" @click="reindexOne(rowMenuDocument)">
             <RefreshCw />
-            <span>重新解析</span>
+            <span>{{ lt('重新解析') }}</span>
           </button>
           <button class="danger" type="button" @click="deleteOne(rowMenuDocument)">
             <Trash2 />
-            <span>删除</span>
+            <span>{{ lt('删除') }}</span>
           </button>
         </div>
       </Teleport>
@@ -999,27 +1007,27 @@ onBeforeUnmount(() => {
         >
           <button type="button" @click="chatWithFolder(rowMenuFolder)">
             <MessageSquare />
-            <span>在聊天中使用</span>
+            <span>{{ lt('在聊天中使用') }}</span>
           </button>
           <button type="button" @click="goToFolder(rowMenuFolder.id)">
             <FolderOpen />
-            <span>打开文件夹</span>
+            <span>{{ lt('打开文件夹') }}</span>
           </button>
           <button type="button" @click="downloadFolder(rowMenuFolder)">
             <Download />
-            <span>下载</span>
+            <span>{{ lt('下载') }}</span>
           </button>
           <button type="button" @click="reindexFolder(rowMenuFolder)">
             <RefreshCw />
-            <span>重新解析</span>
+            <span>{{ lt('重新解析') }}</span>
           </button>
           <button type="button" @click="moveOneFolder(rowMenuFolder)">
             <Move />
-            <span>移动</span>
+            <span>{{ lt('移动') }}</span>
           </button>
           <button class="danger" type="button" @click="deleteOneFolder(rowMenuFolder)">
             <Trash2 />
-            <span>删除</span>
+            <span>{{ lt('删除') }}</span>
           </button>
         </div>
       </Teleport>
@@ -1046,7 +1054,7 @@ onBeforeUnmount(() => {
                   </button>
                   <button :class="{ active: activePreviewTab === 'info' }" type="button" @click="activePreviewTab = 'info'">
                     <FileText />
-                    信息
+                    {{ lt('信息') }}
                   </button>
                 </div>
 
@@ -1063,47 +1071,47 @@ onBeforeUnmount(() => {
                   <div v-else class="info-panel">
                     <dl>
                       <div>
-                        <dt>原始文件名</dt>
+                        <dt>{{ lt('原始文件名') }}</dt>
                         <dd>{{ previewDocument?.original_name || previewData?.original_name || previewData?.name }}</dd>
                       </div>
                       <div>
-                        <dt>文件类型</dt>
+                        <dt>{{ lt('文件类型') }}</dt>
                         <dd>{{ formatDocumentTypeLabel(previewDocument?.file_type || previewData?.file_type) }}</dd>
                       </div>
                       <div>
-                        <dt>文件大小</dt>
+                        <dt>{{ lt('文件大小') }}</dt>
                         <dd>{{ formatDocumentSize(previewDocument?.file_size || previewData?.file_size) }}</dd>
                       </div>
                       <div>
-                        <dt>所在路径</dt>
+                        <dt>{{ lt('所在路径') }}</dt>
                         <dd>{{ previewDocument?.folder_path || previewDocument?.file_path || 'root' }}</dd>
                       </div>
                       <div>
-                        <dt>页数</dt>
+                        <dt>{{ lt('页数') }}</dt>
                         <dd>{{ metadataValue(previewDocument?.page_count || previewData?.page_count) }}</dd>
                       </div>
                       <div>
-                        <dt>解析路径</dt>
+                        <dt>{{ lt('解析路径') }}</dt>
                         <dd>{{ previewRoute }}</dd>
                       </div>
                       <div>
-                        <dt>解析总用时</dt>
+                        <dt>{{ lt('解析总用时') }}</dt>
                         <dd>{{ formatDocumentDuration(previewDocument?.processing_duration || previewData?.processing_duration) }}</dd>
                       </div>
                       <div>
-                        <dt>TOC 节点数</dt>
+                        <dt>{{ lt('TOC 节点数') }}</dt>
                         <dd>{{ metadataValue(previewData?.stats?.node_count) }}</dd>
                       </div>
                       <div>
-                        <dt>文本字符数</dt>
+                        <dt>{{ lt('文本字符数') }}</dt>
                         <dd>{{ metadataValue(previewData?.stats?.text_chars) }}</dd>
                       </div>
                       <div>
-                        <dt>摘要覆盖率</dt>
+                        <dt>{{ lt('摘要覆盖率') }}</dt>
                         <dd>{{ metadataValue(previewData?.stats?.summary_coverage) }}</dd>
                       </div>
                       <div>
-                        <dt>质量报告</dt>
+                        <dt>{{ lt('质量报告') }}</dt>
                         <dd>{{ previewQuality.label }} · {{ previewQuality.message }}</dd>
                       </div>
                     </dl>
